@@ -8,7 +8,8 @@ import {
   fetch as directFetch,
 } from 'undici';
 import { WebSocket, WebSocketServer } from 'ws';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { previewTestLookup } from './preview-test-lookup';
 import {
   LocalSessionControlResponseSchema,
   DEFAULT_PREVIEW_IDLE_TIMEOUT_MS,
@@ -37,6 +38,14 @@ vi.mock('./preview-tunnel-readiness', async (original) => ({
   ...(await original<typeof import('./preview-tunnel-readiness')>()),
   verifyPreviewTunnelRoundTrip: vi.fn(),
 }));
+
+const previousViewerDispatcher = getGlobalDispatcher();
+const viewerDispatcher = new Agent({ connect: { lookup: previewTestLookup } });
+beforeAll(() => setGlobalDispatcher(viewerDispatcher));
+afterAll(async () => {
+  setGlobalDispatcher(previousViewerDispatcher);
+  await viewerDispatcher.close();
+});
 
 const machineId = 'machine-preview' as MachineId;
 const workspaceId = 'workspace-preview' as WorkspaceId;
@@ -681,7 +690,7 @@ describe('PreviewService Quick Tunnel lifecycle', () => {
       const previous = getGlobalDispatcher();
       const blocked = new MockAgent();
       blocked.disableNetConnect();
-      const viewer = new Agent();
+      const viewer = new Agent({ connect: { lookup: previewTestLookup } });
       let socket: WebSocket | undefined;
       const { service } = setup();
       try {
@@ -697,7 +706,7 @@ describe('PreviewService Quick Tunnel lifecycle', () => {
         const response = await directFetch(url, { dispatcher: viewer });
         expect(await response.json()).toEqual({ host: `localhost:${port}`, address });
         url.protocol = 'ws:';
-        socket = new WebSocket(url);
+        socket = new WebSocket(url, { lookup: previewTestLookup });
         await once(socket, 'open');
         const received = once(socket, 'message');
         socket.send('observe peer');

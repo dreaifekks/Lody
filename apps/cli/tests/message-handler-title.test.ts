@@ -1,7 +1,14 @@
+import { LoroRepo } from 'loro-repo';
+import { SessionDocument } from '../src/lib/loro/doc';
+import { getSessionRoomId } from '@lody/shared';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import * as codexProfiles from '../src/agent/codex-profile-store';
 import { MessageHandler } from '../src/lib/message-handler';
 import type { Logger } from '../src/utils/logger';
-import type { SessionId, SessionTitleSource } from '@lody/shared';
+import type { AgentConfigMeta, SessionId, SessionTitleSource } from '@lody/shared';
 import type { SessionManager } from '../src/session/session-manager';
 import type { LoroDocumentManager } from '../src/lib/loro/doc';
 import { createTestCloudPort } from './test-cloud-port';
@@ -37,7 +44,7 @@ const createHandler = async (
   latestMeta?: { title?: string; titleSource?: SessionTitleSource },
   options?: {
     agentConfigId?: string;
-    agentConfigMeta?: { titleGeneration?: { configOptionValues: Record<string, string> } } | null;
+    agentConfigMeta?: Partial<AgentConfigMeta> | null;
   }
 ) => {
   const logger = createSilentLogger();
@@ -106,6 +113,78 @@ const createHandler = async (
 describe('MessageHandler title generation', () => {
   beforeEach(() => {
     mockedGenerateTitleIsolated.mockClear();
+  });
+
+  it('skips a bound Codex account with corrupt metadata and a missing reference, then recovers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'lody-title-binding-'));
+    const store = new codexProfiles.CodexProfileStore(root);
+    const storeSpy = vi.spyOn(codexProfiles, 'getCodexProfileStore').mockReturnValue(store);
+    try {
+      const provider: AgentConfigMeta = {
+        id: 'title-provider' as AgentConfigMeta['id'],
+        machineId: 'm-1' as AgentConfigMeta['machineId'],
+        name: 'Synthetic Codex',
+        description: undefined,
+        cliType: 'builtin',
+        agentType: 'codex',
+        env: {},
+        codexAuth: { mode: 'chatgpt', profileId: 'b881560c-f117-434b-bd92-15ce23f7a78c' },
+      };
+      const profile = await store.resolve('ws-1', provider, true);
+      if (!profile) throw new Error('Expected a synthetic Codex profile');
+      await store.markChatgptReady(profile);
+      const file = path.join(root, profile.profile.profileId, 'profile.json');
+      const original = await readFile(file, 'utf8');
+      await writeFile(file, '{broken');
+      expect(await store.list('ws-1')).toEqual([]);
+      const { handler, sessionDoc, workspaceDocument } = await createHandler(
+        undefined,
+        undefined,
+        undefined,
+        {
+          agentConfigId: provider.id,
+          agentConfigMeta: { ...provider, codexAuth: undefined },
+        }
+      );
+      sessionDoc.getMetaState.mockResolvedValue({ agentConfigId: provider.id });
+      let storedTitle: string | undefined;
+      sessionDoc.setTitleIfSourceIn.mockImplementation(async (title) => {
+        storedTitle = title;
+        return true;
+      });
+      const titleHost = handler as unknown as {
+        maybeGenerateAndStoreSessionTitle(
+          sessionId: SessionId,
+          cliType: string,
+          agentType: string,
+          prompt: string
+        ): Promise<void>;
+      };
+      const generate = () =>
+        titleHost.maybeGenerateAndStoreSessionTitle(
+          'bound-title' as SessionId,
+          'builtin',
+          'codex',
+          'Synthetic task text'
+        );
+      await expect(generate()).resolves.toBeUndefined();
+      expect(mockedGenerateTitleIsolated).not.toHaveBeenCalled();
+      expect(storedTitle).toBeUndefined();
+
+      await writeFile(file, original);
+      workspaceDocument.getAgentConfigById.mockResolvedValue(provider);
+      await generate();
+      expect(storedTitle).toBe('Generated Title');
+      expect(mockedGenerateTitleIsolated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          codexProfile: { profile },
+          taskPrompt: 'Synthetic task text',
+        })
+      );
+    } finally {
+      storeSpy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('skips isolated generation when title already meaningful', async () => {
@@ -345,21 +424,35 @@ describe('MessageHandler title generation', () => {
     ]);
   });
 
-  it('keeps the fork marker when the agent of a fork reports its title', async () => {
-    const { handler, sessionDoc } = await createHandler('(fork) Fix flaky login', 'generated');
+  it('uses native generated titles on a fork without restoring a prefix, and preserves user titles', async () => {
+    const sessionId = 's-fork-title' as SessionId;
+    const repo = await LoroRepo.create({});
+    const doc = new SessionDocument(repo, sessionId, async () => {}, createSilentLogger());
+    await doc.initOffline();
+    const { handler, workspaceDocument } = await createHandler();
+    workspaceDocument.getOrCreateSessionDoc.mockResolvedValue(doc);
     const titleHost = handler as unknown as {
-      maybeStoreAgentSessionTitle: (sessionId: SessionId, title: string) => Promise<void>;
+      maybeStoreAgentSessionTitle(sessionId: SessionId, title: string): Promise<void>;
     };
-
-    await titleHost.maybeStoreAgentSessionTitle('s-11' as SessionId, 'Fix flaky login');
-    expect(sessionDoc.setTitleIfSourceIn).not.toHaveBeenCalled();
-
-    await titleHost.maybeStoreAgentSessionTitle('s-11' as SessionId, 'Retry login on 401');
-    expect(sessionDoc.setTitleIfSourceIn).toHaveBeenCalledWith(
-      '(fork) Retry login on 401',
-      'generated',
-      ['draft', 'generated']
-    );
+    try {
+      await repo.upsertDocMeta(getSessionRoomId(sessionId), {
+        title: '(fork) Fix flaky login',
+        titleSource: 'generated',
+      });
+      await titleHost.maybeStoreAgentSessionTitle(sessionId, 'Fix flaky login');
+      expect((await doc.getMetaState())?.title).toBe('Fix flaky login');
+      await titleHost.maybeStoreAgentSessionTitle(sessionId, 'Retry login on 401');
+      expect((await doc.getMetaState())?.title).toBe('Retry login on 401');
+      await repo.upsertDocMeta(getSessionRoomId(sessionId), {
+        title: '(fork) My chosen title',
+        titleSource: 'user',
+      });
+      await titleHost.maybeStoreAgentSessionTitle(sessionId, 'Agent suggestion');
+      expect((await doc.getMetaState())?.title).toBe('(fork) My chosen title');
+    } finally {
+      await doc.destroy({ preserveStatus: true });
+      await repo.destroy();
+    }
   });
 
   it('does not store an ACP title containing only Lody internal instructions', async () => {

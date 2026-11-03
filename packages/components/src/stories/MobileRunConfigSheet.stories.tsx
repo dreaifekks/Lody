@@ -270,7 +270,7 @@ export const Claude: Story = {
   args: { session: claudeSession, modelOptions: claudeModelOptions, selectors: claudeSelectors },
 };
 
-export const DeepSeekDelegationWarning: Story = {
+export const DeepSeekModels: Story = {
   args: {
     session: deepseekSession,
     modelOptions: [

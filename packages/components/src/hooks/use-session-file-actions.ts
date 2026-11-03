@@ -1,4 +1,8 @@
 import {
+  buildSessionFileRootMounts,
+  toSessionFileRequestPath,
+} from '@/lib/session-file-root-mounts';
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -40,7 +44,8 @@ import {
   type SessionFileErrorActions,
 } from '@/lib/session-file-actions';
 import { isAbsoluteFilePath, resolveLocalWorkspaceFilePath } from '@/lib/session-local-file-path';
-import { resolveSessionFileOpenTarget } from '@/lib/session-file-open-target';
+import { resolveDirectMarkdownFileOpenTarget } from '@/lib/session-file-open-target';
+import { getMarkdownAgentFileCopyPath } from '@/lib/markdown-agent-file-link';
 import {
   buildPathLauncherLaunchInput,
   buildPathLauncherProbes,
@@ -131,7 +136,10 @@ export type SessionFileActions = {
    * file-tree menu, this deliberately never offers download/share remotely:
    * outside the owning local Electron machine it is Copy Path only.
    */
-  readonly buildMarkdownLinkMenuItems: (href: string) => readonly MarkdownAgentFileLinkMenuItem[];
+  readonly buildMarkdownLinkMenuItems: (
+    href: string,
+    copyPath?: string
+  ) => readonly MarkdownAgentFileLinkMenuItem[];
   /**
    * The same actions as a menu, for the file tree's context menu and the side
    * panel's ⋯ menu. Stable across renders so a memoized tree row can take it.
@@ -152,17 +160,26 @@ export function useSessionFileActions({
   /** Null while the surface has no session yet; every action is then absent. */
   readonly session: SessionMeta | null | undefined;
   /**
-   * Only `openFile` is used (for the remote download), so both the file
-   * workspace and session provider shapes fit.
+   * Preview bytes cover ordinary downloads; the optional download path handles
+   * larger files without entering the preview/editor cache.
    */
   readonly fileProvider?: {
     openFile(pathOrFileId: string): Promise<FileWorkspaceOpenResult>;
+    downloadFile?(path: string, signal?: AbortSignal): Promise<Uint8Array | null>;
   } | null;
 }): SessionFileActions {
   const { t } = useTranslation();
   const postHog = usePostHog();
   const nativeShell = isNativeAppShell();
   const exportingRef = useRef(false);
+  const downloadControllers = useRef(new Set<AbortController>());
+  const largeDownloadInProgress = useRef(false);
+  useEffect(
+    () => () => {
+      for (const controller of downloadControllers.current) controller.abort();
+    },
+    [session?.id]
+  );
   // `session/file_action`: one event per user-invoked file action. Only the
   // extension bucket leaves the client, never the path.
   const trackFileAction = useCallback(
@@ -555,7 +572,7 @@ export function useSessionFileActions({
               workspaceId,
               machineId: session.machineId,
               sessionId: session.id,
-              path: filePath,
+              ...toSessionFileRequestPath(filePath, buildSessionFileRootMounts(session.projectRun)),
               fileName: name,
             })
             .catch(() => undefined);
@@ -605,14 +622,35 @@ export function useSessionFileActions({
         exportingRef.current = true;
         setSharing(true);
       }
+      const controller = new AbortController();
+      downloadControllers.current.add(controller);
       void (async () => {
         try {
           const exportBytes = async (bytes: Uint8Array) => {
             if (nativeShell) await shareFileBytesNatively(getDownloadFileName(filePath), bytes);
             else downloadBytesAsFile(filePath, bytes);
           };
+          const downloadOriginal = async () => {
+            if (largeDownloadInProgress.current) return true;
+            largeDownloadInProgress.current = true;
+            try {
+              const bytes = await fileProvider.downloadFile?.(filePath, controller.signal);
+              controller.signal.throwIfAborted();
+              if (!bytes) return false;
+              await exportBytes(bytes);
+              return true;
+            } finally {
+              largeDownloadInProgress.current = false;
+            }
+          };
           const result = await fileProvider.openFile(filePath);
+          controller.signal.throwIfAborted();
           if (result.status !== 'ready') {
+            if (
+              (result.reason === 'text-too-large' || result.reason === 'blob-too-large') &&
+              (await downloadOriginal())
+            )
+              return;
             reportUnavailable(result.reason);
             return;
           }
@@ -627,14 +665,17 @@ export function useSessionFileActions({
           }
           // A `binary` snapshot with no bytes is the machine declining to send
           // them, which is the same "too big for one response" situation.
+          if (await downloadOriginal()) return;
           reportUnavailable('no-bytes');
         } catch {
+          if (controller.signal.aborted) return;
           toast.error(
             nativeShell
               ? t('sessions.fileActions.shareFailed', 'Could not share that file.')
               : t('sessions.fileActions.downloadFailed', 'Could not download that file.')
           );
         } finally {
+          downloadControllers.current.delete(controller);
           if (nativeShell) {
             exportingRef.current = false;
             setSharing(false);
@@ -705,24 +746,13 @@ export function useSessionFileActions({
     ]
   );
 
-  const resolveMarkdownLinkFilePath = useCallback(
-    (href: string): string | null => {
-      const trimmed = href.trim();
-      if (!trimmed) return null;
-      return resolveSessionFileOpenTarget({
-        rawPath: trimmed,
-        pathKind: 'markdown-href',
-        workspacePath,
-        preserveWorktreePath: isElectronRenderer && isLocalMachine,
-      }).filePath;
-    },
-    [isElectronRenderer, isLocalMachine, workspacePath]
-  );
-
   const buildMarkdownLinkMenuItems = useCallback(
-    (href: string): readonly MarkdownAgentFileLinkMenuItem[] => {
-      const filePath = resolveMarkdownLinkFilePath(href);
-      if (!filePath) return [];
+    (href: string, originalPath?: string): readonly MarkdownAgentFileLinkMenuItem[] => {
+      const filePath = resolveDirectMarkdownFileOpenTarget(href)?.filePath;
+      const copyTarget = originalPath ?? getMarkdownAgentFileCopyPath(href);
+      const withPath = (act: (filePath: string) => void) => () => {
+        if (filePath) act(filePath);
+      };
 
       const items: MarkdownAgentFileLinkMenuItem[] = [
         {
@@ -731,8 +761,8 @@ export function useSessionFileActions({
           label: t('sessions.fileActions.copyPath', 'Copy Path'),
           icon: Copy,
           run: () => {
-            trackFileAction('copy_path', 'md_link_context_menu', filePath);
-            copyPath(filePath);
+            trackFileAction('copy_path', 'md_link_context_menu', copyTarget);
+            writePathToClipboard(copyTarget);
           },
         },
       ];
@@ -740,17 +770,17 @@ export function useSessionFileActions({
       // The exact same local-host gate protects every path handed to Electron.
       // A remote agent's href can still be copied, but must never reach this
       // viewer's shell or advertise actions that will fail.
-      if (!localHost || !resolveHostPath(filePath)) return items;
+      if (!filePath || !localHost || !resolveHostPath(filePath)) return items;
 
       items.push({
         kind: 'action',
         id: 'open-file',
         label: t('sessions.fileActions.openFile', 'Open File'),
         icon: ExternalLink,
-        run: () => {
-          trackFileAction('open_external', 'md_link_context_menu', filePath);
-          localHost.openInDefaultApp(filePath);
-        },
+        run: withPath((path) => {
+          trackFileAction('open_external', 'md_link_context_menu', path);
+          localHost.openInDefaultApp(path);
+        }),
       });
       if (availableEditorLaunchers) {
         items.push({
@@ -760,10 +790,10 @@ export function useSessionFileActions({
             editor: availableEditorLaunchers.selected.label,
           }),
           icon: ExternalLink,
-          run: () => {
-            trackFileAction('open_in_editor', 'md_link_context_menu', filePath);
-            runEditorAction(availableEditorLaunchers.selected, filePath);
-          },
+          run: withPath((path) => {
+            trackFileAction('open_in_editor', 'md_link_context_menu', path);
+            runEditorAction(availableEditorLaunchers.selected, path);
+          }),
         });
       }
 
@@ -779,10 +809,10 @@ export function useSessionFileActions({
             id: `open-with:${getPathLauncherId(launcher)}`,
             label: launcher.label,
             icon: ExternalLink,
-            run: () => {
-              trackFileAction('open_with', 'md_link_context_menu', filePath);
-              runEditorAction(launcher, filePath);
-            },
+            run: withPath((path) => {
+              trackFileAction('open_with', 'md_link_context_menu', path);
+              runEditorAction(launcher, path);
+            }),
           })),
         });
       }
@@ -792,19 +822,18 @@ export function useSessionFileActions({
         id: 'reveal',
         label: localHost.revealLabel,
         icon: FolderOpen,
-        run: () => {
-          trackFileAction('reveal', 'md_link_context_menu', filePath);
-          localHost.reveal(filePath);
-        },
+        run: withPath((path) => {
+          trackFileAction('reveal', 'md_link_context_menu', path);
+          localHost.reveal(path);
+        }),
       });
       return items;
     },
     [
-      copyPath,
+      writePathToClipboard,
       availableEditorLaunchers,
       localHost,
       resolveHostPath,
-      resolveMarkdownLinkFilePath,
       runEditorAction,
       t,
       trackFileAction,

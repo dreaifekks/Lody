@@ -1,74 +1,76 @@
 # Product surfaces (`src/components`)
 
-Parent `AGENTS.md` files also apply. `CLAUDE.md` is a symlink; edit `AGENTS.md` only.
-Child directories (`sessions/`, `mobile/`, …) own their own rules.
+Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
 
 ## Sidebar and session rows
 
 - Sidebar rows represent Sessions, never Tasks.
-- Desktop Workspace, Local Project, Updated and Pinned rows support mention drag
-  and Mark as unread (hide on unread). Use `lib/session-mention-drag.ts` for
-  conversation/landing drops; parent tabs use HTML5 drag, child tabs dnd-kit.
-  `startSessionMentionDrag` / `armSessionMentionDrag` must light
-  `ConversationDropOverlay` before `dragenter`. Navigation overlays use
-  `draggable={false}`; rows own `draggable`.
+- Desktop Workspace/Local Project/Updated/Pinned rows support mention drag and
+  Mark as unread, hidden when unread. Conversation/landing drops use
+  `lib/session-mention-drag.ts`; parent tabs use HTML5 drag, children dnd-kit.
+  `startSessionMentionDrag`/`armSessionMentionDrag` show `ConversationDropOverlay`
+  before `dragenter`. Rows own `draggable`; navigation overlays set it false.
+
 - Full-width sidebar stays mounted/inert with scroll; Cmd+B animates content width
   (zero for reduced motion); pause hidden eager-sync/keyboard-nav. Compact/settings
   remounts restore scroll. Compact nav is modal: inert content, restore focus,
   nested Escape first. [Spec](../../../../specs/desktop-windows.md).
-- Every list uses `lib/session-opened-by-tree.ts`: `session-list.tsx` groups, local-project
-  sections, Updated/Pinned in `sidebar-updated-session-list.tsx`, and
-  `sidebar-navigation-model.ts` for matching keyboard navigation.
-- `openedBySessionId` is the precise opener; `openedByRowSessionId` is its row.
-  `buildSidebarOpenerRowResolver` in `sessions/session-list-rows.ts` walks
-  `parentSessionId` to root using sidebar `allActiveSessions`, not visible rows.
-  Preserve the precise opener and independent child workspace. `parentSessionId`
-  children stay out of `sessionListAtom` rows.
-- Opener and unrelated top-level rows retain flat-list alignment. In the leading slot,
-  an opener shows disclosure and a child shows ├/└; hover swaps either for ⋯ at the same
-  7px centre. Draw nesting regardless of working/unread/waiting status. Only children
-  widen the slot from 14px to 26px for a 12px title indent without shifting the background.
-  Keep geometry in `session-row-leading-slot.tsx`; context-menu expand/collapse uses
-  the same toggle.
+- Every list uses `lib/session-opened-by-tree.ts`; keyboard navigation uses
+  `sidebar-navigation-model.ts`.
+- `openedBySessionId` identifies the precise opener; `openedByRowSessionId` its row.
+  `sessions/session-list-rows.ts`'s `buildSidebarOpenerRowResolver` walks `parentSessionId`
+  using `allActiveSessions`, never visible rows. Preserve exact openers/independent
+  child workspaces; exclude contained children from `sessionListAtom` rows.
+
+- Top-level opener/unrelated rows keep flat alignment. `session-row-leading-slot.tsx`
+  owns disclosure for openers and ├/└ for children; hover replaces either with ⋯
+  at the same 7px centre, regardless of activity. Only child slots widen 14px→26px,
+  indenting titles 12px without moving backgrounds. Context menus reuse the toggle.
+
 - Conversation titles stay `font-normal`; pin with the glyph, never weight.
+- Sidebar row radius, inset, ink, hover/selected fill and title clipping use
+  `sidebar-surface.ts` / `sidebar.tokens.stylex.ts` on conversation, repo and nav rows.
+  Tailwind wins same-property conflicts; keep it only for groups, menu-open and focus states.
 - Desktop work/wait/unread/send status belongs only in `SessionRowStatusIndicator`
-  inside `SidebarRowEndSlot`, never the leading slot; it replaces resting `Mergeable`,
-  worktree, PR icon or mobile time with one 14px mark. +/- totals: hover card only.
+  inside `SidebarRowEndSlot`. On two-line Session rows it stays on the title line while
+  the PR control remains accessible on the metadata line when Show Branch is enabled
+  ([decision](../../../../.agents/notes/implemented/feature/2026-11-02-sidebar-pull-requests.md));
+  otherwise hide the row's PR control. On single-line rows activity replaces resting
+  `Mergeable`, worktree or mobile time. +/- totals: hover card only.
   Mobile: [mobile/AGENTS.md](mobile/AGENTS.md). Folded groups: only
   `SidebarGroupActivityMark`, no counts ([why](../../../../.agents/notes/implemented/feature/2026-09-26-sidebar-folded-group-status.md)).
-- Never hide a Session through nesting: missing, cross-section, cross-group, cycling,
-  or deeper-than-one-level openers render top-level. `MAX_VISIBLE_SESSIONS` /
-  `SHOW_FULL_BUCKET_THRESHOLD` count top-level rows. Every list passes `rootRank` for
-  latest-activity sorting; rank an opener by its freshest opened Session.
-- Collapse state uses `sidebarCollapsedOpenedBySessionsAtom`, default expanded. Keep
-  both navigation directions reachable through the tree, every sidebar row's "Go to
-  Opener Session", `SessionHeaderMenu.openedByRelations`, and conversation cards for
-  successful create Operations / the precise opener. Mobile lists use the same two
-  fields and per-bucket tree without disclosure, per [mobile/AGENTS.md](mobile/AGENTS.md).
-- Follow the [Session relation contract](../../../../specs/session-relations.md): root
-  archive recursively includes contained Tabs and opened Sessions, using the shared
-  archive selector and a complete metadata cache. Restore and archived-root permanent
-  delete include only direct child Tabs. `deleteArchivedSession` requires a complete metadata
-  cache before selecting that destructive set; `deleteSessions(ids)` deletes exactly
-  the supplied ids without relation discovery or a cache-readiness requirement so
-  compensation and explicit child/side-session cleanup remain available during
-  hydration. Nested child Sessions are unsupported. Keep dangling `openedBy*`
-  provenance after deleting an opener, but expose reverse navigation only when the
-  exact opener and route root both resolve after hydration. Archived lists still use
-  opened-by provenance for indentation, with child Tabs inside their owning Session's
-  archived-tab UI.
+- Missing, cross-section, cyclic or deeper-than-one-level openers render top-level.
+  Workspace `placeWorkspaceSessionsWithOpeners` moves Sessions into their opener's
+  group; Pinned/Updated keep natural membership. `MAX_VISIBLE_SESSIONS` and
+  `SHOW_FULL_BUCKET_THRESHOLD` count roots. Pass `rootRank` everywhere; an opener
+  ranks by its freshest opened Session.
+
+- `sidebarCollapsedOpenedBySessionsAtom` defaults expanded. Preserve both navigation
+  directions through the tree, row "Go to Opener Session", `SessionHeaderMenu.openedByRelations`
+  and successful-create/precise-opener cards. Mobile uses the same two fields and
+  per-bucket tree without disclosure, per [mobile/AGENTS.md](mobile/AGENTS.md).
+
+- Follow the [Session relation Spec](../../../../specs/session-relations.md): archive
+  contains Tabs and optionally opened Sessions via `useArchiveSessionWithConfirmation`.
+  Restore/delete includes direct child Tabs only; nested children are unsupported.
+  `deleteArchivedSession` requires complete metadata; `deleteSessions(ids)` deletes
+  exactly those IDs without discovery. Preserve opener provenance and expose reverse
+  navigation only after opener/root hydration. Read the
+  [tree rules](../../../../.agents/docs/components-sidebar-session-tree.md).
 
 ## Entry points, drafts, and layout
 
-- Child-tab drafts send through the same accept unit as every other first message:
-  `handleSendDraft` (`sessions/session-detail.tsx`) writes Session meta plus the first
-  user turn together via `startSession` and only then promotes the draft tab;
-  `requestSessionDispatch` is acceleration on top of the durable pointer. Never
-  reintroduce a create-then-hand-off flow (pending-turn refs, post-mount ref flushes): a
-  promoted tab must not exist before its first message is locally durable, and preserved
-  composer text crosses the promotion via the input draft cache, not a component ref.
-  Tab close persists `isTabClosed`; legacy archives share the closed list and reopen
-  through lifecycle restoration. Failed writes remain visible to the user.
+- iOS divisions separate workspace panes; never save the temporary sidebar width. [Decision](../../../../.agents/notes/implemented/bug-fix/2026-10-28-ios-vertical-division.md).
+- The window is `bg-sidebar`; pages use one inset `WorkspaceCard`. Keep the sidebar on the
+  window, never as a floating surface. See [layout docs](../../../../.agents/docs/components-package.md).
+- `handleSendDraft` in `sessions/session-detail.tsx` uses ordinary `startSession`
+  acceptance to persist Session meta and the first user turn before promoting a
+  child draft. `requestSessionDispatch` only accelerates the durable pointer.
+  Never create then hand off through pending-turn refs or post-mount flushes.
+  Preserve composer text through the draft cache, not refs. Close persists
+  `isTabClosed`; legacy archives share the closed list and restore through the
+  lifecycle. Surface failed writes.
+
 - Login handoff: confirm account; retain PKCE/channel on switch; allowlisted schemes only.
 - Desktop changelogs open in-app as sanitized Markdown with raw HTML off. Only
   missing notes fall back to the website, via `getChangelogUrl` and
@@ -82,36 +84,45 @@ Child directories (`sessions/`, `mobile/`, …) own their own rules.
 
 ## Conversation access
 
-- `session-sharing.tsx` owns ONE desktop header control for both access axes.
-  Team visibility picks the shape — private keeps the menu explaining its
-  inherited machine/project scope before either sharing action, anything else is
-  a plain button — and a published link picks the label in both shapes, being
-  the wider disclosure. Never add a second badge beside it; the private scope
-  stays the menu's first block.
-- `useSessionShareStatus` is the only cloud read a header makes while the share
-  editor is CLOSED: the management row, never a source document. `unknown` reads
-  as not-yet-shared, so the label upgrades in place instead of flashing in.
-- The page owns that editor: header control and `…` menu open the same
-  `SessionShareDialog`, keyed by session id so a switching tab cannot retarget it.
+- `session-sharing.tsx` owns one desktop team/web access control: team visibility
+  selects menu/button, public status selects label, and the audience strip shows
+  access. Disable unavailable audiences with reasons. Never add narrowing, tabs,
+  search or a second badge. Paths/base branch remain in `⋯`. Closed headers read
+  only the `useSessionShareStatus` row (`unknown` means unshared). Inline/dialog
+  editors reuse one keyed publisher; publishing keeps the panel open.
+  [Contract](../../../../.agents/notes/implemented/feature/2026-09-14-session-header-share-control.md).
 
 ## Local projects
 
-- Project rows follow visibility, not machine ownership: a teammate's shared project
-  navigates and offers New chat; only removal is owner-only.
-- Adding a folder is a workspace action, not a this-machine action: the picker chooses
-  the machine, so every entry point says "Add folder", not "Add a local project".
-  Settings > Projects pills EVERY machine the user may add to, even ones with no project
-  yet, and passes it as `initialMachineId`. The addable set comes from
-  `useAddLocalProjectMachines`; the ownership rule (`canAddProjects`) has one home and
-  must not be re-derived per surface. Onboarding is the deliberate exception: its
-  desktop native picker really is this-machine only.
-- A pending local-project removal is a visible lifecycle state, not an absent project:
-  keep the project and its Sessions discoverable while the owning machine is offline or
-  retrying, but exclude it from new-Session selectors. Once the catalog row is gone,
-  archived Sessions stay readable and deletable; Restore waits until the same local
-  project is added again.
-- Local-project removal may optionally clean Lody-created Session worktrees, but the
-  option defaults off and appears only after the owning machine preflights every
-  worktree. Always state the original project directory is never deleted; list dirty
-  worktrees and keep them by default. A completed cleanup is not pending removal and
-  must be visibly acknowledged even when worktrees were kept or failed.
+- Visible shared project rows navigate and offer New chat regardless of machine
+  ownership; only removal is owner-only.
+
+- Folder addition is workspace-wide: every entry says "Add folder" and lets the
+  picker select a machine. Settings > Projects lists every addable machine, even
+  empty ones, and passes `initialMachineId`. Derive that set only through
+  `useAddLocalProjectMachines` and its `canAddProjects` ownership rule.
+  Onboarding's native picker is the explicit same-machine exception.
+
+- Directory registration and standalone display are independent. Missing
+  `standaloneVisible` means visible. Hide registrations only in standalone lists,
+  retaining member resolution, repository-copy selection and session access.
+- Delete local projects through the existing action without confirmation/dependency
+  UI. Retain referenced registrations/sessions; delete unreferenced ones normally.
+  Explicit Add restores standalone display/identity.
+- Direct folder selection is draft-only until save. Gate read-only inspection on
+  `projectFolderSelection`; register missing directories before saving the complete
+  Project. Retried saves reuse registrations; source paths stay out of definitions.
+
+E2EE/terminals: read [rules](e2ee/AGENTS.md).
+
+## Automation markers
+
+- Workspace/machine/invitation/membership/composer controls expose stable,
+  translation-independent `data-testid` values. Repeated rows preserve
+  `data-settings-machine-id`, `data-machine-id`, `data-membership-id`,
+  `data-request-id`, `data-device-key` and `data-agent-config-id` identities.
+  These contain public IDs, never invitation tokens, credentials or keys.
+
+- `workspace-ready` denotes scoped sidebar readiness, never execution permission.
+  Tests bind the workspace and observe required content/controls. Preserve semantic/
+  identity attributes for existing harnesses.

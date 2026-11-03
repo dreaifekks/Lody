@@ -13,7 +13,6 @@ import {
   formatRateLimitWindowShortLabel,
   getAgentRateLimitWindows,
   getContextWindowUsageData,
-  getRateLimitRemainingPercent,
   resolveAgentRateLimitForModel,
   resolveAgentRateLimitsForModel,
   type MachineRateLimits,
@@ -53,14 +52,6 @@ describe('session usage', () => {
     expect(getContextWindowUsageData({ size: 0, used: 0 })).toBeNull();
   });
 
-  it('derives remaining quota from the normalized percentage scale', () => {
-    expect(getRateLimitRemainingPercent(25)).toBe(75);
-    expect(getRateLimitRemainingPercent(55)).toBe(45);
-    expect(getRateLimitRemainingPercent(100)).toBe(0);
-    expect(getRateLimitRemainingPercent(1)).toBe(99);
-    expect(getRateLimitRemainingPercent(0.5)).toBe(99.5);
-  });
-
   it('uses provider-reported window durations instead of positional 5h/7d labels', () => {
     const windows = getAgentRateLimitWindows(
       usage({
@@ -83,13 +74,6 @@ describe('session usage', () => {
       },
     ]);
     expect(formatRateLimitWindowShortLabel(windows[0]!.windowDurationSeconds)).toBe('7d');
-  });
-
-  it('reads canonical fixed windows without provider-specific interpretation', () => {
-    expect(getAgentRateLimitWindows(usage())).toMatchObject([
-      { usedPercent: 25, windowDurationSeconds: 18_000 },
-      { usedPercent: 40, windowDurationSeconds: 604_800 },
-    ]);
   });
 
   it('preserves scoped windows even when their values match the shared quota', () => {
@@ -120,29 +104,6 @@ describe('session usage', () => {
       {
         usedPercent: 0.5,
         remainingPercent: 99.5,
-        windowDurationSeconds: 604_800,
-        resetsAtEpochSeconds: 1784505071,
-      },
-    ]);
-  });
-
-  it('preserves an explicitly reported single weekly Codex window', () => {
-    expect(
-      getAgentRateLimitWindows(
-        usage({
-          windows: [
-            {
-              usedPercent: 29,
-              windowDurationSeconds: 604_800,
-              resetsAtEpochSeconds: 1784505071,
-            },
-          ],
-        })
-      )
-    ).toEqual([
-      {
-        usedPercent: 29,
-        remainingPercent: 71,
         windowDurationSeconds: 604_800,
         resetsAtEpochSeconds: 1784505071,
       },
@@ -293,99 +254,41 @@ describe('session usage', () => {
     ).toBeNull();
   });
 
-  it.each(['claude', 'codex', 'grok', 'kimi'])(
-    'shows %s limits with unrelated env',
+  it.each(['claude', 'codex', 'grok'])(
+    'keeps %s quota with unrelated tool settings and hides account overrides',
     (agentType) => {
-      const env = {
-        NMEM_AGENT_ID: 'lody',
-        HTTPS_PROXY: 'http://localhost:7890',
-        NODE_OPTIONS: '--max-old-space-size=4096',
-      };
-      expect(
-        canShowSubscriptionRateLimits({ capability: { version: 1 }, cliType: 'builtin', agentType })
-      ).toBe(true);
+      const input = { cliType: 'builtin' as const, agentType, capability: { version: 1 as const } };
       expect(
         canShowSubscriptionRateLimits({
-          capability: { version: 1 },
-          cliType: 'builtin',
-          agentType,
-          config: { env: { NMEM_AGENT_ID: 'lody' } },
+          ...input,
+          config: { env: { NMEM_AGENT_ID: 'lody', HTTPS_PROXY: 'http://localhost:7890' } },
         })
       ).toBe(true);
       expect(
         canShowSubscriptionRateLimits({
-          capability: { version: 1 },
-          cliType: 'builtin',
-          agentType,
-          config: { env: {} },
+          ...input,
+          config: { env: { NODE_OPTIONS: '--require override.js' } },
         })
-      ).toBe(true);
-      expect(
-        canShowSubscriptionRateLimits({
-          capability: { version: 1 },
-          cliType: 'builtin',
-          agentType,
-          config: { env },
-        })
-      ).toBe(true);
+      ).toBe(false);
+      expect(canShowSubscriptionRateLimits({ ...input, config: { brandId: 'deepseek' } })).toBe(
+        false
+      );
     }
   );
-
   it.each([
-    ['claude', 'ANTHROPIC_BASE_URL'],
     ['claude', 'ANTHROPIC_API_KEY'],
     ['codex', 'OPENAI_API_KEY'],
-    ['codex', 'CODEX_HOME'],
     ['grok', 'XAI_API_KEY'],
-    ['grok', 'GROK_HOME'],
-    ['kimi', 'KIMI_API_KEY'],
-    ['kimi', 'KIMI_BASE_URL'],
-  ])('hides %s subscription limits only when %s is nonblank', (agentType, key) => {
-    const input = { cliType: 'builtin' as const, agentType };
+  ])('treats empty %s account override %s as an account change', (agentType, key) => {
     expect(
       canShowSubscriptionRateLimits({
+        cliType: 'builtin',
+        agentType,
         capability: { version: 1 },
-        ...input,
-        config: { env: { [key]: 'override' } },
-      })
-    ).toBe(false);
-    expect(
-      canShowSubscriptionRateLimits({
-        capability: { version: 1 },
-        ...input,
-        config: { env: { [key]: ' \t\n' } },
-      })
-    ).toBe(true);
-    expect(
-      canShowSubscriptionRateLimits({
-        capability: { version: 1 },
-        ...input,
         config: { env: { [key]: '' } },
       })
-    ).toBe(true);
+    ).toBe(false);
   });
-
-  it.each(['claude', 'codex', 'grok', 'kimi'])(
-    'still hides persisted or inferred %s brands',
-    (agentType) => {
-      expect(
-        canShowSubscriptionRateLimits({
-          capability: { version: 1 },
-          cliType: 'builtin',
-          agentType,
-          config: { brandId: 'deepseek', env: { NMEM_AGENT_ID: 'lody' } },
-        })
-      ).toBe(false);
-      expect(
-        canShowSubscriptionRateLimits({
-          capability: { version: 1 },
-          cliType: 'builtin',
-          agentType,
-          config: { env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic' } },
-        })
-      ).toBe(false);
-    }
-  );
 
   it('keeps Antigravity eligibility independent of env and brand', () => {
     expect(

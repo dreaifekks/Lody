@@ -1,19 +1,18 @@
 # Electron contributor guidelines
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
+Edit `AGENTS.md`; `CLAUDE.md` symlinks here.
 Root rules apply. For `src/**`, read module, IPC and window contracts in
 [`src/AGENTS.md`](src/AGENTS.md).
 
 ## Local OSS composition
 
-- The public desktop composition is local-only. It must not discover deployment env
-  files, initialize authenticated product-cloud behavior, or enable telemetry.
+- Public desktop is local-only: never discover deployment env files, initialize
+  authenticated product-cloud behavior or enable telemetry.
 - The build-time `mainPlatformKind` is the source of truth for data directories,
   sockets, run/lock files, host leases, and workspace catalogs. Pass it explicitly;
   never infer it from an inherited `LODY_PLATFORM` value.
-- The Vite toolchain mode is named `oss`, while the injected product platform remains
-  `VITE_LODY_PLATFORM=local`. `electron.vite.config.ts` owns this mapping and must
-  clear caller-provided `VITE_*` values before injecting audited local constants.
+- `electron.vite.config.ts` maps Vite `oss` to `VITE_LODY_PLATFORM=local`; clear
+  caller-provided `VITE_*` before injecting audited local constants.
 - Run desktop development from the repository root with `pnpm start:local`. It must
   rebuild the embedded CLI and local renderer before launching the bundled CLI; do
   not reuse production/cloud artifacts.
@@ -30,9 +29,8 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
   error.
 - OSS local mode must not create a PostHog client, write an analytics install id, or
   upload source maps, even when unrelated analytics variables exist in the shell.
-- Use `pnpm --dir apps/electron preview:local` only when a smoke/E2E harness has
-  already prepared and validated the OSS build artifacts. That low-level command must
-  remain `--skipBuild --mode oss`.
+- Use `pnpm --dir apps/electron preview:local` only with harness-prepared and
+  validated OSS artifacts; retain `--skipBuild --mode oss`.
 
 ## Build toolchain and window identity
 
@@ -42,15 +40,12 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
   directory before auth stores open. `desktop-channel` changes desktop identity,
   never the shared CLI namespace, data root, or Host endpoint.
 
-- electron-vite must list a build target for the pinned Electron major: an unknown
-  major silently compiles main/preload for Node 16 and the renderer for Chrome 108.
-  Upgrade both together and check the target table in electron-vite's `dist`.
+- Upgrade Electron and electron-vite targets together; verify the pinned Electron
+  major in electron-vite's `dist` target table to avoid obsolete Node/Chrome fallbacks.
 - Electron 42+ does not download its binary during install. `scripts/postinstall.mjs`
   runs the package's idempotent `install.js`; dev, preview and E2E need its `path.txt`.
-- Electron's Chromium supports native top-level await. Keep renderer and module
-  worker builds on native TLA; do not add `vite-plugin-top-level-await` or an
-  equivalent full-bundle AST compatibility rewrite. Reprocessing Rollup's complete
-  output graph materially increases production renderer peak memory.
+- Keep native top-level await in renderer/module workers; do not add
+  `vite-plugin-top-level-await` or another full-bundle AST compatibility rewrite.
 - Linux window identity is one contract: the composition's packaged `desktopName`,
   electron-builder's `syncDesktopName`, the pre-ready `app.setDesktopName` value,
   and the AppImage runtime desktop entry must all resolve to the same desktop-file
@@ -59,6 +54,15 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
 
 ## Embedded CLI and native dependencies
 
+- Main-process E2EE also uses `better-sqlite3`. Declare it in this app's runtime
+  dependencies, externalize it in every main composition, and unpack the installed
+  package including its target prebuild. Never rely on the embedded CLI's separate
+  dependency tree.
+- Both compositions build `src/main/native-storage-smoke.mts` with `application.ts`.
+  afterPack runs that ASAR entry in packaged Electron on matching hosts to test
+  E2EE SQLite close/reopen and encrypted Node custody using synthetic temporary
+  state. Keep it separate from CLI binding probes; it does not prove OS-keychain acceptance.
+
 - The embedded CLI runs built JavaScript, never source-loader/Jiti. Development
   and packaged builds share the output layout.
 - `@loro-dev/roost-node`, `better-sqlite3`, `@lydell/node-pty`, and Node-only `loro-crdt` remain external and must be
@@ -66,24 +70,21 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
   `scripts/cli-native-deps.mjs`.
   Roost's client, Worker, and binding retain relative paths; stage only the target prebuild,
   from the main package or its exact-version optional platform package.
-- `@lydell/node-pty` and `better-sqlite3 >= 13.0.2` use N-API artifacts. Stage the
-  target platform/architecture artifact; do not rebuild by Electron ABI.
+- `@lydell/node-pty` and `better-sqlite3 >= 13.0.2` use N-API prebuilds. Stage the
+  target platform/arch; never run `install-app-deps` or rebuild these by Electron ABI.
 - Every embedded-CLI descendant launched through `process.execPath` must inherit
   `ELECTRON_RUN_AS_NODE` when it exists. On packaged macOS, omitting it launches a
   second GUI app instead of Node.
-- Those descendants load runtime-installed native addons that carry no Team ID, so
-  macOS nested binaries keep `disable-library-validation` in
-  `build/entitlements.mac.inherit.plist`. Removing it makes every such `dlopen` fail
-  and the host reports only `ACP connection closed`. Top-level app entitlements stay
-  strict.
+- macOS nested binaries keep `disable-library-validation` in
+  `build/entitlements.mac.inherit.plist` for runtime-installed addons without Team
+  IDs. Top-level entitlements stay strict.
 - Electron Builder ignores nested staged `node_modules`. `eb-after-pack.mjs` must copy
   them into `app.asar.unpacked`, assert the DeepSeek adapter plus all four pinned
   presets, then probe CLI `--help`, node-pty loading, and a real in-memory SQLite
   database before signing.
-- Keep `better-sqlite3 >= 13.0.2`, the Node-API 10 engine range
-  (`>=22.14.0 <23 || >=23.6.0`), the first-import guard in
-  `sqlite-runtime-support.ts`, and its tests aligned. Older runtimes can segfault
-  while loading the binding. Linux armv7 is unsupported.
+- Keep `better-sqlite3 >= 13.0.2`, Node-API 10, and the CLI first-import guard aligned.
+  [Node security floors and Electron backport limits](../../.agents/notes/implemented/bug-fix/2026-10-22-node-security-runtime-floor.md)
+  are separate. Linux armv7 is unsupported.
 - When upgrading `@lydell/node-pty`, audit package layout and Windows ConPTY binding
   names. Apply the staged asar-path repair after downloading target artifacts; a pnpm
   patch cannot cover cross-architecture packages fetched during packaging.
@@ -93,10 +94,10 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
 
 ## Release packaging and auto-update
 
-- Always package through `scripts/package-electron.mjs` (`pnpm run package -- <args>`),
-  never `electron-builder` directly. It injects the released version via
-  `extraMetadata` so `package.json` is a fallback rather than the release source of
-  truth, and it forces `--publish never` unless a caller opts in.
+- Package through `scripts/package-electron.mjs` (`pnpm run package -- <args>`),
+  never directly through electron-builder. Inject the release version through
+  `extraMetadata`, using package.json only as fallback; force `--publish never`
+  unless the caller opts in.
 - Windows/Linux electron-updater still uses the `publish` block: Vite strips every
   `VITE_*` value, so `AppUpdaterService` falls back to packaged `app-update.yml` and
   `latest*.yml`. Tag contract is `v${version}`.
@@ -106,9 +107,8 @@ Root rules apply. For `src/**`, read module, IPC and window contracts in
   they do not build installers or generate Sparkle feeds/deltas.
 - Before changing updater runtime code, read the auto-update rules in
   [`src/main/services/AGENTS.md`](src/main/services/AGENTS.md#auto-update).
-- Artifact names must stay space-free. GitHub Releases rewrites spaces to periods,
-  which desynchronizes `latest*.yml` and Sparkle enclosures. Do not use
-  `${productName}` in `artifactName`.
+- Keep artifact names space-free and never use `${productName}` in `artifactName`;
+  GitHub rewriting otherwise breaks updater references.
 - macOS releases must be signed and notarized. `generate_appcast` refuses archives
   that fail `codesign --verify --deep --strict`, and Gatekeeper needs a notarized
   first-install DMG. Windows and Linux do not have this constraint.

@@ -518,6 +518,9 @@ export function useLanSessionShareManagement(
 
   return {
     entry,
+    plaintextConfirmation: false,
+    onConfirmPlaintextPublish: publish,
+    onCancelPlaintextPublish: () => {},
     selected,
     hasPending: pending !== null,
     conflict,

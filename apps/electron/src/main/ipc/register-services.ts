@@ -6,6 +6,7 @@ import { TerminalClientMessageSchema } from '@lody/shared/terminal-protocol'
 import { AppIpc, installNativeThemeWatch } from './services/app-ipc'
 import { AuthIpc } from './services/auth-ipc'
 import { CliIpc } from './services/cli-ipc'
+import { E2eeIpc } from './services/e2ee-ipc'
 import { ImageIpc } from './services/image-ipc'
 import { LanIpc } from './services/lan-ipc'
 import { LocalPlatformIpc } from './services/local-platform-ipc'
@@ -15,10 +16,12 @@ import { MachineRpcIpc } from './services/machine-rpc-ipc'
 import { NotificationsIpc } from './services/notifications-ipc'
 import { PublicBrowserIpc } from './services/public-browser-ipc'
 import { SessionControlIpc } from './services/session-control-ipc'
+import { StorageGuardIpc } from './services/storage-guard-ipc'
 import { TerminalIpc } from './services/terminal-ipc'
 import { UpdaterIpc } from './services/updater-ipc'
 import { WidgetsIpc } from './services/widgets-ipc'
 import { setIpcServiceDeps, type IpcServiceDeps } from './ipc-service-deps'
+import { registerClientLossProbe } from '../services/e2ee-client-loss-probe'
 
 type TerminalFireAndForgetType = 'attach' | 'input' | 'resize' | 'close' | 'close_session'
 
@@ -26,6 +29,7 @@ export const IPC_SERVICE_CONSTRUCTORS = [
   AppIpc,
   AuthIpc,
   CliIpc,
+  E2eeIpc,
   ImageIpc,
   LanIpc,
   LocalPlatformIpc,
@@ -35,6 +39,7 @@ export const IPC_SERVICE_CONSTRUCTORS = [
   NotificationsIpc,
   PublicBrowserIpc,
   SessionControlIpc,
+  StorageGuardIpc,
   TerminalIpc,
   UpdaterIpc,
   WidgetsIpc
@@ -49,6 +54,7 @@ export type ElectronIpcServices = MergeIpcService<ReturnType<typeof createRegist
 export function registerIpcServices(deps: IpcServiceDeps) {
   setIpcServiceDeps(deps)
   installNativeThemeWatch()
+  registerClientLossProbe()
 
   ipcMain.on(IPC_SEND_CHANNELS.cliSubscribe, (event) => {
     deps.cliService.attachCliStateSender(event.sender)

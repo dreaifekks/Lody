@@ -1,3 +1,4 @@
+import { LoroStreamsMachineRpcServer } from '../src/machine-rpc-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AgentConfigId,
@@ -480,6 +481,24 @@ describe('LoroStreamsMachineRpcClient', () => {
     client.stop();
   });
 
+  it('forwards includeDisk on machine status only when asked', async () => {
+    const fake = createFakeStreamClient();
+    const client = new LoroStreamsMachineRpcClient({
+      workspaceId: 'workspace-1',
+      machineId: 'machine-1',
+      streamClient: fake.streamClient,
+    });
+    void client.requestMachineStatus({ timeoutMs: 5000, includeDisk: true });
+    void client.requestMachineStatus({ timeoutMs: 5000 });
+    await vi.waitFor(() => expect(fake.appended).toHaveLength(2));
+    // Older daemons reject unknown params, so the default request stays empty.
+    expect(fake.appended.map((entry) => (entry.value as { params: unknown }).params)).toEqual([
+      { includeDisk: true },
+      {},
+    ]);
+    client.stop();
+  });
+
   it('sends machine status requests and resolves matching RPC responses', async () => {
     const fake = createFakeStreamClient();
     const client = new LoroStreamsMachineRpcClient({
@@ -537,6 +556,77 @@ describe('LoroStreamsMachineRpcClient', () => {
   });
 
   describe('a direct transport', () => {
+    it('carries disk, withdrawal and steer through the real server without hub writes', async () => {
+      const fake = createFakeStreamClient();
+      const queued = new Set(['queued-turn']);
+      let guidedPrompt: string | undefined;
+      const server = new LoroStreamsMachineRpcServer({
+        workspaceId: 'workspace-1' as WorkspaceId,
+        machineId: 'machine-1' as MachineId,
+        streamClient: fake.streamClient,
+        logger: { debug() {}, warn() {}, error() {} },
+        getMachineStatus: async (options) => ({
+          type: 'machine/status_response',
+          machineId: 'machine-1' as MachineId,
+          success: true,
+          ...(options?.includeDisk ? { disk: { totalGB: 100, freeGB: 40, usedPercent: 60 } } : {}),
+        }),
+        refreshMachineAcpCapabilities: vi.fn(),
+        withdrawSessionInput: async ({ sessionId, userTurnId }) => ({
+          type: 'session/withdraw-input_response',
+          sessionId,
+          userTurnId,
+          outcome: queued.delete(userTurnId) ? 'withdrawn' : 'already_withdrawn',
+        }),
+        steerSession: async ({ sessionId, userTurnId, inputConfig }) => {
+          guidedPrompt = inputConfig.prompt;
+          return {
+            type: 'session/steer_response',
+            sessionId,
+            userTurnId,
+            applied: true,
+            disposition: 'applied',
+          };
+        },
+      });
+      const client = new LoroStreamsMachineRpcClient({
+        workspaceId: 'workspace-1',
+        machineId: 'machine-1',
+        streamClient: fake.streamClient,
+        directTransport: (request) => server.handleDirectRequest(request),
+      });
+      try {
+        await expect(client.requestMachineStatus({ includeDisk: true })).resolves.toMatchObject({
+          success: true,
+          disk: { totalGB: 100, freeGB: 40, usedPercent: 60 },
+        });
+        await expect(
+          client.requestSessionWithdrawInput({
+            sessionId: 'session-1',
+            userTurnId: 'queued-turn',
+            requesterSessionId: 'source',
+            userId: 'user',
+          })
+        ).resolves.toMatchObject({ outcome: 'withdrawn' });
+        expect(queued.size).toBe(0);
+        await expect(
+          client.requestSessionSteer({
+            sessionId: 'session-1',
+            expectedTurnId: 'active-turn',
+            userTurnId: 'guide-turn',
+            userId: 'user',
+            timestamp: '2026-11-04T00:00:00Z',
+            inputConfig: { prompt: 'Use the selected root' },
+          })
+        ).resolves.toMatchObject({ applied: true, disposition: 'applied' });
+        expect(guidedPrompt).toBe('Use the selected root');
+        expect(fake.appended).toEqual([]);
+      } finally {
+        client.stop();
+        server.stop();
+      }
+    });
+
     const answerFor = (request: { id: string }) => ({
       jsonrpc: '2.0',
       id: request.id,
@@ -603,7 +693,7 @@ describe('LoroStreamsMachineRpcClient', () => {
       client.stop();
     });
 
-    it('leaves to the hub what it could not send, and what may be answered more than once', async () => {
+    it('leaves to the hub requests the direct transport could not send', async () => {
       const fake = createFakeStreamClient();
       const carried: string[] = [];
       const client = new LoroStreamsMachineRpcClient({
@@ -621,7 +711,7 @@ describe('LoroStreamsMachineRpcClient', () => {
       void client.requestMachineStatus({ timeoutMs: 5_000 }).catch(() => undefined);
       await vi.waitFor(() => expect(fake.appended).toHaveLength(2));
 
-      expect(carried).toEqual(['session/live-status']);
+      expect(carried).toEqual(['session/live-status', 'machine/status']);
       expect(fake.appended.map((entry) => (entry.value as { method: string }).method)).toEqual([
         'session/live-status',
         'machine/status',
@@ -2048,6 +2138,53 @@ describe('LoroStreamsMachineRpcClient', () => {
           error: 'tunnel_not_configured',
         })
       );
+    } finally {
+      client.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('roundtrips a project member probe with its typed result', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeStreamClient();
+    const client = new LoroStreamsMachineRpcClient({
+      workspaceId: 'workspace-1',
+      machineId: 'machine-1',
+      streamClient: fake.streamClient,
+    });
+    try {
+      const pending = client.requestProjectProbeLocalMember({
+        localProjectId: 'local-1' as LocalProjectId,
+        requestedByUserId: 'user-1',
+      });
+      await fake.waitForAppendedCount(1);
+      const request = fake.appended[0]!.value as { id: string; method: string; params: unknown };
+      expect(request).toMatchObject({
+        method: 'project/probe-local-member',
+        params: { localProjectId: 'local-1', requestedByUserId: 'user-1' },
+      });
+      const result = {
+        type: 'project/probe-local-member',
+        repoFullName: 'acme/api',
+        isGit: true,
+        submodules: [{ path: 'proto', url: '../proto.git', repoFullName: 'acme/proto' }],
+      };
+      fake.pushBatch({
+        messages: [
+          {
+            jsonrpc: '2.0',
+            id: request.id,
+            method: request.method,
+            rpcVersion: '1',
+            machineId: 'machine-1',
+            result,
+          },
+        ],
+        nextOffset: '1',
+        cursor: '1',
+        upToDate: true,
+      });
+      expect(await pending).toEqual(result);
     } finally {
       client.stop();
       vi.useRealTimers();
@@ -3604,6 +3741,46 @@ describe('pending RPC deadline', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(pending).resolves.toBeNull();
 
+      dispatcher.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('LoroStreamsRpcResponseDispatcher response loop', () => {
+  it('keeps reading responses when recreating a missing response stream fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let ensureCalls = 0;
+      let reads = 0;
+      const streamClient: LoroStreamsJsonStreamClient = {
+        ensureJsonStream: vi.fn(async () => {
+          ensureCalls += 1;
+          if (ensureCalls === 1) throw new Error('synthetic gateway unavailable');
+        }),
+        appendJson: vi.fn(async () => 'next-offset'),
+        readJsonLive: vi.fn(async (_streamId, _state, _onBatch, options) => {
+          reads += 1;
+          if (reads <= 2) throw new LoroStreamsGatewayError('stream not found', 404);
+          await new Promise((_resolve, reject) =>
+            options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            })
+          );
+        }),
+      };
+      const dispatcher = new LoroStreamsRpcResponseDispatcher({
+        workspaceId: 'workspace-1',
+        streamClient,
+        responseStreamId: 'workspace-1:rpc:res:client-1',
+      });
+
+      await dispatcher.start();
+      await vi.waitFor(() => expect(ensureCalls).toBe(1));
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(reads).toBe(3));
+      expect(ensureCalls).toBe(2);
       dispatcher.stop();
     } finally {
       vi.useRealTimers();

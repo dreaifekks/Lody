@@ -47,7 +47,7 @@ function PromptSuggestionsRow() {
       label={label}
       helper={t(
         'settings.agentFeatures.promptSuggestionsHelper',
-        'Claude only. After each reply, suggest what you might send next; press Tab to use it. Applies to every device.'
+        'Suggest your next message with supported agents. Press Tab to apply. Shared across devices.'
       )}
     >
       <Switch

@@ -6,6 +6,7 @@ import { listWorkspaceScheduleIds } from '@/lib/schedules/schedule-documents';
 import {
   getAuthContextOrThrow,
   listAliveSessionMetas,
+  listWorkspaceCandidates,
   resolveWorkspaceOrThrow,
   runOneShotCommand,
   syncDocForRead,
@@ -15,7 +16,8 @@ import {
 } from '@/lib/command-runtime';
 import { exportWorkspaceData } from '@/lib/session-export';
 import { mapWithConcurrency } from '@/lib/session-export/concurrency';
-import { listWorkspacesForToken, type WorkspaceSummary } from '@/lib/workspace';
+import type { WorkspaceSummary } from '@/lib/workspace';
+import { workspaceSupports } from '@lody/shared/workspace-streams-content';
 import { Effect } from 'effect';
 import { z } from 'zod';
 import { getCliPlatformKind } from '@/lib/cli-platform';
@@ -57,6 +59,14 @@ async function syncWorkspaceSessionsForExport(
       `export:${workspace.id}:${entry.meta.id}`
     );
   });
+
+  if (
+    !workspaceSupports(
+      { mode: workspace.contentMode === 'e2ee' ? 'protected' : 'plaintext' },
+      'schedules'
+    )
+  )
+    return;
 
   // This reconciles visible index rows with repo existence, repairing a missing
   // projection row without reviving an explicit index tombstone.
@@ -150,8 +160,8 @@ export const exportCommand = new Command('export')
       } else {
         const auth = getAuthContextOrThrow('export');
         const workspaces = options.allWorkspace
-          ? await listWorkspacesForToken(auth.token)
-          : [await resolveWorkspaceOrThrow(auth, options.workspace)];
+          ? await listWorkspaceCandidates(auth, { offline: options.offline })
+          : [await resolveWorkspaceOrThrow(auth, options.workspace, { offline: options.offline })];
         for (const workspace of workspaces) {
           exports.push(async () => ({
             ...(await withWorkspaceManager(auth, workspace, 'export', (manager) =>

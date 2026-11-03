@@ -5,46 +5,44 @@
 
 ## Context and documentation
 
-- Read the applicable ancestor/scoped `AGENTS.md` files and task-relevant Specs,
-  active notes, `.agents/docs/`, and module READMEs. Follow the required topic
-  links below when their trigger applies, including changes outside the owner's
-  directory. Archives are history, not current authority.
-- Specs express intent, docs explain implementation, notes record decisions.
-  Distinguish bugs, stale docs, and unimplemented intent using code and evidence;
-  never change a Spec to justify a bug.
-- Before creating or editing a Spec, read [Spec rules](specs/AGENTS.md), including
-  status and approval requirements. Reserve Specs for consequential decisions
-  needing human review; prefer an existing Spec. Ordinary fixes need no new Spec.
-- Non-trivial work MUST add/update its [Agent Note](.agents/notes/AGENTS.md#when-to-write)
-  in the same PR; substantial research/design needs a note without a PR too.
-  Only mechanical/local edits without changed decisions are exempt. Link distinct
-  decisions, keep proposals `proposed`, and report deferred notes for read-only work.
+- Read applicable ancestor/scoped `AGENTS.md`, relevant Specs, docs, module READMEs
+  and linked notes. Search notes before reversing decisions. Required topic links
+  also bind outside callers. Archives are history.
+- A note you rely on that is stale, unlinked, or in the wrong lifecycle is fixed in
+  the same PR ([maintenance on read](.agents/notes/AGENTS.md#maintenance-on-read)).
+- Specs express intent, docs implementation, notes decisions. Use code and evidence
+  to distinguish bugs, stale docs and unimplemented intent; never justify a bug by changing a Spec.
+- Before editing a Spec, read [Spec rules](specs/AGENTS.md). Prefer existing Specs;
+  reserve new ones for consequential decisions needing human review, not ordinary fixes.
+- Add/update an [Agent Note](.agents/notes/AGENTS.md#when-to-write) only for durable
+  rationale, alternatives, unenforceable constraints, measurements, formats or ownership.
+  Routine results belong in PRs/tests. New notes require the
+  [supersession check](.agents/notes/AGENTS.md#supersession); keep cited facts current
+  and report deferred notes for read-only work.
 - Update affected docs/READMEs. Run `pnpm run docs status` at start and
   `pnpm run docs check` at finish; review SHA-protected changes before confirming.
   Checks and translations establish neither correctness nor approval; translation
   may follow later. See [document maintenance](.agents/README.md).
-- Keep PR docs compact: consolidate decisions, evidence and limits; avoid fix/run logs.
+- Keep PR docs compact, with decisions, evidence and limits rather than fix/run logs.
   Follow [submission consolidation](.agents/AGENTS.md#documentation-at-submission).
-- Keep binding rules in the nearest `AGENTS.md` (<8 KiB; new scopes need a
-  `CLAUDE.md` symlink). Keep explanations and rationale in their owning docs/notes.
+- Keep complete binding rules in the nearest `AGENTS.md`, below 8 KiB and its
+  [word ceiling](.agents/README.md#word-ceilings). New scopes need a `CLAUDE.md`
+  symlink. Relocate topics rather than use fragments; explanations belong in docs/notes.
 
 ## Effect reference
 
-For Effect work, use the [Effect skill](.agents/skills/effect-ts/SKILL.md) to select
-review, debug, feature/fix or migration mode. Read the consuming package's resolved
-`effect/AGENTS.md` once per version in the current context, then relevant links/source.
-Preserve locked versions and behavioral acceptance. Explicit v3 migrations also use
+Use the [Effect skill](.agents/skills/effect-ts/SKILL.md) for Effect work. Read the
+consumer's resolved `effect/AGENTS.md` once per version/context, then relevant source.
+Preserve locked versions and behavior. Explicit v3 migrations also use
 [the migration skill](.agents/skills/effect-v3-to-v4/SKILL.md).
 
-For feature/fix work, assess a small complete native Effect v4 unit when it helps
-the task, dependencies are ready, and behavior can be verified. Roughly 500 extra
-changed lines is guidance, not an approval gate. Keep pure computation ordinary;
-preserve unrelated behavior and avoid unfinished dependency chains.
-For migration scope, read relevant [charter/ledger](.agents/notes/proposed/architecture/2026-09-27-effect-lifecycle-migration-roadmap.md#unit-ledger)
+Assess a complete native Effect v4 unit only when it helps the fix, dependencies
+are ready and behavior is verifiable. About 500 extra lines is guidance, not an
+approval gate. Keep pure computation ordinary and preserve unrelated behavior.
+For migrations, read the [charter/ledger](.agents/notes/proposed/architecture/2026-09-27-effect-lifecycle-migration-roadmap.md#unit-ledger)
 and [selection guide](.agents/docs/cli-effect-ts.md#small-migrations-during-feature-and-fix-work).
-Meet the charter's completion criteria. Update the ledger for changed dependencies,
-native boundaries, consumers or ownership. Keep modules cohesive; use the guide's
-responsibility split only when it improves a large mixed module.
+Meet completion criteria; update changed dependencies, boundaries, consumers and
+ownership in the ledger. Split a module only when cohesion improves.
 
 ## Repository boundary
 
@@ -68,7 +66,7 @@ responsibility split only when it improves a large mixed module.
   artifact and versioned ACP contract. Shared ACP extension contracts belong in the
   public `LodyAI/acp-extension-core` submodule, consumed through the root workspace;
   never duplicate them locally.
-- Magpie: require local desktop confirmation, fixed loopback mappings and public token.
+- Magpie: desktop confirmation or explicit local CLI import; loopback mappings and public token.
   Keep gateway metadata outside env and catalogs under Lody data, never user profiles.
   [Contract](specs/magpie-provider-import.md).
 - Pi provider migration requires owner confirmation and the target's `builtinPi`
@@ -80,11 +78,10 @@ responsibility split only when it improves a large mixed module.
 ## Contributions and checks
 
 - Identify once: Lody team if the user says so or GitHub login is `zxch3n`,
-  `Leeeon233`, or `wibus-wee`; otherwise community. Before planning a community
-  contribution, read [.github/AGENTS.md](.github/AGENTS.md) for size/assignment rules.
-  Read it before any PR/Issue work as well.
-- Node.js 22.14-22.x or 23.6+ (Node-API 10+); use the pnpm in `package.json`. See the
-  [runtime-floor decision](.agents/notes/implemented/bug-fix/2026-09-09-node-api-runtime-floor.md).
+  `Leeeon233`, or `wibus-wee`; otherwise community. Read [.github/AGENTS.md](.github/AGENTS.md)
+  before planning community contributions or any PR/Issue work.
+- Node.js 22.23.4+ (22.x), 24.22.1+ (24.x), or 26.12.1+ (26.x), with Node-API 10+; use the pnpm in `package.json`. See the
+  [runtime security decision](.agents/notes/implemented/bug-fix/2026-10-22-node-security-runtime-floor.md).
   `pnpm install` (nested checkouts skip it); standalone work uses a separate clone.
   `pnpm start:local` starts the desktop; root `pnpm build` uses the same local composition.
 - Before commit: `pnpm check` and `pnpm format`. Root packages share `.oxfmtrc.json`;
@@ -97,11 +94,13 @@ responsibility split only when it improves a large mixed module.
 - Tests use explicit signals, injected clocks, fake timers, and deterministic
   fixtures; no real sleeps, wall-clock races, network, machine load, or scheduler
   luck. Assert observable behavior, not mock call counts.
-- Delete shallow tests in the changed scope: source-string/regex assertions,
-  mock-call-only checks and ineffective duplicates.
-  Test the real boundary and resulting state, including failure paths; retain
-  meaningful compile-failure contracts. Extend the owning suite instead of adding
-  a file per small fix. Do not delete behavioral coverage merely to reduce counts.
+- Root checks skip `packages/acp-extension-*` internals; retain Lody integration
+  and packaging checks. Adapter tests and formatting are independently maintained.
+
+- Tests must protect Lody behavior or installation, compilation, packaging and
+  release guarantees. Remove shallow source-string, mock-call-only and ineffective
+  duplicate tests in scope. Test real boundaries, state and failures; retain compile-failure
+  contracts and meaningful behavior coverage. Extend the owning suite for small fixes.
 - Before changing teardown, retry, fencing or readiness, read
   [failure containment](.agents/docs/failure-containment.md); preserve verified safe
   reuse and bounded ownership while isolating independent work.

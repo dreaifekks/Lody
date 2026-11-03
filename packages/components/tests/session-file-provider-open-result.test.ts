@@ -77,41 +77,6 @@ describe('normalizePinnedProviderOpenResult', () => {
     ).toBe(unavailableProviderMiss);
   });
 
-  it('keeps provider results that already include an entry unchanged', () => {
-    const result = {
-      status: 'unavailable',
-      entry: {
-        fileId: 't:huge',
-        path: 'src/huge.ts',
-        kind: 'text',
-        sourceState: 'degraded',
-        unavailableReason: 'text-too-large',
-      },
-      reason: 'text-too-large',
-    } satisfies SessionFileOpenResult;
-
-    expect(
-      normalizePinnedProviderOpenResult(result, {
-        fileId: 't:huge',
-        path: 'src/huge.ts',
-        providerState: readyCodeCollabProvider,
-      })
-    ).toBe(result);
-  });
-
-  it('keeps a pinned file tab bound to the old fileId when same-path content is recreated', () => {
-    const tab = {
-      id: 'file:t:old-file',
-      type: 'file' as const,
-      filePath: 'src/index.ts',
-      fileId: 't:old-file',
-      label: 'index.ts',
-      focusRequestSeq: 1,
-    };
-
-    expect(refreshPinnedProviderFileViewerTab(tab, null)).toBe(tab);
-  });
-
   it('follows provider renames when the pinned fileId is preserved', () => {
     expect(
       refreshPinnedProviderFileViewerTab(

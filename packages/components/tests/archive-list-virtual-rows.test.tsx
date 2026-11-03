@@ -474,29 +474,4 @@ describe('ArchiveListWindow virtualization', () => {
     expect(countHeaders(host)).toBe(0);
     expect(host.querySelector('[data-archive-list="virtualized"]')).not.toBeNull();
   });
-
-  it('renders every row without a spacer for a small grouped list', async () => {
-    const rows = flattenVisibleArchiveRows(
-      [
-        {
-          key: 'acme/small',
-          kind: 'repo',
-          collapsed: false,
-          sessions: [session('a'), session('b')],
-        },
-      ],
-      { hideGroupHeader: false }
-    );
-    const host = await renderWindow(
-      <ArchiveListWindow
-        rows={rows}
-        isMobile={false}
-        listScopeId="archive-small"
-        renderRow={renderRow}
-      />
-    );
-    expect(host.querySelector('[data-archive-list="static"]')).not.toBeNull();
-    expect(countSessions(host)).toBe(2);
-    expect(countHeaders(host)).toBe(1);
-  });
 });

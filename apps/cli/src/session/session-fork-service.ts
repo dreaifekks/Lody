@@ -1,3 +1,4 @@
+import { readSessionHistoryMetadata } from '@lody/shared/session-data';
 import { toShared } from '@/platform/process-options';
 import { resolveSessionConversationConfig } from '@lody/shared';
 import {
@@ -102,7 +103,6 @@ function rewriteAttachmentNamespace(
 }
 
 /** Marks a forked Session's title; agent title updates keep it. */
-export const FORK_TITLE_PREFIX = '(fork) ';
 
 export function cloneHistoryThroughTurn(
   history: SessionHistoryInput[],
@@ -345,7 +345,7 @@ export class SessionForkService {
       historyBackend:
         targetMeta?.historyBackend ?? marker.historyBackend ?? LEGACY_SESSION_HISTORY_BACKEND,
     });
-    const history = await targetBackend.readHistory();
+    const history = await targetBackend.readHistoryQuery();
     const hasOriginNotice = history.some((entry) =>
       (entry.items ?? []).some(
         (item) => item.type === 'system_notice' && item.name === 'session_fork_origin'
@@ -362,6 +362,7 @@ export class SessionForkService {
       // Genuinely interrupted mid-saga: the process that owned it is gone.
       // Compensate the worktree from the marker payload (no source doc needed),
       // then leave the durable failed receipt for same-target retries to read.
+      const configHistory = await readSessionHistoryMetadata(targetBackend.history);
       await this.deps.sessionManager
         .cleanupForkWorktree({
           workspaceId: this.deps.workspaceId as never,
@@ -370,8 +371,8 @@ export class SessionForkService {
           agentConfigId: marker.cleanup.agentConfigId as never,
           agentCliType: marker.cleanup.cliType,
           agentType: marker.cleanup.agentType as never,
-          memory: resolveSessionConversationConfig(history).memory,
-          mcpServerIds: resolveSessionMcpSelection(history),
+          memory: resolveSessionConversationConfig(configHistory).memory,
+          mcpServerIds: resolveSessionMcpSelection(configHistory),
           project: marker.cleanup.project as ProjectRef,
           sessionId: targetSessionId,
           githubRepo: marker.cleanup.repoFullName,
@@ -571,9 +572,6 @@ export class SessionForkService {
     }
 
     const sourceTitle = source.title?.trim() || 'Untitled session';
-    // One expression shared by the target meta and the recovery marker so a
-    // repaired session can never drift from a normally-forked one's title.
-    const forkTitle = `${FORK_TITLE_PREFIX}${sourceTitle}`;
     const historyResult = cloneHistoryThroughTurn(
       [...sourceSnapshot.history],
       spec.sourceTurnId,
@@ -722,7 +720,7 @@ export class SessionForkService {
         machineId: source.machineId,
         createdAt: new Date(now).toISOString(),
         lastMessageAt: now,
-        title: forkTitle,
+        title: sourceTitle,
         titleSource: 'generated',
         userId: spec.requestedByUserId,
         status: SessionStatusFactory.initializing(undefined, 'Creating fork worktree'),
@@ -747,7 +745,7 @@ export class SessionForkService {
         targetSessionId,
         operationId: operation.id,
         createdAt: operation.createdAt,
-        title: forkTitle,
+        title: sourceTitle,
         historyBackend: targetMeta.historyBackend,
         cleanup: {
           project: targetProject,
@@ -838,7 +836,7 @@ export class SessionForkService {
       machineId: source.machineId,
       createdAt: new Date(now).toISOString(),
       lastMessageAt: now,
-      title: forkTitle,
+      title: sourceTitle,
       titleSource: 'generated',
       userId: spec.requestedByUserId,
       status: SessionStatusFactory.initializing(),

@@ -16,7 +16,9 @@ import {
   Download,
   Ellipsis,
   ExternalLink,
+  Folder,
   FolderPlus,
+  Folders,
   Github,
   Info,
   Plus,
@@ -24,29 +26,33 @@ import {
   Search,
   TerminalSquare,
   Wrench,
+  type LucideIcon,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Spinner } from '@lody/ui/spinner';
 import {
   getLocalProjectHistoryCatalogKey,
+  getProjectBoundMachineId,
   type LocalProjectHistoryCatalogItem,
   type LocalProjectHistoryCatalogResult,
   type LocalProjectHistoryProvider,
   type LocalProjectHistoryProviderKey,
   type LocalProjectHistorySyncSummary,
   type LocalProjectMeta,
-  machineSupportsLocalProjectRemovalProtocol,
   type MachineId,
   type WorktreeCleanupScriptConfig,
   type WorktreeSetupScriptConfig,
   type WorktreeSetupShell,
 } from '@lody/shared';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
+import { projectEditorRequestAtom } from '@/atoms/project-editor';
+import { canManageWorkspaceProject, useWorkspaceProjects } from '@/hooks/use-workspace-projects';
 import {
   currentWorkspaceIdAtom,
   currentWorkspaceSlugAtom,
   settingsSelectedMachineIdAtom,
   settingsSelectedProjectKeyAtom,
+  userAtom,
 } from '@/atoms';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useLocalProjectsAdmin } from '@/hooks/use-local-projects-admin';
@@ -57,12 +63,7 @@ import {
   useRemoveLocalProject,
 } from '@/hooks/use-remove-local-project';
 import { localMachineIdAtom } from '@/atoms/local-probe';
-import { getMachineMetaMapAtom } from '@/atoms/machines';
-import {
-  RemoveLocalProjectDialog,
-  type LocalProjectRemovalState,
-  type PendingLocalProjectRemoval,
-} from '@/components/loro-app-sidebar';
+import { type LocalProjectRemovalState } from '@/components/loro-app-sidebar';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { CompactRow, CompactSection, SettingsEmptyList } from './compact-layout';
 import { Button, type ButtonProps } from '@lody/ui/button';
@@ -94,6 +95,11 @@ import {
   useAddLocalProjectMachines,
 } from '@/components/local-projects/add-local-project-dialog-container';
 import { ProjectSkillsTab } from './project-skills-tab';
+import { ProjectDefaultMcpTab } from './project-default-mcp-tab';
+import type {
+  ProjectMcpDefaultAccess,
+  ProjectMcpDefaultTarget,
+} from '@/lib/workspace-catalog-write';
 import type { ProjectSkillsSource } from '@/hooks/use-project-skills';
 import { useAppCapability } from '@/lib/app-platform';
 import { getVisibleLocalProjectHistoryFailures } from '@/lib/local-project-history-catalog';
@@ -103,6 +109,8 @@ export type ProjectSettingsRow = {
   key: string;
   machineId: MachineId;
   machineName: string;
+  /** Owner of the project's machine: who may manage the project's defaults. */
+  machineOwnerUserId?: string | null;
   /** Shell this project's machine runs, probed from the machine OS. Local
      projects only edit this shell; the value drives which textarea we show. */
   shell: WorktreeSetupShell;
@@ -220,9 +228,29 @@ export type ProjectSettingsViewProps = {
   onAddLocalProject?: (machineId?: MachineId | null) => void;
   onAddGitHubProject?: () => void;
   onOpenGitHubSettings?: () => void;
+  /** Opens Settings > MCP, where the workspace catalog a project draws on is managed. */
+  onOpenMcpSettings?: () => void;
   canRemoveLocalProject?: (row: ProjectSettingsRow) => boolean;
   onRequestRemoveLocalProject?: (row: ProjectSettingsRow) => void;
   localProjectRemovalStateByKey?: ReadonlyMap<string, LocalProjectRemovalState>;
+  /** Projects of several repositories or folders, placed by the machine they need. */
+  multiRepoProjects?: readonly MultiRepoProjectRow[];
+  onCreateMultiRepoProject?: () => void;
+  onOpenMultiRepoProject?: (projectId: string) => void;
+  onDeleteMultiRepoProject?: (projectId: string) => void;
+};
+
+/**
+ * A project made of several repositories or folders. One that needs a
+ * particular machine (it holds a folder without a GitHub remote) is listed
+ * under that machine; one that runs anywhere is listed with GitHub's.
+ */
+export type MultiRepoProjectRow = {
+  id: string;
+  name: string;
+  memberCount: number;
+  boundMachineId: MachineId | null;
+  canManage: boolean;
 };
 
 /** The global thin scrollbar; a `::-webkit-scrollbar` rule StyleX cannot state. */
@@ -322,7 +350,9 @@ const styles = stylex.create({
     outlineStyle: 'none',
   },
   lineText: { display: 'flex', flexDirection: 'column', gap: '2px', flexGrow: 1, minWidth: 0 },
+  lineTitle: { display: 'flex', alignItems: 'center', gap: space[2], minWidth: 0 },
   lineName: {
+    minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -898,6 +928,23 @@ export function ProjectSettingsComponent({
   const resolvedInitialProjectKey =
     initialProjectKey !== undefined ? initialProjectKey : modalProjectTarget;
   const [addLocalProjectDialogOpen, setAddLocalProjectDialogOpen] = useState(false);
+  const requestProjectEditor = useSetAtom(projectEditorRequestAtom);
+  const currentUserId = useAtomValue(userAtom)?.id ?? null;
+  const { projects: workspaceProjects } = useWorkspaceProjects();
+  const multiRepoProjects = useMemo<MultiRepoProjectRow[]>(
+    () =>
+      workspaceProjects.map((project) => {
+        const bound = getProjectBoundMachineId(project.members);
+        return {
+          id: project.id,
+          name: project.name,
+          memberCount: project.members.length,
+          boundMachineId: bound === 'conflict' ? null : bound,
+          canManage: canManageWorkspaceProject(project, currentUserId),
+        };
+      }),
+    [currentUserId, workspaceProjects]
+  );
   const [addLocalProjectMachineId, setAddLocalProjectMachineId] = useState<MachineId | null>(null);
   /* Same ownership rule the picker itself applies, so a machine the user may
      add to shows up here even before it has a single project. */
@@ -991,27 +1038,19 @@ export function ProjectSettingsComponent({
     await saveGithubWorktreeCleanup(row.repoFullName, config);
   };
 
+  const handleOpenMcpSettings = useCallback(() => openSettings('mcp'), [openSettings]);
+
   const handleAddGitHubProject = useCallback(() => {
     if (!workspaceSlug) return;
     openSettings('github');
   }, [openSettings, workspaceSlug]);
 
-  const localMachineId = useAtomValue(localMachineIdAtom);
-  const machineMetaMap = useAtomValue(getMachineMetaMapAtom);
   const onlineMachineIds = useOnlineMachineIds();
   const visibleMachineIds = useMemo(() => sections.map((section) => section.machineId), [sections]);
   const pendingRemovals = usePendingLocalProjectRemovals(visibleMachineIds);
   useLocalProjectRemovalResultNotifications(visibleMachineIds);
-  const { removeLocalProject, preflightLocalProjectRemoval, getRemoveLocalProjectImpact } =
-    useRemoveLocalProject();
-  const [pendingRemoval, setPendingRemoval] = useState<PendingLocalProjectRemoval | null>(null);
-  const [isRemovingLocalProject, setIsRemovingLocalProject] = useState(false);
-
-  const canRemoveLocalProject = useCallback((_row: ProjectSettingsRow) => {
-    // This catalog is already owner-scoped. Protocol capability only gates
-    // worktree cleanup inside the existing confirm dialog.
-    return true;
-  }, []);
+  const { removeLocalProject } = useRemoveLocalProject();
+  const canRemoveLocalProject = useCallback((_row: ProjectSettingsRow) => true, []);
 
   const localProjectRemovalStateByKey = useMemo(() => {
     const next = new Map<string, LocalProjectRemovalState>();
@@ -1023,44 +1062,14 @@ export function ProjectSettingsComponent({
 
   const handleRequestRemoveLocalProject = useCallback(
     (row: ProjectSettingsRow) => {
-      const impact = getRemoveLocalProjectImpact({
+      void removeLocalProject({
         machineId: row.machineId,
         localProjectId: row.project.id,
-      });
-      const rootPath = typeof row.project.rootPath === 'string' ? row.project.rootPath : null;
-      setPendingRemoval({
-        machineId: row.machineId,
-        localProjectId: row.project.id,
-        name: row.project.name,
-        pathLabel: rootPath,
-        originalRootPath: rootPath,
-        conversationCount: impact.conversationCount,
-        runningSessionCount: impact.runningSessionCount,
+        projectName: row.project.name,
+        originalRootPath: row.project.rootPath,
       });
     },
-    [getRemoveLocalProjectImpact]
-  );
-
-  const handleConfirmRemoveLocalProject = useCallback(
-    async (options: { cleanupWorktrees: boolean }) => {
-      if (!pendingRemoval) return;
-      setIsRemovingLocalProject(true);
-      try {
-        const removed = await removeLocalProject(
-          {
-            machineId: pendingRemoval.machineId,
-            localProjectId: pendingRemoval.localProjectId,
-            projectName: pendingRemoval.name,
-            originalRootPath: pendingRemoval.originalRootPath ?? undefined,
-          },
-          options
-        );
-        if (removed) setPendingRemoval(null);
-      } finally {
-        setIsRemovingLocalProject(false);
-      }
-    },
-    [pendingRemoval, removeLocalProject]
+    [removeLocalProject]
   );
 
   return (
@@ -1089,44 +1098,21 @@ export function ProjectSettingsComponent({
         onOpenGitHubSettings={
           workspaceSlug && githubIntegrationAvailable ? handleAddGitHubProject : undefined
         }
+        onOpenMcpSettings={handleOpenMcpSettings}
         canRemoveLocalProject={canRemoveLocalProject}
         onRequestRemoveLocalProject={handleRequestRemoveLocalProject}
         localProjectRemovalStateByKey={localProjectRemovalStateByKey}
+        multiRepoProjects={multiRepoProjects}
+        onCreateMultiRepoProject={() => requestProjectEditor({ kind: 'create' })}
+        onOpenMultiRepoProject={(projectId) => requestProjectEditor({ kind: 'edit', projectId })}
+        onDeleteMultiRepoProject={(projectId) =>
+          requestProjectEditor({ kind: 'delete', projectId })
+        }
       />
       <AddLocalProjectDialogContainer
         open={addLocalProjectDialogOpen}
         onOpenChange={setAddLocalProjectDialogOpen}
         initialMachineId={addLocalProjectMachineId}
-      />
-      <RemoveLocalProjectDialog
-        open={pendingRemoval != null}
-        target={pendingRemoval}
-        isRemote={
-          pendingRemoval != null && (!localMachineId || pendingRemoval.machineId !== localMachineId)
-        }
-        machineName={pendingRemoval ? machineMetaMap.get(pendingRemoval.machineId)?.name : null}
-        deviceOnline={pendingRemoval != null && onlineMachineIds.has(pendingRemoval.machineId)}
-        canCleanupWorktrees={
-          pendingRemoval != null &&
-          onlineMachineIds.has(pendingRemoval.machineId) &&
-          machineSupportsLocalProjectRemovalProtocol(machineMetaMap.get(pendingRemoval.machineId))
-        }
-        isRemoving={isRemovingLocalProject}
-        onOpenChange={(open) => {
-          if (!open && !isRemovingLocalProject) setPendingRemoval(null);
-        }}
-        onPreflightCleanup={() => {
-          if (!pendingRemoval) {
-            return Promise.reject(new Error('No project selected.'));
-          }
-          return preflightLocalProjectRemoval({
-            machineId: pendingRemoval.machineId,
-            localProjectId: pendingRemoval.localProjectId,
-          });
-        }}
-        onConfirm={(options) => {
-          void handleConfirmRemoveLocalProject(options);
-        }}
       />
     </>
   );
@@ -1155,11 +1141,16 @@ function ProjectSettingsDesktop({
   onAddLocalProject,
   onAddGitHubProject,
   onOpenGitHubSettings,
+  onOpenMcpSettings,
   canRemoveLocalProject,
   onRequestRemoveLocalProject,
   localProjectRemovalStateByKey,
   initialMachineId,
   initialProjectKey,
+  multiRepoProjects = [],
+  onCreateMultiRepoProject,
+  onOpenMultiRepoProject,
+  onDeleteMultiRepoProject,
 }: ProjectSettingsViewProps) {
   const { t } = useTranslation();
   const onlineMachineIds = useOnlineMachineIds();
@@ -1167,7 +1158,7 @@ function ProjectSettingsDesktop({
 
   const totalProjects = sections.reduce((sum, section) => sum + section.rows.length, 0);
   const totalGithubProjects = githubSections.reduce((sum, section) => sum + section.rows.length, 0);
-  const totalCount = totalProjects + totalGithubProjects;
+  const totalCount = totalProjects + totalGithubProjects + multiRepoProjects.length;
   const isAnyLoading = isLoading || githubProjectsLoading;
 
   /* One entry per machine that has local projects OR that the user may add a
@@ -1215,6 +1206,7 @@ function ProjectSettingsDesktop({
       <ProjectAddMenu
         onAddLocalProject={onAddLocalProject ? () => onAddLocalProject() : undefined}
         onAddGitHubProject={onAddGitHubProject}
+        onCreateMultiRepoProject={onCreateMultiRepoProject}
         variant="secondary"
       />
     ) : null;
@@ -1238,12 +1230,33 @@ function ProjectSettingsDesktop({
     onGithubWorktreeSetupChange,
     onGithubWorktreeCleanupChange,
     onOpenGitHubSettings,
+    onOpenMcpSettings,
     canRemoveLocalProject,
     onRequestRemoveLocalProject,
     localProjectRemovalStateByKey,
     localMachineId,
     onlineMachineIds,
   };
+
+  const machineIds = new Set(machineEntries.map((machine) => machine.machineId));
+  // A project bound to a machine this page does not list runs nowhere here;
+  // it stays reachable with the ones that run anywhere.
+  const anyMachineProjects = multiRepoProjects.filter(
+    (project) => !project.boundMachineId || !machineIds.has(project.boundMachineId)
+  );
+  const multiRepoLine = (project: MultiRepoProjectRow) => (
+    <ProjectLine
+      key={`multi:${project.id}`}
+      title={project.name}
+      icon={Folders}
+      caption={t('workspace.projects.repositoryCount', '{{count}} repositories or folders', {
+        count: project.memberCount,
+      })}
+      canRemove={project.canManage && Boolean(onDeleteMultiRepoProject)}
+      onRemove={() => onDeleteMultiRepoProject?.(project.id)}
+      onOpen={() => onOpenMultiRepoProject?.(project.id)}
+    />
+  );
 
   return (
     <>
@@ -1283,6 +1296,9 @@ function ProjectSettingsDesktop({
             {machineEntries.map((machine) => {
               const rows =
                 sections.find((section) => section.machineId === machine.machineId)?.rows ?? [];
+              const boundProjects = multiRepoProjects.filter(
+                (project) => project.boundMachineId === machine.machineId
+              );
               const isThisMachine = Boolean(localMachineId && machine.machineId === localMachineId);
               const online = machine.online || isThisMachine;
               const status = [
@@ -1304,7 +1320,7 @@ function ProjectSettingsDesktop({
                   }}
                 >
                   <CompactSection title={machine.machineName} description={status} boxed>
-                    {rows.length === 0 ? (
+                    {rows.length === 0 && boundProjects.length === 0 ? (
                       <p {...stylex.props(surface.cardNote)}>
                         {t(
                           'workspace.projects.machineEmpty',
@@ -1316,6 +1332,7 @@ function ProjectSettingsDesktop({
                         <ProjectLine
                           key={row.key}
                           title={row.project.name}
+                          icon={Folder}
                           caption={projectPathTail(row.project.rootPath)}
                           shared={row.sharedWithTeam}
                           conversationCount={row.conversationCount}
@@ -1326,10 +1343,23 @@ function ProjectSettingsDesktop({
                         />
                       ))
                     )}
+                    {boundProjects.map(multiRepoLine)}
                   </CompactSection>
                 </div>
               );
             })}
+            {anyMachineProjects.length > 0 ? (
+              <CompactSection
+                title={t('workspace.projects.anyMachineTitle', 'Any machine')}
+                description={t(
+                  'workspace.projects.anyMachineHint',
+                  'Projects of several repositories, run wherever a copy is'
+                )}
+                boxed
+              >
+                {anyMachineProjects.map(multiRepoLine)}
+              </CompactSection>
+            ) : null}
             {githubSections.map((section, index) => (
               <CompactSection
                 key={section.owner}
@@ -1354,6 +1384,7 @@ function ProjectSettingsDesktop({
                   <ProjectLine
                     key={row.key}
                     title={row.name}
+                    icon={Github}
                     privateRepo={row.private}
                     onOpen={() => setEditingProjectKey(row.key)}
                   />
@@ -1403,6 +1434,7 @@ function ProjectSettingsDesktop({
  */
 function ProjectLine({
   title,
+  icon: Icon,
   caption,
   shared = false,
   privateRepo = false,
@@ -1413,6 +1445,7 @@ function ProjectLine({
   onOpen,
 }: {
   readonly title: string;
+  readonly icon: LucideIcon;
   /** Where it lives, when its section does not already say. */
   readonly caption?: string;
   readonly shared?: boolean;
@@ -1444,7 +1477,10 @@ function ProjectLine({
     <div {...stylex.props(styles.line, surface.pressableLine)}>
       <button type="button" onClick={onOpen} {...stylex.props(styles.lineButton)}>
         <span {...stylex.props(styles.lineText)}>
-          <span {...stylex.props(styles.lineName)}>{title}</span>
+          <span {...stylex.props(styles.lineTitle)}>
+            <Icon aria-hidden="true" {...stylex.props(styles.editorTitleIcon)} />
+            <span {...stylex.props(styles.lineName)}>{title}</span>
+          </span>
           {caption ? <span {...stylex.props(styles.lineCaption)}>{caption}</span> : null}
         </span>
         {meta.length > 0 ? (
@@ -1482,11 +1518,13 @@ function ProjectLine({
 function ProjectAddMenu({
   onAddLocalProject,
   onAddGitHubProject,
+  onCreateMultiRepoProject,
   size,
   variant,
 }: {
   readonly onAddLocalProject?: () => void;
   readonly onAddGitHubProject?: () => void;
+  readonly onCreateMultiRepoProject?: () => void;
   readonly size?: ButtonProps['size'];
   readonly variant?: ButtonProps['variant'];
 }) {
@@ -1495,7 +1533,7 @@ function ProjectAddMenu({
   // Like every catalog's add action, it names what it adds. With one way in it
   // is that way; a menu of one item would be a second click for nothing. The
   // folder dialog asks which machine, so a source needs no add of its own.
-  if (onAddLocalProject && !onAddGitHubProject) {
+  if (onAddLocalProject && !onAddGitHubProject && !onCreateMultiRepoProject) {
     return (
       <Button
         type="button"
@@ -1540,6 +1578,21 @@ function ProjectAddMenu({
             </span>
           </Menu.Item>
         ) : null}
+        {onCreateMultiRepoProject ? (
+          <Menu.Item icon={Folders} onClick={() => onCreateMultiRepoProject()}>
+            <span {...stylex.props(styles.menuText)}>
+              <span>
+                {t('workspace.projects.createMultiRepo', 'Several repositories or folders')}
+              </span>
+              <span {...stylex.props(styles.menuHint)}>
+                {t(
+                  'workspace.projects.createMultiRepoHint',
+                  'One conversation works across all of them'
+                )}
+              </span>
+            </span>
+          </Menu.Item>
+        ) : null}
       </Menu.Content>
     </Menu.Root>
   );
@@ -1557,6 +1610,7 @@ function ProjectWindow({
   onGithubWorktreeSetupChange,
   onGithubWorktreeCleanupChange,
   onOpenGitHubSettings,
+  onOpenMcpSettings,
   canRemoveLocalProject,
   onRequestRemoveLocalProject,
   localProjectRemovalStateByKey,
@@ -1574,6 +1628,7 @@ function ProjectWindow({
       config: WorktreeCleanupScriptConfig
     ) => Promise<void>;
     onOpenGitHubSettings?: () => void;
+    onOpenMcpSettings?: () => void;
     canRemoveLocalProject?: (row: ProjectSettingsRow) => boolean;
     onRequestRemoveLocalProject?: (row: ProjectSettingsRow) => void;
     localProjectRemovalStateByKey?: ReadonlyMap<string, LocalProjectRemovalState>;
@@ -1582,6 +1637,7 @@ function ProjectWindow({
   }) {
   const { t } = useTranslation();
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const currentUserId = useAtomValue(userAtom)?.id ?? null;
   const isLocal = selection.kind === 'local';
   const localRow = selection.kind === 'local' ? selection.row : null;
   const githubRow = selection.kind === 'github' ? selection.row : null;
@@ -1619,6 +1675,7 @@ function ProjectWindow({
     { id: 'general', label: t('workspace.projects.window.general', 'General') },
     { id: 'worktree', label: t('workspace.projects.window.worktree', 'Worktree') },
     { id: 'skills', label: t('workspace.projects.window.skills', 'Skills') },
+    { id: 'defaultMcp', label: t('workspace.projects.window.defaultMcp', 'Default MCP') },
     ...(isLocal
       ? [
           {
@@ -1658,7 +1715,45 @@ function ProjectWindow({
           'workspace.projects.window.conversationsDescription',
           'Bring conversations you had with an agent outside Lody into this workspace.'
         )
-      : null;
+      : page === 'defaultMcp'
+        ? t(
+            'workspace.projects.window.defaultMcpDescription',
+            'MCP servers new conversations in this project start with. You can still change them in the composer.'
+          )
+        : null;
+
+  // Worktrees and branches of a project share one default: the target names
+  // the project alone, never a branch or checkout.
+  const defaultMcpTarget = useMemo<ProjectMcpDefaultTarget | null>(() => {
+    if (!workspaceId) return null;
+    if (localRow) {
+      return {
+        workspaceId,
+        project: { kind: 'local', localProjectId: localRow.project.id },
+        machineId: localRow.machineId,
+      };
+    }
+    if (githubRow) {
+      return {
+        workspaceId,
+        project: { kind: 'github', repoFullName: githubRow.repoFullName, branch: '' },
+      };
+    }
+    return null;
+  }, [githubRow, localRow, workspaceId]);
+  const defaultMcpAccess = useMemo<ProjectMcpDefaultAccess>(
+    () =>
+      localRow
+        ? {
+            kind: 'local',
+            currentUserId,
+            machineOwnerUserId: localRow.machineOwnerUserId ?? null,
+          }
+        : // A GitHub project is listed here only while its repository is
+          // connected to the workspace.
+          { kind: 'github', currentUserId, repoInWorkspace: githubRow != null },
+    [currentUserId, githubRow, localRow]
+  );
 
   return (
     <Tooltip.Provider delay={200}>
@@ -1899,6 +1994,15 @@ function ProjectWindow({
                   </CompactSection>
                 )
               ) : null}
+
+              {page === 'defaultMcp' && defaultMcpTarget ? (
+                <ProjectDefaultMcpTab
+                  key={`${defaultMcpTarget.workspaceId}:${localRow?.key ?? githubRow?.key ?? ''}`}
+                  target={defaultMcpTarget}
+                  access={defaultMcpAccess}
+                  onManageMcp={onOpenMcpSettings}
+                />
+              ) : null}
             </div>
           )}
         </section>
@@ -1907,7 +2011,7 @@ function ProjectWindow({
   );
 }
 
-type ProjectWindowPage = 'general' | 'worktree' | 'skills' | 'conversations';
+type ProjectWindowPage = 'general' | 'worktree' | 'skills' | 'defaultMcp' | 'conversations';
 
 /**
  * The window's views: words with a line under the current one that travels to

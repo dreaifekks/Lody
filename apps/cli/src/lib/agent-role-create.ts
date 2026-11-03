@@ -239,7 +239,7 @@ export const resolveAgentRoleCreate = (args: {
     instance: choice.instance,
     machineId: choice.instance.machineId,
     agentConfigId: choice.instance.agentConfigId,
-    prompt: composeAgentRolePrompt(args.role.promptPrefix, args.prompt),
+    prompt: args.prompt,
     dispatchConfig: { ...choice.instance.runConfig, inheritSessionDefaults: false },
     ignoredOverrides: listIgnoredAgentRoleOverrides(args.overrides ?? {}),
   };
@@ -313,6 +313,9 @@ export const bindAgentRoleCreateOptions = (
   options.agentRoleId = resolved.role.id;
   options.agentRoleRevision = resolved.role.revision;
   options.agentRoleSnapshot = snapshotAgentRole(resolved.role, resolved.instance);
+  const promptPrefix = resolved.role.promptPrefix?.trim();
+  if (promptPrefix) options.agentRolePromptPrefix = promptPrefix;
+  else delete options.agentRolePromptPrefix;
 };
 
 /**

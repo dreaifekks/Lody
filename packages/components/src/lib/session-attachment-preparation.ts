@@ -1,3 +1,6 @@
+import { assertProtectedAttachmentReferences } from './encrypted-session-attachment';
+import { authorizePlaintextAttachmentPreparation } from './attachment-workspace-access';
+import type { WorkspaceStreamsMode } from '@lody/shared/workspace-streams-content';
 import {
   inputBlocksToHistoryItems,
   normalizeSessionInputBlocks,
@@ -50,10 +53,12 @@ export function finalizePreparedSend(record: DraftAttachmentSend): PreparedSend 
  * retry only transfers what failed.
  */
 export async function prepareDraftAttachments(args: {
+  content: WorkspaceStreamsMode;
   record: DraftAttachmentSend;
   resources: SessionSendResources;
   signal: AbortSignal;
   token(): string | null;
+  attachmentToken?: () => Promise<string>;
   localMachineId(): MachineId | null;
   /**
    * Whether the agent service of this machine hands files over to the other
@@ -63,6 +68,12 @@ export async function prepareDraftAttachments(args: {
   update(attachments: DraftAttachmentSend['attachments']): void;
   report(id: string, progress: number): void;
 }): Promise<PreparedSend> {
+  if (args.content.mode !== 'protected')
+    await authorizePlaintextAttachmentPreparation(
+      args.record.workspaceId,
+      args.signal,
+      args.record.entry.userId
+    );
   let attachments = args.record.attachments;
   let failure: unknown;
   // The agent service of this machine takes the files of its own sessions,
@@ -92,9 +103,12 @@ export async function prepareDraftAttachments(args: {
           const image = await args.resources.run(
             (signal) =>
               uploadSessionImage({
+                content: args.content,
+                accountId: args.record.entry.userId,
                 workspaceId: args.record.workspaceId as WorkspaceId,
                 sessionId: args.record.sessionId,
                 token,
+                attachmentToken: args.attachmentToken,
                 file,
                 signal,
                 onProgress: (progress) => args.report(attachment.id, progress),
@@ -115,12 +129,18 @@ export async function prepareDraftAttachments(args: {
           // service does not reach and a full file allowance never authorize a
           // handoff.
           if (
+            args.content.mode === 'protected' ||
             isUploadAbortedError(error) ||
             !canHandOffTo(machineId) ||
             fileCount >= SESSION_FILE_MAX_COUNT
           )
             throw error;
           let refusal: string | undefined;
+          await authorizePlaintextAttachmentPreparation(
+            args.record.workspaceId,
+            args.signal,
+            args.record.entry.userId
+          );
           try {
             const outcome = await args.resources.run(
               (signal) =>
@@ -149,9 +169,12 @@ export async function prepareDraftAttachments(args: {
       } else {
         const machineId = args.record.targetMachineId ?? null;
         const fileResult = await prepareSessionFile(args.resources, {
+          content: args.content,
+          accountId: args.record.entry.userId,
           workspaceId: args.record.workspaceId as WorkspaceId,
           sessionId: args.record.sessionId as SessionId,
           token: args.token(),
+          attachmentToken: args.attachmentToken,
           machineId,
           canSendLocally: canHandOffTo(machineId),
           file,
@@ -161,6 +184,7 @@ export async function prepareDraftAttachments(args: {
         ready = fileResult;
       }
       throwIfSendAborted(args.signal);
+      if (args.content.mode === 'protected') assertProtectedAttachmentReferences([ready]);
       if (ready.type === 'image') {
         try {
           await seedSessionImageCache(

@@ -6,162 +6,15 @@ import {
   type MessageTextSpanKind,
 } from '@lody/shared';
 import { normalizeSessionLinksForExport } from '@lody/shared/session-link-export';
+import { restoreMessageQuoteDrafts, type PastedTextDraft } from '@/lib/pasted-text-draft';
 
 export const USER_TEXT_RENDER_LINE_LIMIT = 10;
 export const USER_TEXT_RENDER_CHAR_LIMIT = 900;
 
-/**
- * Items that are never folded into a turn's work region: attachments the agent
- * produced, the plan surfaces, the goal marker, and the "Exited Plan Mode"
- * switch that closes a plan turn.
- *
- * ONE list, used for both questions it answers — "does this item fold?" and
- * "is this item part of the tail that trails the answer?". They were two lists
- * (the tail one held only `image_group` and `switch_mode`), so a turn ending in
- * a `file` or a `proposed_plan` found no trailing tail, reported no visible
- * answer text, and folded the answer itself into "Worked for …". Attachments
- * now sort BELOW the plan, which puts a `file` last far more often, so the two
- * lists have to agree.
- */
-/**
- * A tool call the conversation renders as its own surface (an experimental
- * review card or widget, see `components/agent-surfaces`): it stays visible
- * like an attachment. Absent, every tool call is a step.
- */
+/** Tool surfaces remain independent of the activity group. */
 export type StandaloneToolCallPredicate = (
   toolCall: Extract<MessageContent, { type: 'tool_call' }>
 ) => boolean;
-
-const isNeverCollapsedAssistantItem = (
-  content: MessageContent | undefined,
-  isStandaloneToolCall?: StandaloneToolCallPredicate
-): boolean =>
-  (content?.type === 'tool_call' && isStandaloneToolCall?.(content) === true) ||
-  content?.type === 'image_group' ||
-  content?.type === 'image' ||
-  content?.type === 'file' ||
-  content?.type === 'plan' ||
-  content?.type === 'goal' ||
-  content?.type === 'proposed_plan' ||
-  // A warning/failure the stream folded back onto its emitting turn trails the
-  // answer the same way an attachment does. Left out, a turn that ends in one
-  // reports no visible answer and folds its own reply into "Worked for …".
-  content?.type === 'system_notice' ||
-  (content?.type === 'tool_call' && content.kind === 'switch_mode');
-
-/**
- * The closing text: the final contiguous run of text before the never-collapsed
- * tail, not necessarily the last item. Every adjacent text block in that run
- * stays visible; a non-text item is the boundary between work and the answer.
- * `items.length` when the turn ends in work rather than text.
- */
-const getFinalTextRunStart = (
-  items: MessageContent[],
-  isStandaloneToolCall?: StandaloneToolCallPredicate
-): number => {
-  let index = items.length - 1;
-
-  while (index >= 0 && isNeverCollapsedAssistantItem(items[index], isStandaloneToolCall)) {
-    index -= 1;
-  }
-
-  if (items[index]?.type !== 'text') {
-    return items.length;
-  }
-
-  while (index > 0 && items[index - 1]?.type === 'text') {
-    index -= 1;
-  }
-
-  return index;
-};
-
-/** Length from which earlier text in a turn reads as content, not narration. */
-export const SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS = 300;
-
-const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
-
-/**
- * Earlier text of a finished turn that stays visible beside the answer.
- *
- * Agents narrate while they work ("installing dependencies first", "running
- * the tests"); those short lines fold with the work. A long or structured block
- * (list, table, heading) is a report, typically a complete answer written
- * before a background task's followup appended a short note after it, and
- * folding it hid the real answer. Measured on archived sessions: 300 chars or
- * structure keeps about 2.5% of earlier text, at most four blocks a turn, and
- * every such hidden answer.
- */
-export const isSubstantiveAssistantText = (text: string): boolean =>
-  text.trim().length >= SUBSTANTIVE_ASSISTANT_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
-
-/**
- * Where the text that stays visible as the answer begins: the closing text run,
- * or, when that run is thin, also the text run before the work preceding it.
- *
- * A substantive closing text is the answer. A thin one ("The background task
- * has finished too.") has the shape of a postscript: a background task's
- * followup or a one-line confirmation, appended after the text that actually
- * answered and separated from it by the tool that read the task's output. So
- * the run before that work stays visible with it, whatever its own length: a
- * complete answer can be one sentence with a path in it. One run only; the
- * narration before it is still narration. `items.length` when the turn ends
- * in work rather than text.
- */
-const getVisibleTextStart = (
-  items: MessageContent[],
-  isStandaloneToolCall?: StandaloneToolCallPredicate
-): number => {
-  const finalTextRunStart = getFinalTextRunStart(items, isStandaloneToolCall);
-  if (finalTextRunStart >= items.length) return finalTextRunStart;
-  const closingText = items
-    .slice(finalTextRunStart)
-    .flatMap((item) => (item.type === 'text' ? [item.text] : []))
-    .join('\n\n');
-  if (isSubstantiveAssistantText(closingText)) return finalTextRunStart;
-
-  let index = finalTextRunStart - 1;
-  while (index >= 0 && items[index]?.type !== 'text') {
-    index -= 1;
-  }
-  if (index < 0) return finalTextRunStart;
-  while (index > 0 && items[index - 1]?.type === 'text') {
-    index -= 1;
-  }
-  return index;
-};
-
-export const shouldCollapseAssistantMessageItem = ({
-  content,
-  index,
-  items,
-  isTurnFinished,
-  isStandaloneToolCall,
-}: {
-  content: MessageContent;
-  index: number;
-  items: MessageContent[];
-  isTurnFinished: boolean;
-  isStandaloneToolCall?: StandaloneToolCallPredicate;
-}): boolean => {
-  const itemCount = items.length;
-  const visibleTextStart = getVisibleTextStart(items, isStandaloneToolCall);
-  // Earlier text stays out too when it is substantive (see
-  // `isSubstantiveAssistantText`), but only in a turn that closes in text: one
-  // that ends mid-work folds nothing (see `segmentHasVisibleFinalContent`).
-  const keepsText =
-    content.type === 'text' &&
-    visibleTextStart < itemCount &&
-    (index >= visibleTextStart || isSubstantiveAssistantText(content.text));
-
-  return (
-    isTurnFinished &&
-    itemCount > 1 &&
-    index < itemCount - 1 &&
-    !keepsText &&
-    !isNeverCollapsedAssistantItem(content, isStandaloneToolCall)
-  );
-};
 
 // Copyable text = plain `text` answers plus `proposed_plan` markdown. The plan
 // is the meaningful payload of a plan-only turn, so the message-footer copy
@@ -176,6 +29,32 @@ export const getTextContentFromMessageItems = (items: MessageContent[]): string 
     .map(getCopyableItemText)
     .filter((text) => text.trim().length > 0)
     .join('\n\n');
+
+export function getMessageQuoteEditDraft(items: MessageContent[]): {
+  text: string;
+  drafts: PastedTextDraft[];
+} {
+  let text = '';
+  const drafts: PastedTextDraft[] = [];
+  for (const item of items) {
+    const value = getCopyableItemText(item);
+    if (!value.trim()) continue;
+    if (text) text += '\n\n';
+    const restored = restoreMessageQuoteDrafts(
+      value,
+      item.type === 'text' ? item.spans : undefined
+    );
+    drafts.push(
+      ...restored.drafts.map((draft) => ({
+        ...draft,
+        start: draft.start + text.length,
+        end: draft.end + text.length,
+      }))
+    );
+    text += restored.text;
+  }
+  return { text, drafts };
+}
 
 /**
  * Span kinds that are copied as what the user wrote, not as what the agent read.
@@ -329,19 +208,3 @@ const sliceUserTextRun = (
   }
   return { text, isTruncated: false, lineBreaks };
 };
-
-export const getVisibleAssistantTextContent = (
-  items: MessageContent[],
-  isTurnFinished: boolean
-): string =>
-  getTextContentFromMessageItems(
-    items.filter(
-      (content, index) =>
-        !shouldCollapseAssistantMessageItem({
-          content,
-          index,
-          items,
-          isTurnFinished,
-        })
-    )
-  );

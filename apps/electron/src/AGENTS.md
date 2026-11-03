@@ -1,8 +1,7 @@
 # apps/electron/src
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
-Root `AGENTS.md` and `apps/electron/AGENTS.md` also apply. Build, packaging,
-native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
+Edit `AGENTS.md`; `CLAUDE.md` symlinks here. Root and `apps/electron/AGENTS.md`
+apply; the latter owns build, packaging, native dependencies and OSS composition.
 
 ## Module boundaries
 
@@ -20,23 +19,24 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
 - Main starts, awaits and signals processes only through `@lody/shared/node/process`
   (never `child_process` or `kill`); `check:cli-process-boundary` enforces it.
   Rules: [process layer](../../../packages/shared/src/node/AGENTS.md).
-- Main-process-only helpers belong in `src/main/utils.ts`. Put cross-runtime types and
-  pure logic in `@lody/shared`; shared Electron IPC contracts live in the narrow
-  `@lody/shared/electron-ipc` export.
+- Keep main-only helpers in `src/main/utils.ts`, cross-runtime pure logic/types in
+  `@lody/shared`, and IPC contracts in `@lody/shared/electron-ipc`.
 - Electron main and preload code must not import runtime values from the
   `@lody/shared` root barrel. Use a narrow subpath so Node bundles do not pull in
   renderer modules or `loro-crdt` WASM.
-- Invoke signatures come from the `IpcService` classes and the one constructor list in
-  `register-services.ts`; every public instance method is renderer-facing and must have
-  `@IpcMethod()`. Do not restore parallel handwritten invoke contracts or per-method
-  preload lists. `packages/components` intentionally imports the inferred service type
-  across the app/package boundary with `import type`; the import is erased and must never
-  become a runtime dependency. Shared push/send maps remain in
-  `@lody/shared/electron-ipc`. Preload exposes only `{ invoke, on, send }`, permits invoke
-  channels by the service groups in `preload/ipc-invoke-policy.ts`, and keeps push/send
-  allowlists. The IPC registration test keeps that policy aligned with the registered
-  service constructors. There is no `window.api`. Validate foreign input at the IPC class
-  boundary.
+- Derive invoke signatures from `IpcService` and the sole constructor list in
+  `register-services.ts`. Every public instance method is renderer-facing and needs
+  `@IpcMethod()`. Do not duplicate invoke contracts or per-method preload lists.
+  Components may import inferred service types only with erased `import type`, never
+  a runtime dependency. Keep push/send maps in `@lody/shared/electron-ipc`. Preload
+  exposes only `{ invoke, on, send }`, gates invoke by service groups in
+  `preload/ipc-invoke-policy.ts`, and retains push/send allowlists. Do not add
+  `window.api`; validate foreign input at the IPC class boundary.
+- The E2E client-loss probe (`e2ee.inspectClientLoss` and `e2ee.clientLossEffects`) is the
+  only channel pair outside the service classes. Main registers it, and preload admits it,
+  only for unpackaged `LODY_E2E=1` windows through the main-supplied argument. It stays
+  read-only and returns counts, booleans and sequences without content, tokens or error text.
+  [Decision](../../../.agents/notes/implemented/testing/2026-10-30-e2ee-client-loss-probe.md).
 - Preload runs under the renderer CSP. Zod schemas used there must pass
   `{ jitless: true }`; do not add `unsafe-eval` to accommodate Zod's JIT path.
 
@@ -51,11 +51,9 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
   share that switch. GPU means process CPU/RSS, never hardware usage/VRAM.
   Runtime heap is approximate; only the startup override enables precise readings.
 
-- Generic update metadata may carry localized Markdown under
-  `vendor.lodyChangelog.locales.{en,zh_CN}` in addition to the standard English
-  `releaseNotes` fallback. Main validates and bounds those remote strings before
-  exposing them through `ElectronUpdaterState`; renderer code must use the shared
-  safe Markdown renderer rather than raw HTML.
+- Updates may carry Markdown in `vendor.lodyChangelog.locales.{en,zh_CN}` with
+  English `releaseNotes` fallback. Main validates/bounds strings before exposing
+  `ElectronUpdaterState`; render through shared safe Markdown, never raw HTML.
 - React root callbacks persist fatal IPC diagnostics; ErrorBoundary owns caught-error
   UI and PostHog. Deduplicate errors; report mounted only from a committed layout effect.
   Keep hang capture local and bounded, Wait tied to active stalls, and stack opt-in
@@ -84,14 +82,15 @@ native-dependency, and OSS-composition rules stay in `apps/electron/AGENTS.md`.
   listener after settlement, and treats only the final response as completion.
 - Before changing public-browser routing, isolation or its callers, read
   [the service boundary](main/services/AGENTS.md#public-browser).
-- Image preview export (`services/image-export-service.ts`) keeps the native
-  menu, clipboard, and save dialog here because the renderer holds the only copy
-  of the image (a `blob:` URL main cannot download). Bytes cross once, after the
-  menu selection. Naming/filter logic stays in `image-export-core.ts` so it runs
-  under `node --test` without the `electron` runtime. `context-menu.ts` draws every
-  other right-click and yields to it on images.
+- `services/image-export-service.ts` owns native image menus, clipboard and save
+  dialogs; transfer renderer-owned blob bytes once after selection. Keep naming/filters
+  in `image-export-core.ts`, testable without Electron. `context-menu.ts` handles
+  other right-clicks and yields on images.
 
 ## Local file resources
+
+- Markdown link discovery uses the shared resolver after disk-machine validation.
+  It returns identities without resources; the selected path is reauthorized on read.
 
 - Electron previews local files directly after matching the target to its on-disk
   machine identity; never require daemon liveness or protocol metadata. Relative

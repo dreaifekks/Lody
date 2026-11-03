@@ -143,7 +143,12 @@ describe('files between LAN members', () => {
     sessions: Record<string, Partial<SessionMeta> | 'deleted'> = {},
     options: {
       takesFiles?: boolean;
-      resolvePath?: (workspaceId: string, sessionId: string, filePath: string) => Promise<string>;
+      resolvePath?: (
+        workspaceId: string,
+        sessionId: string,
+        filePath: string,
+        rootId?: string
+      ) => Promise<string>;
     } = {}
   ) {
     const { workspace, stored } = serverWorkspace(sessions);
@@ -558,8 +563,12 @@ describe('files between LAN members', () => {
       const { endpoint } = await startServer(
         { 'home-session': { machineId: SERVER } },
         {
-          resolvePath: async (_workspaceId, sessionId, filePath) => {
-            if (sessionId !== 'home-session' || filePath !== 'out/demo.mp4') {
+          resolvePath: async (_workspaceId, sessionId, filePath, rootId) => {
+            if (
+              sessionId !== 'home-session' ||
+              filePath !== 'out/demo.mp4' ||
+              rootId !== 'member:docs'
+            ) {
               throw new Error('path_not_allowed:File is outside the workspace');
             }
             return videoPath;
@@ -568,7 +577,10 @@ describe('files between LAN members', () => {
       );
       const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
 
-      const part = await ask(desktop, rangeRequest({ path: 'out/demo.mp4', offset: 100_000 }));
+      const part = await ask(
+        desktop,
+        rangeRequest({ path: 'out/demo.mp4', rootId: 'member:docs', offset: 100_000 })
+      );
       const refused = await ask(desktop, rangeRequest({ path: '/etc/passwd' }));
 
       expect(part.answer).toMatchObject({ type: 'range', sizeBytes: video.length });

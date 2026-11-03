@@ -15,6 +15,7 @@ import { toast } from '@/lib/toast';
 import {
   electronSessionCompletionNotificationsEnabledAtom,
   mobileKeyboardActionAtom,
+  prRemoteImagesEnabledAtom,
   queuedMessageBehaviorAtom,
   sessionSidebarCodeChangesOnlyAtom,
   userAtom,
@@ -22,7 +23,6 @@ import {
 import { useAtom, useAtomValue } from 'jotai';
 import { CompactRow, CompactSection } from './compact-layout';
 import { settingContainerClass } from '.';
-import { AutoArchiveSection } from './auto-archive-setting';
 import { AgentFeaturesSection } from './agent-features-setting';
 import { ExperimentalFeaturesSection } from './experimental-features-setting';
 import {
@@ -40,7 +40,6 @@ import { MobileGeneralSettings } from '@/components/mobile/mobile-general-settin
 import { PathLaunchersSettings } from './path-launchers-setting';
 import { QueuedMessageBehaviorControl } from './queued-message-behavior-control';
 import { CliDaemonSetting } from './cli-daemon-setting';
-import { useAppCapability } from '@/lib/app-platform';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { useElectronAutoLaunch } from '@/hooks/use-electron-auto-launch';
 
@@ -130,9 +129,10 @@ export function GeneralSettingsComponent() {
   const preferenceId = useId();
   const codeChangesLabelId = `${preferenceId}-code-changes-label`;
   const codeChangesHelperId = `${preferenceId}-code-changes-helper`;
+  const prImagesLabelId = `${preferenceId}-pr-images-label`;
+  const prImagesHelperId = `${preferenceId}-pr-images-helper`;
   const notificationLabelId = `${preferenceId}-notification-label`;
   const notificationHelperId = `${preferenceId}-notification-helper`;
-  const prAutoArchiveAvailable = useAppCapability('githubPullRequests');
   const postHog = usePostHog();
   const user = useAtomValue(userAtom);
   const [electronCompletionNotificationsEnabled, setElectronCompletionNotificationsEnabled] =
@@ -142,6 +142,7 @@ export function GeneralSettingsComponent() {
     sessionSidebarCodeChangesOnlyAtom
   );
   const [queuedMessageBehavior, setQueuedMessageBehavior] = useAtom(queuedMessageBehaviorAtom);
+  const [prImagesEnabled, setPrImagesEnabled] = useAtom(prRemoteImagesEnabledAtom);
   const [preventSleepEnabled, setPreventSleepEnabled] = useState(true);
   const [cliAutoStartEnabled, setCliAutoStartEnabled] = useState(true);
   const [cliAutoStartLoading, setCliAutoStartLoading] = useState(false);
@@ -814,13 +815,26 @@ export function GeneralSettingsComponent() {
                 />
               </CompactRow>
             </div>
+            <CompactRow
+              labelId={prImagesLabelId}
+              helperId={prImagesHelperId}
+              label={t('settings.general.prImages.label', 'Automatically load PR images')}
+              helper={t(
+                'settings.general.prImages.helper',
+                'When off, load images individually. Image websites can see your IP address.'
+              )}
+            >
+              <Switch
+                aria-labelledby={prImagesLabelId}
+                aria-describedby={prImagesHelperId}
+                checked={prImagesEnabled === true}
+                onCheckedChange={setPrImagesEnabled}
+              />
+            </CompactRow>
           </CompactSection>
         )}
 
-        {prAutoArchiveAvailable ? <AutoArchiveSection /> : null}
-
         <ExperimentalFeaturesSection />
-
         {/* Clear local cache stays last in General settings. */}
         <CompactSection title={t('settings.general.sections.advanced', 'Advanced')}>
           <CompactRow

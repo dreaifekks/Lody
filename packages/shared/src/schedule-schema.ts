@@ -6,6 +6,7 @@ export const scheduleDocSchema = schema({
   definition: schema.LoroMap({
     scheduleId: schema.String(),
     boardId: schema.String({ required: false }),
+    messageVersion: schema.Number({ required: false }),
     title: schema.String(),
     ownerId: schema.String(),
     machineId: schema.String(),
@@ -29,6 +30,7 @@ export const scheduleDocSchema = schema({
     createdBy: schema.String(),
   }),
   prompt: schema.LoroText(),
+  message: schema.LoroMap({ payload: schema.Any({ required: false }) }),
   timeline: schema.LoroList(
     schema.LoroMap({
       id: schema.String(),

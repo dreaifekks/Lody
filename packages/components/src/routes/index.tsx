@@ -14,6 +14,7 @@ import {
   getLocalWorkspaceSlug,
   resolveLocalWorkspace,
   useLocalPlatformWorkspacesState,
+  retryLocalPlatformSnapshot,
 } from '../providers/local-platform-provider';
 
 export const Route = createFileRoute('/')({
@@ -44,6 +45,7 @@ function LocalHomeRoute() {
         gate="workspace_list_error"
         title={t('workspace.route.loadingWorkspacesErrorTitle')}
         description={t('workspace.route.loadingWorkspacesErrorDescription')}
+        onRetry={retryLocalPlatformSnapshot}
       />
     );
   }

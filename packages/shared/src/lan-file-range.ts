@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SessionFileRootIdSchema } from './project-path';
 
 /**
  * Part of a file, asked for in one line and answered with one line and then
@@ -17,6 +18,7 @@ const rangeFields = {
   sessionId: z.string().trim().min(1).max(256),
   fileId: z.string().trim().min(1).max(256).optional(),
   path: z.string().min(1).max(4096).optional(),
+  rootId: SessionFileRootIdSchema.optional(),
   offset: z.number().int().nonnegative(),
   /** To the end of the file when absent; `0` asks for the size and revision alone. */
   length: z.number().int().nonnegative().optional(),

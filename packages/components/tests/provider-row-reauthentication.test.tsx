@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, useState } from 'react';
+// @vitest-environment jsdom
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -107,46 +108,65 @@ describe('ProviderRow reauthentication', () => {
     expect(container.textContent).toContain('70%');
   });
 
+  it.each([
+    ['codex', 'OPENAI_API_KEY'],
+    ['claude', 'ANTHROPIC_BASE_URL'],
+    ['grok', 'XAI_API_KEY'],
+  ])(
+    'shows only the owning %s quota with tool env, and hides account overrides',
+    async (agentType, accountKey) => {
+      const config = {
+        ...makeConfig({ cliType: 'builtin', agentType }),
+        env: { OP_TOKEN: 'synthetic' },
+      };
+      const quotaMachine: MachineViewMeta = {
+        ...machine,
+        acpCapabilities: {
+          [config.id]: {
+            cliType: 'builtin',
+            agentType,
+            modes: [],
+            models: [],
+            fetchedAt: 1,
+            rateLimits: { version: 1 },
+          },
+        },
+        raceLimits: Object.fromEntries(
+          [
+            [config.id, 30],
+            ['another-provider', 90],
+          ].map(([id, usedPercent]) => [
+            getRateLimitEntryKey(agentType, agentType, id as AgentConfigId),
+            {
+              limitId: agentType,
+              scope: { providerId: agentType },
+              windows: [{ usedPercent, windowDurationSeconds: 18000, resetsAtEpochSeconds: null }],
+            },
+          ])
+        ),
+      };
+      const render = async (env: Record<string, string>) =>
+        act(async () => {
+          root.render(
+            <ProviderRow config={{ ...config, env }} machine={quotaMachine} onEdit={() => {}} />
+          );
+        });
+      await render(config.env);
+      expect(container.textContent).toContain('70%');
+      expect(container.textContent).not.toContain('10%');
+      await render({ ...config.env, [accountKey]: 'synthetic' });
+      expect(container.textContent).not.toContain('70%');
+      await render(config.env);
+      expect(container.textContent).toContain('70%');
+    }
+  );
+
   // Asserts on rendered text rather than a mocked panel: the row must not grow a
   // sign-in affordance again, whichever component would provide it.
   const hasSignInAction = () =>
     Array.from(container.querySelectorAll('button')).some((button) =>
       button.textContent?.includes('Sign in')
     );
-
-  // Signing in again lives in the provider detail dialog, so no list row shows it.
-  it.each([
-    { cliType: 'builtin', agentType: 'claude' },
-    { cliType: 'builtin', agentType: 'codex' },
-    { cliType: 'builtin', agentType: 'kimi' },
-    { cliType: 'registry', agentType: 'auggie' },
-  ] as const)('does not offer Sign in again for the $agentType provider row', async (overrides) => {
-    await renderConfig(makeConfig(overrides));
-
-    expect(hasSignInAction()).toBe(false);
-  });
-
-  it('still opens the provider detail when the row is clicked', async () => {
-    const config = makeConfig({ cliType: 'builtin', agentType: 'claude' });
-    function DetailHarness() {
-      const [selected, setSelected] = useState<AgentConfigMeta | null>(null);
-      return selected ? (
-        <p>Opened detail for {selected.name}</p>
-      ) : (
-        <ProviderRow config={config} machine={machine} onEdit={setSelected} />
-      );
-    }
-    await act(async () => {
-      root.render(<DetailHarness />);
-    });
-
-    const row = container.querySelector<HTMLButtonElement>('button[aria-label="Edit Config"]');
-    await act(async () => {
-      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(container.textContent).toContain('Opened detail for claude');
-  });
 
   it('loads the forecast only after its direct action is selected', async () => {
     const store = createCodexResetForecastStore({
@@ -168,148 +188,5 @@ describe('ProviderRow reauthentication', () => {
     await act(async () => forecast?.click());
     expect(store.getState().status).toBe('ready');
     expect(document.body.textContent).toContain('No reset forecast right now.');
-  });
-});
-
-describe('ProviderRow meta line', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-  const now = new Date('2026-09-26T08:00:00.000Z');
-
-  beforeEach(() => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(now);
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    act(() => root.unmount());
-    container.remove();
-    vi.useRealTimers();
-    await initI18n('en');
-  });
-
-  const renderCustom = async () => {
-    const config = { ...makeConfig({ cliType: 'custom', agentType: 'e2e' }), name: 'E2E Agent' };
-    await act(async () => {
-      root.render(
-        <ProviderRow
-          config={config}
-          machine={machine}
-          onEdit={vi.fn()}
-          usage={{ conversations: 1, lastUsedAt: now.getTime() - 2 * 60_000 }}
-        />
-      );
-    });
-  };
-
-  // The kind is a fact of the meta line, in the reader's language, not an
-  // English pill beside the name; the time reads as a sentence of that language.
-  it('names a custom provider and when it was used in Chinese', async () => {
-    await initI18n('zh_CN');
-    await renderCustom();
-
-    expect(container.textContent).toContain('自定义 · 1 个对话 · 2 分钟前用过');
-    expect(container.textContent).not.toContain('Custom');
-    expect(container.textContent).not.toContain('2m');
-  });
-
-  it('keeps the compact units in English', async () => {
-    await initI18n('en');
-    await renderCustom();
-
-    expect(container.textContent).toContain('Custom · 1 conversation · Used 2m ago');
-  });
-});
-
-describe('ProviderRow Antigravity quota', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(async () => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    await initI18n('en');
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  const config = makeConfig({ cliType: 'registry', agentType: ANTIGRAVITY_AGENT_TYPE });
-  const group = (
-    limitId: string,
-    limitName: string,
-    usedPercent: number,
-    windowDurationSeconds = 18_000
-  ) => ({
-    limitId,
-    limitName,
-    scope: { providerId: ANTIGRAVITY_AGENT_TYPE },
-    windows: [
-      {
-        label: limitName,
-        usedPercent,
-        windowDurationSeconds,
-        resetsAtEpochSeconds: null,
-      },
-    ],
-  });
-  const quotaMachine: MachineViewMeta = {
-    ...machine,
-    raceLimits: {
-      // Argon arrives first: it must not displace Gemini.
-      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_ARGON_LIMIT_ID, config.id)]: group(
-        ANTIGRAVITY_ARGON_LIMIT_ID,
-        'Argon',
-        43.5,
-        604_800
-      ),
-      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, 'gemini', config.id)]: {
-        ...group('gemini', 'Gemini', 50),
-        windows: [
-          ...group('gemini', 'Gemini', 50).windows,
-          ...group('gemini', 'Gemini', 25, 604_800).windows,
-        ],
-      },
-      [getRateLimitEntryKey(ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, config.id)]:
-        group(ANTIGRAVITY_THIRD_PARTY_LIMIT_ID, 'Claude / GPT', 60),
-    },
-  };
-  const meterTitles = () =>
-    Array.from(container.querySelectorAll('[role="meter"]')).map((node) =>
-      node.getAttribute('aria-label')
-    );
-
-  const render = async (env: Record<string, string>) => {
-    await act(async () => {
-      root.render(
-        <ProviderRow
-          config={{ ...config, env }}
-          machine={quotaMachine}
-          onEdit={vi.fn()}
-          variant="card"
-        />
-      );
-    });
-  };
-
-  // Google never counts ACP use against the Claude/GPT group, so even a
-  // provider that offers those models shows Gemini and separate Argon quota.
-  it.each([
-    { offersClaude: false, env: {} },
-    { offersClaude: true, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } },
-  ])('shows Gemini and Argon quota (offers Claude: $offersClaude)', async ({ env }) => {
-    await render(env);
-
-    expect(meterTitles()).toEqual(['5h: 50% left', '7d: 75% left', '7d · Argon: 57% left']);
-    expect(meterTitles()).not.toContain('5h: 40% left');
-    expect(meterTitles().some((title) => title?.includes('Claude / GPT'))).toBe(false);
   });
 });

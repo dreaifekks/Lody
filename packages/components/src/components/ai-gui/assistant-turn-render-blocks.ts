@@ -3,10 +3,7 @@ import {
   buildAssistantMessageRenderItems,
   type AssistantMessageRenderItem,
 } from './assistant-message-render-items';
-import {
-  shouldCollapseAssistantMessageItem,
-  type StandaloneToolCallPredicate,
-} from './message-copy';
+import type { StandaloneToolCallPredicate } from './message-copy';
 
 type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
 type ThoughtMessage = Extract<MessageContent, { type: 'thought' }>;
@@ -59,6 +56,7 @@ export type AssistantTurnRenderSegment = {
   key: string;
   blockRange: readonly [number, number];
   workBlockKeys: ReadonlySet<string>;
+  firstWorkBlockIndex: number;
 };
 
 export type AssistantTurnRenderLayout = {
@@ -198,6 +196,7 @@ const buildActivityGroupKey = (messageId: string, first: AssistantActivityRender
 const buildAssistantTurnRenderBlocksFromEntries = (
   messageId: string,
   entries: readonly AssistantMessageRenderItem[],
+  separateThoughts = false,
   isStandaloneToolCall?: StandaloneToolCallPredicate
 ): AssistantTurnRenderBlock[] => {
   const blocks: AssistantTurnRenderBlock[] = [];
@@ -220,6 +219,14 @@ const buildAssistantTurnRenderBlocksFromEntries = (
       continue;
     }
     if (isActivityGroupEntry(entry, isStandaloneToolCall)) {
+      const previous = pendingActivityEntries[0];
+      if (
+        separateThoughts &&
+        previous &&
+        (previous.content.type === 'thought') !== (entry.content.type === 'thought')
+      ) {
+        flushActivityGroup();
+      }
       pendingActivityEntries.push(entry);
       continue;
     }
@@ -279,23 +286,6 @@ const buildSegmentBlockRanges = (
   return ranges.length > 0 ? ranges : [[0, blocks.length]];
 };
 
-const collectSegmentEntries = (
-  blocks: readonly AssistantTurnRenderBlock[],
-  [start, end]: readonly [number, number]
-): AssistantMessageRenderItem[] => {
-  const entries: AssistantMessageRenderItem[] = [];
-  for (let index = start; index < end; index += 1) {
-    const block = blocks[index];
-    if (!block) continue;
-    if (block.kind === 'content') {
-      entries.push(block.entry);
-    } else {
-      entries.push(...block.entries);
-    }
-  }
-  return entries;
-};
-
 /**
  * Whether a segment leaves an answer showing outside its work blocks — the
  * condition for folding the rest into "Worked for …". A folded-on notice is
@@ -319,12 +309,14 @@ export const buildAssistantTurnRenderLayout = (
   messageId: string,
   items: readonly MessageContent[],
   isTurnFinished: boolean,
+  separateThoughts = false,
   isStandaloneToolCall?: StandaloneToolCallPredicate
 ): AssistantTurnRenderLayout => {
   const entries = buildAssistantMessageRenderItems(items);
   const blocks = buildAssistantTurnRenderBlocksFromEntries(
     messageId,
     entries,
+    separateThoughts,
     isStandaloneToolCall
   );
   const ranges = buildSegmentBlockRanges(blocks);
@@ -334,38 +326,23 @@ export const buildAssistantTurnRenderLayout = (
   const segments: AssistantTurnRenderSegment[] = ranges.map((blockRange, segmentIndex) => {
     const key = `segment:${messageId}:${segmentIndex}`;
     if (!isTurnFinished) {
-      return { key, blockRange, workBlockKeys: new Set<string>() };
+      return { key, blockRange, workBlockKeys: new Set<string>(), firstWorkBlockIndex: -1 };
     }
 
-    // The fold rule is applied PER SEGMENT: whether a region closes in text
-    // is that region's own question, so a plan followed by implementation
-    // still keeps its plan visible.
-    const segmentEntries = collectSegmentEntries(blocks, blockRange);
-    const segmentContents = segmentEntries.map((entry) => entry.content);
-    const collapsibleItemIndexes = new Set<number>();
-    segmentEntries.forEach((entry, indexInSegment) => {
-      if (
-        shouldCollapseAssistantMessageItem({
-          content: entry.content,
-          index: indexInSegment,
-          items: segmentContents,
-          isTurnFinished,
-          isStandaloneToolCall,
-        })
-      ) {
-        collapsibleItemIndexes.add(entry.itemIndex);
-      }
-    });
-
+    // Only process folds. Prose is what the reader came for, and whether a text
+    // block is narration or the answer cannot be known from where it sits: a run
+    // may answer first and keep working. Folding by position buried that answer.
     const segmentWorkBlockKeys = new Set<string>();
+    let firstWorkBlockIndex = -1;
     for (let index = blockRange[0]; index < blockRange[1]; index += 1) {
       const block = blocks[index];
-      if (!block) continue;
-      if (block.kind === 'activity_group' || collapsibleItemIndexes.has(block.entry.itemIndex)) {
-        segmentWorkBlockKeys.add(block.key);
+      if (block?.kind !== 'activity_group') continue;
+      segmentWorkBlockKeys.add(block.key);
+      if (firstWorkBlockIndex === -1) {
+        firstWorkBlockIndex = index;
       }
     }
-    return { key, blockRange, workBlockKeys: segmentWorkBlockKeys };
+    return { key, blockRange, workBlockKeys: segmentWorkBlockKeys, firstWorkBlockIndex };
   });
 
   const workBlockKeys = new Set<string>();

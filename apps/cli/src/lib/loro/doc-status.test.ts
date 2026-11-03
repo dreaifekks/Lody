@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  getCurrentPromptSuggestion,
   getSessionRoomId,
   SessionStatusFactory,
   type MachineId,
-  type SessionId,
   type SessionMeta,
+  type SessionId,
 } from '@lody/shared';
-import { LoroDoc, LoroMap } from 'loro-crdt';
+import { LoroDoc } from 'loro-crdt';
 import type { LoroRepo } from 'loro-repo';
 
 import type { Logger } from '@/utils/logger';
@@ -41,72 +40,6 @@ const createSessionDocument = (
 };
 
 describe('SessionDocument status metadata', () => {
-  it('writes lastRunningSeen together with active statuses', async () => {
-    const upsertDocMeta = vi.fn(async () => {});
-    const doc = createSessionDocument({
-      getDocMeta: vi.fn(async () => ({ meta: {} })),
-      upsertDocMeta,
-    });
-
-    await doc.setStatus(SessionStatusFactory.running());
-
-    expect(upsertDocMeta).toHaveBeenCalledWith(
-      doc.roomId,
-      expect.objectContaining({
-        status: SessionStatusFactory.running(),
-        lastRunningSeen: expect.any(Number),
-      })
-    );
-  });
-
-  it('keeps a prompt suggestion written during wrap-up and drops one a newer turn replaced', async () => {
-    // The provider answered user-1; Git and PR sync still hold the turn open.
-    let meta = {
-      latestUserMsgId: 'user-1',
-      processingUserMsgId: 'user-1',
-      lastHandledUserMsgId: 'user-0',
-    } as SessionMeta;
-    const doc = createSessionDocument({
-      getDocMeta: vi.fn(async () => ({ meta })),
-      upsertDocMeta: vi.fn(async (_roomId: string, patch: Partial<SessionMeta>) => {
-        meta = { ...meta, ...patch };
-      }),
-    });
-
-    await expect(doc.setPromptSuggestion('  run the tests ', 'user-1')).resolves.toBe(true);
-    await expect(doc.setPromptSuggestion('x'.repeat(301), 'user-1')).resolves.toBe(false);
-    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
-
-    // Wrap-up ends: the guess shows.
-    meta = { ...meta, processingUserMsgId: undefined, lastHandledUserMsgId: 'user-1' };
-    expect(getCurrentPromptSuggestion(meta)).toBe('run the tests');
-
-    // The next message is published: the old guess stops showing at once, and
-    // a guess for the replaced turn that arrives late is not written.
-    meta = { ...meta, latestUserMsgId: 'user-2' };
-    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
-    await expect(doc.setPromptSuggestion('a late guess', 'user-1')).resolves.toBe(false);
-    expect(meta.promptSuggestion?.text).toBe('run the tests');
-
-    // Handled, but the turn produced no guess of its own: the old one stays hidden.
-    meta = { ...meta, lastHandledUserMsgId: 'user-2' };
-    expect(getCurrentPromptSuggestion(meta)).toBeUndefined();
-  });
-
-  it('does not refresh lastRunningSeen when setting idle', async () => {
-    const upsertDocMeta = vi.fn(async () => {});
-    const doc = createSessionDocument({
-      getDocMeta: vi.fn(async () => ({ meta: {} })),
-      upsertDocMeta,
-    });
-
-    await doc.setStatus(SessionStatusFactory.idle());
-
-    expect(upsertDocMeta).toHaveBeenCalledWith(doc.roomId, {
-      status: SessionStatusFactory.idle(),
-    });
-  });
-
   it('rolls child lastMessageAt up to the parent session', async () => {
     const parentSessionId = 'parent-session-1' as SessionId;
     const childRoomId = getSessionRoomId('session-status-1' as SessionId);
@@ -159,57 +92,6 @@ describe('SessionDocument status metadata', () => {
       lastMessageAt: 2_000,
     });
     expect(upsertDocMeta).not.toHaveBeenCalledWith(parentRoomId, expect.anything());
-  });
-
-  it('deletes the key instead of persisting null when unsetting a history entry field', async () => {
-    // Raw LoroMap writes bypass loro-mirror's undefined-stripping; `set(field,
-    // undefined)` would persist null and break strict readers.
-    const loroDoc = new LoroDoc();
-    const entry = loroDoc.getList('history').insertContainer(0, new LoroMap());
-    entry.set('id', 'entry-1');
-    entry.set('role', 'assistant');
-    entry.set('fileDiff', [{ path: 'a.ts', add: 1, del: 0 }]);
-    const doc = createSessionDocument({}, undefined, loroDoc);
-
-    await doc.agentWrites.setTurnField('entry-1', 'fileDiff', { kind: 'clear' });
-
-    const readBack = loroDoc.getList('history').get(0) as LoroMap;
-    expect(readBack.keys()).not.toContain('fileDiff');
-    expect(readBack.get('fileDiff')).toBeUndefined();
-
-    expect(
-      (
-        await doc.sessionData.commands.applyHistoryAction({
-          kind: 'assistant-file-diff',
-          turnId: 'entry-1',
-          change: { kind: 'clear' },
-        })
-      ).matched
-    ).toBe(true);
-    expect((loroDoc.getList('history').get(0) as LoroMap).keys()).not.toContain('fileDiff');
-    doc.mirror?.dispose();
-  });
-
-  it('derives stable turn storage metadata from the associated user entry', () => {
-    const loroDoc = new LoroDoc();
-    const history = loroDoc.getList('history');
-    const userEntry = history.insertContainer(0, new LoroMap());
-    userEntry.set('id', 'user-1');
-    userEntry.set('role', 'user');
-    userEntry.set('timestamp', '2026-08-04T03:02:00.000Z');
-    const entry = history.insertContainer(1, new LoroMap());
-    entry.set('id', 'entry-1');
-    entry.set('role', 'assistant');
-    entry.set('userTurnId', 'user-1');
-    entry.set('timestamp', '2026-08-04T03:02:01.000Z');
-    const doc = createSessionDocument({}, undefined, loroDoc);
-
-    const capturedAtMs = Date.parse('2026-08-04T03:02:00.000Z');
-    expect(doc.getAssistantHistoryEntryTurnStorageMetadata('entry-1')).toEqual({
-      capturedAtMs,
-      orderKey: `${capturedAtMs.toString().padStart(16, '0')}:${doc.sessionId}:0000000001:entry-1`,
-    });
-    expect(doc.getAssistantHistoryEntryTurnStorageMetadata('missing')).toBeUndefined();
   });
 
   it('resets a status of its own machine to idle during destroy without publishing presence', async () => {

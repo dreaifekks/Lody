@@ -216,6 +216,8 @@ export type AcpSelectorOptions = {
   defaultModelId: string | null;
   /** Dynamic config option selectors for agents with configOptions (e.g. thought_level). */
   configOptionSelectors: AcpConfigOptionSelector[];
+  /** Probed controls before per-model filtering; lets generic model validation restore hidden controls. */
+  unnormalizedConfigOptionSelectors?: AcpConfigOptionSelector[];
   /** Per-model reasoning-effort ladders when the capability source publishes them. */
   modelReasoningEfforts: Record<string, string[]> | undefined;
   /** Per-model effort and Fast support the adapter declared, when stored. */
@@ -402,10 +404,13 @@ const resolveSelectedModelId = (
   configOptions: AcpConfigOptionSummary[] | undefined,
   target?: AcpSelectorTarget
 ): string | undefined => {
-  if (target?.selectedModelId) return target.selectedModelId;
+  const isAcpProbed = target?.cliType === 'registry' || target?.cliType === 'custom';
+  if (!isAcpProbed && target?.selectedModelId) return target.selectedModelId;
   const modelOption = configOptions?.find(
     (option) => option.category === 'model' && option.type === 'select'
   );
+  const selectedValue = isAcpProbed && modelOption && target?.configOptionValues?.[modelOption.id];
+  if (typeof selectedValue === 'string') return selectedValue;
   return typeof modelOption?.currentValue === 'string' ? modelOption.currentValue : undefined;
 };
 
@@ -747,6 +752,15 @@ export const buildAcpSelectorOptions = (target?: AcpSelectorTarget): AcpSelector
     defaultModelId:
       typeof modelConfigOption?.currentValue === 'string' ? modelConfigOption.currentValue : null,
     configOptionSelectors,
+    ...(isAcpProbed
+      ? {
+          unnormalizedConfigOptionSelectors: buildConfigOptionSelectors(
+            configOptions,
+            target,
+            capabilityAuthority
+          ),
+        }
+      : {}),
     modelReasoningEfforts,
     declaredModelControls,
   };

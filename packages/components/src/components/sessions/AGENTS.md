@@ -1,138 +1,138 @@
 # components/sessions
 
-`CLAUDE.md` symlinks here. Edit `AGENTS.md` only.
+Edit `AGENTS.md`, not its `CLAUDE.md` symlink; parent rules apply.
+Read [README](README.md) and these rules.
 
-Read parent rules and linked context before edits.
+## [Tabs](../../../../../.agents/docs/sessions-tabs-routing.md)
 
-## [Tabs and `?tab` routing](../../../../../.agents/docs/sessions-tabs-routing.md)
+- One `SessionTabBar` gates traffic-light insets on `!useElectronFullscreen()`.
+  Hide IDE/share pills below `SESSION_PAGE_HEADER_PILLS_MIN_WIDTH_PX`, retaining `⋯`.
+- Tabs share `TAB_PILL_*_CLASS`, never `--tab-active`/`--tab-inactive`.
+- One tab slot orders waiting > working > unread > agent icon. Test
+  `isWaiting` first; `sessionHasUnreadMessages` excludes closed/archived output.
+- `?tab` owns selection, never mirrored state. Shared closure may select a neighbour
+  or draft. Close writes only `isTabClosed`; reopen clears it without unarchiving.
+- Read [Cmd/Ctrl+W rules](../../lib/commands/AGENTS.md).
+- Change owner writes `SessionMeta.userId`, independently of sharing/visibility.
 
-- ONE `SessionTabBar` row; traffic-light insets gated on `!useElectronFullscreen()`.
-  Hide IDE/share pills below `SESSION_PAGE_HEADER_PILLS_MIN_WIDTH_PX`; keep them on `⋯`.
-- Conversation and side-panel tabs share `TAB_PILL_*_CLASS`. Never
-  `--tab-active`/`--tab-inactive` (both collapse onto `--background` in dark).
-- One leading status slot per tab, `waiting > working > unread > agent icon`;
-  Test `isWaiting` first; use `sessionHasUnreadMessages` to exclude closed/archived output.
-- `?tab` owns selection; never mirror it in state (#193). Confirmed shared closure
-  may replace the current choice with a neighbour or local draft. Close writes
-  `isTabClosed`, never archive/delete; reopen clears only it, never unarchives.
-- Cmd/Ctrl+W ownership: [command rules](../../lib/commands/AGENTS.md).
-- `Change owner` writes the OWNER `SessionMeta.userId`, never sharing/visibility;
-  they stay separate actions.
+## [Shell](../../../../../.agents/docs/sessions-side-panel.md)
 
-## [Shell, side panel, side chats](../../../../../.agents/docs/sessions-side-panel.md)
+- File/diff/browser/PR viewers are closeable right-panel tabs, never conversation
+  splits. `sidePanelTabs` owns order/close fallback.
+- Side Chats are durable children using `childSessionPlacement: 'side-panel'`.
+  They roll into the parent row, have no top/sidebar row and mount lazily.
+  Only tab close deletes them.
+- `openedBySessionId` is provenance, never `parentSessionId`, opener rollup or row
+  filtering. Navigate with root/exact-tab IDs.
+- Collapsed panels stay mounted; pause connections/polling while off screen.
+  Mounting is not preview ownership; cleanup never releases endpoints/tunnels.
 
-- Desktop file/diff/browser/PR viewers are closeable right-panel tabs; never split
-  the conversation. `sidePanelTabs` owns order and close fallback neighbours.
-- A Side Chat is a durable child Session (`childSessionPlacement: 'side-panel'`):
-  no top tab, no sidebar row, but it still rolls up into the parent row. Only explicit
-  tab close deletes it; mount it lazily.
-- `SessionMeta.openedBySessionId` is presentation-only provenance: never
-  `parentSessionId`, never rolled into the opener, never filtered out of the
-  list. Navigation carries root + exact tab ids.
-- The collapsed side panel stays mounted: anything polling or connected in it
-  must take an on-screen prop and pause itself.
-- Panel mount is not preview ownership — never release an endpoint or revoke a
-  tunnel from component cleanup.
+## [Browser](../../../../../.agents/docs/sessions-browser.md)
 
-## [Browser and Managed Preview](../../../../../.agents/docs/sessions-browser.md)
+- Managed Preview accepts only agent-machine loopback. Other addresses need
+  public-browser capability; no iframe/system-browser/CLI/gateway fallback exists.
+- Approval never authorizes LAN preview. Agent-authored `fromPageContent` navigation
+  cannot open private LAN; only the address bar may.
+- Preload one bounded frame after live confirmation. Require atomic moves, no
+  polling and cleanup that remains safe after Browser takeover.
+- Static HTML uses policy-owned `srcdoc`. Scripts require credentialless and
+  `allow-scripts`; otherwise strip navigation and use an empty sandbox. Never preview
+  truncated text. Static frames die with their tab.
+- Encrypted remote controls require protected host features/verified write role,
+  never ordinary proofs. Disclose plaintext tunnel bytes.
+- Comments use `runtime.writer.mutatePreviewVisualComments`, never `setState`.
 
-- Managed Preview accepts only the agent machine's LOOPBACK. All other addresses
-  require public-browser capability; no iframe/system-browser/CLI/gateway fallback.
-- Approval cannot authorize LAN previews. Agent-authored navigation
-  (`fromPageContent`) never opens private LAN; only the address bar may.
-- Preload one bounded frame after live confirmation; require atomic moves, no
-  polling, and cleanup safe after Browser takeover.
-- Static HTML requires policy-owned `srcdoc`. Scripts require credentialless and
-  `allow-scripts` only; otherwise use navigation-stripped HTML with an empty sandbox.
-  Never preview truncated text; static frames die with their tab.
-- Preview comment writes go through `runtime.writer.mutatePreviewVisualComments`, never the store's `setState`.
+## [Surface](../../../../../.agents/docs/sessions-surface.md)
 
-## [Conversation surface](../../../../../.agents/docs/sessions-surface.md)
+- Mobile composers/questions lift for keyboards; other panels use `nativeKeyboardInset`.
+  Wide sessions inherit root padding once.
+- Message-list crashes preserve the composer and copy the shared report with original
+  error/React stacks. Read receipts require `isVisible`, not mounting.
+- `useSessionActions` checks current Repo metadata for all affected
+  target, including contained/opened sessions, before effects.
+- Encrypted history uses bound document access, never wider execution indexes.
+  Unavailable targets mount only document readers, without probes/RPC. Read the
+  [boundary](../../../../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#member-visibility-a4).
+- Window-top headers use shared drag regions, exempting controls.
+- Retain question drafts through navigation/IME Enter and show failures.
+- Copy uses `buildConversationMarkdown`, never `buildReplayPromptFromHistory`.
+  Preserve prose, cap thinking, report omissions and include selected messages
+  without requiring ACP fork support.
+- Use `useResolvedMachineMeta()` capabilities and `useSessionAcpSelectorContext()`
+  selectors; never recompute in composers.
+- Rendering belongs mainly in `../ai-gui/view.tsx`. Conversation `VList` scrolls
+  vertically only; wide content owns its scroller.
 
-- Message-list crash fallback preserves the composer and copies the shared report,
-  including the original error and caught React component stacks.
-- Read receipts require per-surface `isVisible`, never mere mounting.
-- Keep question drafts on navigation and IME Enter; show failures.
-- Markdown copy uses `buildConversationMarkdown`, not `buildReplayPromptFromHistory`:
-  keep prose whole, cap thinking rather than drop it, toast every omission, and
-  include the selected message regardless of ACP fork support.
-- Read ACP capabilities via `useResolvedMachineMeta()` and selectors via
-  `useSessionAcpSelectorContext()`; the controlled composer must not recompute
-  selector options.
-- Most rendering changes belong in `../ai-gui/view.tsx`; the conversation
-  `VList` is vertical-only and wide content owns its own scroller.
+## [Run config](../../../../../.agents/docs/sessions-run-config.md)
 
-## [Run config and Agent Roles](../../../../../.agents/docs/sessions-run-config.md)
+- `buildComposerAgentRoleItems` lists every Role group flat by instance, this machine
+  first. Unrunnable entries remain disabled with reasons. Drafts authorize instances;
+  existing sessions apply only their run config.
+- Roles own config. Other knobs are inert; permission pins hide
+  `DesktopPermissionModeButton`. Knob changes unname Roles, retaining values.
+- Derive selection through `useAcpSessionConfigSelectionState`, never stored resolved
+  state or effect reconciliation.
+- Freeze Role ID/revision/instance in Turn `inputConfig` (`agentRoleSnapshot`).
+  Never rewrite `SessionMeta.agentRoleId`/`agentRoleInstanceId`.
+- Apply accepted/queued Turn `inputConfig` and `userTurnId`-fenced
+  `SessionDoc.acpRuntimeConfig` only to unedited fields. Permission clicks never infer
+  runtime config; explicit execution freezes a non-Plan mode.
+- Only `AgentRoleDetailPane` shows pins; `AgentRoleEditorDialog` edits.
+  Narrow `ComposerAgentRolePanel` rows put agent/model on the second line.
 
-- A composer lists all Role groups flat, its machine first, by instance
-  (`buildComposerAgentRoleItems`); one it cannot run stays, disabled, with its
-  reason. A draft authorizes the instance; a session applies only its run config.
-- A Role IS the whole configuration: other knobs render inert,
-  `DesktopPermissionModeButton` is absent when the Role pins permission, and
-  moving a knob unnames the Role instead of clearing values.
-- Selection flows through `useAcpSessionConfigSelectionState`, a pure derivation:
-  never store the resolved selection or reconcile it in an effect (#185).
-- Freeze Role id, revision and instance (`agentRoleSnapshot`) into the Turn
-  `inputConfig`; `SessionMeta.agentRoleId`/`agentRoleInstanceId` are never rewritten.
-- Two durable authorities: the latest accepted/queued Turn `inputConfig`, and
-  `SessionDoc.acpRuntimeConfig` fenced by `userTurnId`. Apply that baseline only
-  to unedited composer fields, never infer runtime config from a permission
-  click, and freeze a non-Plan mode for explicit execution actions.
-- `AgentRoleDetailPane` is the ONE pane that reads a Role and shows only what it
-  pins; `AgentRoleEditorDialog` is the one editor. When the pane cannot fit,
-  `ComposerAgentRolePanel` puts agent · model on a second line instead.
+## [Dispatch](../../../../../.agents/docs/sessions-live-status.md)
 
-## [Live status and dispatch](../../../../../.agents/docs/sessions-live-status.md)
+- Presence owns Working/Waiting, never `SessionMeta.status`, `lastRunningSeen` or
+  CLI pointers. Derive only dispatched-but-not-started activity from durable turn
+  time, capped at 30s. Without presence, queue behind unfinished turns, never relight
+  Working. Busy composers without authoritative steer use Queue.
+- Interrupt-and-send uses `{ interrupt: true }`, never Stop identity.
+- Follow the [upload contract](../../../../../specs/composer-send-during-upload.md).
+- Coordinators retain Board maintenance; ordinary sessions use negotiated automations.
 
-- Presence owns Working/Waiting UI, never `SessionMeta.status`,
-  `lastRunningSeen`, or CLI dispatch pointers.
-- Only derived activity: dispatched-but-not-started; anchor on the durable turn
-  timestamp and stop at 30s.
-- No presence: queue behind unfinished turns; never relight Working UI.
-- Busy composer without authoritative steer support uses Queue.
-- Uploads: [contract](../../../../../specs/composer-send-during-upload.md).
+## [Info bar](../../../../../.agents/docs/sessions-info-bar.md)
 
-## [Composer info bar](../../../../../.agents/docs/sessions-info-bar.md)
+- Keep cluster order and a nonempty stage while items/ambient content exist.
+  Machine identity stays unstaged (desktop name/mobile icon); ownership is details-only.
+  Scheduled drafts stay in the composer, never the bar.
+- Stage icons are inert. Colour indicates status; never pulse.
+- Reported preview requests enable actions targeting the main Session. One
+  platform opens directly; iOS+Android use a chooser on desktop/mobile.
+- Open preview requires a real reported target. Prioritize repository actions
+  (dirty means Commit & Push), collapse into one and never duplicate below replies.
 
-- Keep canonical cluster order and one nonempty stage when items exist. Hide
-  the bar only without items or ambient content. Machine control stays outside
-  staging (desktop name, mobile icon); ownership appears only in its details card.
-- The stage icon is inert, colour is reserved for genuine status, and nothing
-  in the bar pulses.
-- Open preview stays gated on a real reported target; repository actions are
-  priority-ordered (dirty ⇒ Commit & Push), collapse into one, never duplicated
-  below the reply.
+## [Status slot](../../../../../.agents/docs/sessions-auto-review.md)
 
-## [Session status slot](../../../../../.agents/docs/sessions-auto-review.md)
-
-- One priority-ordered status slot (browser-offline > machine-removed >
-  machine-offline): states hand off, never stack; machine-offline never blocks
-  sends; doc-stream degradation is never re-added.
+- One slot orders browser-offline > machine-removed > machine-offline. Never stack
+  statuses, block sends for offline machines or restore doc-stream degradation.
 
 ## [Render cost](../../../../../.agents/docs/sessions-render-cost.md)
 
-- Never subscribe page-level `activeSession` or message rows to Code Collab
-  file-index Flock state or full `sessionMetaAtomFamily`; select what a row uses.
-- Session-switch reset stays in the render-phase branch of `session-detail.tsx`;
-  no second `useEffect([sessionId])`.
-- A RESTORED side-panel state must not animate: bump `sidebarRestoreSeq` in the
-  same commit as any non-user `isSidebarOpen` write.
-- "Current branch" copy uses `SessionMeta.branchName` only.
-- PR summaries do not enable hosted detail/mutation APIs; local PR links open externally.
+- Reuse controllers; mount child bodies lazily.
+- Page-level `activeSession` and message rows never subscribe to file-index Flock or
+  full `sessionMetaAtomFamily`; select only used fields.
+- Session switches reset during `session-detail.tsx` render, without a second effect.
+- Restored panels never animate. Bump `sidebarRestoreSeq` with non-user `isSidebarOpen`.
+- Current branch reads only `SessionMeta.branchName`.
+- PR summaries use shared lifecycle reads, never UI writes/API grants; local PRs open externally.
 
 ## [File surfaces](../../../../../.agents/docs/sessions-file-surfaces.md)
 
-- File actions use `hooks/use-session-file-actions.ts` + `lib/session-file-actions.ts`;
-  never duplicate capability checks or expose unavailable local-host actions.
-- Mobile Changes starts at the shared file list; exact file/comment links open diffs.
-  Retain diffs on Back; preserve drafts/expansion/focus. Viewport-gate bodies,
-  pause hidden reads and use shared parse Workers for multi-file cache misses.
-- Local paths use the OWNING machine's workspace root + workspace-relative path;
-  `lib/session-local-file-path.ts` rejects absolute/`..`.
-- Static viewer shells; Office engines load on activation/idle; pause hidden video.
-  PDFs: 64 KiB ranges, 8 MP canvases; retain bundled Worker entry/export.
+- Share `hooks/use-session-file-actions.ts` and `lib/session-file-actions.ts`
+  capability checks. Hide unavailable local-host actions.
+- Failed conversation indexes release optional leases and pause until shown;
+  Files/Changes recover independently.
+- Mobile Changes starts at the shared list; exact file/comment links open diffs.
+  Preserve diffs/drafts/expansion/focus on Back. Viewport-gate bodies, pause hidden
+  reads and use shared parse Workers for multi-file cache misses.
+- Local paths use the owning machine's root plus relative path;
+  `lib/session-local-file-path.ts` rejects absolute/`..`. LAN preview/download retains
+  `rootId` through transport/cache identity.
+- Keep static shells; load Office on activation/idle and pause hidden video. PDFs
+  use 64 KiB ranges/8 MP canvases; retain bundled Worker entry/export.
 
 ## [Stories](../../../../../.agents/docs/sessions-stories.md)
 
-- Stories render real components and only mock data; appearance lives in production.
-  Keep stories minimal; verify UI changes in the app.
+- Stories stay minimal and use real components/mocked data. Keep appearance in
+  production and verify UI in the app.
+- Follow [automation identity rules](automation/AGENTS.md).

@@ -4,9 +4,7 @@ Parent `AGENTS.md` files also apply.
 
 ## Session turns have one read path and one write path
 
-A session document's `history` is the one piece of state that grows without
-bound, so the windowed path avoids mirroring it into memory as an array. Everything goes through
-`SessionDocStore`:
+Session history uses windowed `SessionDocStore` access, never an unbounded array:
 
 - **Read** `store.history` — a `ConversationView`: `index(i)` for the always-present
   per-turn row, `turn(i)` for a hydrated turn, `acquireRange` and its release handle to hold a
@@ -19,14 +17,20 @@ bound, so the windowed path avoids mirroring it into memory as an array. Everyth
 - The composition owns one HistoryWriter; the UI store does not expose it.
   Do not add a second writer or bypass `sessionData` for ordinary turn writes.
 
-`getState()` has no `history` key and `setState` receives a draft without one,
-so the ordinary spellings of a second path do not compile. What types cannot
-close is a deliberate escape — a cast that puts the key back, or reaching past
-the store into the raw `LoroDoc` — and
-`tests/no-materialized-history-in-components.test.ts` fails on those. No component reads the raw history list; composition injects the shared reader.
+`getState()` and `setState` drafts exclude `history`. Never bypass that boundary
+with casts or raw `LoroDoc` access. Components use the composition-injected reader,
+never the raw history list.
 
 Full-history actions use the authoritative consistent full-read operation.
 Performance comparisons must use the current full-Mirror baseline.
+
+## Conversation exports
+
+Conversation Markdown/PNG exports use `usePlaintextCopy` before capture and
+repeat runtime admission and its source guard before output. Unknown cloud mode
+cannot authorize a copy; encrypted copies require a fresh explicit choice.
+Cancellation retains selection and cannot remove a user destination.
+[Ownership](hooks/README.md#explicit-plaintext-copies).
 
 ## Lightweight hosted entries
 
@@ -42,11 +46,11 @@ Performance comparisons must use the current full-Mirror baseline.
 
 ## Soft-keyboard viewport handling
 
-- Non-iOS side drawers without snap points use `ui/drawer.tsx`'s live
-  viewport bottom inset on native shells or explicit `repositionInputs={true}`.
-  Never cache a keyboard-shrunken drawer height or infer keyboard visibility from focus:
-  Android-compatible shells can resize the WebView and retain input focus on hide.
-  Preserve the separate iOS native keyboard offset and bottom-sheet handling.
+- Side drawers without snap points keep CSS sizing on native shells or explicit
+  `repositionInputs={true}`. `ui/drawer.tsx` disables Vaul's cached height there:
+  iOS surfaces own their native keyboard offset; other hosts use its live viewport
+  bottom inset. Never cache a focused drawer's height across folds/rotation or infer
+  keyboard visibility from focus. Preserve separate bottom-sheet handling.
   `repositionInputs={false}` explicitly opts out of both Vaul repositioning and
   this inset; callers using it own their keyboard layout.
 
@@ -61,16 +65,13 @@ Performance comparisons must use the current full-Mirror baseline.
 
 ## Keyboard navigation
 
-- Each independently navigable list owns one `FocusScope` and one
-  `useListKeyboardNavigation` call. Rows expose `data-scope-item` plus a stable
-  `data-id`; Up/Down (and J/K) move only in the active scope, while the shell's
-  single scope switcher uses Left/Right between visible leaf scopes. A local
-  control may keep a key by calling `preventDefault`; text inputs are never
-  intercepted. Nested parent scopes yield to their visible child scopes, and an
-  open dialog's scopes never switch focus into the background workspace. Scopes
-  handle their keys on the scope element itself: a dialog popup stops composite
-  keys (arrows, Home/End) before window listeners, so `FocusScope` moves its
-  registered list and the switcher on its own `onKeyDown`.
+- Each independent list owns one `FocusScope` and `useListKeyboardNavigation`.
+  Rows expose `data-scope-item` and stable `data-id`. Up/Down and J/K stay in the
+  active scope; the shell's single Left/Right switcher selects visible leaf scopes.
+  Honor `preventDefault`, never intercept text inputs, yield parent scopes to visible
+  children and keep dialog focus out of background workspaces. Handle keys on the
+  scope element itself: `FocusScope` moves its list and switcher in `onKeyDown`
+  because dialog popups stop composite keys before window listeners.
 
 ## Zen layout
 
@@ -87,11 +88,12 @@ Performance comparisons must use the current full-Mirror baseline.
 
 ## Workspace transitions
 
-- Default app entry opens the workspace chat landing; never persist or restore the
-  last visited route. Explicit deep links and requested window targets retain their destination.
-  Entry/workspace gate redirects use `BootNavigate`; `PreloadedMainLayout` owns its
-  boot-shell Suspense fallback. Keep a visible shell until the destination commits;
-  the hidden warm window's `/` remains neutral.
+- Default to chat; never restore the last route; preserve deep links and window
+  targets. `BootNavigate` hints geometry; `PreloadedMainLayout` owns code fallback.
+  `BootShellBoundary` inside the route error boundary holds one shell through gates
+  until recovery or destination commits; animation never gates readiness. Boot and
+  real cards share frames. `DocumentStyle` owns updates; retire inline first-paint
+  styles only after live commit. Keep the hidden warm window's `/` neutral.
 
 - Dock counts derive from complete active metadata and the sidebar's child activity
   summary. Publish absolute snapshots, including zero, on change and every 30 seconds;
@@ -112,10 +114,10 @@ Performance comparisons must use the current full-Mirror baseline.
 
 ## Billing data
 
-- When authenticated user and workspace resolution completes, preload the billing
-  overview into the existing session-scoped billing-page cache. The preload is only
-  a latency optimization: billing permissions, quota checks, destructive-operation
-  guards, and Stripe invoice history keep their existing live/on-demand data paths.
+- After auth/workspace resolution, preload billing overview into the session-scoped
+  cache for latency only. A rejected preload stays inside its leaf and never reaches
+  the route error boundary. Permissions, quotas, destructive guards, and Stripe invoice
+  history remain live/on-demand.
 
 ## ACP selectors
 

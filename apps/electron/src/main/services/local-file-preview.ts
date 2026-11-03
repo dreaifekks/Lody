@@ -1,3 +1,4 @@
+import { resolveMarkdownFileLink } from '@lody/shared/node/file-link-resolution'
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
@@ -9,7 +10,8 @@ export const LocalFilePreviewRequestSchema = z
   .object({
     machineId: z.string().min(1),
     path: z.string().min(1),
-    workspaceRoot: z.string().nullable().optional()
+    workspaceRoot: z.string().nullable().optional(),
+    resolveMarkdownLink: z.literal(true).optional()
   })
   .strict()
 
@@ -51,6 +53,12 @@ export async function previewLocalFile(
       message: 'The session workspace must be an absolute path.',
       path: request.path
     }
+  if (request.resolveMarkdownLink)
+    return resolveMarkdownFileLink({
+      requestedPath: request.path,
+      workspaceRoot: request.workspaceRoot ?? null,
+      options: { allowArbitraryPaths: true }
+    })
   const resolution = resolveFilePreviewPath({
     requestedPath: request.path,
     workspaceRoot: request.workspaceRoot ?? null,

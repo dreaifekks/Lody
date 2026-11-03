@@ -1,3 +1,4 @@
+import { SessionArchiveConfirmationDialog } from '../src/components/sessions/session-archive-confirmation';
 import { normalizeAgentRole } from '@lody/shared';
 // @vitest-environment jsdom
 import {
@@ -367,8 +368,10 @@ async function boardRuntime(sessions: readonly SessionMeta[]) {
       },
       deleteDoc: (id: string) => repo.deleteDoc(id),
     },
-    readSessionOperationTargets: (id: SessionId, operation: 'archive' | 'restore') =>
-      readSessionOperationTargets(repo, id, operation),
+    readSessionOperationTargets: (
+      id: SessionId,
+      operation: Parameters<WorkspaceRuntime['readSessionOperationTargets']>[1]
+    ) => readSessionOperationTargets(repo, id, operation),
     ensureDocStream: async () => {},
     releaseSessionStore: async () => {},
   } as unknown as WorkspaceRuntime;
@@ -1801,12 +1804,13 @@ it('starts a new Board thread in a repository from its default branch', async ()
   });
 });
 
-/** A Board of three members, its row in the catalog and its Sessions in the metadata cache. */
+/** A Board with contained and independently opened members, plus catalog and cached metadata. */
 async function boardWithMembers() {
   const sessions = [
     makeSession('coordinator', { boardRole: 'coordinator', title: 'Release' }),
     makeSession('root'),
     makeSession('review', { parentSessionId: 'root' as SessionId }),
+    makeSession('opened', { openedBySessionId: 'root' as SessionId }),
   ];
   const env = await boardRuntime(sessions);
   await writeWorkspaceBoard(env.runtime, testBoard());
@@ -1900,7 +1904,7 @@ it('renames and archives the whole Board from its page header menu', async () =>
     await act(async () => menuItem('Archive Board')!.click());
     expect(left).toBe(true);
     expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
-    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review', 'opened']);
   } finally {
     await view.unmount();
     await env.destroy();
@@ -1984,7 +1988,7 @@ it('shares, renames and archives a Board from its sidebar row controls', async (
     expect(await archivedIds()).toEqual([]);
     await act(async () => archiveButton.click());
     expect(archived).toEqual(['bd_test']);
-    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review']);
+    expect(await archivedIds()).toEqual(['coordinator', 'root', 'review', 'opened']);
   } finally {
     creation.boards = [];
     await view.unmount();
@@ -1992,125 +1996,147 @@ it('shares, renames and archives a Board from its sidebar row controls', async (
   }
 });
 
-it('uses sidebar menus and the shared recursive archive action for Board threads', async () => {
-  const sessions = [
-    makeSession('coordinator', { boardRole: 'coordinator' }),
-    makeSession('root', { openedBySessionId: 'coordinator' as SessionId }),
-    makeSession('tab', { parentSessionId: 'root' as SessionId }),
-    makeSession('opened', { openedBySessionId: 'root' as SessionId }),
-    makeSession('other'),
-  ];
-  const env = await boardRuntime(sessions);
-  const store = workspaceStore(env.runtime);
-  store.set(experimentalFeaturesEnabledAtom, true);
-  store.set(boardExperimentEnabledAtom, true);
-  store.set(
-    sessionMetaCacheAtom,
-    Object.fromEntries(sessions.map((session) => [getSessionRoomId(session.id), session]))
-  );
-  let selected: string | null = null;
-  let shownInPage: string | null = null;
-  const view = await mount(
-    <Provider store={store}>
-      <BoardSidePanel
-        board={testBoard()}
-        openThreadId={null}
-        onOpenThread={(session) => {
-          selected = session?.id ?? null;
-        }}
-        onShowInPage={(session) => {
-          shownInPage = session.id;
-        }}
-        onOpenThreadFull={() => {}}
-        renderThread={() => null}
-        requestedThreadId={null}
-        onThreadRequestDone={() => {}}
-      />
-    </Provider>
-  );
-  const row = () => view.host.querySelector<HTMLElement>('[data-id="root"]')!;
-  const openMenu = () =>
-    act(async () =>
-      row().dispatchEvent(
-        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
-      )
+it.each([false, true])(
+  'uses shared archive choice for Board threads (include opened: %s)',
+  async (includeOpened) => {
+    const sessions = [
+      makeSession('coordinator', { boardRole: 'coordinator' }),
+      makeSession('root', { openedBySessionId: 'coordinator' as SessionId }),
+      makeSession('tab', { parentSessionId: 'root' as SessionId }),
+      makeSession('opened', { openedBySessionId: 'root' as SessionId }),
+      makeSession('other'),
+    ];
+    const env = await boardRuntime(sessions);
+    const store = workspaceStore(env.runtime);
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(boardExperimentEnabledAtom, true);
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(sessions.map((session) => [getSessionRoomId(session.id), session]))
     );
-  try {
-    expect(row().querySelector('[aria-label="Board thread"]')).toBeNull();
-    await act(async () =>
-      row()
-        .querySelector('button[aria-label="More actions"]')!
-        .dispatchEvent(
-          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    let selected: string | null = null;
+    let shownInPage: string | null = null;
+    const view = await mount(
+      <Provider store={store}>
+        <SessionArchiveConfirmationDialog />
+        <BoardSidePanel
+          board={testBoard()}
+          openThreadId={null}
+          onOpenThread={(session) => {
+            selected = session?.id ?? null;
+          }}
+          onShowInPage={(session) => {
+            shownInPage = session.id;
+          }}
+          onOpenThreadFull={() => {}}
+          renderThread={() => null}
+          requestedThreadId={null}
+          onThreadRequestDone={() => {}}
+        />
+      </Provider>
+    );
+    const row = () => view.host.querySelector<HTMLElement>('[data-id="root"]')!;
+    const openMenu = () =>
+      act(async () =>
+        row().dispatchEvent(
+          new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })
         )
-    );
-    expect(selected).toBeNull();
-    await openMenu();
-    await act(async () => menuItem('Rename')!.click());
-    await renameTo('Renamed thread');
-    expect((await env.meta('root')).title).toBe('Renamed thread');
-    expect((await env.meta('coordinator')).title).toBe('coordinator');
-    await openMenu();
-    expect(menuItem('Pin Session')).toBeUndefined();
-    expect(menuItem('Unpin Session')).toBeUndefined();
-    expect((await env.meta('root')).boardId).toBe('bd_test');
-    await openMenu();
-    await act(async () => menuItem('Go to Opener Session')!.click());
-    expect(shownInPage).toBe('coordinator');
-    expect(selected).toBeNull();
-    await openMenu();
-    await act(async () => menuItem('Archive Session')!.click());
-    expect(
-      (await Promise.all(sessions.map((session) => env.meta(session.id))))
-        .filter((session) => session.isArchived)
-        .map((session) => session.id)
-    ).toEqual(['root', 'tab', 'opened']);
-    expect(selected).toBeNull();
-    // The shared restore action restores only the root and contained Tabs.
-    await act(async () =>
-      store.set(
-        sessionMetaCacheAtom,
-        Object.fromEntries(
-          await Promise.all(
-            sessions.map(async (session) => [
-              getSessionRoomId(session.id),
-              await env.meta(session.id),
-            ])
+      );
+    try {
+      expect(row().querySelector('[aria-label="Board thread"]')).toBeNull();
+      await act(async () =>
+        row()
+          .querySelector('button[aria-label="More actions"]')!
+          .dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+          )
+      );
+      expect(selected).toBeNull();
+      await openMenu();
+      await act(async () => menuItem('Rename')!.click());
+      await renameTo('Renamed thread');
+      expect((await env.meta('root')).title).toBe('Renamed thread');
+      expect((await env.meta('coordinator')).title).toBe('coordinator');
+      await openMenu();
+      expect(menuItem('Pin Session')).toBeUndefined();
+      expect(menuItem('Unpin Session')).toBeUndefined();
+      expect((await env.meta('root')).boardId).toBe('bd_test');
+      await openMenu();
+      await act(async () => menuItem('Go to Opener Session')!.click());
+      expect(shownInPage).toBe('coordinator');
+      expect(selected).toBeNull();
+      await openMenu();
+      await act(async () => menuItem('Archive Session')!.click());
+      const archivedIds = async () =>
+        (await Promise.all(sessions.map((session) => env.meta(session.id))))
+          .filter((session) => session.isArchived)
+          .map((session) => session.id);
+      const answer = async (label: string) =>
+        act(async () => {
+          const button = [
+            ...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'),
+          ].find((button) => button.textContent === label);
+          expect(button).toBeDefined();
+          button!.click();
+        });
+      expect(await archivedIds()).toEqual([]);
+      await answer('Cancel');
+      expect(await archivedIds()).toEqual([]);
+      await openMenu();
+      await act(async () => menuItem('Archive Session')!.click());
+      await answer(includeOpened ? 'Archive all' : 'Archive this only');
+      expect(
+        (await Promise.all(sessions.map((session) => env.meta(session.id))))
+          .filter((session) => session.isArchived)
+          .map((session) => session.id)
+      ).toEqual(includeOpened ? ['root', 'tab', 'opened'] : ['root', 'tab']);
+      expect(selected).toBeNull();
+      // The shared restore action restores only the root and contained Tabs.
+      await act(async () =>
+        store.set(
+          sessionMetaCacheAtom,
+          Object.fromEntries(
+            await Promise.all(
+              sessions.map(async (session) => [
+                getSessionRoomId(session.id),
+                await env.meta(session.id),
+              ])
+            )
           )
         )
-      )
-    );
-    await act(async () =>
-      [...view.host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')]
-        .find((button) => button.textContent?.startsWith('Archived'))!
-        .click()
-    );
-    await openMenu();
-    expect(menuItem('Archive Session')).toBeUndefined();
-    await act(async () => menuItem('Restore')!.click());
-    expect((await env.meta('root')).isArchived).toBe(false);
-    expect((await env.meta('tab')).isArchived).toBe(false);
-    expect((await env.meta('opened')).isArchived).toBe(true);
-    const otherArchive = view.host.querySelector<HTMLButtonElement>(
-      '[data-id="other"] button[aria-label="Archive session"]'
-    )!;
-    await act(async () => otherArchive.click());
-    expect((await env.meta('other')).isArchived).not.toBe(true);
-    expect(selected).toBeNull();
-    await act(async () =>
-      view.host
-        .querySelector<HTMLButtonElement>(
-          '[data-id="other"] button[aria-label="Confirm Archive session"]'
-        )!
-        .click()
-    );
-    expect((await env.meta('other')).isArchived).toBe(true);
-    expect(selected).toBeNull();
-  } finally {
-    await view.unmount();
-    await env.destroy();
+      );
+      await act(async () =>
+        [...view.host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')]
+          .find((button) => button.textContent?.startsWith('Archived'))!
+          .click()
+      );
+      await openMenu();
+      expect(menuItem('Archive Session')).toBeUndefined();
+      await act(async () => menuItem('Restore')!.click());
+      expect((await env.meta('root')).isArchived).toBe(false);
+      expect((await env.meta('tab')).isArchived).toBe(false);
+      expect((await env.meta('opened')).isArchived === true).toBe(includeOpened);
+      const otherArchive = view.host.querySelector<HTMLButtonElement>(
+        '[data-id="other"] button[aria-label="Archive session"]'
+      )!;
+      await act(async () => otherArchive.click());
+      expect((await env.meta('other')).isArchived).not.toBe(true);
+      expect(selected).toBeNull();
+      await act(async () =>
+        view.host
+          .querySelector<HTMLButtonElement>(
+            '[data-id="other"] button[aria-label="Confirm Archive session"]'
+          )!
+          .click()
+      );
+      expect((await env.meta('other')).isArchived).toBe(true);
+      expect(selected).toBeNull();
+    } finally {
+      await view.unmount();
+      await env.destroy();
+    }
   }
-});
+);
 
 it('keeps the Board selected through its coordinator, threads and contained Tabs', () => {
   const boards = [
@@ -2614,7 +2640,7 @@ it.each(['files', 'memory'] as const)(
   }
 );
 
-it('shows a Board document\'s images from the Board directory, not the renderer origin', async () => {
+it("shows a Board document's images from the Board directory, not the renderer origin", async () => {
   const board = testBoard();
   const store = createStore();
   store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
@@ -2667,7 +2693,7 @@ it('shows a Board document\'s images from the Board directory, not the renderer 
   }
 });
 
-it('maps a Board document\'s image paths into that Board only', () => {
+it("maps a Board document's image paths into that Board only", () => {
   expect(boardDocumentFilePath('files/shots/a.png', 'ws', 'bd_test')).toBe('files/shots/a.png');
   expect(boardDocumentFilePath('/data/boards/ws/bd_test/memory/a.png', 'ws', 'bd_test')).toBe(
     'memory/a.png'

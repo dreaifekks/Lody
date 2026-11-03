@@ -1,3 +1,4 @@
+import { normalizeMcpServerIdSelection } from '@lody/shared';
 import { notificationLabel } from '@lody/shared/notifications';
 import type { RepoRoomSubscription } from 'loro-repo';
 import type { CloudNotificationsPort } from '@lody/platform';
@@ -13,6 +14,7 @@ import {
   scheduleDefinitionFingerprint,
   scheduleRegistryKeys,
   ScheduleRuntimeRowSchema,
+  type ScheduleAuthorizationRequest,
   type SessionId,
   type SessionMeta,
   type WorkspaceId,
@@ -35,6 +37,7 @@ import {
   resolveScheduleMcpSelection,
   buildScheduleRunPrompt,
   buildScheduleRunTarget,
+  withScheduledMessageInput,
   resolveScheduleAgentRunConfig,
   resolveScheduleRunRole,
   buildScheduleSessionCreateOptions,
@@ -45,7 +48,6 @@ import {
   scheduleDestinationSessionState,
   scheduleRequiredLocalProjectId,
 } from './schedule-run-preparation';
-import { AgentExecutionSlots } from '../agent-execution-slots';
 import { readMergedAgentConfigById } from '../agent-config-machine-flock';
 import {
   commitPreparedSessionDispatch,
@@ -56,10 +58,19 @@ import {
 import { createScheduleSyncGate } from './schedule-sync-gate';
 import { ScheduleStore } from './schedule-store';
 import { ScheduleEngine, ScheduleConfigurationError } from './schedule-engine';
+import {
+  isQuotaReservationCandidate,
+  isUnassociatedQuotaReservation,
+} from './legacy-quota-reservation';
+
+// Ticks plan Schedules serially, so this wait delays every other Schedule. A
+// timeout blocks only this definition until the next tick retries it.
+const DEFINITION_SYNC_TIMEOUT_MS = 8_000;
 
 export type ScheduleWorkspaceHandle = {
   evaluate: () => Promise<void>;
   dispose: () => Promise<void>;
+  hasUncertainLegacyQuota: (sessionId: SessionId) => boolean;
 };
 
 export async function createScheduleWorkspace(args: {
@@ -67,12 +78,23 @@ export async function createScheduleWorkspace(args: {
   workspace: WorkspaceSummary;
   auth: AuthContext;
   localOnly: boolean;
-  slots: AgentExecutionSlots;
+  authorize?: (request: ScheduleAuthorizationRequest) => Promise<boolean>;
   logger: Logger;
+  /** Run completion: the chat's own Turns plus delegated Operations it still awaits. */
   hasSessionWork: (sessionId: SessionId) => boolean;
   notifications?: CloudNotificationsPort | null;
+  dispatchQuotaSchedule: (
+    run: import('./schedule-store').ScheduleRun<PreparedSessionInput>,
+    prepared: PreparedSessionInput
+  ) => Promise<'dispatched' | 'discarded'>;
+  /** Message admission: only work that occupies the chat's own Turns. */
+  hasSessionTurnWork: (sessionId: SessionId) => boolean;
+  /** Quota reset time for a definitively exhausted agent binding; see ScheduleEnginePorts. */
+  capacityRetryAt?: (
+    run: import('./schedule-store').ScheduleRun<PreparedSessionInput>
+  ) => Promise<number | undefined>;
 }): Promise<ScheduleWorkspaceHandle> {
-  const { manager, workspace, auth, slots } = args;
+  const { manager, workspace, auth } = args;
   const workspaceId = workspace.id as WorkspaceId;
   const repository = new ScheduleRepository(manager.repo, workspaceId);
   const store = new ScheduleStore<PreparedSessionInput>();
@@ -165,6 +187,8 @@ export async function createScheduleWorkspace(args: {
       agentConfigId,
     });
     if (problem) throw new ScheduleConfigurationError(problem);
+    if (run.message && args.hasSessionTurnWork(sessionId))
+      throw new ScheduleConfigurationError('SESSION_BUSY');
     const createsSession = session.kind === 'absent';
     return {
       sessionId,
@@ -177,25 +201,45 @@ export async function createScheduleWorkspace(args: {
     };
   };
   const engine = new ScheduleEngine<PreparedSessionInput>({
+    ...(args.capacityRetryAt
+      ? {
+          capacityRetryAt: async (run) => {
+            const role = await resolveRunRole(run);
+            const agent = await resolveScheduleAgentRunConfig(
+              manager,
+              workspaceId,
+              auth.machineId,
+              role?.agent ?? run.definition.agent
+            );
+            return args.capacityRetryAt!({ ...run, definition: { ...run.definition, agent } });
+          },
+        }
+      : {}),
     workspaceId,
     machineId: auth.machineId,
     userId: auth.userId,
     store,
-    slots,
     now: getServerNow,
     disabled: () => disabled || disposed,
     ready: isReady,
+    encrypted: workspace.contentMode === 'e2ee',
+    authorize: args.authorize,
     list: () => repository.list(),
     read: async (id) => {
       if (!args.localOnly)
-        await manager.syncDocOrThrow(getScheduleRoomId(id), { reason: 'schedule:definition' });
+        await manager.syncDocOrThrow(getScheduleRoomId(id), {
+          reason: 'schedule:definition',
+          timeoutMs: DEFINITION_SYNC_TIMEOUT_MS,
+        });
       return repository.read(id);
     },
     validateTarget: async (run) => {
       // A prepared run checks the Agent it froze, not what its Role says now.
       await resolveTarget(
         run,
-        run.prepared?.meta.agentConfigId ?? run.definition.agent.agentConfigId
+        run.prepared?.meta.agentConfigId ??
+          (await resolveRunRole(run))?.agent.agentConfigId ??
+          run.definition.agent.agentConfigId
       );
     },
     prepare: async (run) => {
@@ -211,34 +255,48 @@ export async function createScheduleWorkspace(args: {
         auth.machineId,
         role?.agent ?? run.definition.agent
       );
-      const prepared = await prepareSessionInput(
+      let prepared = await prepareSessionInput(
         auth,
         workspace,
         manager,
         buildScheduleRunPrompt({ prompt: run.prompt, role, createsSession }),
-        buildScheduleSessionCreateOptions({
-          sessionId,
-          userTurnId: run.userTurnId,
-          agentConfigId: agent.agentConfigId,
-          title: run.definition.title,
-          boardId: run.definition.boardId,
-          project: run.definition.project,
-          role,
-        }),
+        {
+          ...buildScheduleSessionCreateOptions({
+            sessionId,
+            userTurnId: run.userTurnId,
+            agentConfigId: agent.agentConfigId,
+            title: run.definition.title,
+            boardId: run.definition.boardId,
+            project: run.definition.project,
+            role,
+          }),
+          ...(run.message
+            ? {
+                agentRoleId: run.message.agentRoleId ?? undefined,
+                agentRoleRevision: run.message.agentRoleRevision,
+                agentRoleSnapshot: run.message.agentRoleSnapshot,
+                agentRolePromptPrefix: run.message.rolePromptPrefix,
+              }
+            : {}),
+        },
         {
           ...resolveTurnDispatchConfig({}),
           ...agent,
           inheritSessionDefaults: false,
-          mcpServerIds: await resolveScheduleMcpSelection({
-            manager,
-            workspaceId,
-            localOnly: args.localOnly,
-            definition: run.definition,
-            sessionId,
-          }),
+          mcpServerIds:
+            normalizeMcpServerIdSelection(run.message?.mcpServerIds) ??
+            (await resolveScheduleMcpSelection({
+              manager,
+              workspaceId,
+              localOnly: args.localOnly,
+              definition: run.definition,
+              machineId: auth.machineId,
+              sessionId,
+            })),
         },
         target
       );
+      if (run.message) prepared = withScheduledMessageInput(prepared, run.message);
       if (prepared.meta.machineId !== run.machineId || prepared.meta.userId !== auth.userId)
         throw new Error('Schedule target ownership changed');
       prepared.meta.scheduleId = run.scheduleId;
@@ -250,6 +308,12 @@ export async function createScheduleWorkspace(args: {
         scheduleId: run.scheduleId,
         turnId: prepared.userTurn.id,
         title: notificationLabel(run.definition.title) ?? '',
+        ...(workspace.contentMode === 'e2ee'
+          ? {
+              definitionFingerprint: run.definitionFingerprint,
+              ...(run.manual ? { manualRunKey: run.runKey } : {}),
+            }
+          : {}),
       };
       prepared.source = {
         id: run.sourceEntryId,
@@ -268,7 +332,13 @@ export async function createScheduleWorkspace(args: {
     },
     materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
     isDispatched: (prepared) => isPreparedSessionDispatched(manager, prepared),
-    dispatch: (prepared) => commitPreparedSessionDispatch(manager, prepared),
+    dispatch: async (prepared, run) => {
+      if (workspace.contentMode !== 'e2ee' && isQuotaReservationCandidate(run))
+        return args
+          .dispatchQuotaSchedule(run, prepared)
+          .then((result) => (result === 'discarded' ? result : undefined));
+      await commitPreparedSessionDispatch(manager, prepared);
+    },
     isFinished: (run) => isScheduleRunFinished(manager, run, args.hasSessionWork),
     publish: async (runtime) => {
       const key = scheduleRegistryKeys.runtime(runtime.scheduleId, auth.machineId);
@@ -276,7 +346,11 @@ export async function createScheduleWorkspace(args: {
       // Keep the last accepted Session while updating queue/next-fire fields.
       const next = {
         ...runtime,
-        lastDispatch: runtime.lastDispatch ?? (prior.success ? prior.data.lastDispatch : undefined),
+        lastDispatch:
+          runtime.lastDispatch ??
+          (prior.success && prior.data.activationId === runtime.activationId
+            ? prior.data.lastDispatch
+            : undefined),
       };
       if (
         prior.success &&
@@ -329,11 +403,19 @@ export async function createScheduleWorkspace(args: {
         `[schedules] evaluation failed workspaceId=${workspaceId}; see Schedule runtime state`
       ),
   });
-  engine.restoreOccupancy();
 
   const pass = async (): Promise<void> => {
     if (disposed) return;
     if (isReady() && !disabled) {
+      try {
+        await repository.pruneExpiredMessages({
+          now: getServerNow(),
+          ownerId: auth.userId,
+          machineId: auth.machineId,
+        });
+      } catch {
+        args.logger.warn('[schedules] retention sweep failed; will retry');
+      }
       const rows = await repository.list();
       for (const entry of registry.flock.scan({ prefix: ['manual'] })) {
         const request = entry.value as unknown as {
@@ -392,7 +474,7 @@ export async function createScheduleWorkspace(args: {
   const wake = (): void => {
     void evaluate().catch(() => args.logger.warn('[schedules] wake failed'));
   };
-  cleanups.push(registry.flock.subscribe(wake), slots.subscribe(wake));
+  cleanups.push(registry.flock.subscribe(wake));
 
   // One short timer is also the wake-from-sleep clock check. No per-Schedule
   // timer survives a definition edit, and evaluation coalesces in the engine.
@@ -410,6 +492,14 @@ export async function createScheduleWorkspace(args: {
   wake();
   return {
     evaluate,
+    hasUncertainLegacyQuota: (sessionId) =>
+      store
+        .unfinishedForSession(workspaceId, sessionId)
+        .some(
+          (run) =>
+            (run.prepared !== undefined || run.state === 'dispatched') &&
+            isUnassociatedQuotaReservation(run)
+        ),
     dispose: async () => {
       disposed = true;
       clearInterval(timer);

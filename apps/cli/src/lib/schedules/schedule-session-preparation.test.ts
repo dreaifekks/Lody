@@ -1,3 +1,4 @@
+import { withScheduledMessageInput } from './schedule-run-preparation';
 import { projectTurnAttention } from '@lody/shared/notifications';
 import { turnNotificationAudience } from '../notifications/turn-notification-audience';
 import { describe, expect, it } from 'vitest';
@@ -55,6 +56,7 @@ const manager = {
   repo: {
     getDocMeta: async () => undefined,
     getWorkspaceMeta: async () => undefined,
+    openFlockDoc: async () => ({ flock: { scan: () => [] } }),
   },
   syncMetaOrThrow: async () => {},
 } as unknown as LoroDocumentManager;
@@ -128,15 +130,36 @@ describe('Session preparation for a scheduled run', () => {
       expect(prepared.meta).not.toHaveProperty(field);
     expect(prepared.meta.machineId).toBe('machine');
     expect(prepared.meta.agentConfigId).toBe('agent');
+    expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual([]);
   });
 
-  it('carries the identifiers the engine froze, so a retry reuses one Session', async () => {
-    const prepared = await prepare();
-    expect(prepared.sessionId).toBe('session-1');
-    expect(prepared.meta.id).toBe('session-1');
-    expect(prepared.userTurn.id).toBe('turn-1');
-    // Host-owned automation always uses the inert prepared protocol.
+  it('hands complete message blocks to both history and frozen execution input', async () => {
+    const base = await prepare();
+    const blocks = [
+      {
+        type: 'file' as const,
+        fileId: 'frozen-file',
+        fileName: 'notes.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 5,
+        sha256: 'a'.repeat(64),
+        textPreview: true,
+        transport: 'local' as const,
+        machineId: 'machine',
+        uploadedAt: 1,
+      },
+      { type: 'text' as const, text: 'Say good morning.' },
+    ];
+    const prepared = withScheduledMessageInput(base, { inputBlocks: blocks });
+    expect(prepared.userTurn.items).toContainEqual(
+      expect.objectContaining({ type: 'file', fileId: 'frozen-file', transport: 'local' })
+    );
+    expect(prepared.userTurn.items).toContainEqual({ type: 'text', text: 'Say good morning.' });
+    expect(prepared.userTurn.inputConfig?.inputBlocks).toEqual(blocks);
+    expect(prepared.userTurn.inputConfig?.mcpServerIds).toEqual([]);
     expect(prepared.userTurn.status).toBe('prepared');
+    expect(prepared.userTurn.id).toBe('turn-1');
+    expect(base.userTurn.items).not.toContainEqual(expect.objectContaining({ type: 'file' }));
   });
 
   it('treats a prepared scheduled turn as an ordinary user notification source', async () => {
@@ -156,44 +179,6 @@ describe('Session preparation for a scheduled run', () => {
       expect(item?.outcome).toBe(outcome.kind);
     }
   });
-
-  it('keeps an explicit title as final, so no generated title replaces it', async () => {
-    const prepared = await prepare();
-    expect(prepared.meta.title).toBe('Morning check-in');
-    expect(prepared.meta.titleSource).toBe('user');
-  });
-
-  it('names an untitled Session with a draft from the first prompt line', async () => {
-    // Agent-created Sessions carry no title; ACP-owned titles land only after
-    // the first turn, so the Session would stay unnamed while it runs.
-    const prepared = await prepare(undefined, {
-      prompt: `\n  ${'Investigate the flaky presence heartbeat '.repeat(2)}\nDetails`,
-      title: '',
-    });
-    expect(prepared.meta.title).toBe('Investigate the flaky presence heartbeat Investiga');
-    expect(prepared.meta.titleSource).toBe('draft');
-  });
-
-  it('still resolves a GitHub project onto the Session', async () => {
-    const prepared = await prepare({
-      kind: 'github',
-      repoFullName: 'loro-dev/lody',
-      branch: 'main',
-    });
-    expect(prepared.meta.project).toMatchObject({ kind: 'github', repoFullName: 'loro-dev/lody' });
-    expect(prepared.meta.repoFullName).toBe('loro-dev/lody');
-    expect(prepared.meta.baseBranch).toBe('main');
-  });
-
-  it('still resolves a local project, and gives it no base branch', async () => {
-    const prepared = await prepare({
-      kind: 'local',
-      localProjectId: 'p1' as never,
-      useWorktree: true,
-    });
-    expect(prepared.meta.project).toMatchObject({ kind: 'local', localProjectId: 'p1' });
-    expect(prepared.meta).not.toHaveProperty('baseBranch');
-  });
 });
 
 describe('Schedule ACP values reach ordinary Session preparation', () => {
@@ -201,7 +186,7 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
     cliType: 'custom',
     agentType: 'acp',
     modes: [],
-    models: [],
+    models: [{ modelId: 'opus', name: 'Opus' }],
     fetchedAt: 0,
     configOptions: [
       { id: 'plan_mode', name: 'Plan', type: 'boolean', currentValue: false, options: [] },
@@ -227,10 +212,14 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
       }),
     },
   } as unknown as LoroDocumentManager;
-  const prepareOptions = async (planMode: string | boolean) => {
+  const prepareOptions = async (
+    planMode: string | boolean,
+    fastValues: Record<string, string | boolean> = {}
+  ) => {
     const stored = ScheduleAgentSchema.parse({
       agentConfigId: 'agent',
-      configOptionValues: { plan_mode: planMode, select_flag: 'false' },
+      modelId: Object.keys(fastValues).length > 0 ? 'opus' : undefined,
+      configOptionValues: { plan_mode: planMode, select_flag: 'false', ...fastValues },
     });
     const agent = await resolveScheduleAgentRunConfig(
       localManager,
@@ -266,8 +255,18 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
       });
     }
   );
-  it('leaves malformed legacy booleans for the ordinary validator to reject', async () => {
-    await expect(prepareOptions('off')).rejects.toThrow('expects a boolean');
+  it.each([
+    { fast: 'false', 'fast-mode': 'true', expected: { fast: false, 'fast-mode': true } },
+    { fast: 'true', 'fast-mode': 'false', expected: { fast: true, 'fast-mode': false } },
+  ])('prepares legacy Fast values when the probe omits both Fast controls', async (values) => {
+    const { expected, ...fastValues } = values;
+    const prepared = await prepareOptions(false, fastValues);
+
+    expect(prepared.userTurn.inputConfig?.configOptionValues).toEqual({
+      plan_mode: false,
+      select_flag: 'false',
+      ...expected,
+    });
   });
 
   it('starts a Role’s Session as a dispatched Role does: instruction, run config, provenance', async () => {

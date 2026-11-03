@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Switch } from '@lody/ui/switch';
 import {
   developerModeEnabledAtom,
+  e2eeAccountPairingEnabledAtom,
+  e2eeWorkspaceCreationEnabledAtom,
   inboxBetaEnabledAtom,
   roostHistoryExperimentEnabledAtom,
   semanticShortcutsBetaEnabledAtom,
@@ -30,6 +32,10 @@ export function BetaFeaturesSection() {
   const lanPlatform = supports('lanSharing') && !supports('teamSharing');
   const developerModeEnabled = useAtomValue(developerModeEnabledAtom);
   const [inboxBetaEnabled, setInboxBetaEnabled] = useAtom(inboxBetaEnabledAtom);
+  const [e2eeCreationEnabled, setE2eeCreationEnabled] = useAtom(e2eeWorkspaceCreationEnabledAtom);
+  const [e2eeAccountPairingEnabled, setE2eeAccountPairingEnabled] = useAtom(
+    e2eeAccountPairingEnabledAtom
+  );
 
   const [semanticShortcutsEnabled, setSemanticShortcutsEnabled] = useAtom(
     semanticShortcutsBetaEnabledAtom
@@ -40,6 +46,32 @@ export function BetaFeaturesSection() {
 
   return (
     <CompactSection title={t('settings.beta.title', 'Beta features')}>
+      <CompactRow
+        label={t('settings.beta.e2eeWorkspace', 'Encrypted workspace creation')}
+        helper={t(
+          'settings.beta.e2eeWorkspaceHelper',
+          'Create a workspace with a device identity and signed permission history. Conversation sync and execution are not available yet. Existing workspaces are unchanged.'
+        )}
+      >
+        <Switch
+          checked={e2eeCreationEnabled}
+          onCheckedChange={setE2eeCreationEnabled}
+          aria-label={t('settings.beta.e2eeWorkspace', 'Encrypted workspace creation')}
+        />
+      </CompactRow>
+      <CompactRow
+        label={t('settings.beta.e2eeAccountPairing', 'Account-wide device pairing')}
+        helper={t(
+          'settings.beta.e2eeAccountPairingHelper',
+          'Add a device to all your encrypted workspaces with one scanned or pasted code. Requires host support; the existing pairing stays available.'
+        )}
+      >
+        <Switch
+          checked={e2eeAccountPairingEnabled}
+          onCheckedChange={setE2eeAccountPairingEnabled}
+          aria-label={t('settings.beta.e2eeAccountPairing', 'Account-wide device pairing')}
+        />
+      </CompactRow>
       <CompactRow
         label={t('settings.beta.inbox', 'Inbox')}
         helper={t(

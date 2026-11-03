@@ -13,33 +13,30 @@ Replacement rules: [shared](../../../../../packages/shared/AGENTS.md#session-his
 
 ## Opening a doc pulls its stream
 
-`LoroDocumentManager.getOrCreateSessionDoc()` is not a cheap read.
-`SessionDocument.init()` joins and pulls the room immediately. It stays joined
-in the manager cache until `cleanSessionDoc`; each open costs a subscription and
-full initial sync.
+`getOrCreateSessionDoc` joins and pulls a room, retaining it until cleanup.
 
 Rules:
 
 - Renderer metadata is imported into the meta Flock with no transport; the
   metadata live monitor must start at repo init (`ready()`), or
   `getDocMeta` stays stale and dispatch misses `latestUserMsgId`.
-- Never open docs in a loop over `listAliveRoomIds` or any other workspace-wide
-  enumeration. A long-lived workspace holds thousands of historical session
-  rooms; opening them all stalls startup and floods the Streams backend.
+- Never open documents through workspace-wide room enumeration.
 - Bulk/startup/recovery scans must first filter to candidates through indexes
   that do not join rooms: `repo.getDocMeta(roomId)` meta records, the `e/`
   existence index (`lib/loro/repo-existence.ts`), or a purpose-built local index
   (example: `session/session-fork-operation-store.ts`). Open docs only for the
   filtered candidates, under a concurrency bound (`mapWithConcurrency`, 4).
-- To drop a doc you opened for inspection, first prove no other holder adopted
-  it: `LoroDocumentManager.sessions` is a shared cache with **no refcounting**,
-  and `cleanSessionDoc`/`destroy` disposes every holder's mirror/subscriptions
-  (the dispatch watcher's `watchedSessions` guard blocks re-subscription). When you cannot
-  prove sole ownership, leave the doc cached. Never call
-  `repo.unloadDoc`/`unloadDocRoom` on a live wrapper directly either (the room
-  binding would leak; see `SessionDocument.destroy` in `doc.ts`), and never let
-  teardown write status/meta for docs that must stay hidden (e.g. unfinished
-  fork targets).
+- Observation reads of another Machine's Session use
+  `LoroDocumentManager.readSessionDocTransiently`: it reads a cached doc in
+  place, otherwise opens a temporary wrapper outside `sessions` and destroys it.
+  The room stays joined only until its first sync or `TRANSIENT_DOC_ROOM_RETAIN_MS`,
+  so slow rooms still converge and no one-off read holds the room forever. A
+  failed wrapper cleanup never replaces the completed read
+  ([rationale](../../../../../.agents/notes/implemented/bug-fix/2026-11-02-cross-machine-read-room-lifetime.md)).
+- Inspection cleanup requires proof of sole ownership: `sessions` has no refcounts,
+  and destroy kills every holder's subscriptions. Otherwise leave the wrapper cached.
+  Never unload a live wrapper's Repo room directly or let teardown publish hidden
+  fork status/metadata.
 
 Room enumeration follows the metadata activation index: `../../session/AGENTS.md`.
 
@@ -50,18 +47,15 @@ see [observe scopes](../../commands/session-observe-runtime.ts).
 
 ## Streams cursors are replica-bound
 
-Daemon/commands share `repo.sqlite3`, not replicas: Meta/Flock cursors use `createRepoStreamsPersistence`, LoroDoc cursors from
+Per identity, share `repo.sqlite3`, not replicas: Meta/Flock cursors use `createRepoStreamsPersistence`, LoroDoc cursors from
 `createDocumentRemoteCursorStore` (shared rows: daemon only). No shared
 `remoteCursorStore` or schedule-only `onPersist*`. Test:
 `tests/cli-streams-replica-checkpoints.test.ts`.
 
 ## Shared ACP runtime config contains no secrets
 
-`SessionDocument.applyAcpRuntimeConfigPatch` is the durable boundary for the
-workspace-shared runtime baseline. It must remove every option id matched by
-`isSensitiveAcpConfigOptionId`, even when an upstream caller already filtered the
-ACP response; otherwise a future agent can persist and broadcast credential-like
-selector values to collaborators.
+`SessionDocument.applyAcpRuntimeConfigPatch` must remove every option matched by
+`isSensitiveAcpConfigOptionId`, even after upstream filtering.
 
 ## Presence is ephemeral and partitioned by origin
 
@@ -88,8 +82,8 @@ Only Legacy entries execute. No kernel Promise/timers,
 extra runtime or POST/SSE queue. Failed release retains work/Cause/owner and
 fences its generations; the registry retires it, never blocking the workspace.
 Close joins completion. Revoke preserves local
-production. CLI owns registry/token Scopes; durable/presence share one provider.
-`platform/presence.ts` consumes the published SDK native entry.
+production. CLI owns registry/token Scopes; workspace token users share one kernel.
+`platform/presence.ts` uses the published SDK native entry.
 
 ## Device resources use `machine-monitor.ts`
 
@@ -100,8 +94,14 @@ observer-lease driven; never start OS probes permanently or persist snapshots.
 
 ## Catalog readers
 
-Share Repo; close readers first. Timeouts end waiters.
-Retry baseline errors in-place. Role writes confirm remote sync.
+Share Promise Repo; close readers first. Timeouts end waiters.
+Retry baseline errors in-place. Only metadata and the workspace Flock stay joined;
+any other catalog is released after `TRANSIENT_CATALOG_IDLE_MS` without a read
+and stops retrying then. Role writes confirm remote sync.
+Default MCP fallback requires an actual persisted remote cursor for that workspace
+Flock, not local rows or an empty checkpoint generation. Keep the pinned SQLite
+checkpoint reader read-only; cover receipt, restart and purge through real Streams
+persistence when changing this SDK-format compatibility boundary.
 
 ## Machine Flock writes for this machine are local-first
 
@@ -114,30 +114,27 @@ owns the live room, dirty state and exponential retry.
 
 ## Durable commands are scanned, not evented
 
-`machine-flock-command-watcher.ts` owns the machine's durable COMMAND subscription
-(archive/delete/delete-local-project/provider-setup), separately from the sync
-coordinator's write room. Flock rows are durable, so reconnect correctness is
-SCAN-based: every authoritative join rescans every queue, and join or initial-sync
-failures retry with bounded backoff. Events are only low-latency wakeups and carry
-`authoritative`, which gates provider setup — a stale local setup row must not outrun
-a remote cancellation. Route both the event and rejoin paths through
-`MessageHandler.rescanMachineCommands`; a family wired to only one of them fails
-silently, because its queue stops draining. Recovery uses
-`isRecoverableStreamsRoomStatus` ('detached' is never recoverable). Local project
-removal rules live in [../AGENTS.md](../AGENTS.md).
+`machine-flock-command-watcher.ts` owns durable command queues separately from the
+sync writer. Every authoritative join rescans every queue; join/initial-sync failures
+retry with bounded backoff. Events only wake work, and their `authoritative` flag
+prevents stale setup from outrunning remote cancellation. Route event and rejoin
+paths through `MessageHandler.rescanMachineCommands`. Use
+`isRecoverableStreamsRoomStatus`; detached is not recoverable. Local-project removal
+follows [library rules](../AGENTS.md).
 
 ## Keep Streams recovery signals separate
 
-`connection-recovery.ts` has TWO signals. `onStreamsOnline` is cheap, unthrottled, and
-fires on every health rising edge — it RELEASES work parked while offline (dirty
-Machine Flock docs, which arm no timer of their own, plus the scheduled automation
-queues). `onMetaRoomSynced` is the EXPENSIVE "rescan the workspace index" signal whose
-listeners do O(rooms) work: it waits for meta catch-up and is rate-limited to one
-fan-out per `LODY_LORO_META_SYNCED_MIN_INTERVAL_MS` (30s), deferred and never dropped,
-because the dispatch bootstrap scan is the only retry path for a session whose
-reconcile threw. A fan-out after a real meta-room outage skips that floor; a
-transport-only flap does not. Recombining them turned a single stuck room into ~3400
-session reconciles/minute. Backoff is flap-aware for the same reason: health that does
-not survive `LODY_LORO_HEALTH_STABILITY_WINDOW_MS` (5s) counts as a failed recovery and
-charges the attempt counter instead of resetting it, and `force` must not clear that
-history. Regression: `tests/reconnect-storm-repro.test.ts`.
+Keep recovery signals separate. `onStreamsOnline` releases parked dirty-Flock and
+schedule work on every rising edge, without throttling. `onMetaRoomSynced` waits for
+meta catch-up and scans the workspace index at most once per
+`LODY_LORO_META_SYNCED_MIN_INTERVAL_MS` (30s), deferring rather than dropping work.
+A real meta-room outage bypasses that floor; a transport flap does not. Health shorter
+than `LODY_LORO_HEALTH_STABILITY_WINDOW_MS` (5s) charges the retry counter, and force
+must not erase it. Retain `tests/reconnect-storm-repro.test.ts`.
+
+Health follows the meta room. While it is joined, an aggregate `disconnected`
+means one doc or Flock room failed: health reads `rooms-degraded`, a backed-off
+per-room sweep (1s to 30s) retries that room, and cloud side effects keep running. Never
+schedule a transport-wide reconnect for it; one room that never finished its
+initial sync did that every two minutes
+([note](../../../../../.agents/notes/implemented/bug-fix/2026-11-02-cross-machine-read-room-lifetime.md)).

@@ -57,15 +57,17 @@ the first-persisted wall-clock sighting: cron-fire steers extend the turn's `end
 past a one-shot fire minute, so using it as the creation anchor can roll the fire to
 next year. For one-shot crons, prefer the output's `nextFireAt` over any anchor.
 
-This is what lets the web derive its "session will continue" panel from the
-Cron/ScheduleWakeup `tool_call` items in history: the CLI persists NO extra
-scheduled-task state, neither in `SessionMeta` nor as a new history item. See
-`@lody/shared` `collectPendingScheduledTasksFromHistory` and `nextCronFireMs`. The
-deriver reads exactly those fields — do not "clean up" this exception, or the panel
-goes silently empty (unit tests fabricate history and will not catch it).
+The web derives its continuation panel through collectPendingScheduledTasksFromHistory
+and nextCronFireMs using these exact fields. Never add scheduled-task state to SessionMeta
+or a separate history item, or remove fields that fabricated test history may mask.
 
 The former `_meta.claudeCode.toolName` carrier is read only by the centralized
 one-release compatibility path; new provider output must use the Core contract.
+
+Replay and content settlement use separate per-epoch facts. Stamp ACP content at
+enqueue; generated images count after a matched nonempty history write. Bound the existing image upload wait by the runtime deadline and shutdown signal before observing content; keep raw uploads owned, and write late images only to their captured turn. Image lifecycle events block
+replay but are not replies. Late/suppressed events cannot mark a new epoch; unknown
+state refuses replay and lets settlement fail open. Cases: [decision](../../../../../.agents/notes/implemented/bug-fix/2026-10-26-silent-turn-content-observation.md).
 
 ## Flush, evidence, and shutdown
 
@@ -98,7 +100,7 @@ into Code Collab evidence. Evidence arriving for a finalized target is serialize
 through the same per-turn persistence chain as normal finalization; a failed attempt
 restores both captured evidence sets ahead of concurrently collected evidence and
 schedules bounded, evidence-only backoff retries that never replay the
-already-persisted ACP history update.
+already-persisted ACP history update. Budget/shutdown cancellation discards the captured gap-fill attempt instead of retrying against a successor's files.
 
 Shutdown order: cancel those timers, stop SessionManager producers while keeping
 workspace documents open, wait for already-started async evidence collectors, flush

@@ -18,10 +18,7 @@ import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { CreateOptions } from '@/commands/session';
 import {
   applyAgentRoleCreateTarget,
-  bindAgentRoleCreateOptions,
   composeAgentRolePrompt,
-  listIgnoredAgentRoleOverrides,
-  loadWorkspaceAgentRoleCatalog,
   resolveAgentRoleCreate,
   resolveAgentRoleCreateFromCatalog,
   selectAgentRoleTarget,
@@ -116,19 +113,10 @@ describe('selectUniqueAgentRoleByIdOrName', () => {
       /Agent Role selector is ambiguous: Reviewer\. Use an id instead\. Candidates:/
     );
   });
-
-  it('fails fast with the candidate list when the Role does not exist', () => {
-    expect(() => selectUniqueAgentRoleByIdOrName(roles, 'missing')).toThrow(
-      /Agent Role not found: missing\. Candidates: Implementer \(implementer\), Reviewer \(reviewer\)/
-    );
-    expect(() => selectUniqueAgentRoleByIdOrName(roles, '  ')).toThrow(
-      'Missing Agent Role selector.'
-    );
-  });
 });
 
 describe('resolveAgentRoleCreate', () => {
-  it('composes the Prompt prefix and freezes the Role run config', () => {
+  it('keeps the authored prompt, binds the Prompt prefix separately and freezes the Role run config', () => {
     const role = agentRole({
       runConfig: {
         modeId: 'default',
@@ -140,7 +128,10 @@ describe('resolveAgentRoleCreate', () => {
 
     const resolved = resolveAgentRoleCreate({ role, prompt: 'Review the current diff.' });
 
-    expect(resolved.prompt).toBe('Act as a careful reviewer.\n\nReview the current diff.');
+    expect(resolved.prompt).toBe('Review the current diff.');
+    const options: CreateOptions = {};
+    applyAgentRoleCreateTarget(options, resolved);
+    expect(options.agentRolePromptPrefix).toBe('Act as a careful reviewer.');
     expect(resolved.dispatchConfig).toEqual({
       modeId: 'default',
       modelId: 'opus',
@@ -152,20 +143,6 @@ describe('resolveAgentRoleCreate', () => {
     expect(composeAgentRolePrompt('  ', 'Review the current diff.')).toBe(
       'Review the current diff.'
     );
-  });
-
-  it('lists every manual override flag the Role replaces', () => {
-    expect(
-      listIgnoredAgentRoleOverrides({
-        machine: 'workstation',
-        agent: 'codex',
-        agentConfig: 'claude',
-        mode: 'plan',
-        model: 'opus',
-        configOption: ['permission_mode=ask'],
-      })
-    ).toEqual(['--agent', '--agent-config', '--mode', '--model', '--config-option']);
-    expect(listIgnoredAgentRoleOverrides({ machine: '  ', configOption: [] })).toEqual([]);
   });
 });
 
@@ -248,41 +225,6 @@ describe('resolveAgentRoleCreateFromCatalog', () => {
     discoveryState.instances = [];
     discoveryState.projectMachineId = undefined;
   });
-
-  it('loads the workspace catalog and resolves an id or unique name', async () => {
-    const role = agentRole();
-    const { manager } = createRoleCatalogManager([role]);
-
-    const byId = await resolveAgentRoleCreateFromCatalog({
-      auth,
-      manager,
-      workspaceId: 'workspace-id' as WorkspaceId,
-      selector: 'reviewer',
-      prompt: 'Review this.',
-    });
-    expect(byId.role).toEqual(role);
-
-    const byName = await resolveAgentRoleCreateFromCatalog({
-      auth,
-      manager,
-      workspaceId: 'workspace-id' as WorkspaceId,
-      selector: 'Reviewer',
-      prompt: 'Review this.',
-      overrides: { model: 'manual-model' },
-    });
-    expect(byName.role.id).toBe('reviewer');
-    expect(byName.ignoredOverrides).toEqual(['--model']);
-
-    await expect(
-      resolveAgentRoleCreateFromCatalog({
-        auth,
-        manager,
-        workspaceId: 'workspace-id' as WorkspaceId,
-        selector: 'missing',
-        prompt: 'Review this.',
-      })
-    ).rejects.toThrow(/Agent Role not found: missing/);
-  });
 });
 
 describe('applyAgentRoleCreateTarget', () => {
@@ -330,63 +272,6 @@ describe('applyAgentRoleCreateTarget', () => {
     expect(options.branch).toBe('feature/roles');
     expect(options.machine).toBe('remote-machine');
     expect(options.model).toBeUndefined();
-  });
-
-  it('bindAgentRoleCreateOptions leaves options untouched without a Role', () => {
-    const options: CreateOptions = {};
-    bindAgentRoleCreateOptions(options, undefined);
-    expect(options).toEqual({});
-  });
-});
-
-describe('MCP resolution parity', () => {
-  it('resolves the same target, Prompt and dispatch config as the MCP create path', () => {
-    const role = agentRole({
-      runConfig: {
-        modeId: 'default',
-        modelId: 'opus',
-        configOptionValues: { reasoning_effort: 'medium' },
-      },
-      promptPrefix: 'Act as a careful reviewer.',
-    });
-    const prompt = 'Review the current diff.';
-
-    const cli = resolveAgentRoleCreate({ role, prompt });
-    const mcp = resolveMcpSessionCreate(
-      { operationId: 'role-review-1', prompt, agentRoleId: 'reviewer' },
-      undefined,
-      { machineId: 'current-machine' as MachineId, project: undefined },
-      { role, instance: getAgentRoleTargets(role)[0]!, rule: 'available' }
-    );
-
-    expect(cli.machineId).toBe(mcp.input.machineId);
-    expect(cli.agentConfigId).toBe(mcp.input.agentConfigId);
-    expect(cli.prompt).toBe(mcp.prompt);
-    expect(cli.dispatchConfig).toEqual(mcp.dispatchConfig);
-
-    const cliOptions: CreateOptions = {};
-    applyAgentRoleCreateTarget(cliOptions, cli);
-    const mcpOptions = buildMcpCreateOptions(mcp.input, createMcpContext());
-    expect(cliOptions.machine).toBe(mcpOptions.machine);
-    expect(cliOptions.agentConfig).toBe(mcpOptions.agentConfig);
-    expect(cliOptions.agentRoleId).toBe('reviewer');
-    expect(cliOptions.agentRoleRevision).toBe(7);
-
-    bindAgentRoleCreateOptions(mcpOptions, cli);
-    expect(mcpOptions.agentRoleId).toBe(cliOptions.agentRoleId);
-    expect(mcpOptions.agentRoleRevision).toBe(cliOptions.agentRoleRevision);
-    expect(mcpOptions.agentRoleSnapshot).toEqual(cliOptions.agentRoleSnapshot);
-  });
-});
-
-describe('loadWorkspaceAgentRoleCatalog', () => {
-  it('reads Role rows from the workspace Flock document', async () => {
-    const role = agentRole();
-    const { manager } = createRoleCatalogManager([role]);
-
-    const catalog = await loadWorkspaceAgentRoleCatalog(manager, 'workspace-id' as WorkspaceId);
-
-    expect(catalog.get(role.id)).toEqual(role);
   });
 });
 

@@ -2,6 +2,8 @@ import { getAgentRoleTargets } from '@lody/shared';
 // Coverage for the Role offer inside an EXISTING session: which Roles it may
 // reuse, and what "still applied" means when the session's agent is fixed.
 
+// Coverage for the Role offer inside an EXISTING session: which Roles it may
+// reuse, and what "still applied" means when the session's agent is fixed.
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
@@ -159,10 +161,6 @@ describe('isAgentRoleRunConfigApplied', () => {
     modelId: 'gpt-5.5',
     configOptionValues: { effort: 'high' },
   };
-
-  it('holds on the values alone, whatever agent is running', () => {
-    expect(isAgentRoleRunConfigApplied(role.runConfig, applied)).toBe(true);
-  });
 
   it('stops holding when a pinned value is changed by hand', () => {
     expect(

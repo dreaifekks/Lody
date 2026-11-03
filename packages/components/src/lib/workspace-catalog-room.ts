@@ -1,5 +1,6 @@
 import {
   applyWorkspaceFlockRowEvents,
+  getProjectMcpDefaults,
   getWorkspaceFlockDocId,
   getWorkspacePinnedProjectKeys,
   getWorkspaceVoiceSetting,
@@ -8,19 +9,22 @@ import {
   listWorkspaceBoards,
   type BoardMeta,
   listWorkspaceMcpServers,
+  listWorkspaceProjects,
   readWorkspaceFlockRowsFromFlock,
   type AgentRole,
+  type ProjectMcpDefault,
   type WorkspaceFlockEvent,
   type WorkspaceFlockRowMap,
   type WorkspaceMcpServerMeta,
   type WorkspaceVoiceSetting,
+  type WorkspaceProject,
 } from '@lody/shared';
 import type { WorkspaceRuntime } from '@/atoms/runtime';
 
 /**
  * The workspace document's catalogs, as one snapshot.
  *
- * MCP servers and Agent Roles are separate row families of the SAME Flock
+ * MCP servers, Agent Roles and Project groups are separate row families of the SAME Flock
  * document, so they are read through one room rather than one room each: a
  * second room would open the same document, join the same Loro room, and keep a
  * second copy of the same row map for a list of a few dozen entries.
@@ -31,10 +35,21 @@ export type WorkspaceCatalogSnapshot = {
   roles: AgentRole[];
   /** The Codex agent every device uses for experimental voice, when shared. */
   voice: WorkspaceVoiceSetting | null;
-  /** Experimental next-message suggestions for Claude sessions, on for every device. */
+  /** Experimental next-message suggestions for supported agents, shared by every device. */
   promptSuggestions: boolean;
   /** Machine-qualified keys of the local projects pinned atop their sidebar group. */
   pinnedProjects: readonly string[];
+  /** Multi-repository Project groups, sorted by name. */
+  projects: WorkspaceProject[];
+  /** Explicit per-project default MCP selections, keyed by `getProjectMcpKey`. */
+  projectMcpDefaults: Readonly<Record<string, ProjectMcpDefault>>;
+  /**
+   * True once the local document has been read. Defaults derived before this
+   * would be derived from nothing, so default-dependent sends wait for it.
+   */
+  loaded: boolean;
+  /** Opening or reading the document failed; defaults cannot be resolved. */
+  failed: boolean;
   /** True once the first remote sync landed, which makes an empty catalog authoritative. */
   synced: boolean;
 };
@@ -50,11 +65,18 @@ export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   voice: null,
   promptSuggestions: false,
   pinnedProjects: Object.freeze([]) as readonly string[],
+  projects: Object.freeze([]) as unknown as WorkspaceProject[],
+  projectMcpDefaults: Object.freeze({}),
+  loaded: false,
+  failed: false,
   synced: false,
 });
 
 type SharedCatalogRoom = {
   refCount: number;
+  inFlight: boolean;
+  retryDelay: number;
+  retryTimer?: ReturnType<typeof setTimeout>;
   cancelled: boolean;
   rows: WorkspaceFlockRowMap;
   snapshot: WorkspaceCatalogSnapshot;
@@ -84,8 +106,28 @@ const reuseUnchanged = <T>(previous: T[], next: T[]): T[] =>
     ? previous
     : next;
 
+/** The same, for the project-default family: keyed rows, identity-stable values. */
+const reuseUnchangedRecord = <T>(
+  previous: Readonly<Record<string, T>>,
+  next: Record<string, T>
+): Readonly<Record<string, T>> => {
+  const previousKeys = Object.keys(previous);
+  return previousKeys.length === Object.keys(next).length &&
+    previousKeys.every((key) => previous[key] === next[key])
+    ? previous
+    : next;
+};
+
+function emit(room: SharedCatalogRoom, snapshot: WorkspaceCatalogSnapshot): void {
+  room.snapshot = snapshot;
+  for (const listener of room.listeners) {
+    listener(room.snapshot);
+  }
+}
+
 function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: boolean): void {
-  if (room.rows === rows && room.snapshot.synced === synced) return;
+  const previous = room.snapshot;
+  if (room.rows === rows && previous.loaded && previous.synced === synced) return;
   room.rows = rows;
   const servers = reuseUnchanged(room.snapshot.servers, listWorkspaceMcpServers(rows));
   const boards = reuseUnchanged(room.snapshot.boards, listWorkspaceBoards(rows));
@@ -107,6 +149,11 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
     nextPinnedProjects.every((key, index) => key === room.snapshot.pinnedProjects[index])
       ? room.snapshot.pinnedProjects
       : nextPinnedProjects;
+  const projects = reuseUnchanged(previous.projects, listWorkspaceProjects(rows));
+  const projectMcpDefaults = reuseUnchangedRecord(
+    previous.projectMcpDefaults,
+    getProjectMcpDefaults(rows)
+  );
   if (
     boards === room.snapshot.boards &&
     servers === room.snapshot.servers &&
@@ -114,17 +161,32 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
     voice === room.snapshot.voice &&
     promptSuggestions === room.snapshot.promptSuggestions &&
     pinnedProjects === room.snapshot.pinnedProjects &&
-    room.snapshot.synced === synced
+    projects === previous.projects &&
+    projectMcpDefaults === previous.projectMcpDefaults &&
+    previous.loaded &&
+    previous.synced === synced
   ) {
     return;
   }
-  room.snapshot = { boards, servers, roles, voice, promptSuggestions, pinnedProjects, synced };
-  for (const listener of room.listeners) {
-    listener(room.snapshot);
-  }
+  emit(room, {
+    boards,
+    voice,
+    promptSuggestions,
+    pinnedProjects,
+    servers,
+    roles,
+    projects,
+    projectMcpDefaults,
+    loaded: true,
+    failed: false,
+    synced,
+  });
 }
 
 function startRoom(runtime: WorkspaceRuntime, room: SharedCatalogRoom): void {
+  if (room.cancelled || room.inFlight) return;
+  clearTimeout(room.retryTimer);
+  room.inFlight = true;
   void (async () => {
     try {
       const handle = await runtime.repo.openFlockDoc(getWorkspaceFlockDocId(runtime.workspaceId));
@@ -153,9 +215,25 @@ function startRoom(runtime: WorkspaceRuntime, room: SharedCatalogRoom): void {
       // wholesale so remotely deleted rows cannot survive in the UI cache.
       publish(room, readWorkspaceFlockRowsFromFlock(handle.flock), true);
     } catch (error) {
-      if (!room.cancelled) console.error('Failed to sync workspace catalog', error);
+      if (room.cancelled) return;
+      console.error('Failed to sync workspace catalog', error);
+      // Only a document that was never read is a failure to resolve defaults: a
+      // read snapshot stays usable while the remote room is unavailable.
+      if (!room.snapshot.loaded) {
+        emit(room, { ...room.snapshot, failed: true });
+        room.retryTimer = setTimeout(() => startRoom(runtime, room), room.retryDelay);
+        room.retryDelay = Math.min(room.retryDelay * 2, 30_000);
+      }
+    } finally {
+      room.inFlight = false;
     }
   })();
+}
+
+/** Retry an unread catalog without opening a second room for its consumers. */
+export function retryWorkspaceCatalog(runtime: WorkspaceRuntime): void {
+  const room = ROOMS.get(runtime);
+  if (room?.snapshot.failed) startRoom(runtime, room);
 }
 
 /**
@@ -170,6 +248,8 @@ export function acquireWorkspaceCatalog(
   if (!room) {
     room = {
       refCount: 0,
+      inFlight: false,
+      retryDelay: 1_000,
       cancelled: false,
       rows: EMPTY_ROWS,
       snapshot: EMPTY_WORKSPACE_CATALOG,
@@ -194,6 +274,7 @@ export function acquireWorkspaceCatalog(
       joined.refCount -= 1;
       if (joined.refCount > 0) return;
       joined.cancelled = true;
+      clearTimeout(joined.retryTimer);
       if (ROOMS.get(runtime) === joined) {
         ROOMS.delete(runtime);
       }

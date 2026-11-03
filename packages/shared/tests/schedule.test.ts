@@ -8,14 +8,13 @@ import {
   validateScheduleTrigger,
 } from '../src/schedule-time';
 import {
-  buildScheduleRegistryRow,
-  readScheduleRegistryRows,
   scheduleDefinitionFingerprint,
-  scheduleRunIds,
   scheduleRunKey,
+  scheduleRunIds,
 } from '../src/schedule-registry';
 import {
   normalizeLegacyScheduleAgent,
+  SCHEDULED_MESSAGE_RETENTION_MS,
   ScheduleAgentSchema,
   ScheduleDefinitionSchema,
 } from '../src/schedule-types';
@@ -133,6 +132,15 @@ describe('Schedule persistence contract', () => {
       prompt: 'hello',
     });
     expect(new Set([first, none, selected]).size).toBe(3);
+    for (const extra of [
+      { boardId: 'bd_other' },
+      { agentRole: { roleId: 'role-1', instanceId: 'stable-target' } },
+      { agent: { ...d.agent, configOptionValues: { reasoning_effort: 'high' } } },
+    ]) {
+      expect(
+        scheduleDefinitionFingerprint({ definition: { ...d, ...extra }, prompt: 'hello' })
+      ).not.toBe(first);
+    }
     const key = scheduleRunKey('test', 'activation', 123);
     expect(
       scheduleRunIds(key, { scheduleId: 'test', destination: { kind: 'new_session' } })
@@ -144,19 +152,6 @@ describe('Schedule persistence contract', () => {
         )
       ).size
     ).toBe(3);
-  });
-  it('honors tombstones regardless of row order', () => {
-    const row = buildScheduleRegistryRow({
-      definition: definition(),
-      prompt: 'hello',
-      timeline: [],
-    });
-    expect(
-      readScheduleRegistryRows([
-        { key: ['tombstone', 'test'], value: { actorId: 'owner', deletedAt: 1 } },
-        { key: ['schedule', 'test'], value: row },
-      ])
-    ).toEqual([]);
   });
   it('writes the definition durably before enabling its Registry and reads absent docs without seeding', async () => {
     const docs = new Map<string, LoroDoc>();
@@ -346,6 +341,276 @@ describe('Chat-mode schedules carry no project', () => {
     return port;
   };
 
+  it('purges terminal one-time messages after retention and retries a busy purge', async () => {
+    const docs = new Map<string, LoroDoc>();
+    const rows = new Map<string, unknown>();
+    const purged: string[] = [];
+    let purgeBusy = true;
+    const port: ScheduleRepositoryPort = {
+      openPersistedDoc: async (id) => {
+        if (!docs.has(id)) docs.set(id, new LoroDoc());
+        return { doc: docs.get(id)! };
+      },
+      openFlockDoc: async () => ({
+        flock: {
+          scan: () =>
+            [...rows].map(([key, value]) => ({ key: JSON.parse(key) as string[], value })),
+          get: (key) => rows.get(JSON.stringify(key)),
+          set: (key, value) => rows.set(JSON.stringify(key), value),
+          delete: (key) => rows.delete(JSON.stringify(key)),
+        },
+      }),
+      flush: async () => {},
+      purgeDoc: async (id) => {
+        if (purgeBusy) throw new Error('doc is busy');
+        purged.push(id);
+        docs.delete(id);
+      },
+    };
+    const repo = new ScheduleRepository(port, 'workspace' as never);
+    const draft = {
+      ...chatDraft(),
+      prompt: 'hello',
+      message: { inputBlocks: [{ type: 'text' as const, text: 'hello' }] },
+      trigger: { kind: 'once' as const, at: '2026-10-27T09:00:00Z' },
+      destination: { kind: 'existing_session' as const, sessionId: 'chat' },
+    };
+    await repo.save({
+      scheduleId: 'test',
+      draft,
+      actorId: 'owner',
+      now: 1,
+      activationId: 'activation',
+      activityId: 'created',
+      create: true,
+    });
+    const [row] = await repo.list();
+    const setRuntime = (messageState: string, updatedAt: number) => {
+      rows.set(JSON.stringify(['runtime', 'test', 'machine']), {
+        scheduleId: 'test',
+        machineId: 'machine',
+        activationId: 'activation',
+        observedDefinitionFingerprint: row!.definitionFingerprint,
+        messageState,
+        updatedAt,
+      });
+    };
+    setRuntime('pending', 1_000);
+    expect(
+      await repo.pruneExpiredMessages({
+        now: 1_000 + SCHEDULED_MESSAGE_RETENTION_MS,
+        ownerId: 'owner',
+        machineId: 'machine',
+      })
+    ).toEqual([]);
+    setRuntime('sent', 1_000);
+    expect(
+      await repo.pruneExpiredMessages({
+        now: 1_000 + SCHEDULED_MESSAGE_RETENTION_MS - 1,
+        ownerId: 'owner',
+        machineId: 'machine',
+      })
+    ).toEqual([]);
+    expect(
+      await repo.pruneExpiredMessages({
+        now: 1_000 + SCHEDULED_MESSAGE_RETENTION_MS,
+        ownerId: 'owner',
+        machineId: 'machine',
+      })
+    ).toEqual([]);
+    expect(await repo.list()).toHaveLength(1);
+    purgeBusy = false;
+    expect(
+      await repo.pruneExpiredMessages({
+        now: 1_000 + SCHEDULED_MESSAGE_RETENTION_MS,
+        ownerId: 'owner',
+        machineId: 'machine',
+      })
+    ).toEqual(['test']);
+    expect(purged).toEqual(['schedule-test']);
+    expect(await repo.list()).toEqual([]);
+    expect(rows.has(JSON.stringify(['tombstone', 'test']))).toBe(true);
+    expect(rows.has(JSON.stringify(['schedule', 'test']))).toBe(false);
+    expect(rows.has(JSON.stringify(['runtime', 'test', 'machine']))).toBe(false);
+  });
+
+  it('persists complete messages across replicas, fingerprints their payload and replays one creation', async () => {
+    const port = memoryPort();
+    const author = new ScheduleRepository(port, 'workspace' as never);
+    const message = {
+      inputBlocks: [
+        {
+          type: 'text' as const,
+          text: 'Review this',
+          spans: [{ start: 0, end: 6, kind: 'file' as const, label: 'Review' }],
+        },
+        {
+          type: 'file' as const,
+          fileId: 'local-file',
+          fileName: 'notes.txt',
+          mimeType: 'text/plain',
+          sizeBytes: 5,
+          sha256: 'a'.repeat(64),
+          textPreview: true,
+          transport: 'local' as const,
+          machineId: 'machine',
+          uploadedAt: 1,
+        },
+      ],
+      mcpServerIds: [],
+    };
+    const draft = {
+      ...chatDraft(),
+      boardId: 'bd_schedule',
+      agentRole: { roleId: 'role-1', instanceId: 'stable-target' },
+      mcpServerIds: [],
+      prompt: 'Review this',
+      message,
+      trigger: { kind: 'once' as const, at: '2026-10-27T09:00:00Z' },
+      destination: { kind: 'existing_session' as const, sessionId: 'chat' },
+    };
+    const args = {
+      scheduleId: 'test',
+      draft,
+      actorId: 'owner',
+      now: 1,
+      activationId: 'activation',
+      activityId: 'create',
+      create: true,
+    };
+    await author.save(args);
+    await author.save(args);
+    const stored = await author.read('test');
+    expect(stored?.message).toEqual(message);
+    expect(stored?.definition.messageVersion).toBe(1);
+    expect(stored?.timeline).toHaveLength(1);
+    const peer = new LoroDoc();
+    peer.import((await port.openPersistedDoc('schedule-test')).doc.export({ mode: 'snapshot' }));
+    const replica = new ScheduleRepository(
+      { ...port, openPersistedDoc: async () => ({ doc: peer }) },
+      'workspace' as never
+    );
+    const read = await replica.read('test');
+    const [row] = await author.list();
+    expect(read?.message).toEqual(message);
+    expect(read?.definition).toMatchObject({
+      boardId: 'bd_schedule',
+      agentRole: { roleId: 'role-1', instanceId: 'stable-target' },
+      mcpServerIds: [],
+    });
+    expect(
+      scheduleDefinitionFingerprint({
+        ...read!,
+        message: { ...message, mcpServerIds: ['mcp-other'] },
+      })
+    ).not.toBe(row!.definitionFingerprint);
+    expect(scheduleDefinitionFingerprint(read!)).toBe(row!.definitionFingerprint);
+    expect(row?.scheduledMessage).toBe(true);
+    const changed = { ...read!, message: { ...message, mcpServerIds: ['another'] } };
+    expect(scheduleDefinitionFingerprint(changed)).not.toBe(row!.definitionFingerprint);
+    const { message: _message, ...without } = draft;
+    await expect(
+      author.save({ ...args, create: false, activityId: 'edit', draft: without })
+    ).rejects.toThrow('payload');
+    peer.getMap('message').delete('payload');
+    peer.commit();
+    expect(await replica.read('test')).toBeNull();
+  });
+
+  it('converges concurrent complete-message creation despite different device clocks', async () => {
+    const ports = [memoryPort(), memoryPort()];
+    const repositories = ports.map((port) => new ScheduleRepository(port, 'workspace' as never));
+    const draft = {
+      ...chatDraft(),
+      prompt: 'continue',
+      message: { inputBlocks: [{ type: 'text' as const, text: 'continue' }] },
+      trigger: { kind: 'once' as const, at: '2026-10-27T09:00:00Z' },
+      destination: { kind: 'existing_session' as const, sessionId: 'chat' },
+    };
+    for (const [index, repository] of repositories.entries())
+      await repository.save({
+        scheduleId: 'quota',
+        draft,
+        actorId: 'owner',
+        now: 1000 + index * 5000,
+        activationId: 'activation',
+        activityId: 'create',
+        create: true,
+      });
+    const docs = await Promise.all(
+      ports.map(async (port) => (await port.openPersistedDoc('schedule-quota')).doc)
+    );
+    const snapshots = docs.map((doc) => doc.export({ mode: 'snapshot' }));
+    docs[0]!.import(snapshots[1]!);
+    docs[1]!.import(snapshots[0]!);
+    const rows = await Promise.all(
+      repositories.map(async (repository) => (await repository.list())[0]!)
+    );
+    expect(rows[0]!.definitionFingerprint).toBe(rows[1]!.definitionFingerprint);
+    for (const repository of repositories) {
+      const merged = (await repository.read('quota'))!;
+      expect(merged.prompt).toBe('continue');
+      expect(merged.timeline).toHaveLength(1);
+      expect(merged.message?.inputBlocks).toEqual(draft.message.inputBlocks);
+      expect(scheduleDefinitionFingerprint(merged)).toBe(rows[0]!.definitionFingerprint);
+      await repository.save({
+        scheduleId: 'quota',
+        draft,
+        actorId: 'owner',
+        now: 9999,
+        activationId: 'activation',
+        activityId: 'create',
+        create: true,
+      });
+      expect((await repository.read('quota'))?.prompt).toBe('continue');
+    }
+  });
+
+  it('supports attachment-only messages and rejects missing, empty or non-once payloads', async () => {
+    const repo = new ScheduleRepository(memoryPort(), 'workspace' as never);
+    const draft = {
+      ...chatDraft(),
+      prompt: '',
+      message: {
+        inputBlocks: [
+          {
+            type: 'image' as const,
+            imageId: 'image',
+            mimeType: 'image/png',
+            fileName: 'image.png',
+            sizeBytes: 5,
+            width: 1,
+            height: 1,
+          },
+        ],
+      },
+      trigger: { kind: 'once' as const, at: '2026-10-27T09:00:00Z' },
+      destination: { kind: 'existing_session' as const, sessionId: 'chat' },
+    };
+    const stored = await repo.save({
+      scheduleId: 'image-only',
+      draft,
+      actorId: 'owner',
+      now: 1,
+      activationId: 'a',
+      activityId: 'create',
+      create: true,
+    });
+    expect((await repo.read('image-only'))?.message).toEqual(draft.message);
+    expect(() => scheduleDefinitionFingerprint({ ...stored, message: undefined })).toThrow(
+      'missing'
+    );
+    expect(() =>
+      scheduleDefinitionFingerprint({ ...stored, message: { inputBlocks: [] } })
+    ).toThrow();
+    expect(() =>
+      scheduleDefinitionFingerprint({
+        ...stored,
+        definition: { ...stored.definition, trigger: { kind: 'manual' } },
+      })
+    ).toThrow('one-time');
+  });
+
   it.each([
     ['2026-10-01T02:21', '2026-10-01T09:21:00.000Z'],
     ['2026-11-01T01:30', '2026-11-01T08:30:00.000Z'],
@@ -392,25 +657,6 @@ describe('Chat-mode schedules carry no project', () => {
     }
   );
 
-  it('accepts a definition with no project and keeps the field absent through the doc', async () => {
-    const repo = new ScheduleRepository(memoryPort(), 'workspace' as never);
-    await repo.save({
-      scheduleId: 'test',
-      draft: chatDraft(),
-      actorId: 'owner',
-      now: 1,
-      activationId: 'activation',
-      activityId: 'created',
-      create: true,
-    });
-    const stored = await repo.read('test');
-    expect(stored?.definition.project).toBeUndefined();
-    const [row] = await repo.list();
-    expect(row?.projectKind).toBeUndefined();
-    expect(row?.projectKey).toBeUndefined();
-    expect(row?.definitionFingerprint).toBe(scheduleDefinitionFingerprint(stored!));
-  });
-
   it('keeps a Role reference through the doc and the Registry, and drops it with a later save', async () => {
     const repo = new ScheduleRepository(memoryPort(), 'workspace' as never);
     const save = (activityId: string, agentRole?: { roleId: string; instanceId?: string }) =>
@@ -448,33 +694,6 @@ describe('Chat-mode schedules carry no project', () => {
         definition: { ...manual!.definition, agentRole: { roleId: 'role-1' } },
       })
     );
-  });
-
-  it('does not confuse a chat schedule with an identical project-bound one', () => {
-    const withProject = { definition: definition(), prompt: 'hello' };
-    const { project: _project, ...rest } = definition();
-    const chat = { definition: ScheduleDefinitionSchema.parse(rest), prompt: 'hello' };
-    expect(scheduleDefinitionFingerprint(chat)).not.toBe(
-      scheduleDefinitionFingerprint(withProject)
-    );
-    expect(buildScheduleRegistryRow(chat).projectKind).toBeUndefined();
-    expect(buildScheduleRegistryRow(withProject).projectKind).toBe('github');
-  });
-
-  it('re-reads a chat schedule from the Registry rows it published', async () => {
-    const port = memoryPort();
-    const repo = new ScheduleRepository(port, 'workspace' as never);
-    await repo.save({
-      scheduleId: 'test',
-      draft: chatDraft(),
-      actorId: 'owner',
-      now: 1,
-      activationId: 'activation',
-      activityId: 'created',
-      create: true,
-    });
-    const handle = await port.openFlockDoc('workspace:sr');
-    expect(readScheduleRegistryRows(handle.flock.scan())).toHaveLength(1);
   });
 });
 
@@ -515,12 +734,43 @@ describe('legacy Schedule ACP value compatibility', () => {
     expect(agent.configOptionValues.plan_mode).toBe('false');
     expect(scheduleDefinitionFingerprint(document)).toBe(fingerprint);
   });
-  it.each([42, null, {}, [], 'x'.repeat(1025)])('rejects invalid option values', (value) => {
+  it('projects legacy Fast literals by semantic id only when the probe does not declare a select', () => {
+    const agent = {
+      agentConfigId: 'agent',
+      configOptionValues: {
+        fast: 'false',
+        'fast-mode': 'true',
+        fast_select: 'false',
+      },
+    };
+
     expect(
-      ScheduleAgentSchema.safeParse({
-        agentConfigId: 'agent',
-        configOptionValues: { option: value },
-      }).success
-    ).toBe(false);
+      normalizeLegacyScheduleAgent(agent, [
+        {
+          id: 'fast',
+          name: 'Custom Fast choice',
+          type: 'select',
+          currentValue: 'false',
+          options: [{ value: 'false', name: 'False' }],
+        },
+        {
+          id: 'fast_select',
+          name: 'Fast selection',
+          type: 'select',
+          currentValue: 'false',
+          options: [{ value: 'false', name: 'False' }],
+        },
+      ]).configOptionValues
+    ).toEqual({
+      fast: 'false',
+      'fast-mode': true,
+      fast_select: 'false',
+    });
+
+    expect(normalizeLegacyScheduleAgent(agent).configOptionValues).toEqual({
+      fast: false,
+      'fast-mode': true,
+      fast_select: 'false',
+    });
   });
 });

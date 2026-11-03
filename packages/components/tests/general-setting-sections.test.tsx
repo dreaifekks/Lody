@@ -82,7 +82,9 @@ describe('General settings sections', () => {
     const titles = sections().map((entry) => entry.title);
     expect(titles.indexOf('Agent features')).toBe(titles.indexOf('Conversations') + 1);
     expect(section('Agent features')?.switches).toEqual(['Next message suggestions']);
-    expect(section('Agent features')?.text).toContain('Claude only');
+    expect(section('Agent features')?.text).toContain(
+      'Suggest your next message with supported agents.'
+    );
 
     await act(async () => switchNamed('Enable experimental features')?.click());
     expect(store.get(experimentalFeaturesEnabledAtom)).toBe(false);

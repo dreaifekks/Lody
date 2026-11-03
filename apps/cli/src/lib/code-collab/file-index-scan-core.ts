@@ -1,5 +1,6 @@
 import type { Dirent } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { resolveSessionFilePath, isSafeProjectPath } from '@lody/shared';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import type {
@@ -48,14 +49,18 @@ type GitTreePath = {
 };
 
 export type GitDirectoryScanInput = {
+  readonly signal?: AbortSignal;
   readonly directoryAbsolutePath: string;
   readonly directoryWorkspacePath: string;
   readonly entryBudget: number;
   readonly recursive: boolean;
 };
 
-export async function isInsideGitWorktree(workspaceRoot: string): Promise<boolean> {
-  const inside = await runGit(workspaceRoot, ['rev-parse', '--is-inside-work-tree']);
+export async function isInsideGitWorktree(
+  workspaceRoot: string,
+  signal?: AbortSignal
+): Promise<boolean> {
+  const inside = await runGit(workspaceRoot, ['rev-parse', '--is-inside-work-tree'], signal);
   return inside.ok && inside.stdout.trim() === 'true';
 }
 
@@ -65,7 +70,7 @@ export async function scanGitDirectoryEntries(
   if (!options.recursive) {
     return null;
   }
-  const result = await runGitLsFiles(options.directoryAbsolutePath);
+  const result = await runGitLsFiles(options.directoryAbsolutePath, options.signal);
   if (!result.ok) {
     return null;
   }
@@ -141,34 +146,39 @@ export function isIgnoredLazyDirectoryValue(value: CodeCollabV2FileTreeValue | u
 }
 
 async function runGitLsFiles(
-  cwd: string
+  cwd: string,
+  signal?: AbortSignal
 ): Promise<{ readonly ok: true; readonly paths: readonly GitTreePath[] } | { readonly ok: false }> {
   // `runGit` never rejects, so both children are joined before either outcome is used.
   // Returning on the first failure left the sibling `git` unawaited; with Tinypool's
   // `Atomics.wait` idle worker it could stay unreaped as a daemon zombie on macOS.
-  const [listed, deleted, ignored] = await Promise.all([
-    runGit(cwd, [
-      'ls-files',
-      '-z',
-      '--cached',
-      '--others',
-      '--exclude-standard',
-      '--deduplicate',
-      '--',
-      '.',
-    ]),
-    runGit(cwd, ['ls-files', '--deleted', '-z', '--', '.']),
-    runGit(cwd, [
-      'ls-files',
-      '-z',
-      '--others',
-      '--ignored',
-      '--exclude-standard',
-      '--directory',
-      '--',
-      '.',
-    ]),
+  const results = await Promise.allSettled([
+    runGit(
+      cwd,
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--deduplicate', '--', '.'],
+      signal
+    ),
+    runGit(cwd, ['ls-files', '--deleted', '-z', '--', '.'], signal),
+    runGit(
+      cwd,
+      ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', '--', '.'],
+      signal
+    ),
   ]);
+  for (const result of results) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  const [listedResult, deletedResult, ignoredResult] = results;
+  if (
+    listedResult?.status !== 'fulfilled' ||
+    deletedResult?.status !== 'fulfilled' ||
+    ignoredResult?.status !== 'fulfilled'
+  ) {
+    throw new Error('Git listing did not settle');
+  }
+  const listed = listedResult.value;
+  const deleted = deletedResult.value;
+  const ignored = ignoredResult.value;
   if (!listed.ok) {
     return { ok: false };
   }
@@ -213,39 +223,97 @@ function parseIgnoredGitPaths(stdout: string): GitTreePath[] {
   return treePaths;
 }
 
+export type ProjectGitMember = { readonly path: string; readonly base: string };
+
+export async function resolveProjectGitDirectory(
+  root: string,
+  memberPath: string
+): Promise<string> {
+  if (!isSafeProjectPath(memberPath)) throw new Error('Invalid project group member path');
+  const canonicalRoot = await realpath(root);
+  const directory = await realpath(path.join(canonicalRoot, memberPath));
+  if (
+    resolveSessionFilePath([{ id: 'main', absolutePath: canonicalRoot }], directory)
+      ?.relativePath !== memberPath
+  )
+    throw new Error('Project group member escaped its directory');
+  return directory;
+}
+
+export async function computeProjectAllChanges(
+  root: string,
+  members: readonly ProjectGitMember[]
+): Promise<CodeCollabV2AllChangesState> {
+  return (await computeProjectAllChangesSnapshot(root, members)).allChanges;
+}
+
+export async function computeProjectAllChangesSnapshot(
+  root: string,
+  members: readonly ProjectGitMember[]
+) {
+  const changes: CodeCollabV2AllChangesState = {};
+  const gitMemberBases: Record<string, string> = {};
+  for (const member of members) {
+    const directory = await resolveProjectGitDirectory(root, member.path);
+    const diffBase = (await resolveAllChangesDiffBase(directory, member.base)) ?? 'HEAD';
+    gitMemberBases[member.path] = diffBase;
+    const state = await computeAllChanges(directory, { diffBase });
+    for (const [file, change] of Object.entries(state)) changes[`${member.path}/${file}`] = change;
+  }
+  return { allChanges: changes, gitMemberBases };
+}
+
 export async function computeAllChanges(
   workspaceRoot: string,
-  options: { readonly preferredBaseBranch?: string; readonly diffBase?: string } = {}
+  options: {
+    readonly preferredBaseBranch?: string;
+    readonly diffBase?: string;
+    readonly signal?: AbortSignal;
+  } = {}
 ): Promise<CodeCollabV2AllChangesState> {
   const diffBase =
     options.diffBase ??
-    (await resolveAllChangesDiffBase(workspaceRoot, options.preferredBaseBranch));
+    (await resolveAllChangesDiffBase(workspaceRoot, options.preferredBaseBranch, options.signal));
   const diffTarget = diffBase ?? 'HEAD';
-  const [numstat, nameStatus, untracked] = await Promise.all([
+  const results = await Promise.allSettled([
     // `--numstat` cannot use `-z`, so disable `core.quotePath` to keep non-ASCII paths
     // raw (matching the `-z` outputs below); otherwise they are mis-keyed and lose their
     // All Changes diff counts.
-    runGit(workspaceRoot, [
-      '-c',
-      'core.quotePath=false',
-      'diff',
-      '--numstat',
-      '--no-renames',
-      '--relative',
-      diffTarget,
-      '--',
-    ]),
-    runGit(workspaceRoot, [
-      'diff',
-      '--name-status',
-      '--no-renames',
-      '-z',
-      '--relative',
-      diffTarget,
-      '--',
-    ]),
-    runGit(workspaceRoot, ['ls-files', '--others', '--exclude-standard', '-z']),
+    runGit(
+      workspaceRoot,
+      [
+        '-c',
+        'core.quotePath=false',
+        'diff',
+        '--numstat',
+        '--no-renames',
+        '--relative',
+        diffTarget,
+        '--',
+      ],
+      options.signal
+    ),
+    runGit(
+      workspaceRoot,
+      ['diff', '--name-status', '--no-renames', '-z', '--relative', diffTarget, '--'],
+      options.signal
+    ),
+    runGit(workspaceRoot, ['ls-files', '--others', '--exclude-standard', '-z'], options.signal),
   ]);
+  for (const result of results) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  const [numstatResult, nameStatusResult, untrackedResult] = results;
+  if (
+    numstatResult?.status !== 'fulfilled' ||
+    nameStatusResult?.status !== 'fulfilled' ||
+    untrackedResult?.status !== 'fulfilled'
+  ) {
+    throw new Error('Git diff did not settle');
+  }
+  const numstat = numstatResult.value;
+  const nameStatus = nameStatusResult.value;
+  const untracked = untrackedResult.value;
   if (!numstat.ok && !nameStatus.ok && !untracked.ok) {
     return {};
   }
@@ -280,10 +348,15 @@ export async function computeAllChanges(
 
   if (untracked.ok) {
     for (const filePath of untracked.stdout.split('\0')) {
+      options.signal?.throwIfAborted();
       if (!filePath) continue;
       const normalizedPath = normalizeGitPath(filePath);
       if (!(normalizedPath in changes)) {
-        changes[normalizedPath] = await lineStatsForUntrackedFile(workspaceRoot, normalizedPath);
+        changes[normalizedPath] = await lineStatsForUntrackedFile(
+          workspaceRoot,
+          normalizedPath,
+          options.signal
+        );
       }
     }
   }
@@ -292,32 +365,46 @@ export async function computeAllChanges(
 
 export async function resolveAllChangesDiffBase(
   workspaceRoot: string,
-  preferredBaseBranch?: string
+  preferredBaseBranch?: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
-  if (!(await isInsideGitWorktree(workspaceRoot))) {
+  if (!(await isInsideGitWorktree(workspaceRoot, signal))) {
     return null;
   }
 
-  const baseRef = await resolveAllChangesBaseRef(workspaceRoot, preferredBaseBranch);
+  const baseRef = await resolveAllChangesBaseRef(workspaceRoot, preferredBaseBranch, signal);
   if (baseRef) {
-    const mergeBase = await runGit(workspaceRoot, ['merge-base', baseRef, 'HEAD']);
+    const mergeBase = await runGit(workspaceRoot, ['merge-base', baseRef, 'HEAD'], signal);
     const trimmed = mergeBase.ok ? mergeBase.stdout.trim() : '';
     if (trimmed) {
       return trimmed;
     }
   }
 
-  const head = await runGit(workspaceRoot, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  const head = await resolveGitHeadCommit(workspaceRoot, signal);
+  return head;
+}
+
+export async function resolveGitHeadCommit(
+  workspaceRoot: string,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const head = await runGit(workspaceRoot, ['rev-parse', '--verify', 'HEAD^{commit}'], signal);
   return head.ok && head.stdout.trim() ? head.stdout.trim() : null;
 }
 
 async function resolveAllChangesBaseRef(
   workspaceRoot: string,
-  preferredBaseBranch?: string
+  preferredBaseBranch?: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
   const candidates = gitDiffBaseRefCandidates(preferredBaseBranch);
   for (const candidate of candidates) {
-    const exists = await runGit(workspaceRoot, ['rev-parse', '--verify', `${candidate}^{commit}`]);
+    const exists = await runGit(
+      workspaceRoot,
+      ['rev-parse', '--verify', `${candidate}^{commit}`],
+      signal
+    );
     if (exists.ok) {
       return candidate;
     }
@@ -327,15 +414,17 @@ async function resolveAllChangesBaseRef(
 
 async function lineStatsForUntrackedFile(
   workspaceRoot: string,
-  workspacePath: string
+  workspacePath: string,
+  signal?: AbortSignal
 ): Promise<CodeCollabV2AllChangesValue> {
   try {
     const absolutePath = path.resolve(workspaceRoot, workspacePath);
-    const bytes = await readFile(absolutePath);
+    const bytes = await readFile(absolutePath, { signal });
     if (hasBinaryNul(bytes)) return true;
     const text = decodeUtf8(bytes);
     return { diff: [countTextLines(text), 0] };
   } catch {
+    signal?.throwIfAborted();
     return true;
   }
 }
@@ -365,17 +454,23 @@ function parseDeletedPathsFromNameStatus(stdout: string): Set<string> {
 
 async function runGit(
   cwd: string,
-  args: readonly string[]
+  args: readonly string[],
+  signal?: AbortSignal
 ): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false }> {
   try {
-    const { stdout } = await runCommandTextLegacy({
-      command: 'git',
-      args: ['-C', cwd, ...args],
-      maxOutputBytes: GIT_MAX_BUFFER_BYTES,
-      check: 'exit-0',
-    });
+    signal?.throwIfAborted();
+    const { stdout } = await runCommandTextLegacy(
+      {
+        command: 'git',
+        args: ['-C', cwd, ...args],
+        maxOutputBytes: GIT_MAX_BUFFER_BYTES,
+        check: 'exit-0',
+      },
+      { signal }
+    );
     return { ok: true, stdout };
   } catch {
+    signal?.throwIfAborted();
     return { ok: false };
   }
 }

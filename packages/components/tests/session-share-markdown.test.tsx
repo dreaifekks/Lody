@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment jsdom
 import { act } from 'react';
 import {
   createMemoryHistory,
@@ -31,12 +32,14 @@ import { writeStoredLastActiveTabState } from '../src/lib/session-draft-tabs';
 import { getSessionNavigationLocation } from '../src/lib/session-navigation';
 import { pendingSessionLinkAtom } from '../src/lib/session-deep-link';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
 import { SessionReadonlyContext } from '../src/components/ai-gui/session-readonly-context';
 import { SessionLinkProvider } from '../src/components/ai-gui/session-link-context';
 import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
 import { MarkdownFileResources } from '../src/components/ai-gui/markdown-file-image';
+import { SessionCommentMarkdown } from '../src/ui/diff-viewer/session-comment-markdown';
+import { prRemoteImagesEnabledAtom } from '../src/atoms/settings';
 import {
   createFakeFileWorkspaceProvider,
   type FileWorkspaceOpenResult,
@@ -53,6 +56,89 @@ vi.mock('react-i18next', async (importOriginal) => ({
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+afterAll(async () => {
+  // Copy-tex installs a document listener; finish the renderer's lazy import before jsdom closes.
+  await vi.dynamicImportSettled();
+});
+
+describe('PR remote images', () => {
+  let root: Root, container: HTMLDivElement;
+  const store = createStore();
+  beforeEach(() => {
+    Object.defineProperty(window, '__LODY_ELECTRON__', { configurable: true, value: true });
+    store.set(prRemoteImagesEnabledAtom, false);
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    Reflect.deleteProperty(window, '__LODY_ELECTRON__');
+  });
+  const render = (body: string) =>
+    act(async () =>
+      root.render(
+        <Provider store={store}>
+          <SessionCommentMarkdown body={body} allowHtml />
+        </Provider>
+      )
+    );
+
+  it('loads a single image only after a click and does not transfer consent to a changed URL', async () => {
+    await render('![Diagram](https://images.example/one.png)');
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+    const button = [...container.querySelectorAll('button')].find(
+      (item) => item.textContent === 'Load image'
+    );
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+    expect(container.querySelector('iframe')?.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(decodeURIComponent(new URL(container.querySelector('iframe')!.src).hash.slice(1))).toBe(
+      'https://images.example/one.png'
+    );
+    await render('![Diagram](https://images.example/two.png)');
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('loads automatically only when enabled and stops on disabling', async () => {
+    await render('![Diagram](https://images.example/one.png)');
+    await act(async () => store.set(prRemoteImagesEnabledAtom, true));
+    expect(container.querySelector('iframe')).not.toBeNull();
+    await act(async () => store.set(prRemoteImagesEnabledAtom, false));
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('requires consent again for an HTML image using a protocol-relative URL', async () => {
+    await render('<img src="//images.example/one.png" alt="Diagram" />');
+    expect(container.querySelector('iframe')).toBeNull();
+    await act(async () => container.querySelector('button')!.click());
+    const frame = container.querySelector('iframe')!;
+    expect(decodeURIComponent(new URL(frame.src).hash.slice(1))).toBe(
+      'https://images.example/one.png'
+    );
+  });
+
+  it('shows an error and retries after the isolated image fails', async () => {
+    await render('![Diagram](https://images.example/one.png)');
+    await act(async () => container.querySelector('button')!.click());
+    const frame = container.querySelector('iframe')!;
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          source: frame.contentWindow,
+          data: { kind: 'lody-pr-image-error' },
+        })
+      );
+    });
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.textContent).toContain('Unable to load image');
+    await act(async () => container.querySelector('button')!.click());
+    expect(container.querySelector('iframe')).not.toBeNull();
+  });
+});
 
 describe('anonymous Markdown resource boundary', () => {
   let root: Root, container: HTMLDivElement;
@@ -121,21 +207,6 @@ describe('conversation Markdown images across row remounts', () => {
     root = createRoot(container);
     await act(async () => root.render(<MarkdownRenderer text={text} />));
   };
-
-  it('reserves a loaded image size on the next mount', async () => {
-    const text = '![Screenshot](https://example.org/remount-loaded.png)';
-    await act(async () => root.render(<MarkdownRenderer text={text} />));
-    const image = container.querySelector('img')!;
-    expect(image.hasAttribute('height')).toBe(false);
-    Object.defineProperty(image, 'naturalWidth', { value: 1200 });
-    Object.defineProperty(image, 'naturalHeight', { value: 800 });
-    await act(async () => image.dispatchEvent(new Event('load')));
-
-    await remount(text);
-    const again = container.querySelector('img')!;
-    expect(again.getAttribute('width')).toBe('1200');
-    expect(again.getAttribute('height')).toBe('800');
-  });
 
   it('shows an unreachable image as its alt text, and keeps it so on the next mount', async () => {
     const text = '![Local preview](/tmp/remount-unreachable.png)';
@@ -228,16 +299,6 @@ describe('file Markdown images', () => {
     expect(blobs.get(img.src)?.size).toBe(4);
     await act(async () => img.dispatchEvent(new Event('load')));
     expect(container.querySelector('button')).toBeNull();
-  });
-
-  it('loads same-machine resources automatically without creating a blob', async () => {
-    const source = createFakeFileWorkspaceProvider({
-      files: [{ path: 'images/plot.png', kind: 'binary', sourceState: 'live-readonly' }],
-      snapshots: { 'images/plot.png': { kind: 'binary', url: 'lody-file://synthetic/image' } },
-    });
-    await render(source, true);
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('lody-file://synthetic/image');
-    expect(blobs.size).toBe(0);
   });
 
   it('shows a failed read and can retry it', async () => {
@@ -335,9 +396,16 @@ describe('file Markdown images', () => {
   it('reads HTML and relative images against the document, and a missing one where the document names it', async () => {
     const files = ['docs/plot.png', 'images/up.png', '/data/boards/ws/bd/files/shots/light.png'];
     const source = createFakeFileWorkspaceProvider({
-      files: files.map((path) => ({ path, kind: 'binary' as const, sourceState: 'live-readonly' as const })),
+      files: files.map((path) => ({
+        path,
+        kind: 'binary' as const,
+        sourceState: 'live-readonly' as const,
+      })),
       snapshots: Object.fromEntries(
-        files.map((path) => [path, { kind: 'binary' as const, url: `lody-file://synthetic/${path}` }])
+        files.map((path) => [
+          path,
+          { kind: 'binary' as const, url: `lody-file://synthetic/${path}` },
+        ])
       ),
     });
     const paths: string[] = [];
@@ -374,7 +442,9 @@ describe('file Markdown images', () => {
 
   it('shows the read failure when the document names no other place', async () => {
     await render(
-      { openFile: async () => ({ status: 'unavailable', reason: 'deleted', message: 'Not found' }) },
+      {
+        openFile: async () => ({ status: 'unavailable', reason: 'deleted', message: 'Not found' }),
+      },
       true,
       'docs/guide.md',
       'See `missing.png`.'

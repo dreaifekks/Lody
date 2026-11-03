@@ -1,118 +1,119 @@
 # CLI library
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only. File index:
+`CLAUDE.md` aliases this file. Index:
 [README.md](README.md). Scoped rules: [acp](acp/AGENTS.md),
 [code-collab](code-collab/AGENTS.md), [file-preview](file-preview/AGENTS.md),
 [loro](loro/AGENTS.md), [pr-poller](pr-poller/AGENTS.md).
 
-**Before dispatch/sync changes, read context/message-flow.md.** The WS/DO control-plane path is DEPRECATED; do not add to it.
+**Before dispatch/sync read context/message-flow.md; before catalog/Fleet changes read [E2EE rules](e2ee/AGENTS.md).** WS/DO is deprecated; do not extend it.
 
 ## Composition and transports
 
-- Daemon commands share its replica; cleanup failure never fences.
-
+- Daemon commands borrow its replica; command cleanup failures never fence.
 - GitHub auth: conversation-owner personal → matching-owner machine → repo App,
   once per source. Failures advance without a policy RPC; local context grants
   machine eligibility. Never persist managed tokens or replay uncertain writes.
   Checkout/LFS share the pinned helper context. Contract: [identity fallback](../../../../specs/github-identity-fallback.md).
 
-- `cloud-cli-port.ts` is the sole official-build composition root for cloud clients and
-  endpoint-derived adapters. Daemon runtime modules must not construct cloud SDK
-  clients or read `LODY_AUTH_URL` / `LODY_AUTH_SITE_URL` / `LODY_SERVER_URL`. The local
-  port does no cloud I/O; it reaches only the hubs and members of its
-  [LANs](../../../../.agents/docs/lan.md). Unavailable operations fail at their
-  boundary; only best-effort background effects may skip. Enforced by
-  `scripts/check-platform-boundaries.mjs` + `tests/local-platform-zero-cloud.test.ts`.
+- Only `cloud-cli-port.ts` constructs official cloud clients and endpoint adapters.
+  Daemon modules must not construct cloud SDKs or read deployment URLs. The local
+  port reaches only [LAN hubs/members](../../../../.agents/docs/lan.md), without cloud I/O.
+  Unavailable operations fail at their boundary; only best-effort background effects
+  may skip. Preserve platform-boundary and local-zero-cloud checks.
+- A `--paired-workspace` machine port reads only its own workspace plan, with its device
+  credential (`e2eeMachinePairing.workspaceEntitlement`), for the cooperative quotas;
+  it never borrows an account API key.
 - Client-visible RPC references come from public `@lody/cloud-api`; generated server
   declarations and private workspace packages are forbidden. Prime the token provider
   before reading `getGatewayBaseUrl()`, and never let runtime transports or Machine RPC
   require `LODY_LORO_STREAMS_BASE_URL` as a parallel hidden composition path.
 - `cloud-pr-association.ts`: use `authSiteUrl`, not `authBaseUrl` (internal proxy).
   Six failures/workspace/repo, no eviction; reset on client recreation. Log once.
+- Local control queue cancellation must bypass session main work. Health reads,
+  per-config refreshes and per-agent installs must use independent lanes; restart
+  and upgrade stay serialized together. [Decision](../../../../.agents/notes/implemented/bug-fix/2026-09-20-acp-authenticate-queue-lane.md).
 - Local control negotiates NDJSON or legacy buffered JSON, preserving intermediate
   replies. `MachineRuntime` may collect responses but forwards each as sent. Cancel
   parked history watches before shutdown drain; preserve shared writers.
-- Route every remote bridge attach/detach/revoke through `machine-runtime.ts`
-  `runBridgeTransition` and keep long waits OUT of transition bodies: attach is
-  deliberately short, so a queued detach/revoke stays prompt. Backfill enable/disable
-  flips its authorization generation inside the queued body (S5: a revoked workspace
-  must never keep backfill enabled).
-- **Dual-author (no write intents)**: the renderer direct-authors user/UI durable
-  writes against its own repo over its own Streams connection; the CLI authors only
-  agent-produced data. The v4-v6 write-intent envelope (`WorkspaceWriteIntentAuthor`,
-  `intent`/`intent-ack` frames, CLI preview-comment mirror) is REMOVED; never
-  reintroduce a proxy-authoring path (invariants in `specs/local-first-two-plane.md`).
-  Local dispatch triggers off the renderer-authored `latestUserMsgId` doc-meta write
-  plus the local Machine RPC fast path.
+- Route remote attach/detach/revoke through `machine-runtime.ts` `runBridgeTransition`.
+  Keep bodies short; backfill authorization generations change inside that queue.
+- The renderer authors user/UI writes on its own Repo/Streams connection; CLI authors
+  agent data. Never restore v4-v6 write intents, proxy authors or CLI preview-comment
+  mirrors. Dispatch follows renderer `latestUserMsgId` plus local Machine RPC.
+  Preserve `specs/local-first-two-plane.md`.
 
 - INVARIANT: agent PATH merges keep the session's `gh` shim dir first
   ([note](../../../../.agents/notes/implemented/bug-fix/2026-09-26-gh-shim-broker-and-path.md)).
 
+## Encrypted workspace catalog
+
+- `local-workspace-catalog.ts` keeps encrypted discovery in account/machine-bound
+  `workspace-catalog.json.e2ee`, ordinary rows only in v1 `workspaces`; lock both writes.
+  Ordinary-only mutations never rewrite encrypted rows. Old v1 writers cannot erase
+  the sidecar or account/machine-bound `.e2ee-invalid` marker.
+- Offline/ordinary writes never replace unreadable sidecars. Only authenticated online-list
+  reconciliation may archive a corrupt `.e2ee` file before rebuilding; permission and marker
+  errors stay errors. Retain originals, failure receipts and usable ordinary rows.
+  Persist ordinary remote-list results; return degraded receipts with current auth/revocation
+  checks. Atomically publish `.e2ee-invalid` BEFORE encrypted updates; retain through failed
+  writes/cleanup until healthy publication. Derive unavailable from the marker, never unknown
+  v1 fields; stale sidecars cannot bootstrap. Fleet keeps scoped recoverable issues, bounded
+  retries and pending signature until healthy receipt.
+
 ## Local Loro data plane
 
-Read [loro/AGENTS.md](loro/AGENTS.md) before enumerating rooms, publishing presence,
-writing machine Flock rows, or reacting to reconnection. Before changing
-`local-loro-data-plane-server.ts` (protocol v7, push, peer-scoped) read its
-[rules and design](../../../../.agents/docs/cli-lib-local-loro-data-plane.md): named
-`LoroDocumentManager` options, scheduler and bulk-writer limits, sender-enforced
-framing, the RAW-chunk `createJsonLineSplitter` requirement, renderer room lifetime.
-The room engine remains explicitly Legacy; outbound work uses the single native
-process writer facade, and cleanup awaits its release receipt. Two are never negotiable: a renderer joining a Session Doc room must not call
-`getOrCreateSessionDoc` or retain a live cloud room, and the CLI's cloud room status is
-never pushed to renderers as local room health.
+Read [Loro rules](loro/AGENTS.md) before room enumeration, presence, Flock writes or
+reconnection. Before data-plane changes, read the [v7 design](../../../../.agents/docs/cli-lib-local-loro-data-plane.md).
+Preserve named manager options, peer scope, scheduler/bulk limits, sender framing,
+RAW-chunk `createJsonLineSplitter`, and renderer room lifetime. The Legacy engine
+shares one native process writer. Await release receipts; Fleet closes that writer
+only after all workspace and connection owners release, retaining failed owners for
+recovery. Renderer joins never call `getOrCreateSessionDoc`, retain cloud rooms or
+receive cloud status as local health.
 
 ## Sessions and turns
 
-- `session-gc-manager.ts`: `evaluateMemoryPressure` returns TWO verdicts, `evict` and
-  `block`, sharing no threshold. Probes fail OPEN; `null` Windows commit growth
-  never becomes `0`. Sweeps never force the cached commit probe; never act on a
-  cached sample once pressure appears; re-check briefly before failing a turn; bound
-  evictions per call. The threshold is a safety MARGIN, not "what a turn needs".
-  [Per-OS signals](../../../../.agents/docs/cli-lib-memory-pressure.md). Idle counts
-  native work: never clean `running`, cap background waits. Post-turn output resets
-  it only for `sessionActivity` agents.
+- `session-gc-manager.ts` separates evict/block thresholds. Probes fail open; unknown
+  Windows commit growth never becomes zero. Sweeps do not force cached probes; recheck
+  fresh pressure briefly before rejecting a turn and bound evictions. Never clean native
+  running work; bound background waits. Only sessionActivity agents reset idle from
+  post-turn output. Eligibility failures retain that Session only; foreground reclamation
+  is bounded to 10s. See [signals](../../../../.agents/docs/cli-lib-memory-pressure.md).
+
 - **Session attachments**: before changing preparation, transfer, materialization,
   or backfill, read the [lifecycle rules](../../../../.agents/docs/cli-lib-session-files.md).
   CLI/MCP input preparation must finish before history/dispatch; recovery uses frozen
   references, never source paths. [Input contract](../../../../specs/cli-session-attachments.md).
   Keep ACP `resource_link` file URIs, workspace-contained agent output, and
   MessageHandler-owned authorization-generation/AbortController backfill fencing.
-- [acp/AGENTS.md](acp/AGENTS.md) specifies ACP buffering/flush in `message-handler.ts`,
-  turn-evidence persistence, shutdown ordering, the non-expiring late-ACP target in
-  `session-transient-store.ts`, and the `awaitTurnHistoryGate` requirement for
-  turn-scoped history LIST writes. Read it before changing any of them. The
-  `replay-prompt-builder` resume fallback is in `context/hotspots.md`.
+- Read [ACP rules](acp/AGENTS.md) before buffering, history gates, evidence persistence,
+  late-output routing or shutdown changes. Resume replay follows context/hotspots.md.
 
 ## Projects, providers, tasks
 
-- Builtin Codex/DeepSeek local-project history import is read-only: require
-  `_meta.lody.sessionHistory` v1 and call the Core-defined history method; never fall
-  back to `loadSession`, which resumes the thread. Publish an imported Session only
-  after history and its cursor are durable; legacy `metadata_only` shells stay
-  selectable so a later import finishes hydration.
-- Imported history keeps source hashes/ids separate from its stored-content baseline.
-  Bind the baseline to the doc cursor, not metadata; compare existing content exactly,
-  never sanitize it to hide edits. Write history and capture its baseline without an
-  async gap, before publishing meta. Legacy history without a baseline is not migrated.
-- History import validates the selected Provider machine/id/type; never fall back
-  from a missing selection. Legacy requests use the sole same-type Provider. Catalogs
-  are Provider-scoped; replay/import keys stay stable. Bind an earlier unbound import only when the selected Provider
-  lists its source; never replace a binding or merge another account's native ID.
-  Refresh loads through the import's own binding. Every import write records the
-  load-reported selection on the last imported user turn via `applyAcpRuntimeConfigPatch`.
-- Removing a local project archives every unarchived Session for that machine/project
-  before deleting the project row, found through the existence and metadata indexes
-  rather than by opening every Session document; a failed archive keeps the delete
-  command queued for a later scan. Worktree cleanup covers only Lody-created Session
-  worktrees of that project: inspect every worktree before submission and again
-  immediately before deletion, never force-delete or backup-commit a dirty worktree, and
-  record per-worktree deleted/kept/failed results. The original project directory is
-  never a deletion target, and cleanup failures must complete the command with a visible
-  result rather than leave removal pending.
-- Before changing `provider-setup-manager.ts`, read its
-  [rules](../../../../.agents/docs/cli-lib-provider-setup.md): row ownership and the
-  single publish commit, cancellation, when the queue may start in cloud versus OSS
-  local mode, and the rule that a setup row never carries authorization URLs, codes,
-  tokens, or raw provider output.
+- Codex/DeepSeek history import requires `_meta.lody.sessionHistory` v1 and the Core
+  read method, never `loadSession`. Publish only after history/cursor durability;
+  legacy metadata shells remain selectable for hydration.
+- Keep source hashes/ids separate from the cursor-bound stored-content baseline.
+  Compare exact content; never sanitize edits or migrate missing baselines. Write
+  history and capture its baseline without an async gap before metadata publication.
+- Validate the selected Provider machine/id/type without fallback. Legacy requests
+  use the sole same-type Provider. Keep Provider-scoped catalogs and stable replay/import
+  keys. Bind an unbound import only if that Provider lists its source; never replace
+  bindings or merge another account's native id. Refresh through that binding and
+  record load-reported selection on the last imported user turn through
+  `applyAcpRuntimeConfigPatch`.
+
+- Local-project deletion retains registrations referenced by Projects or group runs;
+  disable standalone display without archiving their Sessions. Catalog read/sync
+  failure keeps the command queued. Otherwise archive all unarchived machine/project
+  Sessions via existence/metadata indexes before removing the row; archive failure
+  retains the command. Explicit cleanup covers only Lody-created Session worktrees:
+  inspect before submission and deletion, never force-delete or backup-commit dirty
+  worktrees, record deleted/kept/failed results, and complete with visible results
+  even on cleanup failure. Never delete the original project directory.
+- Before provider setup changes read its [rules](../../../../.agents/docs/cli-lib-provider-setup.md).
+  Preserve row ownership, single publication, cancellation and cloud/local queue timing.
+  Setup rows contain no authorization URLs, codes, tokens or raw provider output.
 - **A `file-preview/` preview must never activate Code Collab**: no workspace watch, no
   All Changes recompute, no Flock publish.

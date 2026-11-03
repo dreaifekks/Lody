@@ -1,7 +1,10 @@
 import {
   deleteWorkspaceMcpServerFromFlock,
+  getEffectiveDefaultMcpIds,
+  getProjectMcpDefaults,
+  getProjectMcpKey,
+  type ProjectRef,
   getWorkspaceFlockDocId,
-  isWorkspacePromptSuggestionsEnabled,
   listWorkspaceMcpServers,
   readWorkspaceFlockRowsFromFlock,
   writeWorkspaceAgentRoleToFlock,
@@ -14,6 +17,42 @@ import {
   type WorkspaceMcpServerMeta,
 } from '@lody/shared';
 import { formatErrorMessage } from '@/utils/format-error';
+import { WorkspaceSyncUnavailableError } from './command-runtime';
+
+/** Wait only for the daemon-owned reader's first baseline, never force a refresh. */
+export async function waitForMcpCatalogBaseline(
+  manager: {
+    catalogBaselineReady(docId: string, timeoutMs: number): Promise<boolean>;
+  },
+  workspaceId: WorkspaceId
+): Promise<void> {
+  if (!(await manager.catalogBaselineReady(getWorkspaceFlockDocId(workspaceId), 1_000))) {
+    throw new WorkspaceSyncUnavailableError({ message: 'Workspace MCP catalog is still syncing.' });
+  }
+}
+
+/** Defaults may use an old remote snapshot, but never infer absence from a new replica. */
+export async function waitForMcpDefaultCatalog(
+  manager: Parameters<typeof waitForMcpCatalogBaseline>[0] & {
+    hasPersistedWorkspaceCatalog(): boolean;
+  },
+  workspaceId: WorkspaceId
+): Promise<void> {
+  try {
+    await waitForMcpCatalogBaseline(manager, workspaceId);
+  } catch (error) {
+    if (!(error instanceof WorkspaceSyncUnavailableError)) throw error;
+    try {
+      if (manager.hasPersistedWorkspaceCatalog()) return;
+    } catch (cause) {
+      throw new WorkspaceSyncUnavailableError({
+        message: 'Workspace MCP catalog history could not be read.',
+        cause,
+      });
+    }
+    throw error;
+  }
+}
 
 export type McpCatalogWriteResult = {
   changed: boolean;
@@ -54,15 +93,6 @@ export async function listWorkspaceMcpCatalog(
 ): Promise<WorkspaceMcpServerMeta[]> {
   const handle = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
   return listWorkspaceMcpServers(readWorkspaceFlockRowsFromFlock(handle.flock));
-}
-
-/** The prompt-suggestions switch, from this machine's copy of the workspace document. */
-export async function readWorkspacePromptSuggestionsEnabled(
-  repo: WorkspaceMcpReadableRepo,
-  workspaceId: WorkspaceId
-): Promise<boolean> {
-  const handle = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
-  return isWorkspacePromptSuggestionsEnabled(readWorkspaceFlockRowsFromFlock(handle.flock));
 }
 
 /**
@@ -140,4 +170,20 @@ export function findWorkspaceMcpServer(
     throw new Error(`MCP server selector is ambiguous: ${normalized}. Use an id.`);
   }
   throw new Error(`MCP server not found: ${normalized}`);
+}
+
+/** Read a single local workspace snapshot; explicit selections bypass defaults. */
+export async function readProjectDefaultMcpIds(
+  repo: WorkspaceMcpReadableRepo,
+  workspaceId: WorkspaceId,
+  project: ProjectRef | undefined,
+  machineId: string
+): Promise<McpServerId[]> {
+  const handle = await repo.openFlockDoc(getWorkspaceFlockDocId(workspaceId));
+  const rows = readWorkspaceFlockRowsFromFlock(handle.flock);
+  const key = getProjectMcpKey(project, machineId);
+  return getEffectiveDefaultMcpIds(
+    listWorkspaceMcpServers(rows),
+    key ? getProjectMcpDefaults(rows)[key] : undefined
+  );
 }

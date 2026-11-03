@@ -1,3 +1,4 @@
+import type { ProjectLocalMemberProbe, SessionProjectRun } from './workspace-project';
 import type {
   HostedConfigCategory,
   HostedConfigImportResult,
@@ -42,6 +43,7 @@ import type {
   SessionHistoryChange,
   SessionTurnInputConfig,
   AcpCapabilityCacheEntry,
+  AcpAuthMethodSummary,
   SessionGoalAction,
 } from '.';
 import type {
@@ -57,6 +59,7 @@ import type {
 import type { ProjectSkillsResult } from './acp/skills';
 import type { IosSimulatorCommand, IosSimulatorResponse } from './ios-simulator';
 import type { RpcSecretPublicKey } from './rpc-secret';
+import type { SessionHistoryContentPatch } from './session-data/history-patches';
 import type { BugReportClientLog } from './bug-report';
 import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 
@@ -92,6 +95,7 @@ export interface SessionCreateRequest {
   machineId: MachineId;
   workspaceId: WorkspaceId;
   project?: ProjectRef;
+  projectRun?: SessionProjectRun;
   meta?: SessionStartMeta;
   acpSessionConfig: ACPSessionConfig;
   worktreeSetup?: WorktreeSetupScriptConfig;
@@ -269,6 +273,8 @@ export interface MachineStatusRequest {
   type: 'machine/status';
   machineId: MachineId;
   workspaceId: WorkspaceId;
+  /** Only for daemons advertising `machineDiskStatus`. */
+  includeDisk?: true;
 }
 
 export type MachineLifecycleLaunchMode = 'daemon' | 'foreground' | 'electron' | 'unknown';
@@ -288,6 +294,8 @@ export interface MachineStatusResponse {
   machineId: MachineId;
   success: boolean;
   resources?: MachineResourceInfo;
+  /** Sent only when the request asked with `includeDisk`. */
+  disk?: { totalGB: number; freeGB: number; usedPercent: number };
   lifecycle?: MachineLifecycleCapability;
   error?: string;
 }
@@ -436,14 +444,7 @@ export interface MachineAcpCapabilitiesRefreshResponse {
   error?: string;
 }
 
-export interface MachineAcpAuthMethodSummary {
-  type: 'agent' | 'env_var' | 'terminal';
-  id?: string;
-  name?: string;
-  description?: string;
-  /** Display-only. The machine resolves the trusted executable and arguments. */
-  args?: string[];
-}
+export interface MachineAcpAuthMethodSummary extends AcpAuthMethodSummary {}
 
 export type MachineAcpAuthenticationFormField =
   | {
@@ -490,6 +491,12 @@ export type MachineAcpAuthenticateRequest = MachineAcpAuthenticateRequestBase &
         action: 'start';
         /** Daemon-authoritative persisted Provider config. No launch fields cross RPC. */
         configId: AgentConfigId;
+        /**
+         * Sign-in method the reader picked from the agent's advertised list.
+         * The daemon still validates it against what the agent advertises now,
+         * and falls back to its own picker when the cached list is stale.
+         */
+        methodId?: string;
       }
     | {
         action: 'cancel';
@@ -871,14 +878,16 @@ export interface SessionHistoryReadRequest {
 
 /** Bounded logical reads over the owner session's active history branch. */
 export type SessionHistoryReadQuery =
+  | SessionHistoryInspectionQuery
   | {
       readonly kind: 'watchChanges';
       readonly checkpoint: string;
       readonly includeBodiesFrom?: number;
+      readonly withPatches?: true;
       readonly waitMs: number;
     }
   | { readonly kind: 'inputAcceptance'; readonly entry: unknown }
-  | { readonly kind: 'count' }
+  | { readonly kind: 'count'; readonly withCheckpoint?: true }
   | { readonly kind: 'readAt'; readonly position: number }
   | { readonly kind: 'readTurn'; readonly turnId: string; readonly atCheckpoint?: string }
   | {
@@ -887,7 +896,19 @@ export type SessionHistoryReadQuery =
       readonly to: number;
       readonly atCheckpoint?: string;
     }
-  | { readonly kind: 'readDirectory'; readonly from: number; readonly to: number }
+  | {
+      readonly kind: 'readDirectory';
+      readonly from: number;
+      readonly to: number;
+      readonly atCheckpoint?: string;
+    }
+  | {
+      readonly kind: 'readQuery';
+      readonly from: number;
+      readonly to: number;
+      readonly transcriptVisibility?: boolean;
+      readonly atCheckpoint?: string;
+    }
   | { readonly kind: 'readLatestPage'; readonly limit: number; readonly withCheckpoint?: boolean }
   | {
       readonly kind: 'readOlderPage';
@@ -899,9 +920,29 @@ export type SessionHistoryReadQuery =
       readonly kind: 'readChanges';
       readonly checkpoint: string;
       readonly includeBodiesFrom?: number;
+      readonly withPatches?: true;
     }
   | { readonly kind: 'readAll' }
   | { readonly kind: 'readTurnOutput'; readonly userTurnId: string };
+
+/** Coherent owner queries negotiated by sessionHistoryInspection v2. */
+export type SessionHistoryInspectionQuery =
+  | { readonly kind: 'readMetadata' }
+  | { readonly kind: 'readLatestGoal' }
+  | { readonly kind: 'readTranscript'; readonly limit?: number; readonly reverse?: boolean }
+  | {
+      readonly kind: 'readQuerySnapshot';
+      readonly from?: number;
+      readonly to?: number;
+      readonly transcriptVisibility?: boolean;
+    }
+  | {
+      readonly kind: 'readSelection';
+      readonly positions: readonly number[];
+      readonly token: string;
+      readonly transcriptVisibility?: boolean;
+    }
+  | { readonly kind: 'readReplayPrompt'; readonly excludeTurnId?: string };
 
 /** Complete logical changes since one owner-issued durable observation. */
 export type SessionHistoryChanges =
@@ -910,6 +951,13 @@ export type SessionHistoryChanges =
       readonly checkpoint: string;
       readonly from?: number;
       readonly ids: readonly string[];
+      readonly patches?: {
+        readonly baseCheckpoint: string;
+        readonly turns: readonly {
+          readonly turnId: string;
+          readonly operations: readonly SessionHistoryContentPatch[];
+        }[];
+      };
       readonly bodies?: {
         readonly changed: readonly SessionHistoryInput[];
         readonly from?: number;
@@ -965,7 +1013,14 @@ export interface SessionHistoryWriteResponse {
 }
 
 // Local CLI control (Electron -> local CLI) message subsets
+export type DshProvidersRequest = { type: 'machine/dsh-providers'; machineId: MachineId };
+export type DshProvidersResponse = {
+  type: 'machine/dsh-providers_response';
+  providers: Array<{ id: string; name: string }>;
+};
+
 export type LocalSessionControlRequest =
+  | DshProvidersRequest
   | SessionCreateRequest
   | SessionChatRequest
   | SessionCancelRequest
@@ -992,6 +1047,7 @@ export type LocalSessionControlRequest =
   | SessionPreviewStatusRequest;
 
 export type LocalSessionControlResponse =
+  | DshProvidersResponse
   | SessionCreateAck
   | SessionCreateResponse
   | SessionChatAck
@@ -1228,6 +1284,7 @@ export type LocalProjectControlRequest =
       machineId: MachineId;
       workspaceId: WorkspaceId;
       rootPath: string;
+      inspect?: boolean;
     }
   | {
       type: 'local-project/list-roots';
@@ -1524,6 +1581,7 @@ export type LocalProjectControlResponse =
         name: string;
         rootPath: string;
         alreadyRegistered: boolean;
+        inspection?: ProjectLocalMemberProbe;
       }
     >
   | LocalProjectControlOkResponse<'local-project/list-roots', LocalProjectBrowseRootsResult>

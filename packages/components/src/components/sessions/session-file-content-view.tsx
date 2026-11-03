@@ -58,7 +58,7 @@ import {
   createLocalProjectIpcFileTransport,
   createLocalProjectRpcFileTransport,
 } from '@/lib/local-project-rpc-file-provider';
-import { ScrollArea } from '@/ui/scroll-area';
+import { ScrollArea } from '@lody/ui/scroll-area';
 import {
   hasSessionFileLspProvider,
   type SessionFileProvider,
@@ -84,6 +84,7 @@ import { ArticleReviewControls, useArticleChanges } from '../boards/article-revi
 import { SessionFileImagePreview } from './session-file-image-preview';
 import { MarkdownRenderer } from '../ai-gui/markdown-renderer';
 import { MarkdownFileResources } from '../ai-gui/markdown-file-image';
+import { SessionLinkProvider } from '../ai-gui/session-link-context';
 import { isSvgPath } from '@/lib/image-file-preview';
 import { isPdfFilePath } from '@/lib/pdf-file-preview';
 import { logCodeCollabDebug } from '@/lib/code-collab-debug';
@@ -514,6 +515,7 @@ export type SessionFileContentViewProps = {
   defaultHtmlPreview?: boolean;
   saveRequestSeq?: number;
   copyMarkdownRequestSeq?: number;
+  sessionLinksEnabled?: boolean;
   /**
    * Mobile file drawers use the platform text surface for Markdown source so
    * long-press opens the OS selection controls instead of Monaco's desktop
@@ -605,6 +607,7 @@ function SessionFileContentViewImpl({
   defaultHtmlPreview = false,
   saveRequestSeq,
   copyMarkdownRequestSeq,
+  sessionLinksEnabled = false,
   preferNativeMarkdownSelection = false,
   className,
   active = true,
@@ -1721,30 +1724,32 @@ function SessionFileContentViewImpl({
       )}
       data-native-selection-allow
     >
-      {fileProvider ? (
-        <MarkdownFileResources
-          key={`${session.machineId}:${sessionId}`}
-          provider={fileProvider}
-          documentPath={providerEntry?.path ?? normalizedPath}
-          documentText={markdownPreviewText}
-          automatic={Boolean(sessionFileActions.localHost)}
-          active={isActiveSurface && showMarkdownRendered}
-        >
+      <SessionLinkProvider enabled={sessionLinksEnabled}>
+        {fileProvider ? (
+          <MarkdownFileResources
+            key={`${session.machineId}:${sessionId}`}
+            provider={fileProvider}
+            documentPath={providerEntry?.path ?? normalizedPath}
+            documentText={markdownPreviewText}
+            automatic={Boolean(sessionFileActions.localHost)}
+            active={isActiveSurface && showMarkdownRendered}
+          >
+            <MarkdownRenderer
+              text={markdownPreviewText}
+              size={conversationFontSize}
+              allowHtml
+              extraRehypePlugins={articleChanges.rehypePlugins}
+            />
+          </MarkdownFileResources>
+        ) : (
           <MarkdownRenderer
             text={markdownPreviewText}
             size={conversationFontSize}
             allowHtml
             extraRehypePlugins={articleChanges.rehypePlugins}
           />
-        </MarkdownFileResources>
-      ) : (
-        <MarkdownRenderer
-          text={markdownPreviewText}
-          size={conversationFontSize}
-          allowHtml
-          extraRehypePlugins={articleChanges.rehypePlugins}
-        />
-      )}
+        )}
+      </SessionLinkProvider>
       {annotationThreadId && showMarkdownRendered ? (
         <ArticleAnnotationMarkers
           root={markdownRoot}

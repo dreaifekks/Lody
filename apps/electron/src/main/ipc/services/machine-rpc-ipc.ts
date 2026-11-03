@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, type WebContents } from 'electron'
 import path from 'node:path'
 import { z } from 'zod'
 import { getLodyDataDir } from '@lody/shared/node/installation-profile'
+import { SessionFileRootIdSchema } from '@lody/shared/project-path'
 import { mainPlatformKind } from '../../platform'
 import {
   LocalFilePreviewRequestSchema,
@@ -34,6 +35,7 @@ const MemberFileSchema = z
     sessionId: text,
     fileId: text.optional(),
     path: z.string().min(1).max(4096).optional(),
+    rootId: SessionFileRootIdSchema.optional(),
     /** A file of this Board's shared directory; `path` is then relative to it. */
     boardId: z.string().startsWith('bd_').max(256).optional(),
     /** Only what a player needs is taken from it. */

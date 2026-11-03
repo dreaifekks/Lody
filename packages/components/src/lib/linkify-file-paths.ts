@@ -12,8 +12,8 @@ import { parseMarkdownAgentFileHref } from './markdown-agent-file-link';
 //   - inline code: the ENTIRE backtick content must be a single recognized
 //     file path; partial spans inside commands/snippets are left as code.
 //
-// Wrongly-linkified paths fail open: the file viewer's open handler already
-// degrades gracefully when a path cannot be resolved.
+// These are candidates only. Conversation rendering confirms relative paths
+// against the owning file index; absolute paths can open directly.
 
 export type FilePathTextSegment = { type: 'text'; value: string } | { type: 'path'; value: string };
 
@@ -41,7 +41,7 @@ const NON_ASCII_RUN = String.raw`(?:(?!\p{ASCII})[\p{L}\p{M}\p{N}])+`;
 const ASCII_EXTENSION = String.raw`\.[0-9]*[A-Za-z][A-Za-z0-9]*(?![A-Za-z0-9])`;
 const OTHER_DOT = String.raw`\.[0-9]*(?![A-Za-z0-9])`;
 const SEGMENT = String.raw`(?=[\p{L}\p{M}\p{N}._-])(?:${NON_ASCII_RUN}|[A-Za-z0-9_-]+|${OTHER_DOT}|${ASCII_EXTENSION}(?!\P{ASCII}))*(?:${ASCII_EXTENSION})?`;
-const PATH_PREFIX = String.raw`(?:(?:~|\.{0,2})[\\/])?`;
+const PATH_PREFIX = String.raw`(?:[A-Za-z]:[\\/]|[\\/]{1,2}|(?:~|\.{1,2})[\\/])?`;
 const LINE_SUFFIX = String.raw`(?:#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:L?\d+(?:C\d+)?(?::\d+)?)`;
 const CANDIDATE_PATTERN = new RegExp(
   `${PATH_PREFIX}${ASCII_SEGMENT}(?:[\\\\/]${SEGMENT})*(?:${LINE_SUFFIX})?`,

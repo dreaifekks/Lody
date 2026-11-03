@@ -1,122 +1,143 @@
 # Workspace provider guidelines
 
-`CLAUDE.md` is a symlink to this file. Parent `AGENTS.md` files also apply.
+`CLAUDE.md` links here; ancestor rules apply.
 
-## Mirrors over synced docs tolerate unknown root keys
+`CloudPlatformProvider` renders login without Convex auth. Its authenticated child
+owns organization/E2EE inbox queries; the router supplies context, workspace actions
+and owner/admin inboxes.
 
-Synced-doc Mirrors must set `ignoreUnknownProperties: true`: newer peers' unknown
-root keys otherwise reject the whole state and block writes. Test:
-`packages/shared/tests/session-doc-forward-compat.test.ts`.
+## Synced mirrors tolerate unknown roots
 
-Session docs use `createSessionMirror`; only its HistoryWriter writes history.
-Replacement contract: [shared rules](../../../shared/AGENTS.md#session-history).
+Synced Mirrors require `ignoreUnknownProperties: true` or new peers block writes.
+Test: `packages/shared/tests/session-doc-forward-compat.test.ts`.
+
+`createSessionMirror` owns Session history writes through its HistoryWriter. Read: [shared rules](../../../shared/AGENTS.md#session-history).
 
 ## Streams connection cardinality
 
-- Discovery/refresh reuse existing workspace Machine Flock/RPC transports, with no
-  subscription per config/request. Connections stay bounded by workspace/machine
-  topology; more configs add serialized RPCs only. Release unowned one-shot handles
-  and subscriptions.
-- Discover startup capabilities once per config/runtime, tracked in `refreshedConfigKeys`.
-  Re-arm passes aborted when presence leaves `synced`; reconnect must not re-probe answered
-  configs or use a pass-level gate. Probes launch real agents. Refresh defaults to machine
-  cache; only user or setup/authentication actions set `force`.
-  Intent: [capability refresh cache](../../../../specs/acp-capability-refresh-cache.md).
+- Discovery/refresh reuse workspace Machine Flock/RPC transports. Connections follow
+  machine/workspace topology; extra configs add serialized RPCs, never subscriptions.
+  Release unowned handles/subscriptions.
+
+- Probe startup capabilities once per config/runtime via `refreshedConfigKeys`.
+  Re-arm aborted passes after presence recovers; never re-probe answered configs.
+  These launch real agents. Use machine cache unless user/setup/auth actions set
+  `force`. [Intent](../../../../specs/acp-capability-refresh-cache.md).
 
 ## Workspace switching
 
-- Prompt Shortcuts instances belong to one initialization effect lifetime. Cleanup
-  must retire the published instance immediately, before asynchronous durable close.
-  Returning to the same account/workspace must never reuse a retired instance;
-  render-time fencing also covers platform, cloud capability, and retry generation.
-- The `$workspaceName` route owns the render-time target slug. Workspace-scoped UI must
-  require that target, the active runtime, and the runtime-owned doc-meta snapshot to agree
-  before reading singleton caches. Shared visibility and sharing hooks enforce this gate by
-  default when mounted under `WorkspaceRouteTargetProvider`; scope mismatch returns an empty
-  projection and disables queries, Machine Flock, sharing, and eager-sync inputs. Provider-
-  external consumers such as `RuntimeProvider` retain their existing default behavior. Explicit
-  `workspaceId` / `enabled` options remain fenced by the route scope and cannot reopen stale work.
+- Prompt Shortcuts belong to one initialization effect. Retire before durable close;
+  never reuse retired instances. Fence platform/cloud capability/retry generation.
+  Legacy admission gates cloud discovery/store/token/writes: unknown waits, encrypted
+  disables. Preserve local access.
+
+- `$workspaceName` owns the render target. Before singleton reads, match route,
+  runtime and runtime-owned doc-meta scope. Under `WorkspaceRouteTargetProvider`,
+  visibility/sharing hooks default to empty projections on mismatch, disabling
+  queries, Machine Flock, sharing and eager-sync. External `RuntimeProvider`
+  consumers keep their defaults. `workspaceId`/`enabled` cannot bypass this fence.
+
 - Each `resolveWorkspaceDataScope` wait names its `blocker`; keep scan failures on the scope.
   [Stuck report](../../../../.agents/notes/implemented/feature/2026-09-26-workspace-sync-stuck-telemetry.md).
 
 ## Workspace runtime
 
-- Readers require backend identity and their Meta plane. Provisional absence/empty
-  history is not legacy evidence; release waits on resolve/retire. Keep Roost
-  capabilities live and wake its bridge on arrival.
+- Readers require backend identity and Meta plane. Missing/empty provisional history
+  is never legacy evidence. Release waits on resolve/retire; keep Roost capabilities
+  live and wake its bridge on arrival.
 
-- A neutral local warm spare may initialize the implicit workspace runtime without
-  publishing route context. A matching claim must retain that runtime or its in-flight
-  initialization. Do not infer a cloud workspace. Only the main-owned macOS local
-  prepared-window lifecycle may mount a speculative Session; it must gate read
-  receipts, workspace ownership, autofocus and external-history refresh until
-  presentation. Raw background prefetch never gains this exception.
+- Neutral local warm spares may initialize implicit workspaces without route
+  publication; matching claims retain runtime/in-flight initialization. Never infer
+  cloud workspaces. Only main-owned macOS local prepared windows mount speculative
+  Sessions, gating receipts/ownership/autofocus/external-history refresh until
+  presentation. Background prefetch has no exception.
 
-- Background Session prefetch must never acquire a UI Session store or create a
-  Mirror. Its disposable worker owns raw Doc import/export and a separate,
-  rebuildable snapshot cache. Keep one worker task per renderer, terminate before
-  releasing its slot, and detach local peers from the parent on cancellation. The
-  parent must check the durable activity checkpoint before constructing a worker;
-  scope cache rows by workspace and room so auxiliary windows share them.
-  Keep the timestamp-only high-water index as the pre-queue startup filter; it
-  must not load snapshots, Docs, histories, or foreground cursor state.
-  Foreground acquisition cancels that room's prefetch and merges cached binary
-  state into the existing repo document; never replace unsent local edits or share
-  the UI repo's persistence/cursors with the worker. Intent:
-  [background prefetch](../../../../specs/session-background-prefetch.zh.md).
-- Keep one Repo view; `WorkspaceTargetRouter` owns target/transport selection.
+- Prefetch never acquires UI Session stores/Mirrors. One worker per renderer owns
+  raw Doc I/O and rebuildable snapshots keyed by workspace/room across windows.
+  Terminate before slot release; detach peers on cancel. Check durable activity
+  before constructing workers. The pre-queue timestamp high-water filter loads no
+  snapshots/Docs/history/foreground cursors. Foreground acquisition cancels room
+  prefetch and merges into the live Repo, preserving unsent edits. Workers never
+  share UI persistence/cursors.
+  [Intent](../../../../specs/session-background-prefetch.zh.md).
+
+- Keep one Repo view across auth refresh and unrelated mode-cache changes;
+  `WorkspaceTargetRouter` owns target/transport selection.
   Never restore a second writer or proxy-authoring/write-intent mirror.
-- Runtime close cancels auth, joins attach/reconnect work, then destroys Repo.
+- Runtime close retries recoverable cleanup, retaining fencing until confirmed Repo destruction.
   Failed startup shares this close path.
-- Local-only window bootstrap may exchange same-workspace CRDT snapshots from
-  already owned documents. Merge into the receiving Repo; never treat peer state
-  as authoritative sync or open stores solely to answer bootstrap requests.
-  Check disk before requesting peer exports; Web Locks inventory bounds requests
-  to live runtimes, and negative replies must release missing-document waits.
-  Seed cold documents before Repo subscribes, persisting the merged snapshot before
-  adoption; storage-loaded versions must be durable before cursor advancement. Never
-  replace a live document. Import before constructing the history reader to avoid
-  replaying bulk-import events through an initialized projection.
-- Repo storage, LoroDoc cursors and eager-sync high-water state share a per-renderer
-  cache namespace. Independently persisted replicas must not share checkpoints.
-  Meta/Flock cursors stay repo-owned; delete Meta progress via `repo.getReplicaCheckpointStore`.
-- Required Streams protection rejects missing providers or plaintext rooms
-  ([contract](../../../../specs/workspace-streams-content.md)).
-- Transport state is selected per room, never merged. Runtime stores use
-  `getReadinessTransportForRoom`; hooks without the router use the structural binding in
-  `src/lib/room-readiness.ts`. Keep those selection rules aligned.
-- The local renderer identity comes atomically from the Electron local-platform snapshot
-  and uses the CLI catalog's persistent `local:*` id. Do not substitute a constant or
-  temporary user.
-- Controls for a machine resolved as local use Electron local session control,
-  independent of cloud-token or sync state. A failed local bridge is an error; never
-  fall back to a remote RPC path.
-- Cloud Electron waits for the first **Run local agent** setting snapshot before creating
-  its workspace runtime. Enabled uses dual sync; disabled uses cloud-only sync and must
-  not attach the local data plane or surface its reconnect state.
-- Meta-room attachment is single-flight per runtime. Token, network, and visibility edges may
-  force one immediate recovery attempt, but they must preserve the current outage's retry history;
-  only a sustained healthy dwell resets backoff. Every attempt after the first is a `recovery`
-  phase, including one prompted by a rotated token.
-- Workspace-level rooms without a machine owner use the platform fallback.
-  Returning no transport silently disables synchronization for those rooms.
-- Resource monitoring follows target ownership: local machines use the local monitor
-  transport, remote machines use the optional remote transport, and unknown ownership
-  remains pending.
-- Presence is merged by origin. For an origin represented by the local plane, the local
-  snapshot is authoritative, including absence; do not resurrect cleared presence from a
-  lagging replica.
-- Doc-metadata bootstrap and the live repo watch overlap by design: merge per field with
-  live winning (`mergeBootstrapMetaCache`), never letting the snapshot undo an archive
-  already applied live.
+- Bootstrap exchanges only owned same-workspace CRDT snapshots. Check disk first;
+  Web Locks restrict requests to live runtimes, and negative replies release waits.
+  Never open stores for requests, trust peers as authority or replace live docs.
+  Merge into the receiving Repo; seed before subscribing, persist before adoption/
+  cursor advancement and import before reader creation to avoid bulk-event replay.
+
+- Repo storage, LoroDoc cursors and eager-sync high-water state share a renderer
+  namespace; independent replicas never share checkpoints. Meta/Flock cursors remain
+  repo-owned; delete Meta progress through `repo.getReplicaCheckpointStore`.
+
+- Unknown workspace mode permits local Repo access, never ordinary body egress.
+  Preserve drafts until authenticated classification; retire and cancel provisional
+  transports before recording an encrypted or contradictory verdict.
+- E2EE uses local host keys, a dedicated bucket, Loro history and waiting-key leases;
+  plaintext bypass is forbidden. Retain sealed old-epoch sends/historical reads.
+  Prefer installed current keys; genuine absence allows retained published keys
+  within the durable fifteen-minute grace, then fails for retry. Hints never pick
+  write keys. Never persist tokens; forward rejected ones for exact eviction.
+  Bind caches/inputs to account/workspace/genesis/signing key; drain before deletion
+  and retain exact receipts.
+  [Sealing](../../../../.agents/notes/implemented/architecture/2026-10-27-e2ee-epoch-receive-barrier.md),
+  [M2](../../../../.agents/notes/proposed/architecture/2026-10-22-e2ee-m2-product-integration.md),
+  [transport](../../../../specs/workspace-streams-content.md).
+
+- Missing-key notices begin 30 seconds after explicit post-grace seal failure and
+  clear on successful saves. They never retry, gate or discard edits.
+
+- Select transport per room, never merge. Use `getReadinessTransportForRoom`;
+  hooks without the router use `src/lib/room-readiness.ts`. Keep rules aligned.
+- Electron's atomic local-platform snapshot supplies the CLI catalog's persistent
+  `local:*` identity. Never substitute constant/temporary users.
+
+- Locally resolved machines use Electron local session control regardless of
+  cloud-token/sync state. Local bridge failure never falls back to remote RPC.
+
+- Cloud Electron waits for the first **Run local agent** snapshot before runtime
+  creation. Enabled uses dual sync; disabled uses cloud-only sync without local
+  data-plane attachment or reconnect UI.
+
+- Meta attachment is single-flight. Token/network/visibility edges may trigger one
+  immediate recovery without resetting outage history. Only sustained health resets
+  backoff; all later attempts, including rotation, are `recovery`.
+
+- Ownerless workspace rooms use platform fallback transport; never disable sync by
+  returning no transport.
+
+- Resource monitoring uses owner-local or optional remote transport; unknown owners
+  remain pending.
+
+- Local presence origin/absence wins over cloud. UI uses display state; recovery
+  uses raw state. Encrypted presence uses its authorized bucket/minimal plaintext
+  allowlist on publish/cloud/local reads; unsupported protected channels stay disabled.
+
+- Merge overlapping bootstrap/watch metadata per field with live values winning
+  (`mergeBootstrapMetaCache`); snapshots never undo live archives.
 
 ## Attachment transfer ownership
 
-`sendResources` owns preparation/I/O/borrows; cancel/join before transports/caches
-close. Only caches dispose stores. Loro commits locally, then dispatches best-effort.
-Roost freezes input/target and shares ordered leases with queues. Ordinary input
-negotiates `sessionInputDispatch` v1: one owner request commits history and activation;
-the sender uses its receipt without history readback or a second dispatch RPC.
-Guide handoff still needs an owner receipt. Archive/delete cancel durable work beyond local
-snapshots and join leases. Unready Blobs stay in memory; uncertain steers never replay.
+The Loro queue validates protected image/file manifests before history writes.
+Records stay bound to their original workspace; protected mode excludes Roost.
+
+`sendResources` owns preparation/I/O/borrows; cancel/join before transport/cache
+close. Only caches dispose stores. Loro commits locally then dispatches best-effort;
+Roost freezes input/target and shares ordered queue leases. Negotiate
+`sessionInputDispatch` v1: one owner request commits history/activation, and the
+sender uses its receipt without readback/second RPC. Guide handoff needs an owner
+receipt. Archive/delete cancel all durable work and join leases, beyond local
+snapshots. Unready Blobs stay in memory; never replay uncertain steers.
 [Decision](../../../../.agents/notes/proposed/architecture/2026-10-13-backend-independent-send-acceptance.md).
+
+- Protected leases retain account/readers until confirmed close. Preallocated leases
+  fence cold opens.
+  Start native fencing at renderer cleanup; retain incomplete owners. Only overlapping
+  custody/Repo namespaces wait. Device replacement shares account/workspace/genesis
+  writers. First key receipt stays pending; usable epochs wake content.

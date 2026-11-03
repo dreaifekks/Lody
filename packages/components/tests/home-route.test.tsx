@@ -8,10 +8,17 @@ import {
   createRoute,
   createRouter,
   RouterProvider,
+  Outlet,
 } from '@tanstack/react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeRoute } from '../src/routes/index';
+import { BootShellBoundary } from '../src/components/boot-shell-boundary';
 import { BOOT_SHELL_MARKUP } from '../src/lib/boot-shell';
+
+const getSnapshot = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/electron-ipc-client', () => ({
+  getIpcServices: () => ({ localPlatform: { getSnapshot } }),
+}));
 
 const state = vi.hoisted(() => ({
   local: false,
@@ -23,7 +30,15 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/lib/desktop-window', () => ({ isWarmWindow: () => state.warm }));
+vi.mock('@/hooks/use-mobile', () => ({
+  useIsMobile: () => false,
+  useIsCompactDesktop: () => false,
+}));
+vi.mock('@/lib/desktop-window', () => ({
+  isWarmWindow: () => state.warm,
+  isSessionWindow: () => false,
+  windowStorage: () => localStorage,
+}));
 vi.mock('@/lib/app-platform', () => ({ isLocalAppPlatform: () => state.local }));
 vi.mock('@/lib/workspace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/lib/workspace')>()),
@@ -109,7 +124,13 @@ describe('default app entry', () => {
       localStorage.setItem('lody:lastAppRoute', legacy);
       sessionStorage.setItem('lody:lastAppRoute', legacy);
 
-      const rootRoute = createRootRoute();
+      const rootRoute = createRootRoute({
+        component: () => (
+          <BootShellBoundary>
+            <Outlet />
+          </BootShellBoundary>
+        ),
+      });
       const indexRoute = createRoute({
         getParentRoute: () => rootRoute,
         path: '/',
@@ -162,6 +183,9 @@ describe('default app entry', () => {
         'true'
       );
       expect(container.querySelector('.lody-boot-shell__mark')).not.toBeNull();
+      expect(container.querySelector('[data-lody-boot-shell]')?.getAttribute('data-layout')).toBe(
+        expected === '/login' || expected === '/workspace/create' ? 'plain' : 'workspace'
+      );
       await act(async () => {
         finishNavigation();
         await router.load();
@@ -188,4 +212,72 @@ describe('default app entry', () => {
     expect(container.querySelector('[data-lody-boot-shell]')).toBeNull();
     expect(container.querySelector('img, div')).toBeNull();
   });
+});
+
+it('recovers the same multi-LAN provider and keeps following after bootstrap and refresh failures', async () => {
+  state.local = true;
+  const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const { getLocalPlatformProvider, retryLocalPlatformSnapshot } = await vi.importActual<
+    typeof import('../src/providers/local-platform-provider')
+  >('../src/providers/local-platform-provider');
+  getSnapshot.mockRejectedValue(new Error('invalid local catalog'));
+  const provider = getLocalPlatformProvider();
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider.workspaces.state.get().status).toBe('error');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(provider.workspaces.state.get().status).toBe('error');
+
+    const pending = Promise.withResolvers<unknown>();
+    getSnapshot.mockReturnValue(pending.promise);
+    getSnapshot.mockClear();
+    retryLocalPlatformSnapshot();
+    retryLocalPlatformSnapshot();
+    await vi.advanceTimersByTimeAsync(2_000);
+    // Manual retries and the follower borrow one outstanding snapshot read.
+    expect(getSnapshot).toHaveBeenCalledTimes(1);
+    const local = { workspaceId: 'local:workspace', name: 'Local', slug: 'local', role: 'owner' };
+    const initial = { userId: 'local:user', workspace: local, workspaces: [local] };
+    pending.resolve(initial);
+    getSnapshot.mockResolvedValue(initial);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider.workspaces.state.get()).toMatchObject({
+      status: 'ready',
+      activeWorkspaceId: local.workspaceId,
+    });
+    expect(provider.identity.session.get()).toMatchObject({
+      status: 'authenticated',
+      user: { id: 'local:user' },
+    });
+    expect(getLocalPlatformProvider()).toBe(provider);
+
+    const lan = {
+      workspaceId: 'lan:workspace',
+      name: 'LAN',
+      slug: 'lan',
+      role: 'owner',
+      lan: { id: 'lan-one' },
+    };
+    getSnapshot.mockResolvedValue({ ...initial, workspaces: [local, lan] });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(provider.workspaces.state.get()).toMatchObject({
+      workspaces: [{ id: local.workspaceId }, { id: lan.workspaceId }],
+    });
+    const ready = provider.workspaces.state.get();
+    getSnapshot.mockRejectedValue(new Error('catalog temporarily unavailable'));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(provider.workspaces.state.get()).toBe(ready);
+    getSnapshot.mockResolvedValue({
+      ...initial,
+      workspaces: [{ ...local, name: 'Recovered' }, lan],
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(provider.workspaces.state.get()).toMatchObject({
+      workspaces: [{ name: 'Recovered' }, { name: 'LAN' }],
+    });
+    expect(getLocalPlatformProvider()).toBe(provider);
+  } finally {
+    vi.clearAllTimers();
+    error.mockRestore();
+  }
 });

@@ -7,6 +7,7 @@ import type {
   WorkspaceId,
 } from '@lody/shared';
 import { loadSessionMcpCatalog, loadSessionWorkspaceSettings } from './session-mcp-resolver';
+import { WorkspaceSyncUnavailableError } from '@/lib/command-runtime';
 
 const workspaceId = 'workspace-1' as WorkspaceId;
 const sessionId = 'session-1' as SessionId;
@@ -37,113 +38,59 @@ const catalogFlock = flockWithRows([
 ]);
 
 describe('loadSessionMcpCatalog', () => {
-  it('does not open or sync a document for an empty selection', async () => {
-    const openFlockDoc = vi.fn();
-    const syncFlockDoc = vi.fn();
+  it('does not need a catalog for an empty selection', async () => {
+    const unexpectedRead = async (): Promise<never> => {
+      throw new Error('Empty selections must not access the catalog');
+    };
     const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc },
-      syncFlockDoc,
+      repo: { openFlockDoc: unexpectedRead },
+      waitForCatalogBaseline: unexpectedRead,
       workspaceId,
       sessionId,
       selectedIds: [],
       logger: { debug: vi.fn() },
     });
     expect(select(undefined)).toEqual({ servers: [], problems: [] });
-    expect(openFlockDoc).not.toHaveBeenCalled();
-    expect(syncFlockDoc).not.toHaveBeenCalled();
   });
 
-  it('reads the catalog and expands target-daemon environment variables', async () => {
-    const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
+  it('waits for the shared baseline and then loads the selected server', async () => {
+    const baseline = Promise.withResolvers<void>();
+    let ready = false;
+    const loading = loadSessionMcpCatalog({
+      repo: {
+        openFlockDoc: async () => {
+          if (!ready) throw new Error('Read before the baseline');
+          return { flock: catalogFlock };
+        },
+      },
+      waitForCatalogBaseline: () => baseline.promise,
       workspaceId,
       sessionId,
       selectedIds: [selectedId],
       logger: { debug: vi.fn() },
       env: { NODE_BIN: 'node', ENTRYPOINT: 'server.js' },
     });
-    expect(select(undefined)).toEqual({
-      servers: [{ name: 'filesystem', command: 'node', args: ['server.js'], env: [] }],
-      problems: [],
-    });
-  });
-
-  it("fills variables from the LAN's table behind the machine's own environment", async () => {
-    const lanEnv = vi.fn(() => ({ NODE_BIN: 'lan-node', ENTRYPOINT: 'lan-server.js' }));
-    const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
-      workspaceId,
-      sessionId,
-      selectedIds: [selectedId],
-      logger: { debug: vi.fn() },
-      env: { NODE_BIN: 'node' },
-      lanEnv,
-    });
-    // The machine keeps NODE_BIN; the LAN supplies what the machine lacks.
-    expect(select(undefined)).toEqual({
-      servers: [{ name: 'filesystem', command: 'node', args: ['lan-server.js'], env: [] }],
-      problems: [],
-    });
-    // Read at the start, so a variable set since the daemon started counts.
-    expect(lanEnv).toHaveBeenCalledTimes(1);
-  });
-
-  it('finishes every read before the agent capabilities are known', async () => {
-    const openFlockDoc = vi.fn(async () => ({ flock: catalogFlock }));
-    const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc },
-      workspaceId,
-      sessionId,
-      selectedIds: [selectedId],
-      logger: { debug: vi.fn() },
-      env: { NODE_BIN: 'node', ENTRYPOINT: 'server.js' },
-    });
-    expect(openFlockDoc).toHaveBeenCalledTimes(1);
-
-    // Selecting twice with different capabilities must not touch the document
-    // again: the load phase is what ACP startup overlaps with its handshake.
-    expect(select({ http: true }).servers).toHaveLength(1);
-    expect(select({ http: false }).servers).toHaveLength(1);
-    expect(openFlockDoc).toHaveBeenCalledTimes(1);
-  });
-
-  it('turns catalog read failures into catalog_unavailable', async () => {
-    const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc: vi.fn(async () => Promise.reject(new Error('database unavailable'))) },
-      workspaceId,
-      sessionId,
-      selectedIds: [selectedId],
-      logger: { debug: vi.fn() },
-    });
-    const result = select(undefined);
-    expect(result.servers).toEqual([]);
-    expect(result.problems).toEqual([
-      { kind: 'catalog_unavailable', reason: 'database unavailable' },
-    ]);
-  });
-
-  it('refreshes first and falls back to local rows if refresh fails', async () => {
-    const order: string[] = [];
-    const syncFlockDoc = vi.fn(async () => {
-      order.push('sync');
-      throw new Error('offline');
-    });
-    const openFlockDoc = vi.fn(async () => {
-      order.push('open');
-      return { flock: catalogFlock };
-    });
-    const select = await loadSessionMcpCatalog({
-      repo: { openFlockDoc },
-      syncFlockDoc,
-      workspaceId,
-      sessionId,
-      selectedIds: [selectedId],
-      logger: { debug: vi.fn() },
-      env: { NODE_BIN: 'node', ENTRYPOINT: 'server.js' },
-    });
-    expect(order).toEqual(['sync', 'open']);
-    expect(syncFlockDoc).toHaveBeenCalledWith('workspace-1:wf:workspace', { timeoutMs: 5_000 });
+    ready = true;
+    baseline.resolve();
+    const select = await loading;
     expect(select(undefined).servers).toHaveLength(1);
+  });
+
+  it('preserves the original cold-baseline error instead of freezing an empty catalog', async () => {
+    const cause = new Error('Synthetic initial-sync timeout');
+    const error = new WorkspaceSyncUnavailableError({ message: 'Catalog is still syncing', cause });
+    const loading = loadSessionMcpCatalog({
+      repo: { openFlockDoc: async () => ({ flock: flockWithRows([]) }) },
+      waitForCatalogBaseline: async () => {
+        throw error;
+      },
+      workspaceId,
+      sessionId,
+      selectedIds: [selectedId],
+      logger: { debug: () => {} },
+    });
+    await expect(loading).rejects.toBe(error);
+    expect(error.cause).toBe(cause);
   });
 });
 
@@ -207,7 +154,9 @@ describe('loadSessionWorkspaceSettings', () => {
       value: { version: 1, tools },
     });
     // Another device turned notifications on; this machine still holds them off.
-    let rows = [toolsRow([])];
+    let rows: Array<{ key: string[]; value: { version: number; tools?: string[] } }> = [
+      toolsRow([]),
+    ];
     const copy = {
       repo: { openFlockDoc: vi.fn(async () => ({ flock: flockWithRows(rows) })) },
       syncFlockDoc: vi.fn(async () => {
@@ -235,5 +184,27 @@ describe('loadSessionWorkspaceSettings', () => {
         logger: { debug: vi.fn() },
       })
     ).resolves.toEqual({ promptSuggestions: false, agentTools: [] });
+  });
+});
+
+describe('LAN MCP environment', () => {
+  it("fills variables from the LAN's table behind the machine's own environment", async () => {
+    const lanEnv = vi.fn(() => ({ NODE_BIN: 'lan-node', ENTRYPOINT: 'lan-server.js' }));
+    const select = await loadSessionMcpCatalog({
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
+      workspaceId,
+      sessionId,
+      selectedIds: [selectedId],
+      logger: { debug: vi.fn() },
+      env: { NODE_BIN: 'node' },
+      lanEnv,
+    });
+    // The machine keeps NODE_BIN; the LAN supplies what the machine lacks.
+    expect(select(undefined)).toEqual({
+      servers: [{ name: 'filesystem', command: 'node', args: ['lan-server.js'], env: [] }],
+      problems: [],
+    });
+    // Read at the start, so a variable set since the daemon started counts.
+    expect(lanEnv).toHaveBeenCalledTimes(1);
   });
 });

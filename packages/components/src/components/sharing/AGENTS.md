@@ -5,9 +5,10 @@ Parent rules apply. `CLAUDE.md` is a symlink; edit this file only.
 - Breaking static-publication cutover in progress: do not deploy until the
   anonymous reader, MCP confirmation, GC and integration fixtures switch
   together. [Intent](../../../../../specs/session-sharing.md).
-- `session-share-dialog.tsx` and controlled `session-share-manager.tsx` own
-  authenticated publication. The manager is one screen at a time — setup,
-  publishing, published — with exactly one primary action each.
+- `session-share-dialog.tsx`, `session-share-panel.tsx` and controlled
+  `session-share-manager.tsx` own authenticated publication. The manager is one
+  screen at a time — setup, publishing, published — with exactly one primary
+  action each.
   A human action starts publication; the package is frozen in full before any
   byte is uploaded. Include all selected stored history, including
   thought/tool content with the [sharing projection](../../../../../specs/session-sharing.md).
@@ -16,24 +17,21 @@ Parent rules apply. `CLAUDE.md` is a symlink; edit this file only.
   reuses the frozen retry keys), uploads and commits. There is no publication
   preview or prepare-only action. A stale draft is revoked by the next publish,
   never on dialog open.
-- Progress must stay honest: only the object upload has a byte total, so only it
-  may show a percentage; capture and the publish commit use the indeterminate
-  sweep. Auto-copy may claim "copied" only after the clipboard write resolves; a
-  rejected write shows the manual-copy field.
+- Progress is determinate only for object upload. Claim auto-copy only after clipboard success; otherwise show manual copy.
+- The header panel keeps the editor inline in `session-share-panel.tsx` with the `embedded` manager;
+  `⋯` still opens the dialog.
 - MCP consent names purpose, exact targets and full URL delivery to the agent.
   One approval starts an independent share and encrypted result delivery.
   Hide cards on local or canonical publication success.
-- `SessionShareDialogFrame` keeps its fixed header and one keyboard-aware scroll
-  body; the manager's action row sticks to the bottom of that body. Opening
-  focuses the panel and never a control, so the link field is not preselected and
-  the sub-conversation checkbox is not armed. The portal must shrink/lift for the
-  native keyboard. Closed editors must not load source documents or run cloud
-  queries.
-- The sub-conversation checkbox resolves to an explicit current set, capped at 32;
-  future children never join it. A share that carries only some of the
-  current children renders indeterminate with the exact count, never a plain
-  tick. Client capture is not server materialization, and source metadata is not
-  a publisher identity certificate.
+- `SessionShareDialogFrame` has a fixed header and one keyboard-aware scroll body,
+  with the action row stuck to its bottom. Opening focuses the panel, not controls:
+  never preselect the link or arm the checkbox. Shrink/lift the portal for keyboards.
+  Closed editors neither load sources nor query cloud.
+
+- Child selection is an explicit current set capped at 32; future children never
+  join. Partial selections show an indeterminate checkbox and exact count.
+  Client capture is not server materialization; metadata never certifies publisher identity.
+
 - `hooks/use-session-share-management.ts` owns prepare/confirm/upload/publish.
   Settings reuses `useSessionShareLinkActions` for copy/reset/revoke. Keep retry
   credentials and request identity stable; publish only after sealing.
@@ -44,7 +42,11 @@ Parent rules apply. `CLAUDE.md` is a symlink; edit this file only.
 - `lib/session-share-publisher.ts` is app-only: hydrate all sources before
   synchronous capture, copy attachments under app authority, and release every
   source lease. Never import it from the anonymous entry. Workspace E2EE will
-  decrypt here before plaintext publication, not on a server or reader.
+  decrypt here before plaintext publication, not on a server or reader. Encrypted
+  publication requires explicit confirmation of the runtime, workspace/root, selected
+  session set and share revision before capture or upload, including updates and MCP
+  approvals. Invalidate changed scopes and reject unavailable selections; ordinary
+  workspaces retain their existing flow. [Decision](../../../../../.agents/notes/implemented/feature/2026-10-28-e2ee-share-plaintext-consent.md).
 - `lib/session-share-secrets.ts` owns device-local credentials scoped by
   user/workspace/share and credential version. Ordinary cache clear preserves them.
   Missing credentials require reset, never recovery from cloud data or Flock.
@@ -61,15 +63,12 @@ Parent rules apply. `CLAUDE.md` is a symlink; edit this file only.
   Capture removes `system_notice/task_proposal` from display containers before
   attachment I/O; reader validation rejects it. Preserve `subagent_task` and
   opaque tool/text content. This is not keyword-based task redaction.
-- Preserve app presentation: independent conversations in the left tree and
-  child Tabs in the one main pane. The reader has NO right pane and no toggle
-  for one, so a side-panel child renders as an ordinary Tab: published content
-  must stay reachable, never dropped with the pane. Reuse controlled
-  presentation only, not workspace runtime hooks. The left tree uses the app's
-  `session-row-leading-slot.tsx` in that slot's row box, not a second
-  connector/disclosure implementation. It marks the open pane's root by tinting
-  `foreground` (never `bg-accent`) on the title box alone, never across the
-  connector gutter.
+- Preserve independent conversations in the left tree and child Tabs in the main
+  pane. The reader has no right pane/toggle; side-panel children render as ordinary
+  Tabs, never disappear. Reuse controlled presentation, not runtime hooks.
+  The tree uses `session-row-leading-slot.tsx`, never duplicate connectors/disclosure.
+  Mark the open root with `foreground` on its title only, never `bg-accent` or gutter tint.
+
 - Markdown is dynamic: the existing conversation-copy builder, range selection,
   budget/truncation rules and result notices. No stored Markdown object.
 - The shared file-attachment rollout switch defaults off: capture replaces typed

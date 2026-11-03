@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createMcpHandler } from '@modelcontextprotocol/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
@@ -226,6 +227,92 @@ const listPublishedToolNames = async (boardId?: string): Promise<string[]> => {
 };
 
 describe('Lody MCP tool catalog', () => {
+  it('serves Skills discovery and on-demand content through the App modern HTTP handler', async () => {
+    const handler = createMcpHandler(buildLodyMcpServer);
+    const request = async (method: string, params: Record<string, unknown> = {}) => {
+      const response = await handler.fetch(
+        new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-method': method,
+            'mcp-protocol-version': '2026-07-28',
+            ...(typeof params.name === 'string' ? { 'mcp-name': params.name } : {}),
+            ...(method === 'resources/read' && typeof params.uri === 'string'
+              ? { 'mcp-name': params.uri }
+              : {}),
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method,
+            params: {
+              ...params,
+              _meta: {
+                'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+                'io.modelcontextprotocol/clientInfo': { name: 'lody-test', version: '1' },
+                'io.modelcontextprotocol/clientCapabilities': {},
+              },
+            },
+          }),
+        })
+      );
+      const body: unknown = await response.json();
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      return body;
+    };
+    try {
+      expect(await request('server/discover')).toMatchObject({
+        result: {
+          capabilities: { resources: {}, extensions: { 'io.modelcontextprotocol/skills': {} } },
+        },
+      });
+      expect(await request('skills/list')).toMatchObject({
+        result: {
+          resultType: 'complete',
+          cacheScope: 'public',
+          ttlMs: 300_000,
+          skills: [
+            {
+              uri: 'skill://lody-automations/SKILL.md',
+              frontmatter: { name: 'lody-automations' },
+              resources: expect.any(Array),
+            },
+          ],
+        },
+      });
+      expect(
+        await request('skills/get', { uri: 'skill://lody-automations/SKILL.md' })
+      ).toMatchObject({
+        result: {
+          resultType: 'complete',
+          skill: { uri: 'skill://lody-automations/SKILL.md' },
+        },
+      });
+      expect(
+        await request('resources/read', {
+          uri: 'skill://lody-automations/references/commands.schema.json',
+        })
+      ).toMatchObject({
+        result: {
+          contents: [{ mimeType: 'application/json', text: expect.any(String) }],
+        },
+      });
+      expect(
+        await request('resources/read', {
+          uri: 'skill://lody-automations/SKILL.md',
+        })
+      ).toMatchObject({
+        result: {
+          contents: [{ mimeType: 'text/markdown', text: expect.any(String) }],
+        },
+      });
+    } finally {
+      await handler.close();
+    }
+  });
+
   it('publishes bounded catalog retry guidance on every create/chat tool', async () => {
     const server = buildLodyMcpServer();
     const client = new Client({ name: 'retry-guidance-test-client', version: '1.0.0' });
@@ -822,8 +909,7 @@ describe('session MCP input schemas', () => {
         type: 'object',
         properties: {
           useCurrentSessionAsParent: {
-            description:
-              'Create a child of the current Session that reuses the exact same workspace directory; cannot be combined with workContext.',
+            type: 'boolean',
           },
           workContext: workContextSchema,
         },
@@ -835,8 +921,7 @@ describe('session MCP input schemas', () => {
             type: 'object',
             properties: {
               useCurrentSessionAsParent: {
-                description:
-                  'Create a child of the current Session that reuses the exact same workspace directory; cannot be combined with workContext.',
+                type: 'boolean',
               },
               workContext: workContextSchema,
             },
@@ -847,8 +932,7 @@ describe('session MCP input schemas', () => {
               type: 'object',
               properties: {
                 useCurrentSessionAsParent: {
-                  description:
-                    'Create a child of the current Session that reuses the exact same workspace directory; cannot be combined with workContext.',
+                  type: 'boolean',
                 },
                 workContext: workContextSchema,
               },
@@ -1036,7 +1120,7 @@ describe('session MCP input schemas', () => {
     );
 
     expect(role.revision).toBe(7);
-    expect(resolved.prompt).toBe('Act as a careful reviewer.\n\nReview the current diff.');
+    expect(resolved.prompt).toBe('Review the current diff.');
     expect(resolved.input).toMatchObject({
       machineId: 'remote-machine',
       agentConfigId: 'claude-opus',
@@ -1058,7 +1142,10 @@ describe('session MCP input schemas', () => {
       inheritSessionDefaults: false,
     });
     expect(buildResolvedMcpCreateCanonicalCommand(resolved)).toMatchObject({
-      prompt: 'Act as a careful reviewer.\n\nReview the current diff.',
+      // Recovery replays the canonical command, so the frozen prefix travels
+      // beside the authored prompt instead of inside it.
+      prompt: 'Review the current diff.',
+      agentRolePromptPrefix: 'Act as a careful reviewer.',
       agentRoleId: 'reviewer',
       agentRoleRevision: 7,
       machineId: 'remote-machine',
@@ -1312,6 +1399,75 @@ describe('session MCP input schemas', () => {
     });
   });
 
+  it('runs a remote Role in the Local Project linked GitHub repository only when the workspace enables it', () => {
+    const frozenInputConfig = {} as SessionTurnInputConfig;
+    const input = {
+      operationId: 'role-review-linked-1',
+      prompt: 'Review this.',
+      agentRoleId: 'reviewer',
+    } as const;
+    const requester = {
+      machineId: 'current-machine',
+      project: {
+        kind: 'local',
+        localProjectId: 'project-id',
+        branch: 'feature/unpushed',
+        githubRepoFullName: 'loro-dev/lody-oss',
+        useWorktree: true,
+      },
+    } as const;
+
+    const linked = resolveMcpSessionCreate(
+      input,
+      { chainDepth: 0, frozenInputConfig },
+      requester,
+      targetOf(agentRole()),
+      'loro-dev/lody-oss'
+    ).input;
+    // The local branch may exist only on the requester's Machine, so the
+    // clone starts from the repository's default branch.
+    expect(linked).toMatchObject({
+      machineId: 'remote-machine',
+      workContext: { kind: 'github', repo: 'loro-dev/lody-oss' },
+    });
+    expect(linked.workContext).not.toHaveProperty('branch');
+    expect(linked).not.toHaveProperty('useCurrentSessionAsParent');
+    expect(
+      buildMcpCreateOptions(linked, {
+        sessionId: 'current-session',
+        machineId: 'current-machine',
+      })
+    ).toMatchObject({ repo: 'loro-dev/lody-oss', machine: 'remote-machine' });
+
+    // An unlisted repository keeps the plain-chat placement.
+    const unlisted = resolveMcpSessionCreate(
+      input,
+      { chainDepth: 0, frozenInputConfig },
+      requester,
+      targetOf(agentRole())
+    ).input;
+    expect(unlisted).not.toHaveProperty('workContext');
+
+    // An explicit work context or a same-Machine Role is unaffected.
+    const explicit = resolveMcpSessionCreate(
+      { ...input, workContext: { kind: 'chat' } },
+      { chainDepth: 0, frozenInputConfig },
+      requester,
+      targetOf(agentRole()),
+      'loro-dev/lody-oss'
+    ).input;
+    expect(explicit.workContext).toEqual({ kind: 'chat' });
+    const sameMachine = resolveMcpSessionCreate(
+      input,
+      { chainDepth: 0, frozenInputConfig },
+      { ...requester, machineId: 'remote-machine' },
+      targetOf(agentRole()),
+      'loro-dev/lody-oss'
+    ).input;
+    expect(sameMachine.useCurrentSessionAsParent).toBe(true);
+    expect(sameMachine).not.toHaveProperty('workContext');
+  });
+
   it('requires only that the Role id exists in the workspace catalog', () => {
     expect(() =>
       resolveMcpSessionCreate(
@@ -1423,6 +1579,7 @@ describe('session MCP input schemas', () => {
       modeId: 'agent',
       modelId: 'gpt-5.6-sol',
       configOptionValues: { 'fast-mode': true },
+      mcpServerIds: [],
       inheritedDispatchConfig: {
         modeId: 'agent',
         modelId: 'gpt-5.6-sol',
@@ -1436,6 +1593,7 @@ describe('session MCP input schemas', () => {
       modeId: undefined,
       modelId: undefined,
       configOptionValues: { mode: 'read-only', model: 'gpt-5.5' },
+      mcpServerIds: [],
       inheritSessionDefaults: false,
     });
     await expect(
@@ -1450,6 +1608,7 @@ describe('session MCP input schemas', () => {
       modeId: 'read-only',
       modelId: 'gpt-5.5',
       configOptionValues: { 'fast-mode': false, reasoning_effort: 'high', plan_mode: true },
+      mcpServerIds: [],
       inheritSessionDefaults: false,
     });
   });
@@ -1879,6 +2038,7 @@ describe('session MCP input schemas', () => {
     expect(waitUntilMetaSynced).toHaveBeenCalledOnce();
     expect(waitUntilMetaSynced).toHaveBeenCalledWith({
       reason: 'mcp.session_rename_many:current-session-id',
+      timeoutMs: 30_000,
     });
   });
 
@@ -2120,7 +2280,10 @@ describe('board membership in MCP creation', () => {
     const prepared = await prepareSessionInput(
       { userId: 'owner', machineId: 'machine' } as never,
       { id: 'workspace' } as never,
-      { repo: { getDocMeta: async () => undefined } } as unknown as LoroDocumentManager,
+      {
+        repo: { getDocMeta: async () => undefined },
+        isEncryptedWorkspace: () => false,
+      } as unknown as LoroDocumentManager,
       input.prompt,
       options,
       // MCP creates freeze their selection before preparation.

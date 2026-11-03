@@ -1,93 +1,181 @@
-// @vitest-environment jsdom
-import { act, createElement } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { createStore, Provider } from 'jotai';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionMeta } from '@lody/shared';
-
-const catalog = vi.hoisted(() => ({ promptSuggestions: true }));
-vi.mock('@/hooks/use-workspace-catalog', () => ({
-  useWorkspaceCatalog: () => ({ promptSuggestions: catalog.promptSuggestions }),
+const catalog = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../src/hooks/use-workspace-catalog', () => ({
+  useWorkspaceCatalog: () => ({
+    promptSuggestions: catalog.enabled,
+    boards: [],
+    roles: [],
+    servers: [],
+    pinnedProjects: [],
+    loaded: true,
+    synced: true,
+  }),
 }));
+// @vitest-environment jsdom
+import { act, createElement, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Provider, createStore } from 'jotai';
+import { describe, expect, it, vi } from 'vitest';
+import { getSessionRoomId, type SessionId, type SessionMeta, type WorkspaceId } from '@lody/shared';
+import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
+import { setWorkspaceContextAtom } from '../src/atoms/workspace-context';
+import { ChatComposer } from '../src/components/chat/chat-composer';
+import { initI18n } from '../src/i18n';
+import { useSessionPromptSuggestion } from '../src/hooks/use-session-prompt-suggestion';
 
-const { useSessionPromptSuggestion } =
-  await import('../src/components/sessions/use-session-prompt-suggestion');
+vi.mock('../src/components/mentions/mention-session-source', async (original) => ({
+  ...(await original<object>()),
+  useSessionMentionItems: () => [],
+}));
+vi.mock('../src/components/mentions/mention-agent-role-source', async (original) => ({
+  ...(await original<object>()),
+  useAgentRoleMentionItems: () => [],
+}));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-let root: Root;
-let shown: string | null = null;
-
-const session = (id: string, text: string, agentType = 'claude'): SessionMeta =>
-  ({
-    id,
-    agentType,
-    latestUserMsgId: 'user-1',
-    lastHandledUserMsgId: 'user-1',
-    promptSuggestion: { text, afterUserMsgId: 'user-1' },
-  }) as unknown as SessionMeta;
-
-function Probe(props: { session: SessionMeta; inputEmpty?: boolean; agentBusy?: boolean }) {
-  shown = useSessionPromptSuggestion(props.session, {
-    inputEmpty: props.inputEmpty ?? true,
-    agentBusy: props.agentBusy ?? false,
+describe('session prompt suggestion subscription', () => {
+  it('never renders the previous session or workspace suggestion while subscriptions change', async () => {
+    const store = createStore();
+    const callbacks = new Map<string, (value: string | null) => void>();
+    const runtime = {
+      workspaceSlug: 'workspace',
+      workspaceId: 'workspace' as WorkspaceId,
+      subscribePromptSuggestion: (
+        _machine: string,
+        session: string,
+        listener: (value: string | null) => void
+      ) => {
+        callbacks.set(session, listener);
+        listener(session === 'first' ? 'First hint' : null);
+        return () => {
+          callbacks.delete(session);
+        };
+      },
+    } as WorkspaceRuntime;
+    store.set(runtimeAtom, runtime);
+    store.set(setWorkspaceContextAtom, { slug: 'workspace', workspaceId: runtime.workspaceId });
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries(
+        ['first', 'second'].map((id) => [
+          getSessionRoomId(id as SessionId),
+          { machineId: 'machine' } as SessionMeta,
+        ])
+      )
+    );
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    function Probe({ sessionId }: { sessionId: SessionId }) {
+      const suggestion = useSessionPromptSuggestion(sessionId);
+      return createElement('span', null, suggestion ?? 'none');
+    }
+    const render = (sessionId: string) =>
+      act(async () =>
+        root.render(
+          createElement(
+            Provider,
+            { store },
+            createElement(Probe, { sessionId: sessionId as SessionId })
+          )
+        )
+      );
+    try {
+      await render('first');
+      expect(host.textContent).toBe('First hint');
+      await render('second');
+      expect(host.textContent).toBe('none');
+      expect(callbacks.has('first')).toBe(false);
+      await act(async () => callbacks.get('second')?.('Second hint'));
+      expect(host.textContent).toBe('Second hint');
+      await act(async () =>
+        store.set(setWorkspaceContextAtom, {
+          slug: 'different',
+          workspaceId: 'different' as WorkspaceId,
+        })
+      );
+      expect(host.textContent).toBe('none');
+      expect(callbacks.size).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
-  return null;
-}
-
-function render(store: ReturnType<typeof createStore>, props: Parameters<typeof Probe>[0]) {
-  act(() => root.render(createElement(Provider, { store }, createElement(Probe, props))));
-}
-
-beforeEach(() => {
-  catalog.promptSuggestions = true;
-  shown = null;
-  root = createRoot(document.createElement('div'));
 });
 
-afterEach(() => {
-  act(() => root.unmount());
-  localStorage.clear();
-});
-
-describe('useSessionPromptSuggestion', () => {
-  it('offers the guess only for Claude, with the switch on, while idle', () => {
-    // Not an experimental feature: the experimental switch does not gate it.
-    const store = createStore();
-    render(store, { session: session('a', 'run the tests') });
-    expect(shown).toBe('run the tests');
-
-    render(store, { session: session('a', 'run the tests'), agentBusy: true });
-    expect(shown).toBeNull();
-    render(store, { session: session('a', 'run the tests', 'codex') });
-    expect(shown).toBeNull();
-
-    catalog.promptSuggestions = false;
-    render(store, { session: session('a', 'run the tests') });
-    expect(shown).toBeNull();
+it('removes the suggestion and Tab hint from the real composer when the workspace switch is off', async () => {
+  await initI18n('en');
+  const store = createStore();
+  const workspaceId = 'suggestions-workspace' as WorkspaceId;
+  const sessionId = 'suggestions-session' as SessionId;
+  let emit: ((value: string | null) => void) | undefined;
+  const runtime = {
+    workspaceSlug: 'suggestions-workspace',
+    workspaceId,
+    subscribePromptSuggestion: (
+      _machine: string,
+      _session: string,
+      listener: (value: string | null) => void
+    ) => {
+      emit = listener;
+      listener('Run the tests');
+      return () => {
+        emit = undefined;
+      };
+    },
+  } as WorkspaceRuntime;
+  store.set(runtimeAtom, runtime);
+  store.set(setWorkspaceContextAtom, { slug: 'suggestions-workspace', workspaceId });
+  store.set(sessionMetaCacheAtom, {
+    [getSessionRoomId(sessionId)]: {
+      id: sessionId,
+      machineId: 'machine',
+      agentType: 'codex',
+    } as SessionMeta,
   });
-
-  it('lets the guess go once something is typed, even if the text is cleared again', () => {
-    const store = createStore();
-    render(store, { session: session('a', 'run the tests') });
-    render(store, { session: session('a', 'run the tests'), inputEmpty: false });
-    render(store, { session: session('a', 'run the tests') });
-    expect(shown).toBeNull();
-
-    // The next turn's guess is offered again.
-    render(store, { session: session('a', 'commit it') });
-    expect(shown).toBe('commit it');
-  });
-
-  it('lets the guess go when the composer switches to another session', () => {
-    const store = createStore();
-    render(store, { session: session('a', 'run the tests') });
-    render(store, { session: session('b', 'open a PR') });
-    expect(shown).toBe('open a PR');
-
-    render(store, { session: session('a', 'run the tests') });
-    expect(shown).toBeNull();
-  });
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  function Composer() {
+    const suggestion = useSessionPromptSuggestion(sessionId);
+    const [value, setValue] = useState('');
+    return createElement(ChatComposer, {
+      promptValue: value,
+      onPromptChange: setValue,
+      promptSuggestion: suggestion,
+    });
+  }
+  const render = () =>
+    act(async () => root.render(createElement(Provider, { store }, createElement(Composer))));
+  const tab = async () => {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    await act(async () => host.querySelector('textarea')!.dispatchEvent(event));
+    return event;
+  };
+  try {
+    catalog.enabled = false;
+    await render();
+    expect(host.querySelector('[data-prompt-suggestion]')).toBeNull();
+    expect((await tab()).defaultPrevented).toBe(false);
+    expect(host.querySelector('textarea')?.value).toBe('');
+    catalog.enabled = true;
+    await render();
+    expect(host.querySelector('[data-prompt-suggestion]')?.textContent).toContain('Tab');
+    expect(host.querySelector('[data-prompt-suggestion]')?.textContent).toContain('Run the tests');
+    const late = emit!;
+    catalog.enabled = false;
+    await render();
+    await act(async () => late('Late hint'));
+    expect(host.querySelector('[data-prompt-suggestion]')).toBeNull();
+    expect((await tab()).defaultPrevented).toBe(false);
+    catalog.enabled = true;
+    await render();
+    expect((await tab()).defaultPrevented).toBe(true);
+    expect(host.querySelector('textarea')?.value).toBe('Run the tests');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    catalog.enabled = true;
+  }
 });

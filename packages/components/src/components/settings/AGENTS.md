@@ -3,10 +3,9 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
 Parent `AGENTS.md` files also apply.
 
-Settings owns the workspace catalog surfaces (Providers, MCP servers, Agent
-Roles). The catalog's durability rule — a local Flock write is durable, and the
-upload that follows it is not something a settings surface waits on, reports, or
-rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
+Settings owns Providers/MCP/Role catalogs. A local Flock write is durable;
+Settings never waits for, reports or rolls back upload. Follow root
+[AGENTS.md](../../../../../AGENTS.md).
 
 ## Layout and components
 
@@ -19,6 +18,8 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   says what the label cannot. Split master/detail by fill; type: `type.stylex.ts`.
 - Preferences grammar: `CompactRow`, one answer; records: name, state, menu/detail.
   Its four switches bind translated labels and rendered helpers.
+- `SettingsLineTabs` keeps a held tab's full ID on its overflow menu item as
+  `data-settings-tab-overflow-id`; visible tabs retain `data-tab`. Labels may repeat.
 - `share-management-setting.tsx` lists published static copies via the scoped cloud
   query. Ordinary members see their publications; admins see the workspace inventory.
   Draft uploads are not published shares. Reuse `useSessionShareLinkActions` for
@@ -31,29 +32,27 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   LAN (`lanSharing` only): `lan-share-management-setting.tsx`; every member manages
   hub shares. Links contain no credential.
 
-- Desktop Settings > Projects stacks every source (each machine, then GitHub
-  owners) as a `CompactSection` of ruled project rows. Clicking a project opens
-  a nested project window (header, page tabs) — never inline the editor beside the list.
-  Mobile keeps the previous stacked list. Local-project deletion reuses
-  `useRemoveLocalProject` / `RemoveLocalProjectDialog` (nested overlay like MCP);
-  do not add a second confirm. Pending removal stays listed until the owning
-  machine finishes. Do not RPC-probe worktree/skills on offline remotes, and
-  never surface `machine_rpc_unavailable` as an editor error. The GitHub source
-  row must paint from `lody:githubReposCache` on first frame; do not wait on
-  `listWorkspaceReposWithStatus` to decide whether GitHub exists.
+- Desktop Projects stacks machine/GitHub sources as ruled `CompactSection`s.
+  A project opens a nested window with header/tabs, never an inline editor. Mobile
+  keeps its stacked list. Reuse `useRemoveLocalProject` without confirmation,
+  following parent removal rules. Never probe offline remotes' worktree/skills or
+  show `machine_rpc_unavailable` as editor error. Paint GitHub from
+  `lody:githubReposCache` immediately; never await `listWorkspaceReposWithStatus`
+  to decide whether that source exists.
+
+- Project create/edit: `project-create-wizard.tsx`, scope first; read-only: `ProjectGroupView`.
 - Settings rows (`compact-layout.tsx`) give labels remaining width and controls their
   content width. Never size columns from viewport breakpoints: the panel
   clips controls. Desktop Settings nav follows panel width; keep categories/drafts,
   reveal the selection and wrap actions.
-- Agent configuration lives in `agent-config-dialog.tsx` plus `env-vars-textarea.tsx`.
-  DeepSeek Harness official vs custom endpoint is dialog form state only: persist
-  `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` (official always writes
-  `https://api.deepseek.com/anthropic`) and never a new AgentConfigMeta field. Model ids come from
-  the endpoint's OpenAI-compatible discovery response during live verification; official
-  Messages and legacy Chat roots share the provider's official `/models` endpoint. Do not
-  add a parallel manual catalog field. Additional env cannot override either connection
-  key, and changing endpoint or credential invalidates the dialog's prior live
-  verification.
+- `agent-config-dialog.tsx` and `env-vars-textarea.tsx` own Agent config.
+  DeepSeek official/custom choice stays form-only: persist `DEEPSEEK_API_KEY` /
+  `DEEPSEEK_BASE_URL`, with official `https://api.deepseek.com/anthropic`, never a
+  new AgentConfigMeta field. Live OpenAI-compatible discovery supplies model IDs;
+  official Messages/legacy Chat roots share `/models`. Never add a manual catalog.
+  Extra env cannot override either connection key; endpoint/credential changes
+  invalidate prior live verification.
+
 - Keep three.js/R3F behind the lazy usage-calendar module so lightweight and SSR
   consumers never evaluate its renderer graph.
 - Charts follow [timeline rules](../../../../../specs/usage-timeline.md).
@@ -88,6 +87,11 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   The graphic follows the range
   (hour skyline, day-by-hour grid, or 53-week calendar, as on the Usage screen);
   every kind fits the one `GRAPHIC_H` box so card height never depends on range. Leave the space beside the headline empty.
+
+- Bind `agent-provider-add` to its resolved machine and `agent-config-dialog` to
+  its captured `data-machine-id`, including fallback/open-dialog changes. Both
+  Add and dialogs honor workspace RPC restrictions before probes/draft writes.
+  Signed file RPC grants no Provider management; same-machine IPC remains available.
 
 ## Agent Roles
 

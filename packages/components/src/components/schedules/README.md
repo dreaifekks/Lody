@@ -5,16 +5,13 @@
 shows rows with no `boardId`; `BoardSchedules` supplies a Board and local selection
 callbacks, using the same editor, actions and save rules inside its panel.
 
-The global desktop route slides the editor beside the table under its header.
-Mobile and Board panels switch between the list and editor to keep the composer
-controls usable at narrow widths. The Board passes `board` to `ScheduleListView`:
-its existing compact row geometry applies even inside a narrow panel on a wide
-desktop. Column headings/minimum table width and the duplicate page title are
-omitted; search and New remain. The Board empty state does not promise a
-particular destination. Global page layout and copy keep their existing defaults.
-Saving or closing returns to the owning list.
-The global route remains mounted across index/detail navigation. Its remembered
-column widths and desktop split width stay in the existing device atoms.
+The global desktop route opens the upstream detail modal; mobile and Board
+panels switch between the list and editor. Both share the Settings / Run history
+frame, including scheduled-message editing. The Board passes `board` to
+`ScheduleListView` to keep rows compact at any viewport width, omit the duplicate
+page title and use destination-neutral empty copy. Search and New remain.
+Saving or closing returns to the owning list. The global route remains mounted
+across index/detail navigation.
 
 `schedule-scope.ts` filters rows and walks the current epoch’s deterministic
 Session ids in order. It skips archived/deleted/detached identities and stops at

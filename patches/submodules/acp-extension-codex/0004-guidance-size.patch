@@ -1,0 +1,81 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 611b262..3f0aa22 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -16,27 +16,29 @@
+
+ - Keep edits consistent with existing formatting.
+ - When adding env/config knobs, document them in `readme-dev.md`.
+-- Managed-profile process tokens identify independent native uses, not exclusive leases.
+-  Write only the matching host-owned record's proof and remove the token from native env.
+-  Never restrict same-profile concurrency or implement credential refresh in the adapter.
++- Managed-profile tokens identify independent uses, not exclusive leases. Write only
++  matching host-owned proofs and remove tokens from native env. Never restrict profile
++  concurrency or refresh credentials in the adapter.
+ - Classify managed ChatGPT refresh failures on new, resume, fork, and stable load without
+   logging out; mark only reused-token contention. Legacy load retains its original error path.
+ - Lody may launch the adapter from an Electron or daemon process with no Windows console.
+   Set `windowsHide: true` on every adapter-owned console-subsystem child process spawn;
+   `ELECTRON_RUN_AS_NODE` is a separate runtime-mode concern.
+-- The adapter serves ACP v1 and v2. A change that is not meant for one protocol version only must work correctly in both.
+-- When updating discriminated-union/event `switch` statements, do not add a trailing fallback like `return null` only to satisfy TypeScript.
+-- Handle each variant with an explicit `case`; if intentionally ignored, use an explicit no-op case.
+-- Code comments should be concise and in plain language; avoid verbosity and overly specific detail.
++- Support ACP v1 and v2 unless a change explicitly targets one version.
++- Handle each union/event switch variant explicitly, including ignored no-op cases;
++  never add a trailing fallback solely to satisfy TypeScript.
++- Keep comments concise and plain.
+
+ ## Testing Guidelines
+
+ - Tests live under `src/__tests__/` and use Vitest.
+ - Favor event-driven assertions (see `src/__tests__/CodexACPAgent/*`).
+ - Prefer snapshot-based tests using `toMatchFileSnapshot()` over inline assertions.
+-- When snapshot response data drifts, prefer replacing that response payload with a stable placeholder over asserting fragile fields (except for 'model/list').
++- Replace drifting snapshot payloads with stable placeholders rather than fragile fields,
++  except for `model/list`.
+ - Focus on behavior and outputs rather than implementation details.
+-- Cover both ACP v1 and v2 when a change affects what a client receives (updates, responses, replay). A change to internal logic only does not need its tests duplicated per version.
++- Test client-visible updates/responses/replay on v1 and v2; internal-only tests need
++  no version duplication.
+ - Use `/run-codex` skill (`.claude/skills/run-codex/`) to test with real Codex and observe actual events.
+
+ ## Docs
+@@ -87,25 +89,18 @@
+   session. Agent message updates expose their Codex turn id as `_meta.lody.turnId`;
+   `_meta.lody.forkAtTurn.turnId` is passed directly to `thread/fork.lastTurnId`. Do not maintain
+   a message-id mapping or emulate fork by replaying source history.
+-- Codex reasoning summaries can echo trailing empty HTML comments from model instructions. Keep
+-  that provider-specific cleanup in `src/ReasoningText.ts` across live deltas and history replay;
+-  do not filter assistant text, raw reasoning, or HTML globally in the client renderer.
+-- App-server `warning` and `configWarning` notifications are structured ACP session info updates:
+-  put `{ level, message, source }` under `_meta.lody.notice`. Never emit them as agent message text;
+-  Lody persists that metadata as an `agent_warning` system notice, and text chunks would pollute
+-  assistant history, generated titles, and replayed prompts.
+-- App-server terminal `error` notifications are also control-plane state, never agent message text.
+-  Record a prompt failure for every non-retry error and publish structured `_meta.codex.error`
+-  metadata only. Redact any Lody internal-instruction tail at this adapter boundary before putting
+-  provider errors in ACP metadata or `RequestError` data. Session title updates must identify
+-  `_meta.lody.titleSource` as `explicit`,
+-  `fallback`, or `unset` so hosts can accept real names without mistaking prompt previews for
+-  generated titles. Automatic generation belongs to the ACP client; never advertise
+-  `sessionTitle` or start an auxiliary title turn here.
+-- Account rate-limit windows are dynamic. Read the full `account/rateLimits/read` snapshot when a
+-  session opens, merge sparse `account/rateLimits/updated` values into that snapshot, and preserve
+-  each native window's `windowDurationMins` when mapping it to Core's
+-  `windowDurationSeconds`. Never infer 5-hour/7-day meaning from `primary`/`secondary` position.
++- Keep trailing-empty-comment cleanup in `src/ReasoningText.ts` for live/replayed
++  reasoning summaries; never globally filter assistant text, raw reasoning or HTML.
++- Emit app-server `warning`/`configWarning` as ACP session info updates with
++  `{ level, message, source }` under `_meta.lody.notice`, never agent text.
++- Terminal `error` notifications stay control-plane metadata, never agent text. Mark
++  every non-retry error as prompt failure and emit only `_meta.codex.error`; redact
++  internal-instruction tails before ACP metadata or `RequestError` data. Titles declare
++  `_meta.lody.titleSource` as `explicit`, `fallback` or `unset`. The ACP client owns
++  automatic titles; never advertise `sessionTitle` or start auxiliary title turns.
++- Read full `account/rateLimits/read` on session open and merge sparse
++  `account/rateLimits/updated` values. Convert each `windowDurationMins` to Core
++  `windowDurationSeconds`; never infer duration from primary/secondary position.
+ - Core `worktreeProject` derives a deterministic native project idempotency key from
+   the canonical logical root. Let Codex persist that identity through `project/create`;
+   never infer it from user project roots or add adapter-side bindings. Existing native

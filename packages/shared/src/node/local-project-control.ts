@@ -25,6 +25,7 @@ import {
   LanShareSourceSchema,
 } from '../lan-share';
 import { IosSimulatorResponseSchema } from '../ios-simulator';
+import { ProjectLocalMemberProbeSchema } from '../workspace-project';
 import type { LocalProjectControlRequest, LocalProjectControlResponse } from '../message';
 import { LanIosSimulatorRequestSchema } from '../message-schemas';
 
@@ -67,7 +68,7 @@ function isStringArray(value: unknown): value is string[] {
 function isLocalProjectHistoryProvider(value: unknown): boolean {
   return (
     isObjectRecord(value) &&
-    (value.cliType === 'builtin' || value.cliType === 'registry') &&
+    (value.cliType === 'builtin' || value.cliType === 'registry' || value.cliType === 'custom') &&
     typeof value.agentType === 'string' &&
     value.agentType.trim().length > 0
   );
@@ -337,7 +338,11 @@ export function isLocalProjectControlRequest(value: unknown): value is LocalProj
   }
 
   if (value.type === 'local-project/prepare-add') {
-    return typeof value.workspaceId === 'string' && typeof value.rootPath === 'string';
+    return (
+      typeof value.workspaceId === 'string' &&
+      typeof value.rootPath === 'string' &&
+      isOptionalBoolean(value.inspect)
+    );
   }
 
   if (value.type === 'local-project/list-roots') {
@@ -656,7 +661,9 @@ export function isLocalProjectControlResponse(
       typeof value.result.localProjectId === 'string' &&
       typeof value.result.name === 'string' &&
       typeof value.result.rootPath === 'string' &&
-      typeof value.result.alreadyRegistered === 'boolean'
+      typeof value.result.alreadyRegistered === 'boolean' &&
+      (value.result.inspection === undefined ||
+        ProjectLocalMemberProbeSchema.safeParse(value.result.inspection).success)
     );
   }
 

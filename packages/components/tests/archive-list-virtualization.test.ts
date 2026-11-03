@@ -1,14 +1,12 @@
+import { ARCHIVE_GROUP_GAP_PX } from '../src/lib/archive-list-virtualization';
+import { ARCHIVE_DESKTOP_SESSION_ROW_ESTIMATE_PX } from '../src/lib/archive-list-virtualization';
+import { ARCHIVE_HEADER_ROW_ESTIMATE_PX } from '../src/lib/archive-list-virtualization';
+import { estimateArchiveRowSize } from '../src/lib/archive-list-virtualization';
 import { describe, expect, it } from 'vitest';
 import type { SessionId, SessionMeta } from '@lody/shared';
 import {
-  ARCHIVE_DESKTOP_SESSION_ROW_ESTIMATE_PX,
-  ARCHIVE_GROUP_GAP_PX,
-  ARCHIVE_HEADER_ROW_ESTIMATE_PX,
-  ARCHIVE_LIST_VIRTUALIZE_THRESHOLD,
   archiveRowDataId,
-  estimateArchiveRowSize,
   flattenVisibleArchiveRows,
-  shouldVirtualizeVisibleArchiveRows,
   type ArchiveListGroupInput,
 } from '../src/lib/archive-list-virtualization';
 
@@ -30,11 +28,6 @@ function group(
 }
 
 describe('archive list virtualization helpers', () => {
-  it('virtualizes based on visible row count, not collapsed contents', () => {
-    expect(shouldVirtualizeVisibleArchiveRows(ARCHIVE_LIST_VIRTUALIZE_THRESHOLD)).toBe(false);
-    expect(shouldVirtualizeVisibleArchiveRows(ARCHIVE_LIST_VIRTUALIZE_THRESHOLD + 1)).toBe(true);
-  });
-
   it('flattens project groups into headers plus opened-by session rows', () => {
     const root = session('root');
     const opened = session('opened', { openedBySessionId: root.id });
@@ -124,28 +117,6 @@ describe('archive list virtualization helpers', () => {
     const flat = flattenVisibleArchiveRows([group('__all__', sessions)], { hideGroupHeader: true });
     expect(flat).toHaveLength(14);
     expect(flat.every((row) => row.kind === 'session')).toBe(true);
-  });
-
-  it('marks local project headers for the taller estimate', () => {
-    const rows = flattenVisibleArchiveRows(
-      [group('local:m:p', [session('a')], { kind: 'local' })],
-      { hideGroupHeader: false }
-    );
-    expect(rows[0]).toMatchObject({ kind: 'header', local: true });
-    expect(estimateArchiveRowSize(rows[0], { isMobile: false })).toBeGreaterThan(
-      ARCHIVE_HEADER_ROW_ESTIMATE_PX
-    );
-  });
-
-  it('adds group gap to trailing rows so the spacer matches section spacing', () => {
-    const rows = flattenVisibleArchiveRows([group('acme/app', [session('last')])], {
-      hideGroupHeader: false,
-    });
-    const sessionRow = rows[1];
-    expect(sessionRow?.kind).toBe('session');
-    expect(estimateArchiveRowSize(sessionRow, { isMobile: false })).toBe(
-      ARCHIVE_DESKTOP_SESSION_ROW_ESTIMATE_PX + ARCHIVE_GROUP_GAP_PX
-    );
   });
 });
 

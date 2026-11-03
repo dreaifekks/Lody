@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useOrganization } from '@/hooks/useOrganization';
 import { useStableSession } from '@/hooks/useStableSession';
 import { useCloudQuery } from '@lody/platform/react';
+import { WorkspaceAdmissionGate } from '@/components/workspace-admission-gate';
 import { cloudOperations } from '@/lib/cloud-api-operations';
 import {
   clearPreferredWorkspaceSlugIfMatch,
@@ -32,6 +33,7 @@ import {
   getLocalWorkspaceSlug,
   resolveLocalWorkspace,
   useLocalPlatformWorkspacesState,
+  retryLocalPlatformSnapshot,
 } from '../providers/local-platform-provider';
 
 // Paths that are served by the CF Pages middleware as landing pages.
@@ -136,6 +138,7 @@ function LocalWorkspaceGuardRoute() {
         gate="workspace_list_error"
         title={t('workspace.route.loadingWorkspacesErrorTitle')}
         description={t('workspace.route.loadingWorkspacesErrorDescription')}
+        onRetry={retryLocalPlatformSnapshot}
       />
     );
   }
@@ -364,7 +367,15 @@ function CloudWorkspaceGuardRoute() {
   );
 }
 
-function WorkspaceAuthedRoute({
+function WorkspaceAuthedRoute(props: Parameters<typeof PlaintextWorkspaceAuthedRoute>[0]) {
+  return (
+    <WorkspaceAdmissionGate workspaceName={props.workspaceName}>
+      <PlaintextWorkspaceAuthedRoute {...props} />
+    </WorkspaceAdmissionGate>
+  );
+}
+
+function PlaintextWorkspaceAuthedRoute({
   workspaceName,
   organizations,
   organizationsLoading,

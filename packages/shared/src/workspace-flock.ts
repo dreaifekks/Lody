@@ -1,9 +1,21 @@
 import { normalizeBoardMeta, type BoardMeta } from './board';
 import type { BoardId } from './ids';
+import {
+  normalizeWorkspaceProject,
+  type WorkspaceProject,
+  type ProjectId,
+} from './workspace-project';
 import { normalizeAgentRole, serializeAgentRoleRow, type AgentRole } from './agent-role';
 import type { AgentConfigId, AgentRoleId, MachineId, McpServerId, WorkspaceId } from './ids';
-import { isWorkspaceMcpServerMeta, type WorkspaceMcpServerMeta } from './workspace-mcp';
 import { LODY_AGENT_TOOL_IDS, type LodyAgentToolId } from './lody-agent-tools';
+import {
+  isWorkspaceMcpServerMeta,
+  isProjectMcpKey,
+  normalizeProjectMcpDefault,
+  type ProjectMcpDefault,
+  type WorkspaceMcpServerMeta,
+} from './workspace-mcp';
+import { assertPublicMcpServer, publicMcpServer } from './mcp-authentication';
 
 export const WORKSPACE_FLOCK_DOC_STREAM_SEGMENT = 'wf';
 const WORKSPACE_FLOCK_DOC_NAME = 'workspace';
@@ -14,6 +26,8 @@ export const getWorkspaceFlockDocId = (workspaceId: WorkspaceId): string =>
 export type WorkspaceFlockBoardKey = ['board', BoardId];
 export type WorkspaceFlockMcpServerKey = ['mcpServer', McpServerId];
 export type WorkspaceFlockAgentRoleKey = ['agentRole', AgentRoleId];
+export type WorkspaceFlockProjectKey = ['project', ProjectId];
+export type WorkspaceFlockProjectMcpDefaultKey = ['projectMcpDefault', string];
 /** One row per workspace-wide setting. */
 export type WorkspaceFlockVoiceSettingKey = ['setting', 'voice'];
 export type WorkspaceFlockPromptSuggestionsSettingKey = ['setting', 'promptSuggestions'];
@@ -25,6 +39,8 @@ export type WorkspaceFlockSettingKey =
   | WorkspaceFlockAgentToolsSettingKey
   | WorkspaceFlockPinnedProjectsSettingKey;
 export type WorkspaceFlockKey =
+  | WorkspaceFlockProjectKey
+  | WorkspaceFlockProjectMcpDefaultKey
   | WorkspaceFlockBoardKey
   | WorkspaceFlockMcpServerKey
   | WorkspaceFlockAgentRoleKey
@@ -43,9 +59,9 @@ export type WorkspaceVoiceSetting = {
 };
 
 /**
- * Experimental next-message suggestions for Claude sessions. The row exists
- * only while the feature is on. It is workspace-wide because the machine that
- * runs a session decides when Claude starts, whichever device sent the message.
+ * Next-message suggestions negotiated through the upstream ACP capability.
+ * The row exists only while enabled; absence means off. Every machine reads
+ * this workspace-wide setting when initializing the agent.
  */
 export type WorkspacePromptSuggestionsSetting = { version: 1 };
 
@@ -117,10 +133,22 @@ export const isWorkspaceVoiceSetting = (value: unknown): value is WorkspaceVoice
  * data moved between documents and no window where a Role exists in both or
  * neither.
  */
-export const WORKSPACE_FLOCK_ROW_FAMILIES = ['mcpServer', 'agentRole', 'board', 'setting'] as const;
+export const WORKSPACE_FLOCK_ROW_FAMILIES = [
+  'mcpServer',
+  'agentRole',
+  'board',
+  'setting',
+  'project',
+  'projectMcpDefault',
+] as const;
 
 export const workspaceFlockKeys = {
   board: (id: BoardId): WorkspaceFlockBoardKey => ['board', id],
+  project: (id: ProjectId): WorkspaceFlockProjectKey => ['project', id],
+  projectMcpDefault: (projectKey: string): WorkspaceFlockProjectMcpDefaultKey => [
+    'projectMcpDefault',
+    projectKey,
+  ],
   mcpServer: (id: McpServerId): WorkspaceFlockMcpServerKey => ['mcpServer', id],
   agentRole: (id: AgentRoleId): WorkspaceFlockAgentRoleKey => ['agentRole', id],
   voiceSetting: (): WorkspaceFlockVoiceSettingKey => ['setting', 'voice'],
@@ -137,6 +165,8 @@ export const workspaceFlockKeys = {
 
 export type ParsedWorkspaceFlockKey =
   | { kind: 'board'; key: WorkspaceFlockBoardKey; boardId: BoardId }
+  | { kind: 'project'; key: WorkspaceFlockProjectKey; projectId: ProjectId }
+  | { kind: 'projectMcpDefault'; key: WorkspaceFlockProjectMcpDefaultKey; projectKey: string }
   | {
       kind: 'mcpServer';
       key: WorkspaceFlockMcpServerKey;
@@ -178,6 +208,17 @@ export const parseWorkspaceFlockKey = (
     const boardId = id as BoardId;
     return { kind: 'board', key: workspaceFlockKeys.board(boardId), boardId };
   }
+  if (key[0] === 'project') {
+    const projectId = id as ProjectId;
+    return { kind: 'project', key: workspaceFlockKeys.project(projectId), projectId };
+  }
+  if (key[0] === 'projectMcpDefault' && isProjectMcpKey(id)) {
+    return {
+      kind: 'projectMcpDefault',
+      key: workspaceFlockKeys.projectMcpDefault(id),
+      projectKey: id,
+    };
+  }
   if (key[0] === 'mcpServer') {
     const mcpServerId = id as McpServerId;
     return { kind: 'mcpServer', key: workspaceFlockKeys.mcpServer(mcpServerId), mcpServerId };
@@ -212,6 +253,11 @@ export type WorkspaceFlockAgentRoleRow = {
   key: WorkspaceFlockAgentRoleKey;
   value: AgentRole;
 };
+export type WorkspaceFlockProjectRow = { key: WorkspaceFlockProjectKey; value: WorkspaceProject };
+export type WorkspaceFlockProjectMcpDefaultRow = {
+  key: WorkspaceFlockProjectMcpDefaultKey;
+  value: ProjectMcpDefault;
+};
 export type WorkspaceFlockVoiceSettingRow = {
   key: WorkspaceFlockVoiceSettingKey;
   value: WorkspaceVoiceSetting;
@@ -230,6 +276,8 @@ export type WorkspaceFlockPinnedProjectsSettingRow = {
   value: WorkspacePinnedProjectsSetting;
 };
 export type WorkspaceFlockRow =
+  | WorkspaceFlockProjectRow
+  | WorkspaceFlockProjectMcpDefaultRow
   | WorkspaceFlockBoardRow
   | WorkspaceFlockMcpServerRow
   | WorkspaceFlockAgentRoleRow
@@ -272,11 +320,19 @@ export const parseWorkspaceFlockRow = (
       ? { key: parsedKey.key, value: board }
       : undefined;
   }
+  if (parsedKey.kind === 'project') {
+    const project = normalizeWorkspaceProject(value);
+    return project?.id === parsedKey.projectId ? { key: parsedKey.key, value: project } : undefined;
+  }
+  if (parsedKey.kind === 'projectMcpDefault') {
+    const preference = normalizeProjectMcpDefault(value);
+    return preference ? { key: parsedKey.key, value: preference } : undefined;
+  }
   if (parsedKey.kind === 'mcpServer') {
     if (!isWorkspaceMcpServerMeta(value) || value.id !== parsedKey.mcpServerId) {
       return undefined;
     }
-    return { key: parsedKey.key, value };
+    return { key: parsedKey.key, value: publicMcpServer(value) };
   }
   if (parsedKey.kind === 'agentToolsSetting') {
     const setting = normalizeAgentTools(value);
@@ -395,7 +451,10 @@ const workspaceFlockRowsEqual = (
 export const writeWorkspaceMcpServerToFlock = (
   flock: WorkspaceFlockWritableFlock,
   entry: WorkspaceMcpServerMeta
-): boolean => writeWorkspaceFlockRow(flock, workspaceFlockKeys.mcpServer(entry.id), entry);
+): boolean => {
+  assertPublicMcpServer(entry);
+  return writeWorkspaceFlockRow(flock, workspaceFlockKeys.mcpServer(entry.id), entry);
+};
 
 export const deleteWorkspaceMcpServerFromFlock = (
   flock: WorkspaceFlockWritableFlock,
@@ -496,3 +555,31 @@ export const listWorkspaceBoards = (rows: WorkspaceFlockRowMap): BoardMeta[] =>
     .filter((row): row is WorkspaceFlockBoardRow => row.key[0] === 'board')
     .map((row) => row.value)
     .sort((a, b) => b.createdAtMs - a.createdAtMs || a.id.localeCompare(b.id));
+
+export const listWorkspaceProjects = (rows: WorkspaceFlockRowMap): WorkspaceProject[] =>
+  Object.values(rows)
+    .filter((row): row is WorkspaceFlockProjectRow => row.key[0] === 'project')
+    .map((row) => row.value)
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+export const writeWorkspaceProjectToFlock = (
+  flock: WorkspaceFlockWritableFlock,
+  project: WorkspaceProject
+): boolean => writeWorkspaceFlockRow(flock, workspaceFlockKeys.project(project.id), project);
+export const deleteWorkspaceProjectFromFlock = (
+  flock: WorkspaceFlockWritableFlock,
+  id: ProjectId
+): boolean => deleteWorkspaceFlockRow(flock, workspaceFlockKeys.project(id));
+
+export const getProjectMcpDefaults = (
+  rows: WorkspaceFlockRowMap
+): Record<string, ProjectMcpDefault> => {
+  const defaults: Record<string, ProjectMcpDefault> = {};
+  for (const row of Object.values(rows)) {
+    if (isProjectMcpDefaultRow(row)) defaults[row.key[1]] = row.value;
+  }
+  return defaults;
+};
+
+const isProjectMcpDefaultRow = (
+  row: WorkspaceFlockRow
+): row is WorkspaceFlockProjectMcpDefaultRow => row.key[0] === 'projectMcpDefault';

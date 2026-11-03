@@ -1,6 +1,10 @@
+import {
+  useLegacyWorkspaceMutation,
+  useLegacyWorkspaceQuery,
+} from '@/hooks/use-legacy-workspace-query';
+import { useLegacyWorkspaceQueriesEnabled } from './use-workspace-feature';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useCloudMutation, useCloudQuery } from '@lody/platform/react';
 import { useAppCapability } from '@/lib/app-platform';
 import { withGitHubTokenRetry, withGitHubOperationTokenRetry } from '@/lib/github-token';
 import { cloudOperations } from '@/lib/cloud-api-operations';
@@ -29,10 +33,16 @@ export function useGitHubPrIdentity({
   // no brokered token whose repository could be swapped under a name.
   const hostedIdentity = useAppCapability('githubIntegration');
   const requestedRepoFullName = repoFullName?.trim() || null;
+  const legacyQueriesEnabled = useLegacyWorkspaceQueriesEnabled(workspaceId);
   const hasInputs = Boolean(
-    enabled && workspaceId && requestedRepoFullName && prNumber && prNumber > 0
+    legacyQueriesEnabled &&
+    enabled &&
+    workspaceId &&
+    requestedRepoFullName &&
+    prNumber &&
+    prNumber > 0
   );
-  const serverVersions = useCloudQuery(
+  const serverVersions = useLegacyWorkspaceQuery(
     cloudOperations.github.getPrCacheVersions,
     hasInputs && hostedIdentity
       ? {
@@ -43,13 +53,16 @@ export function useGitHubPrIdentity({
         }
       : 'skip'
   );
-  const resolveLegacy = useCloudMutation(cloudOperations.github.resolveLegacyPrRepositoryIdentity);
+  const resolveLegacy = useLegacyWorkspaceMutation(
+    cloudOperations.github.resolveLegacyPrRepositoryIdentity
+  );
   const linkedRepositoryId = serverVersions?.repositoryId;
   const ready =
     hasInputs &&
-    (!hostedIdentity || (!serverVersions?.identityPending &&
-    (!sessionId ||
-      (typeof linkedRepositoryId === 'number' && Boolean(serverVersions?.repoFullName)))));
+    (!hostedIdentity ||
+      (!serverVersions?.identityPending &&
+        (!sessionId ||
+          (typeof linkedRepositoryId === 'number' && Boolean(serverVersions?.repoFullName)))));
   const unresolved = hasInputs && !ready && serverVersions !== undefined;
   const key = JSON.stringify([workspaceId, sessionId, requestedRepoFullName, prNumber]);
   const [publicRepository, setPublicRepository] = useState<{ key: string; id: number } | null>(

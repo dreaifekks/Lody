@@ -6,6 +6,7 @@ import { LoroRepo } from 'loro-repo';
 import { SqliteRepoStore } from 'loro-repo/storage/sqlite';
 import {
   getWorkspaceFlockDocId,
+  workspaceFlockKeys,
   listWorkspaceAgentRoles,
   legacyAgentRoleInstanceId,
   withAgentRoleTargets,
@@ -323,13 +324,22 @@ describe('importing from a hosted installation on disk', () => {
       HOSTED_MACHINE,
       project('p-here', projectDir)
     );
-    await upsertWorkspaceMcpCatalogEntry(
-      hosted,
-      HOSTED_WORKSPACE,
-      mcp({ id: 'docs' as McpServerId }),
-      {
-        sync: false,
-      }
+    // Legacy hosted versions persisted literal credentials. Seed their raw storage
+    // shape so the real snapshot reader/importer, not today's writer, handles it.
+    const hostedCatalog = await hosted.openFlockDoc(getWorkspaceFlockDocId(HOSTED_WORKSPACE));
+    hostedCatalog.flock.set(
+      workspaceFlockKeys.mcpServer('docs' as McpServerId),
+      mcp({
+        id: 'docs' as McpServerId,
+        connection: {
+          transport: 'stdio',
+          command: 'docs-mcp',
+          env: {
+            DOCS_KEY: 'synthetic-legacy-docs-secret',
+            FROM_ENV: '${DOCS_FROM_ENV}',
+          },
+        },
+      })
     );
     const flock = await hosted.openFlockDoc(getWorkspaceFlockDocId(HOSTED_WORKSPACE));
     writeWorkspaceAgentRoleToFlock(
@@ -393,6 +403,28 @@ describe('importing from a hosted installation on disk', () => {
     expect(await listWorkspaceMcpCatalog(repo, LOCAL_WORKSPACE)).toMatchObject([
       { id: 'docs', name: 'docs', createdBy: LOCAL_USER },
     ]);
+    const importedCatalog = await repo.openFlockDoc(getWorkspaceFlockDocId(LOCAL_WORKSPACE));
+    const importedMcp = importedCatalog.flock.get(
+      workspaceFlockKeys.mcpServer('docs' as McpServerId)
+    );
+    expect(importedMcp).toMatchObject({
+      connection: {
+        authentication: 'local',
+        env: { FROM_ENV: '${DOCS_FROM_ENV}' },
+      },
+    });
+    expect(JSON.stringify(importedMcp)).not.toContain('synthetic-legacy-docs-secret');
+    const originalCatalog = await opened[0]!.repo.openFlockDoc(
+      getWorkspaceFlockDocId(HOSTED_WORKSPACE)
+    );
+    expect(
+      originalCatalog.flock.get(workspaceFlockKeys.mcpServer('docs' as McpServerId))
+    ).toMatchObject({ connection: { env: { DOCS_KEY: 'synthetic-legacy-docs-secret' } } });
+    await expect(
+      upsertWorkspaceMcpCatalogEntry(repo, LOCAL_WORKSPACE, mcp({ id: 'new-secret' }), {
+        sync: false,
+      })
+    ).rejects.toThrow('MCP credentials must be configured on the local machine');
     const roles = listWorkspaceAgentRoles(
       readWorkspaceFlockRowsFromFlock(
         (await repo.openFlockDoc(getWorkspaceFlockDocId(LOCAL_WORKSPACE))).flock
@@ -412,6 +444,46 @@ describe('importing from a hosted installation on disk', () => {
         )
       )
     ).toEqual({ scripts: { bash: 'pnpm install' } });
+  });
+
+  it('imports a legacy HTTP definition without copying its credentials or rewriting the source', async () => {
+    const hosted = opened[0]!.repo;
+    const sourceCatalog = await hosted.openFlockDoc(getWorkspaceFlockDocId(HOSTED_WORKSPACE));
+    const id = 'legacy-http' as McpServerId;
+    const legacy = mcp({
+      id,
+      name: 'remote-docs',
+      transport: 'http',
+      connection: {
+        transport: 'http',
+        url: 'https://synthetic-user:synthetic-password@mcp.example/tools?project=docs&api_key=synthetic-url-secret#synthetic-fragment',
+        bearerToken: 'synthetic-bearer-secret',
+        headers: { Authorization: 'synthetic-header-secret', 'X-From-Env': '${DOCS_HEADER}' },
+      },
+    });
+    sourceCatalog.flock.set(workspaceFlockKeys.mcpServer(id), legacy);
+    await hosted.flush();
+    const repo = await open(path.join(root, 'local', 'repo.sqlite3'));
+    await importHostedConfig(
+      local(repo),
+      {
+        sourceWorkspaceId: HOSTED_WORKSPACE,
+        categories: ['mcpServers'],
+      },
+      hostedDir
+    );
+    const destination = await repo.openFlockDoc(getWorkspaceFlockDocId(LOCAL_WORKSPACE));
+    const written = destination.flock.get(workspaceFlockKeys.mcpServer(id));
+    expect(written).toMatchObject({
+      connection: {
+        transport: 'http',
+        url: 'https://mcp.example/tools?project=docs',
+        authentication: 'local',
+        headers: { 'X-From-Env': '${DOCS_HEADER}' },
+      },
+    });
+    expect(JSON.stringify(written)).not.toContain('synthetic-');
+    expect(sourceCatalog.flock.get(workspaceFlockKeys.mcpServer(id))).toEqual(legacy);
   });
 
   it('changes nothing when it is run again', async () => {

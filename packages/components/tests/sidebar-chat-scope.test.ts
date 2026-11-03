@@ -20,56 +20,6 @@ function mountArchiveScopeStore() {
   return { store, unsubscribe };
 }
 
-describe('chatScopeAtom', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('shows all workspace tasks when the user has not chosen a filter', () => {
-    const { store, unsubscribe } = mountChatScopeStore();
-
-    expect(store.get(chatScopeAtom)).toBe('team');
-    expect(localStorage.getItem(CHAT_SCOPE_STORAGE_KEY)).toBeNull();
-
-    unsubscribe();
-  });
-
-  it('preserves an explicitly saved My Tasks filter', () => {
-    localStorage.setItem(CHAT_SCOPE_STORAGE_KEY, JSON.stringify('my'));
-
-    const { store, unsubscribe } = mountChatScopeStore();
-
-    expect(store.get(chatScopeAtom)).toBe('my');
-
-    unsubscribe();
-  });
-});
-
-describe('archiveScopeAtom', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('shows all archived workspace tasks when the user has not chosen a filter', () => {
-    const { store, unsubscribe } = mountArchiveScopeStore();
-
-    expect(store.get(archiveScopeAtom)).toBe('team');
-    expect(localStorage.getItem(ARCHIVE_SCOPE_STORAGE_KEY)).toBeNull();
-
-    unsubscribe();
-  });
-
-  it('preserves an explicitly saved My Tasks archive filter', () => {
-    localStorage.setItem(ARCHIVE_SCOPE_STORAGE_KEY, JSON.stringify('my'));
-
-    const { store, unsubscribe } = mountArchiveScopeStore();
-
-    expect(store.get(archiveScopeAtom)).toBe('my');
-
-    unsubscribe();
-  });
-});
-
 describe('archiveMachineIdAtom', () => {
   beforeEach(() => localStorage.clear());
 

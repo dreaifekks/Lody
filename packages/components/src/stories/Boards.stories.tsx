@@ -828,7 +828,9 @@ function BoardHeaderToolbar() {
   return (
     <div className="flex h-full shrink-0 items-center gap-1 pl-1 pr-2">
       <div className={cn(SESSION_PAGE_HEADER_PILLS_CLASS, 'items-center')}>
-        <SessionAccessControl publicShare={{ status: 'none', onOpen: noop }} />
+        <SessionAccessControl
+          publicShare={{ status: 'none', renderEditor: () => <div>LAN share editor</div> }}
+        />
       </div>
       <SessionHeaderMenu
         session={coordinatorSession}

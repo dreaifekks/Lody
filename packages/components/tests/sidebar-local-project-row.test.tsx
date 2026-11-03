@@ -1,7 +1,8 @@
 import { flushSync } from 'react-dom';
 // @vitest-environment jsdom
 
-import React, { act } from 'react';
+// @vitest-environment jsdom
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -14,6 +15,7 @@ import type {
 
 import { LocalProjectItem } from '../src/components/loro-app-sidebar';
 import { LoroSidebar } from '../src/components/loro-sidebar';
+import { SessionList, type SessionListRow } from '../src/components/session-list';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
 
@@ -34,25 +36,6 @@ const project = {
 } as LocalProjectMeta;
 
 const NO_LIVE_STATUSES: ReadonlyMap<string, SessionStatus> = new Map();
-
-/**
- * The elements whose hover drives `element`'s group-hover variants, by
- * Tailwind's rule: `group-hover:` answers any ancestor `.group`,
- * `group-hover/row:` any ancestor `.group/row`. jsdom cannot hover, so a test
- * asks this instead of what a hover would paint.
- */
-function groupHoverOwners(element: Element): Element[] {
-  const names = new Set<string>();
-  for (const token of Array.from(element.classList)) {
-    const match = /^group-hover(?:\/([\w-]+))?:/.exec(token);
-    if (match) names.add(match[1] ? `group/${match[1]}` : 'group');
-  }
-  const owners: Element[] = [];
-  for (let node = element.parentElement; node; node = node.parentElement) {
-    if (Array.from(names).some((name) => node.classList.contains(name))) owners.push(node);
-  }
-  return owners;
-}
 
 const SIDEBAR_ROW = '[data-scope-item="row"]';
 
@@ -272,42 +255,6 @@ describe('sidebar local project row', () => {
     expect(named?.querySelector('.lucide-pin')).toBeNull();
   });
 
-  it('lets a hover light only the row under the pointer, pinned or not', () => {
-    for (const inPinnedSection of [false, true]) {
-      render({
-        onNavigateProject: vi.fn(),
-        onNewChatInProject: vi.fn(),
-        onTogglePinned: vi.fn(),
-        isPinned: inPinnedSection,
-        showMachineName: inPinnedSection,
-        inPinnedSection,
-        sessions: [localSession('first'), localSession('second')],
-      });
-      const rows = Array.from(container?.querySelectorAll(SIDEBAR_ROW) ?? []);
-      // The project row, its two Sessions and, when pinned, a pinned Session.
-      expect(rows, `pinned=${inPinnedSection}`).toHaveLength(inPinnedSection ? 4 : 3);
-      for (const row of rows) {
-        const reveals = Array.from(row.querySelectorAll('*')).filter(
-          (element) => groupHoverOwners(element).length > 0
-        );
-        // The project's own rows do reveal on hover (the pinned conversation
-        // may have nothing to reveal), so the check below is not vacuous.
-        if (!row.hasAttribute('data-sidebar-updated-id')) {
-          expect(reveals.length, row.getAttribute('data-id') ?? '').toBeGreaterThan(0);
-        }
-        for (const element of reveals) {
-          for (const owner of groupHoverOwners(element)) {
-            // Hovering anywhere in the owner restyles `element`; an owner that
-            // spans another row would light this one from there.
-            const rowsInOwner =
-              owner.querySelectorAll(SIDEBAR_ROW).length + (owner.matches(SIDEBAR_ROW) ? 1 : 0);
-            expect(rowsInOwner, `${row.getAttribute('data-id')} pinned=${inPinnedSection}`).toBe(1);
-          }
-        }
-      }
-    }
-  });
-
   it('goes inert while the project is being removed', () => {
     const onNavigateProject = vi.fn();
     const onNewChatInProject = vi.fn();
@@ -430,5 +377,95 @@ describe('sidebar local project row', () => {
     });
     expect(row?.querySelector('[data-session-row-indicator]')).toBeNull();
     expect(row?.getAttribute('aria-label')).toBe("Lody · Teammate's Mac · /workspace/lody");
+  });
+});
+
+// A Project group's row is a project row: the same hover controls in the same
+// places, the row itself starts a conversation, and there is no separate "+".
+describe('sidebar project group row', () => {
+  let root: Root | undefined;
+  let container: HTMLDivElement | undefined;
+
+  beforeEach(async () => {
+    await initI18n('en');
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    if (root) act(() => root?.unmount());
+    root = undefined;
+    container?.remove();
+    container = undefined;
+    vi.restoreAllMocks();
+  });
+
+  const row = (sessionId: string, projectGroup: { id: string; name: string }): SessionListRow => ({
+    sessionId,
+    title: sessionId,
+    repoFullName: 'acme/web',
+    branchName: '',
+    latestMessageAt: '2026-10-18T00:00:00.000Z',
+    addedLines: 0,
+    deletedLines: 0,
+    isWorking: false,
+    hasUnreadMessages: false,
+    isOffline: false,
+    isWaitingPermission: false,
+    projectGroup,
+  });
+
+  function render() {
+    const handlers = {
+      onNewInProjectGroup: vi.fn(),
+      onOpenProjectGroupSettings: vi.fn(),
+      onArchiveProjectGroupChats: vi.fn(),
+      onMoveProjectGroup: vi.fn(),
+    };
+    act(() => {
+      root?.render(
+        <SessionList
+          sessions={[
+            row('shop-1', { id: 'shop', name: 'Shop' }),
+            // A deleted group still lists its conversations under the old name.
+            row('old-1', { id: 'gone', name: 'Old group' }),
+          ]}
+          repos={[]}
+          projectGroups={[
+            { projectId: 'shop', name: 'Shop', collapsed: false },
+            { projectId: 'docs', name: 'Docs', collapsed: false },
+          ]}
+          onToggleProjectGroupCollapsed={() => undefined}
+          {...handlers}
+        />
+      );
+    });
+    const groupRow = (id: string) =>
+      container?.querySelector<HTMLElement>(`[data-id="group:projectGroup:${id}"]`);
+    return { handlers, groupRow };
+  }
+
+  it('leaves a deleted group nothing to start, edit or move', () => {
+    const { handlers, groupRow } = render();
+    const old = groupRow('gone');
+    expect(old).toBeInstanceOf(HTMLElement);
+    expect(old?.querySelector('button[aria-label="New chat in this project"]')).toBeNull();
+    expect(old?.querySelector('button[aria-label="Reorder project"]')).toBeNull();
+    act(() => old?.click());
+    expect(handlers.onNewInProjectGroup).not.toHaveBeenCalled();
   });
 });

@@ -1143,6 +1143,7 @@ function SessionBrowserPanelController({
   return (
     <SessionBrowserPanelView
       className={className}
+      tunnelDisclosure={runtime?.contentMode === 'e2ee' && !isLocalDesktopSession}
       toolbar={{
         leadingSlot: leadingSlot,
         focusAddress: active && currentAddress === null,

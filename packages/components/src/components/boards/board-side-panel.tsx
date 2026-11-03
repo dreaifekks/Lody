@@ -20,6 +20,7 @@ import {
 const localProjectsOf = (rows: MachineFlockRowMap | undefined) =>
   rows ? getMachineFlockLocalProjects(rows) : undefined;
 import { useSessionActions } from '@/hooks/use-session-actions';
+import { useArchiveSessionWithConfirmation } from '../sessions/session-archive-confirmation';
 import { buildSessionLink } from '@lody/shared/session-link';
 import {
   RenameSessionDialogView,
@@ -138,12 +139,13 @@ function BoardThreads({
 }) {
   const { archiveSession, restoreSession, markSessionUnread, updateSessionTitle } =
     useSessionActions();
+  const confirmAndArchive = useArchiveSessionWithConfirmation(archiveSession);
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
   const [renameTarget, setRenameTarget] = useState<RenameSessionDialogTarget | null>(null);
   const actions = useMemo(
     () => ({
       onArchive: (id: string) => {
-        void archiveSession(id as SessionId).catch((error: unknown) => {
+        void confirmAndArchive(id as SessionId).catch((error: unknown) => {
           toast.error(error instanceof Error ? error.message : String(error));
         });
       },
@@ -164,7 +166,7 @@ function BoardThreads({
         );
       },
     }),
-    [archiveSession, restoreSession, markSessionUnread, updateSessionTitle, workspaceId]
+    [confirmAndArchive, restoreSession, markSessionUnread, updateSessionTitle, workspaceId]
   );
   const { allActiveSessions } = useVisibleSessionMetas();
   const { archivedSessions } = useVisibleArchivedSessionMetas();

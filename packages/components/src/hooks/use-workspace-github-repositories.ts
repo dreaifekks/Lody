@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { WorkspaceRepository } from '@lody/cloud-api';
-import { useCloudQuery } from '@lody/platform/react';
+import { useLegacyWorkspaceQuery } from './use-legacy-workspace-query';
 import { useAppCapability } from '@/lib/app-platform';
 import { cloudOperations } from '@/lib/cloud-api-operations';
 import { listLocalGitHubRepositories } from '@/lib/local-github-repositories';
@@ -14,7 +14,7 @@ export function useWorkspaceGitHubRepositories(
   workspaceId: string | null | undefined
 ): WorkspaceRepository[] | null | undefined {
   const registry = useAppCapability('githubIntegration');
-  const hosted = useCloudQuery(
+  const hosted = useLegacyWorkspaceQuery(
     cloudOperations.github.getWorkspaceRepositories,
     registry && workspaceId ? { workspaceId } : 'skip'
   );

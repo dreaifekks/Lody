@@ -3,6 +3,10 @@ import type { InboxScope } from './model';
 
 export interface InboxQueries {
   hasPassiveResults(workspaceId: string, sessionId: string): Effect.Effect<boolean, unknown>;
+  activeExecution(
+    workspaceId: string,
+    sessionId: string
+  ): Effect.Effect<(InboxScope & { inputId: string; executionId: string }) | undefined, unknown>;
   preferredHumanInput(
     workspaceId: string,
     sessionId: string
@@ -18,7 +22,11 @@ export interface InboxQueries {
     sessionId: string,
     id: string
   ): Effect.Effect<boolean, unknown>;
-  inputKind(scope: InboxScope, id: string): Effect.Effect<'human' | 'task' | undefined, unknown>;
+  inputKind(
+    scope: InboxScope,
+    id: string
+  ): Effect.Effect<'human' | 'task' | 'automation' | undefined, unknown>;
+  acceptedAutomationInput(scope: InboxScope, id: string): Effect.Effect<boolean, unknown>;
   pauseTarget(
     workspaceId: string,
     sessionId: string,

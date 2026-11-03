@@ -13,7 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { LoroRepo } from 'loro-repo';
 
 import type { Logger } from '../../src/utils/logger';
-import type { SessionId } from '@lody/shared';
+import type { SessionId, SessionHistoryInput, MessageContent } from '@lody/shared';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 
 import { startLocalAcpAgent } from '../../src/agent/acp-runner';

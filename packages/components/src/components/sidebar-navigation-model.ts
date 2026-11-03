@@ -6,6 +6,7 @@ import {
   MAX_VISIBLE_SESSIONS,
   sessionGroupOverflowsPreview,
   type SessionRowGroup,
+  type SessionListProjectGroupState,
   type SessionListRepoState,
   type SessionListRow,
 } from '@/components/session-list';
@@ -38,6 +39,12 @@ export function getLocalProjectSessionGroupKey(machineId: string, localProjectId
 export type SidebarNavigationLocalSection = {
   collapsed: boolean;
   projects: SidebarNavigationLocalProject[];
+  /**
+   * Multi-repository projects that need this machine, listed after its
+   * folders, with the conversations filed under them.
+   */
+  projectGroups?: SessionListProjectGroupState[];
+  projectGroupSessions?: SessionListRow[];
 };
 
 export type SidebarNavigationModelOptions = {
@@ -55,8 +62,11 @@ export type SidebarNavigationModelOptions = {
   workspace: {
     localSections: SidebarNavigationLocalSection[];
     githubSectionCollapsed: boolean;
+    /** Includes the conversations of the multi-repository projects listed here. */
     repoSessions: SessionListRow[];
     repos: SessionListRepoState[];
+    /** Multi-repository projects that run on any machine, listed with GitHub. */
+    projectGroups?: SessionListProjectGroupState[];
     chatSessions: SessionListRow[];
     chatsCollapsed: boolean;
   };
@@ -89,11 +99,23 @@ function emitSessionGroup(
 function emitLocalSections(
   items: SidebarNavItem[],
   sections: SidebarNavigationLocalSection[],
+  showFullSessionGroups: Record<string, boolean>,
   collapsedOpenedBySessions: Record<string, boolean>
 ): void {
   for (const section of sections) {
     if (section.collapsed) continue;
     emitLocalProjects(items, section.projects, collapsedOpenedBySessions);
+    if (section.projectGroups?.length) {
+      for (const group of buildGroups(
+        section.projectGroupSessions ?? [],
+        [],
+        false,
+        undefined,
+        section.projectGroups
+      )) {
+        emitSessionGroup(items, group, showFullSessionGroups, collapsedOpenedBySessions);
+      }
+    }
   }
 }
 
@@ -175,10 +197,21 @@ export function buildSidebarNavigationItems({
     return items;
   }
 
-  emitLocalSections(items, workspace.localSections, collapsedOpenedBySessions);
+  emitLocalSections(
+    items,
+    workspace.localSections,
+    showFullSessionGroups,
+    collapsedOpenedBySessions
+  );
 
   if (!workspace.githubSectionCollapsed) {
-    for (const group of buildGroups(workspace.repoSessions, workspace.repos, false)) {
+    for (const group of buildGroups(
+      workspace.repoSessions,
+      workspace.repos,
+      false,
+      undefined,
+      workspace.projectGroups
+    )) {
       emitSessionGroup(items, group, showFullSessionGroups, collapsedOpenedBySessions);
     }
   }

@@ -1,44 +1,71 @@
 import {
-  getDefaultSelectedMcpServerIds,
+  type ProjectRef,
   resolveSessionConversationConfig,
   type McpServerId,
   type WorkspaceId,
 } from '@lody/shared';
 
 import type { LoroDocumentManager } from './loro/doc';
-import { listWorkspaceMcpCatalog, syncMcpCatalog } from './workspace-mcp-store';
-import { formatErrorMessage } from '@/utils/format-error';
-import { getLogger } from '@/utils/logger';
+import {
+  readProjectDefaultMcpIds,
+  syncMcpCatalog,
+  waitForMcpDefaultCatalog,
+} from './workspace-mcp-store';
+import { getSessionCommandEnvironment } from './session-command-environment';
 
 /**
  * Turns written outside the desktop composer must still record a workspace MCP
  * selection: dispatch reads an absent one as `[]`. These helpers give such
  * producers (Schedules, CLI and MCP Session tools) the composer's own choice.
  */
-export type McpSelectionManager = Pick<LoroDocumentManager, 'repo' | 'syncFlockDocOrThrow'>;
+export type McpSelectionManager = Pick<LoroDocumentManager, 'repo' | 'syncFlockDocOrThrow'> &
+  Partial<
+    Pick<
+      LoroDocumentManager,
+      'hasWorkspaceCatalogReader' | 'catalogBaselineReady' | 'hasPersistedWorkspaceCatalog'
+    >
+  >;
 
 /**
  * Keep a stated selection, including an explicit `[]`. Without one, use the
  * catalog's `enabledByDefault` servers, which is what a new composer preselects.
- * Like the composer, a default may come from this machine's catalog copy: a
- * failed refresh is logged, never a reason to refuse the Turn.
+ * Use the daemon's confirmed catalog baseline, with the upstream persisted-checkpoint
+ * policy. A retryable cold read must happen before Operation acceptance.
  */
 export async function resolveMcpSelectionOrWorkspaceDefault(args: {
   manager: McpSelectionManager;
   workspaceId: WorkspaceId;
   localOnly?: boolean;
+  project?: ProjectRef;
+  machineId?: string;
   selection: readonly McpServerId[] | undefined;
 }): Promise<McpServerId[]> {
   if (args.selection !== undefined) return [...args.selection];
-  if (!args.localOnly) {
-    await syncMcpCatalog(args.manager, args.workspaceId).catch((error: unknown) => {
-      getLogger('mcp-selection').debug(
-        `Using the local MCP catalog copy for workspace defaults: ${formatErrorMessage(error)}`
+  const environment = getSessionCommandEnvironment();
+  if (!args.localOnly && !(environment && !environment.host.remote)) {
+    if (
+      args.manager.hasWorkspaceCatalogReader?.() &&
+      args.manager.catalogBaselineReady &&
+      args.manager.hasPersistedWorkspaceCatalog
+    ) {
+      await waitForMcpDefaultCatalog(
+        {
+          catalogBaselineReady: args.manager.catalogBaselineReady.bind(args.manager),
+          hasPersistedWorkspaceCatalog: args.manager.hasPersistedWorkspaceCatalog.bind(
+            args.manager
+          ),
+        },
+        args.workspaceId
       );
-    });
+    } else {
+      await syncMcpCatalog(args.manager, args.workspaceId);
+    }
   }
-  return getDefaultSelectedMcpServerIds(
-    await listWorkspaceMcpCatalog(args.manager.repo, args.workspaceId)
+  return readProjectDefaultMcpIds(
+    args.manager.repo,
+    args.workspaceId,
+    args.project,
+    args.machineId ?? ''
   );
 }
 

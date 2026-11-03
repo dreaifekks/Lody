@@ -68,11 +68,10 @@ Shared mention primitive used by composer autocomplete surfaces.
 - `MentionKind` stays product-neutral: `pasted_text` is the only member the
   primitive branches on, and every other kind is an opaque tag the menu chooses.
   Adding a mention category must not edit this package.
-- `MentionItem` registers its stable ref object, never a `{ current: node }`
-  snapshot. The collection keys its map by that object and sorts by document
-  position through `.current`, so a snapshot taken before the node mounts leaves
-  a null-node entry behind — the sort collapses around it and highlight movement
-  matches the wrong row.
+- `MentionItem` registers its stable ref, never a `{ current: node }` snapshot.
+  Collections key by that ref and sort through `.current`; retain live nodes so
+  highlight navigation cannot use a stale null-node position.
+
 - `onMentionsChange`/`onValueChange` updaters see the last value WRITTEN, not
   the last value rendered (`useFlushConsistentState` in `mention-root.tsx`).
   `useControllableState` resolves an updater against the controlled prop, and
@@ -102,6 +101,7 @@ Shared mention primitive used by composer autocomplete surfaces.
   It docks above `[data-mention-frame]` (else the input) and caps to visible
   room without covering the frame or top inset.
   The docked strip is the only scroller: menus pass `docked` and drop their own.
+- Full-height composers use `mobilePanelPlacement="bottom"` (dock above footer).
 - Desktop content, the mobile strip and rows share `mention-surface.ts`: the
   `@lody/ui` popup surface restated in semantic tokens (no border, no Tailwind).
   StyleX cannot read `data-highlighted`, so `ui/mention.tsx` derives the row

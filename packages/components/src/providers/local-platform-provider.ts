@@ -147,3 +147,8 @@ export function useLocalWorkspaces(): readonly WorkspaceSummary[] {
   const state = useLocalPlatformWorkspacesState();
   return state.status === 'ready' ? state.workspaces : NO_WORKSPACES;
 }
+
+/** Retry the same continuously followed catalog. */
+export function retryLocalPlatformSnapshot(): void {
+  void refreshLocalPlatformSnapshot();
+}

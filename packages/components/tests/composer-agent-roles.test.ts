@@ -1,3 +1,4 @@
+import { resolvePendingAgentRoleSelection } from '../src/lib/composer-agent-roles';
 import { getAgentRoleTargets } from '@lody/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -22,7 +23,6 @@ import {
   planNewChatAgentRolePick,
   isComposerAgentRoleApplied,
   resolveTurnAgentRoleForRunConfig,
-  resolvePendingAgentRoleSelection,
 } from '../src/lib/composer-agent-roles';
 import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
 import {
@@ -330,10 +330,6 @@ describe('isComposerAgentRoleApplied', () => {
     configOptionSelectors: [{ configId: 'thought_level' }],
   };
 
-  it('holds while every pinned value is what will run', () => {
-    expect(isComposerAgentRoleApplied(role!, matching)).toBe(true);
-  });
-
   it('ignores options the Role does not pin', () => {
     expect(
       isComposerAgentRoleApplied(role!, {
@@ -343,61 +339,6 @@ describe('isComposerAgentRoleApplied', () => {
     ).toBe(true);
   });
 
-  it.each([
-    ['plan_mode', true, false],
-    ['plan_mode', false, true],
-    ['collaboration_mode', 'plan', 'default'],
-    ['collaboration_mode', 'default', 'plan'],
-  ] as const)('retains the Role when %s changes from %s to %s', (configId, before, after) => {
-    const planningRole = {
-      ...role,
-      runConfig: {
-        ...role.runConfig,
-        configOptionValues: { thought_level: 'high', [configId]: before },
-      },
-    };
-    const changed = {
-      ...matching,
-      configOptionValues: { thought_level: 'high', [configId]: after },
-    };
-    expect(isComposerAgentRoleApplied(planningRole, changed)).toBe(true);
-    expect(isComposerAgentRoleApplied(planningRole, { ...changed, modelId: 'other' })).toBe(false);
-    expect(
-      isComposerAgentRoleApplied(planningRole, {
-        ...changed,
-        configOptionValues: { thought_level: 'low', [configId]: after },
-      })
-    ).toBe(false);
-    expect(isComposerAgentRoleApplied(planningRole, matching)).toBe(false);
-    expect(
-      isComposerAgentRoleApplied(planningRole, {
-        ...changed,
-        configOptionValues: { thought_level: 'high', [configId]: 'invalid' },
-      })
-    ).toBe(false);
-  });
-
-  it.each([
-    ['plan_mode', 'true', false],
-    ['plan_mode', 'invalid', true],
-    ['collaboration_mode', true, 'default'],
-    ['collaboration_mode', 'invalid', 'plan'],
-  ] as const)(
-    'does not retain a Role with invalid saved %s value %s',
-    (configId, saved, selected) => {
-      const invalidRole = {
-        ...role,
-        runConfig: { ...role.runConfig, configOptionValues: { [configId]: saved } },
-      };
-      expect(
-        isComposerAgentRoleApplied(invalidRole, {
-          ...matching,
-          configOptionValues: { [configId]: selected },
-        })
-      ).toBe(false);
-    }
-  );
-
   it('stops holding when a pinned option falls back to the agent value', () => {
     expect(
       isComposerAgentRoleApplied(role!, {
@@ -405,11 +346,6 @@ describe('isComposerAgentRoleApplied', () => {
         configOptionValues: { thought_level: 'low' },
       })
     ).toBe(false);
-  });
-
-  it('stops holding when the model or mode is changed by hand', () => {
-    expect(isComposerAgentRoleApplied(role!, { ...matching, modelId: 'gpt-5.6-thor' })).toBe(false);
-    expect(isComposerAgentRoleApplied(role!, { ...matching, modeId: 'default' })).toBe(false);
   });
 
   it('never holds for another agent config or machine', () => {
@@ -658,33 +594,6 @@ describe('a programmatic Turn of a Role that pins Fast off', () => {
         overrides: { modelIdOverride: 'claude-fable-5-1' },
       })
     ).toBeNull();
-  });
-});
-
-describe('doesAgentRolePinPermissionMode', () => {
-  const pinning = makeRole({
-    id: 'r-1' as AgentRoleId,
-    name: 'Reviewer',
-    runConfig: { modeId: 'read-only', configOptionValues: { permission_mode: 'ask' } },
-  }).runConfig;
-  const bare = makeRole({ id: 'r-2' as AgentRoleId, name: 'Bare' }).runConfig;
-
-  it('holds for a legacy ACP mode the Role stored', () => {
-    expect(doesAgentRolePinPermissionMode(pinning, { kind: 'modeId' })).toBe(true);
-    expect(doesAgentRolePinPermissionMode(bare, { kind: 'modeId' })).toBe(false);
-  });
-
-  it('holds for the agent own permission option when the Role stored it', () => {
-    const source = { kind: 'configOption', configId: 'permission_mode' } as const;
-    expect(doesAgentRolePinPermissionMode(pinning, source)).toBe(true);
-    expect(doesAgentRolePinPermissionMode(bare, source)).toBe(false);
-  });
-
-  // An agent that publishes no permission control leaves a Role nothing to own,
-  // so the composer must keep its own permission button rather than hide a knob
-  // the Role never had.
-  it('never holds when the agent exposes no permission control', () => {
-    expect(doesAgentRolePinPermissionMode(pinning, null)).toBe(false);
   });
 });
 

@@ -175,6 +175,8 @@ describe('resolveBuiltinACPSetting', () => {
   });
 
   it('prepares the Magpie launch from Provider metadata without a private environment switch', async () => {
+    const dshHome = await mkdtemp(join(tmpdir(), 'lody-dsh-magpie-'));
+    vi.stubEnv(DEEPSEEK_HARNESS_HOME_ENV, dshHome);
     const gateway = 'http://127.0.0.1:3425';
     const input = { cliType: 'builtin' as const, agentType: 'deepseek', magpieGatewayUrl: gateway };
     vi.stubGlobal('fetch', async (url: string) =>
@@ -195,6 +197,8 @@ describe('resolveBuiltinACPSetting', () => {
       );
     } finally {
       vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+      await rm(dshHome, { recursive: true, force: true });
     }
   });
 
@@ -280,7 +284,7 @@ describe('resolveBuiltinACPSetting', () => {
           '-e',
         ])
       );
-      expect(launch.env?.LODY_DSH_NODE_EXECUTABLE).toBe(process.execPath);
+      expect(launch.env?.LODY_DSH_NODE_EXECUTABLE).toBeUndefined();
       expect(parseNpxPackageSpecFromArgs(launch.args)).toEqual({
         name: '@deepseek-ai/dsh',
         version: DEEPSEEK_HARNESS_VERSION,

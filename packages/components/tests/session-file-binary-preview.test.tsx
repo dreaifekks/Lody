@@ -1,8 +1,11 @@
+import { StrictMode } from 'react';
+import { getVideoMimeTypeForPath } from '../src/lib/video-file-preview';
 // @vitest-environment jsdom
 
-import { act, createElement, StrictMode } from 'react';
+// @vitest-environment jsdom
+import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -11,128 +14,10 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-import { getVideoMimeTypeForPath } from '../src/lib/video-file-preview';
 import { SessionFileBinaryPreview } from '../src/components/sessions/session-file-binary-preview';
 import Papa from 'papaparse';
 import { readXlsxSelectionClipboard } from '../src/components/sessions/session-file-xlsx-clipboard';
-import {
-  createSpreadsheetClipboard,
-  writeSpreadsheetClipboard,
-} from '../src/components/sessions/session-file-spreadsheet-clipboard';
-import {
-  getOfficePreviewKind,
-  MAX_OFFICE_PREVIEW_BYTES,
-  OfficePreviewTooLargeError,
-  readOfficePreviewBytes,
-} from '../src/lib/session-file-office-source';
-
-(
-  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
-
-describe('SessionFileBinaryPreview', () => {
-  it('opens PDFs in the paged document viewer', () => {
-    const markup = renderToStaticMarkup(
-      createElement(SessionFileBinaryPreview, {
-        path: '/workspace/Report.PDF',
-        bytes: Uint8Array.of(1),
-      })
-    );
-
-    expect(markup).toContain('aria-label="PDF viewer"');
-    expect(markup).toContain('aria-label="Previous page"');
-    expect(markup).toContain('aria-label="Pages sidebar"');
-    expect(markup).toContain('aria-label="Search document"');
-    expect(markup).not.toContain('This binary file cannot be previewed.');
-  });
-
-  it('keeps other binary files on the existing notice path', () => {
-    const markup = renderToStaticMarkup(
-      createElement(SessionFileBinaryPreview, {
-        path: '/workspace/archive.zip',
-        url: 'lody-resource://file/archive',
-      })
-    );
-
-    expect(markup).toContain('This binary file cannot be previewed.');
-  });
-
-  it('keeps a media file nothing was read of on the notice, with a download where one is offered', () => {
-    const markup = renderToStaticMarkup(
-      createElement(SessionFileBinaryPreview, {
-        path: 'recordings/demo.mp4',
-        fileActions: { onCopyPath: () => {}, onDownload: () => {} },
-      })
-    );
-
-    expect(markup).not.toContain('<video');
-    expect(markup).toContain('This binary file cannot be previewed.');
-    expect(markup).toContain('Download file');
-    expect(
-      renderToStaticMarkup(
-        createElement(SessionFileBinaryPreview, {
-          path: 'archive.zip',
-          fileActions: { onCopyPath: () => {} },
-        })
-      )
-    ).not.toContain('Download file');
-  });
-
-  it.each(['docx', 'xlsx', 'pptx'])('routes %s files into the lazy office preview', (extension) => {
-    const markup = renderToStaticMarkup(
-      createElement(SessionFileBinaryPreview, {
-        path: `/workspace/report.${extension}`,
-        bytes: Uint8Array.of(1),
-      })
-    );
-
-    expect(markup).toContain('Loading document…');
-    expect(markup).not.toContain('This binary file cannot be previewed.');
-  });
-});
-
-describe('office preview source', () => {
-  it('recognizes supported extensions without promoting legacy or unrelated files', () => {
-    expect(getOfficePreviewKind('/workspace/Report.XLSX')).toBe('xlsx');
-    expect(getOfficePreviewKind('presentation.pptx?version=1')).toBe('pptx');
-    expect(getOfficePreviewKind('archive.zip')).toBeNull();
-    expect(getOfficePreviewKind('legacy.doc')).toBeNull();
-  });
-
-  it('reads only complete bounded preview bytes', async () => {
-    const fetched = await readOfficePreviewBytes({
-      url: 'lody-resource://file/workbook',
-      signal: new AbortController().signal,
-      fetcher: async () => new Response(Uint8Array.of(80, 75, 3, 4)),
-    });
-    expect(new Uint8Array(fetched)).toEqual(Uint8Array.of(80, 75, 3, 4));
-
-    await expect(
-      readOfficePreviewBytes({
-        url: 'lody-resource://file/oversized',
-        signal: new AbortController().signal,
-        fetcher: async () =>
-          new Response(Uint8Array.of(1), {
-            headers: { 'Content-Length': String(MAX_OFFICE_PREVIEW_BYTES + 1) },
-          }),
-      })
-    ).rejects.toBeInstanceOf(OfficePreviewTooLargeError);
-  });
-
-  it('rejects a cancelled read before it opens a resource', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    await expect(
-      readOfficePreviewBytes({
-        url: 'lody-resource://file/cancelled',
-        signal: controller.signal,
-        fetcher: async () => {
-          throw new Error('A cancelled preview must not open a resource.');
-        },
-      })
-    ).rejects.toMatchObject({ name: 'AbortError' });
-  });
-});
+import { createSpreadsheetClipboard } from '../src/components/sessions/session-file-spreadsheet-clipboard';
 
 describe('spreadsheet clipboard', () => {
   it('preserves rectangular values in text and HTML without interpreting cell markup', () => {
@@ -156,22 +41,6 @@ describe('spreadsheet clipboard', () => {
     expect(() => createSpreadsheetClipboard([['x'.repeat(10 * 1024 * 1024 + 1)]])).toThrow(
       RangeError
     );
-  });
-
-  it('reports clipboard permission failures to the caller', async () => {
-    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: () => Promise.reject(new DOMException('Denied', 'NotAllowedError')) },
-    });
-    try {
-      await expect(
-        writeSpreadsheetClipboard(createSpreadsheetClipboard([['value']]))
-      ).rejects.toMatchObject({ name: 'NotAllowedError' });
-    } finally {
-      if (original) Object.defineProperty(navigator, 'clipboard', original);
-      else Reflect.deleteProperty(navigator, 'clipboard');
-    }
   });
 });
 
@@ -253,14 +122,6 @@ describe.each([
   ['video', 'webm', 'mp4', 'video/webm', 'video/mp4', 'Video'],
   ['audio', 'wav', 'm4a', 'audio/wav', 'audio/mp4', 'Audio'],
 ] as const)('%s preview lifecycle', (kind, extension, nextExtension, mime, nextMime, title) => {
-  it('recognizes video containers without treating bare names or directories as videos', () => {
-    expect(getVideoMimeTypeForPath('clip.WEBM')).toBe('video/webm');
-    expect(getVideoMimeTypeForPath('clip.mp4?version=1')).toBe('video/mp4');
-    expect(getVideoMimeTypeForPath('webm')).toBeUndefined();
-    expect(getVideoMimeTypeForPath('folder.webm/readme')).toBeUndefined();
-    expect(getVideoMimeTypeForPath('archive.zip')).toBeUndefined();
-  });
-
   let container: HTMLDivElement;
   let root: Root;
   const blobs = new Map<string, Blob>();

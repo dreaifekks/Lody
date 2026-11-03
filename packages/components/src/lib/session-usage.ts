@@ -3,8 +3,7 @@ import {
   ANTIGRAVITY_AGENT_TYPE,
   ANTIGRAVITY_ARGON_LIMIT_ID,
   CODEX_SPARK_LIMIT_ID,
-  hasBuiltinEnvAuthRouting,
-  resolveAgentBrandId,
+  isSubscriptionQuotaEligible,
   normalizePersistedRateLimit,
   parseRateLimitEntryKey,
   type AgentConfigCliType,
@@ -88,6 +87,23 @@ export function formatRateLimitWindowShortLabel(windowDurationSeconds: number | 
   return `${windowDurationSeconds / 60}m`;
 }
 
+/** "5 hours", "Weekly", or the short `3d` form for any other window the provider reports. */
+export function formatRateLimitWindowDurationLabel(
+  windowDurationSeconds: number | null,
+  t: TFunction
+): string {
+  if (windowDurationSeconds === SEVEN_DAY_WINDOW_SECONDS) {
+    return t('sessions.usage.weekly', 'Weekly');
+  }
+  if (windowDurationSeconds === FIVE_HOUR_WINDOW_SECONDS) {
+    return t('sessions.usage.fiveHour', '5 hours');
+  }
+  if (windowDurationSeconds === null) {
+    return t('sessions.usage.limit', 'Usage');
+  }
+  return formatRateLimitWindowShortLabel(windowDurationSeconds);
+}
+
 export function formatAgentRateLimitWindowLabel(
   window: AgentRateLimitWindow,
   durationLabel: string,
@@ -122,23 +138,19 @@ export function getContextWindowUsageData(
 
 export function canShowSubscriptionRateLimits({
   capability,
-  agentType,
   cliType,
+  agentType,
   config,
 }: {
   cliType: AgentConfigCliType;
   agentType: string;
-  config?: Pick<AgentConfigMeta, 'brandId' | 'env' | 'codexAuth'> | null;
+  config?: Pick<AgentConfigMeta, 'brandId' | 'env' | 'codexAuth' | 'magpieGatewayUrl'> | null;
   capability?: AcpCapabilityCacheEntry['rateLimits'];
 }): boolean {
   // Antigravity is refreshed by the daemon rather than an ACP quota extension.
   if (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE) return true;
   return (
-    capability?.version === 1 &&
-    (cliType !== 'builtin' ||
-      (!hasBuiltinEnvAuthRouting(agentType, config?.env) &&
-        !resolveAgentBrandId({ brandId: config?.brandId, env: config?.env }) &&
-        config?.codexAuth?.mode !== 'api-key'))
+    capability?.version === 1 && isSubscriptionQuotaEligible({ ...config, cliType, agentType })
   );
 }
 

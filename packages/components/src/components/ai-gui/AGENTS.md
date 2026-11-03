@@ -25,40 +25,39 @@ Ownership: [README.md](README.md).
 - Empty state stays outside the list even with an empty leading Fragment; zero-height
   caches can hide the first user row. Keep activity labels/tones and one header inset.
 - Creation cards: [contract](README.md#creation-progress). Bind status to the
-  target Turn (a Board main session's follow the thread) and subscribe only to its
-  title; `progressMessageId` prevents duplicates. Consecutive creation records share a five-card scroller with
-  disclosure; retain their full hydration range. Legacy successes keep cards.
+  target Turn (a Board main session's follows the thread) and subscribe only to its title; `progressMessageId` prevents
+  duplicates. Share a five-card scroller; retain full hydration.
+  Keep concrete cards; hide contentless successes and their empty batch rows.
 
 ## Turn Folding And Layout
 
-- Finished turns keep the final text run and earlier `isSubstantiveAssistantText`;
-  narration folds except before thin tails (`getVisibleTextStart`). Mid-work/streaming
-  stays expanded. The worked header leads its segment.
-- Plan approval cuts an `AssistantTurnRenderSegment` in a live turn. Match ACP
-  kind `switch_mode`, never a title (`plan-surface.ts`). Keep `workBlockKeys`,
-  `hasVisibleFinalContent`, last-item visibility and `expandedWorkedGroups` per
-  segment; expansion keys include it. Only the last segment shows duration;
-  earlier ones say "Finished working".
+- Finished turns fold thoughts and tool calls into the work region; streaming
+  turns stay expanded.
+- Prose never folds. Every `text` item renders wherever it falls in the turn: a
+  later work cannot hide earlier answers.
+- Plan approval cuts a live turn by ACP kind `switch_mode`, never title.
+  `plan-surface.ts` prefers nonempty `rawInput.plan` over replaceable tool content.
+  Keep `workBlockKeys`, `hasVisibleFinalContent`, last-item visibility and expansion
+  keys per segment. Only the last segment shows duration; earlier segments say
+  "Finished working".
+- Standalone tool surfaces remain independent cards outside activity groups.
 - `shouldUseWorkedGroup` requires a finished turn, foldable work, and visible
   final content outside `workBlockKeys`. A cancelled/interrupted or tool-only
   turn with no answer stays expanded; `message.finished` cannot prove
   completion alone. A reused entry reopening upstream
   must clear `finished` and `endedAt` (see
   `apps/cli/src/session/AGENTS.md`).
-- Thought and tool rows share one compact transparent timeline, 13px, no glyphs:
-  the verb says the kind of step. Execute calls are not cards. Disclosure labels
-  lead; the chevron trails (desktop: hover-only, body type, no fill). Only builtin DeepSeek Harness retains thought rows in expandable
-  activity groups; pure thoughts default open unless explicitly collapsed. Other providers
-  keep thoughts hidden.
-  Assistant footers show config, not author identity.
-- An expanded tool step is ONE `ToolDetailSheet` (`tool-call-detail.tsx`): composer
-  fill + card shadow, no header restating the row, sections in content order. Only
-  the command is highlighted, via the Shiki worker; output stays ANSI text. Drop
-  text blocks that echo the command. [Note](../../../../../.agents/notes/implemented/feature/2026-09-26-tool-step-detail-sheet.md).
-- Duration has one owner: desktop uses `WorkedGroupHeader` for folded turns and
-  the footer after buttons otherwise; mobile always uses the footer before
-  buttons, and the worked header suppresses its copy. Preserve
-  `MOBILE_TURN_ACTION_LEADING_INSET_PX` so actions clear the edge-back strip.
+- Thought/tool timelines are compact, transparent, 13px and glyph-free; verbs label
+  steps. Execute calls are not cards. Disclosure labels lead, chevrons trail
+  (desktop: hover-only, body type, no fill). Only builtin DSH shows thoughts:
+  separate groups default thoughts open and tools closed; explicit toggles win.
+  DSH thought prose uses answer typography, secondary ink and shared work folding. Other providers
+  hide thoughts. Footers show config, not author identity.
+- Expanded steps use `ToolDetailSheet`: composer fill, card shadow, no duplicate
+  header and sections in content order. Highlight commands with Shiki; retain ANSI
+  output and omit command echoes. [Note](../../../../../.agents/notes/implemented/feature/2026-09-26-tool-step-detail-sheet.md).
+- Duration appears once: desktop folded header or footer after buttons; mobile
+  footer before buttons. Preserve `MOBILE_TURN_ACTION_LEADING_INSET_PX`.
   Mobile buttons rest hidden but the newest turn's; a tap reveals one message's.
 - Live status precedes a trailing subagent task summary, including when the turn
   has no footer.
@@ -66,12 +65,15 @@ Ownership: [README.md](README.md).
   Fork controls and loading need a finished turn.
 - `ConversationColumn` owns the gutter; row shells add no horizontal pad. EVERY
   row shares one rail: prose, process labels/steps, live status and the mobile
-  footer sit at `conversation.railInset`; expansion never shifts content right.
+  footer sit at `conversation.railInset`; thought prose aligns with its label.
   Footer bleed is trailing-only (`-mr-[7px]`). See `AssistantTurnAlignment.stories`.
+- The trailing row (`trailingContent`: pending sends, continuation notes) is
+  full-bleed like the scroller, so each item mounts its own `ConversationColumn`.
+  Stream rows never rely on the row shell for width or gutter.
 - Follow the StyleX [spacing contract](../../../../../specs/conversation-rhythm.md).
   User rows own `responseGap`; assistant tails own `roundGap` (desktop: including
   footer/metadata; mobile: below the footer).
-  Cache/memo include boundaries. Expanded work preserves prose and summary gaps.
+  Cache boundaries; expanded work preserves gaps.
 
 ## Conversation Outline
 
@@ -81,20 +83,22 @@ Ownership: [README.md](README.md).
 
 ## Content Contracts
 
-- Child cancel needs subagentCancellation v1 and an exact parent turn; never
-  Stop the parent or invent terminal state. Runs also need subagentEvents v1
-  and `support.cancel`. Dialogs share turn renderers/grouping and one scroller:
-  [task rows and dialog](README.md#subagent-tasks).
+- Only absolute or owning-index-confirmed paths become interactive. Keep other
+  paths as text/code. Open known targets directly; copy the authored path.
+
+- Child cancel requires subagentCancellation/subagentEvents v1, `support.cancel`
+  and an exact parent turn; never Stop the parent or invent state. Dialogs reuse
+  parent renderers/grouping, one scroller, and read run bodies only while open:
+  [task/dialog contract](README.md#subagent-tasks).
 
 - Text roles: `@lody/ui`; prose: `conversation.readingLeading`; compact prose/code:
   subheadline, no nested `em`. Message sizes: `conversation-font-size-classes.ts`;
   hosts require CSS typed division. Stream engine: live turns only;
   remounts show existing text immediately and animate only additions.
 - Rendering and search share CJK emphasis rules.
-- A Mermaid diagram in a message is a still preview until a pointer click
-  activates it, and an unmodified wheel is NEVER taken — activated or not.
-  Deactivation preserves pan/zoom and activation adds no outline; see the
-  [inline view contract](../../../../../specs/mermaid-inline-view.md).
+- Mermaid starts as a still preview, activates on click and never takes an
+  unmodified wheel. Deactivation preserves pan/zoom; activation adds no outline.
+  Follow the [inline contract](../../../../../specs/mermaid-inline-view.md).
   `mermaid-diagram-viewer.tsx` stays the only full-screen surface, reached from
   the block's action bar. Invariants:
   [mermaid-diagram-rendering.md](mermaid-diagram-rendering.md).
@@ -110,11 +114,9 @@ Ownership: [README.md](README.md).
   pills, list on `--background`.
 - Update `message-content-guards.ts` with every shared `MessageContent` variant.
   `isMessageContent` gates rendering; a missing case silently drops the item.
-- A user entry marked by `SessionMeta.lastMissingHistoryUserMsgId` renders the
-  terminal "Not delivered" label. That label is the only recovery entry: its
-  dialog resends the same content as a new ordinary message, then marks the old
-  entry `canceled` while retaining the marker as a tombstone. Never automatically
-  dispatch or revive the old turn.
+- `lastMissingHistoryUserMsgId` renders "Not delivered", the sole recovery entry.
+  Its dialog resends as a new message, cancels the old entry and retains the
+  tombstone. Never automatically revive or dispatch the old turn.
 - Frozen Agent/Role names/icons never use human profiles or live catalogs. Human names
   sit right of time; only desktop avatars open accessible name/email cards.
 - Attachment layout, preview continuity, and mobile previews follow

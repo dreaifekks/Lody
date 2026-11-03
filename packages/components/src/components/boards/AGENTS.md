@@ -28,9 +28,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   thread-only unread wins; known stop/failure/cancel blocks it. Settled is not success.
   localProject catalogs are acquired at list level, once per machine.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
-- Thread rows reuse sidebar actions (no pin) and `SessionHeaderMenu`. Board glyph:
-  headers/page tabs only. Back (`boardEntrySearch`) never on coordinator pages;
-  full-page parent links use the palette format and `boardMemberEntrySearch`.
+- Thread rows use sidebar actions (no pin), `SessionHeaderMenu` and shared archive
+  confirmation. Board glyphs stay in headers/page tabs; Back (`boardEntrySearch`)
+  never shows on coordinators. Full-page parent links use palette labels and `boardMemberEntrySearch`.
 - Panel threads use `SessionChatInterface`; workspace and file viewers belong to
   the thread. Board files keep their authorized preview. Never use `side-session:`
   ids: closing one deletes the Session.
@@ -80,8 +80,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   Tabs), then the coordinator, then clears it. The coordinator (the page menu follows
   it) and the row change last: a failure leaves the Board as it was, retryable; no
   rollback. Rename patches the current row's name.
-- The experiment gates the sidebar section, the Board panel and archived Boards.
-  Turning it off keeps data, ordinary sessions and membership inheritance.
+- The experiment gates sidebar/panel/archived Boards; disabling it preserves data,
+  ordinary sessions and membership inheritance.
 - Manual membership changes affect only the selected Session, clear its generation,
   and never detach the fixed coordinator. Tab inheritance happens at creation.
 - Board tools are advertised at ACP startup, but the daemon authorizes against

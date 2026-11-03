@@ -250,6 +250,7 @@ export function useChatLandingDefaults({
     // back online).
     const previous = readChatLandingDefaults(workspaceId);
     writeChatLandingDefaults(workspaceId, {
+      lastUsedProject: previous?.lastUsedProject,
       contextType,
       agentId: selectedAgent?.agentId ?? previous?.agentId ?? null,
       machineId: selectedAgent?.machineId ?? previous?.machineId ?? null,

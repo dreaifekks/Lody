@@ -11,7 +11,7 @@ import { LanFileRangeAnswerSchema, type LocalFileRangeRequest } from '@lody/shar
  */
 export type AgentFileTarget = Pick<
   LocalFileRangeRequest,
-  'workspaceId' | 'machineId' | 'sessionId' | 'fileId' | 'path' | 'boardId'
+  'workspaceId' | 'machineId' | 'sessionId' | 'fileId' | 'path' | 'rootId' | 'boardId'
 >
 
 export type AgentFileRange = {
@@ -205,6 +205,7 @@ export class MemberFileResources {
       target.sessionId,
       target.fileId ?? null,
       target.path ?? null,
+      target.rootId ?? null,
       target.boardId ?? null,
       revision,
       mime

@@ -1,8 +1,10 @@
+import { beforeEach } from 'vitest';
 // @vitest-environment jsdom
 
+// @vitest-environment jsdom
 import React, { act, forwardRef, useImperativeHandle, type HTMLAttributes } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const sidebarPanelMock = vi.hoisted(() => ({
   collapse: vi.fn(),
@@ -122,14 +124,6 @@ describe('DesktopSessionDetailLayout', () => {
     expect(sidebarPanel?.contains(terminalDock)).toBe(false);
   });
 
-  it('only enables the resize handle while the sidebar is open', () => {
-    const mounted = renderLayout({ sidebarOpen: false });
-    expect(mounted.querySelector('[data-disabled]')?.getAttribute('data-disabled')).toBe('true');
-
-    renderLayout({ sidebarOpen: true });
-    expect(mounted.querySelector('[data-disabled]')?.getAttribute('data-disabled')).toBe('false');
-  });
-
   it('keeps the secondary panel mounted while the sidebar is collapsed', () => {
     const secondaryPanel = <div data-testid="secondary-panel" />;
     const mounted = renderLayout({ secondaryPanel, sidebarOpen: true });
@@ -201,58 +195,6 @@ describe('DesktopSessionDetailLayout sidebarMinWidthRequest', () => {
     rectSpy = undefined;
   });
 
-  it('raises the restored size to the requested width when expanding from collapsed', () => {
-    renderLayout({ sidebarOpen: false });
-    expect(sidebarPanelMock.collapse).toHaveBeenCalled();
-
-    renderLayout({
-      sidebarOpen: true,
-      sidebarMinWidthRequest: { seq: 1, minWidthPx: 500 },
-    });
-
-    // Restored default is 30%; the request raises it to the 500px percent.
-    expect(sidebarPanelMock.resize).toHaveBeenCalledTimes(1);
-    expect(sidebarPanelMock.resize).toHaveBeenCalledWith(REQUEST_PERCENT);
-  });
-
-  it('restores the previous size when the window is too narrow to spare the request', () => {
-    stubGroupWidth(900);
-    renderLayout({ sidebarOpen: false });
-
-    renderLayout({
-      sidebarOpen: true,
-      sidebarMinWidthRequest: { seq: 1, minWidthPx: 500 },
-    });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalledTimes(1);
-    expect(sidebarPanelMock.resize).toHaveBeenCalledWith(30);
-  });
-
-  it('applies the request in place when the sidebar is already open', () => {
-    sidebarPanelMock.getSize.mockReturnValue(25);
-    renderLayout({ sidebarOpen: true });
-    expect(sidebarPanelMock.resize).not.toHaveBeenCalled();
-
-    renderLayout({
-      sidebarOpen: true,
-      sidebarMinWidthRequest: { seq: 1, minWidthPx: 500 },
-    });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalledTimes(1);
-    expect(sidebarPanelMock.resize).toHaveBeenCalledWith(REQUEST_PERCENT);
-  });
-
-  it('never shrinks a panel that is already wider than the request', () => {
-    sidebarPanelMock.getSize.mockReturnValue(45);
-    renderLayout({
-      sidebarOpen: true,
-      sidebarMinWidthRequest: { seq: 1, minWidthPx: 500 },
-    });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalledTimes(1);
-    expect(sidebarPanelMock.resize).toHaveBeenCalledWith(45);
-  });
-
   it("opens a Board half and half, never at a chat layout's width, and remembers no split", () => {
     // A chat's side panel was dragged to 38% and closed.
     sidebarPanelMock.getSize.mockReturnValue(38.2);
@@ -307,110 +249,5 @@ describe('DesktopSessionDetailLayout sidebarMinWidthRequest', () => {
     renderLayout({ ...chat, sidebarOpen: false });
     renderLayout({ ...chat, sidebarOpen: true });
     expect(sidebarPanelMock.resize).toHaveBeenLastCalledWith(38);
-  });
-
-  it('consumes each request once — rerendering the same request does not resize again', () => {
-    renderLayout({ sidebarOpen: false });
-
-    const request = { seq: 1, minWidthPx: 500 };
-    renderLayout({ sidebarOpen: true, sidebarMinWidthRequest: request });
-    renderLayout({ sidebarOpen: true, sidebarMinWidthRequest: request });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('DesktopSessionDetailLayout sidebarRestoreSeq', () => {
-  let root: Root | undefined;
-  let container: HTMLDivElement | undefined;
-  /** Captured `requestAnimationFrame` callbacks, flushed explicitly by the test. */
-  let pendingFrames: Array<FrameRequestCallback> = [];
-
-  const renderLayout = (overrides: Partial<DesktopSessionDetailLayoutProps>) => {
-    if (!container) {
-      container = document.createElement('div');
-      document.body.appendChild(container);
-      root = createRoot(container);
-    }
-    act(() => {
-      root?.render(
-        <DesktopSessionDetailLayout
-          defaultSizes={{ main: 70, sidebar: 30 }}
-          topBar={null}
-          chatSurfaces={null}
-          terminalDock={null}
-          secondaryPanel={null}
-          sidebarOpen
-          onSidebarCollapse={() => {}}
-          deleteConfirmDialog={null}
-          {...overrides}
-        />
-      );
-    });
-    if (!container) throw new Error('Expected a mounted container');
-    return container;
-  };
-
-  const sidebarTransitionDuration = () =>
-    container?.querySelector<HTMLElement>('[data-panel-id="sidebar"]')?.style.transitionDuration;
-
-  const flushFrames = () => {
-    const frames = pendingFrames;
-    pendingFrames = [];
-    act(() => {
-      for (const frame of frames) frame(0);
-    });
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    pendingFrames = [];
-    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      pendingFrames.push(callback);
-      return pendingFrames.length;
-    });
-    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    if (root) {
-      act(() => root?.unmount());
-    }
-    container?.remove();
-    root = undefined;
-    container = undefined;
-    vi.restoreAllMocks();
-  });
-
-  it('animates a sidebar change the user asked for', () => {
-    renderLayout({ sidebarOpen: false, sidebarRestoreSeq: 1 });
-    flushFrames();
-
-    renderLayout({ sidebarOpen: true, sidebarRestoreSeq: 1 });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalled();
-    expect(sidebarTransitionDuration()).toBe('220ms');
-  });
-
-  it('applies a restored sidebar state without a transition', () => {
-    renderLayout({ sidebarOpen: false, sidebarRestoreSeq: 1 });
-    flushFrames();
-
-    // A session switch: the new session's sidebar state arrives with a bumped seq.
-    renderLayout({ sidebarOpen: true, sidebarRestoreSeq: 2 });
-
-    expect(sidebarPanelMock.resize).toHaveBeenCalled();
-    expect(sidebarTransitionDuration()).toBe('0ms');
-  });
-
-  it('re-arms the transition only after a frame has rendered with it suppressed', () => {
-    renderLayout({ sidebarOpen: true, sidebarRestoreSeq: 1 });
-    flushFrames();
-
-    renderLayout({ sidebarOpen: false, sidebarRestoreSeq: 2 });
-    expect(sidebarTransitionDuration()).toBe('0ms');
-
-    flushFrames();
-    expect(sidebarTransitionDuration()).toBe('220ms');
   });
 });

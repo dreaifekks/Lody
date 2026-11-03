@@ -1,3 +1,6 @@
+import { readSessionHistoryMetadata } from '@lody/shared/session-data';
+import { inputBlocksToHistoryItems, type ScheduledMessage } from '@lody/shared';
+import type { PreparedSessionInput } from '../prepared-session-input';
 import {
   getAgentRoleTargets,
   composeAgentRolePrompt,
@@ -311,7 +314,8 @@ export async function resolveScheduleMcpSelection(args: {
   manager: import('../loro/doc').LoroDocumentManager;
   workspaceId: WorkspaceId;
   localOnly: boolean;
-  definition: Pick<ScheduleDefinition, 'destination' | 'mcpServerIds'>;
+  machineId?: string;
+  definition: Pick<ScheduleDefinition, 'destination' | 'mcpServerIds' | 'project'>;
   sessionId: SessionId;
 }): Promise<McpServerId[]> {
   const { manager, definition, sessionId } = args;
@@ -320,12 +324,31 @@ export async function resolveScheduleMcpSelection(args: {
     const session = await manager.getOrCreateSessionDoc(sessionId);
     const record = await manager.repo.getDocMeta(getSessionRoomId(sessionId));
     const backend = await createSessionBackend(session, record?.meta as SessionMeta);
-    selection = readRecordedSessionMcpSelection(await backend.readHistory());
+    selection = readRecordedSessionMcpSelection(await readSessionHistoryMetadata(backend.history));
   }
   return await resolveMcpSelectionOrWorkspaceDefault({
     manager,
     workspaceId: args.workspaceId,
     localOnly: args.localOnly,
     selection,
+    project: definition.project,
+    machineId: args.machineId,
   });
+}
+
+/** Keep display content and frozen execution input identical before the ledger takes custody. */
+export function withScheduledMessageInput(
+  prepared: PreparedSessionInput,
+  message: ScheduledMessage
+): PreparedSessionInput {
+  if (!prepared.userTurn.inputConfig)
+    throw new Error('Scheduled message has no execution configuration');
+  return {
+    ...prepared,
+    userTurn: {
+      ...prepared.userTurn,
+      items: inputBlocksToHistoryItems(message.inputBlocks),
+      inputConfig: { ...prepared.userTurn.inputConfig, inputBlocks: message.inputBlocks },
+    },
+  };
 }

@@ -110,11 +110,11 @@ Base UI + StyleX primitives; compile with `@stylexjs/unplugin` and `stylex-optio
   their messages; `popup` the lists they open), not one per component.
 - `src/gallery` is the token board: a new token, variant, size, tone or shape
   lands with its entry, read off the rendered node.
-  `test/gallery.test.tsx` fails when a token has no entry. **A sample that is a
+  **A sample that is a
   rung needs a different rung under it**: the panel is the card rung, and in
   dark region and card are one value. No test sees this — open the board.
 - `corner.shape` goes with every radius except `radius.full` and ringed
   corners — both `corner.round`: spread shadows can't parallel-offset a
   superellipse; round is the non-Chromium fallback.
-- A Radix file in `packages/components/src/ui` is deleted when its in-repo
-  callers reach zero; private consumers sync on typecheck.
+- `ScrollArea` exposes its native viewport ref. Delete obsolete Radix files once
+  all in-repo callers migrate; private consumers sync on typecheck.

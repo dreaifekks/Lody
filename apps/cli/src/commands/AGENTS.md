@@ -60,13 +60,10 @@ Metadata idle/Presence loss is not completion; sequence is local.
   idempotent — the id is a sha256 of the resolved root path), then opens the active installation
   profile's deep link (`lody://chat/new?…` cloud, `lody-oss://chat/new?…` local). Link shape lives
   in `../lib/desktop-deep-link.ts` and both sides pin the URL in unit tests.
-- INVARIANT: registration happens only in the CLI. The deep link carries ids, never a path, and
-  the app must never register a project from one — any web page can navigate the OS to either
-  registered protocol, so a path-carrying link would let a site hand agents an arbitrary
-  directory. An unknown project id just stays unselected.
+- Registration happens only in the CLI. Deep links carry ids, never paths, and
+  must never register projects. Unknown ids remain unselected.
 - `workspaceSlug` is present only when the daemon reported workspace candidates.
-- Daemon down is not a failure: the deterministic project id is computed locally and the app still
-  opens, with a warning that a brand-new directory was not registered.
+- If the daemon is down, open the deterministic id and warn that registration may be missing.
 - Local-project control transport and the workspace picker are shared with `lody project`
   (`../lib/local-project-control-client.ts`).
 
@@ -83,9 +80,8 @@ Metadata idle/Presence loss is not completion; sequence is local.
 
 ## Session create and dispatch (`session.ts`)
 
-- `--local-project … --worktree` sets `ProjectRef.useWorktree`; daemon startup consumes it in
-  `../session/session-execution-service.ts` and worktree creation happens in
-  `../session/session-manager.ts`.
+- `--local-project --worktree` sets ProjectRef.useWorktree; dispatch and SessionManager
+  own deferred worktree creation.
 - Direct/worktree local create records the Git remote's GitHub repository, matching desktop.
   Remote identity is not authorization: the PR reconciler uses authenticated GitHub reads,
   never a product-cloud registry. Absent/unreadable remotes leave creation local.
@@ -100,6 +96,10 @@ Metadata idle/Presence loss is not completion; sequence is local.
   categories. Raw selectors override inherited scalars; reject legacy Plan/mode conflicts.
   `validateSessionCreateOptions({ dispatchConfig })` validates before acceptance;
   freeze each effective target config and use it for recovery, never mutable history.
+  Omitted MCP defaults use the daemon reader's one-second first-baseline wait; cold
+  fallback requires persisted remote workspace Flock history. Without it, validation
+  rejects retryably before Operation acceptance or Schedule create/edit persistence.
+  Explicit selections, including `[]`, bypass default resolution.
 - `--agent-role`: `../lib/agent-role-create.ts` uses shared instance selection;
   `--machine` pins. Freeze instance/id/revision; warn and clear manual agent/run flags.
   Preserve work context/parent.

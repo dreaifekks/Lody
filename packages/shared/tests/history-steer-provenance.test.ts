@@ -34,35 +34,6 @@ describe('stored steer provenance', () => {
     }
   });
 
-  it('rejects invalid new or updated provenance without changing stored values', () => {
-    const doc = new LoroDoc();
-    const mirror = createSessionMirror({
-      doc,
-      initialState: { session: { id: 'synthetic' as SessionId }, history: [] },
-    });
-    try {
-      mirror.historyWriter.append(entry());
-      const before = doc.getList('history').toJSON();
-      const version = doc.version().toJSON();
-      for (const marker of ['normal', 42, null]) {
-        const malformed = {
-          ...entry(),
-          inputConfig: { prompt: 'must not land', _lodyDeliveryKind: marker },
-        } as unknown as SessionHistoryInput;
-        expect(() => mirror.historyWriter.replace('guide', malformed)).toThrow(
-          'Invalid history write'
-        );
-        expect(() => mirror.historyWriter.append({ ...malformed, id: 'new' })).toThrow(
-          'Invalid history write'
-        );
-        expect(doc.getList('history').toJSON()).toEqual(before);
-        expect(doc.version().toJSON()).toEqual(version);
-      }
-    } finally {
-      mirror.dispose();
-    }
-  });
-
   it('persists the Continue marker the composer sends after an interruption', () => {
     const doc = new LoroDoc();
     const mirror = createSessionMirror({

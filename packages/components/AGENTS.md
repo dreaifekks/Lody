@@ -3,11 +3,14 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
 Root `AGENTS.md` also applies.
 
-This package contains shared React UI for browser-shaped, Electron, and responsive
-mobile surfaces. Background for the rules below:
+Shared React UI serves browser-shaped, Electron and responsive mobile hosts. Read:
 [.agents/docs/components-package.md](../../.agents/docs/components-package.md).
 
 ## General rules
+
+- Native shells never emit `$pageview`/`$pageleave`; browser tracking stays enabled.
+  Mention-fetch failures reach consumers, never analytics. Use `app/active` for
+  authenticated readiness, never duplicate `onboarding/account_ready`.
 
 - Regenerate TanStack routes after changing route files.
 - Use `pnpm --filter @lody/components dev` to generate and format the route tree
@@ -16,64 +19,71 @@ mobile surfaces. Background for the rules below:
 - All user-visible copy must go through i18n.
 - Compact number units (K/M/B vs 万/亿) follow the product language via
   `toIntlLocaleOrEn` / `formatCompactNumber`, never the host OS locale.
-- Use `@lody/ui` primitives for every control; never restyle one through `className`
-  (a StyleX or Tailwind visual class there loses to, or fights, its own). Legacy
-  primitive rules: [src/ui/AGENTS.md](src/ui/AGENTS.md).
-- New or rewritten product styling is StyleX, not Tailwind. Colour, shadow, radius and
-  space come from `@lody/ui/tokens/colors.stylex` / `scales.stylex`; styles live in the
-  component's `stylex.create`, and what an area shares lives in its `surface.ts`
-  (e.g. `components/settings/surface.ts`). Copy that follows `--ui-font-size` keeps `em`.
-  Materials are `@lody/ui`'s: cards lift, controls stand up, every value holder is
-  the one recessed well, and a list of records is one card with ruled rows.
+- Use `@lody/ui` controls without visual `className` overrides.
+  Follow the [legacy primitive rules](src/ui/AGENTS.md).
+
+- New/reworked product styling uses StyleX, never Tailwind. Use
+  `@lody/ui/tokens/colors.stylex` / `scales.stylex` for colour/shadow/radius/space,
+  component `stylex.create` for styles and the area's `surface.ts` for shared styles
+  (e.g. `components/settings/surface.ts`). Copy following `--ui-font-size` uses `em`.
+  Use `@lody/ui` materials: raised cards/controls, one recessed value well and one
+  ruled card for a record list.
+
 - `PlatformContext` intentionally has no default. Cloud-shaped component tests use
   `tests/test-platform.tsx`'s `TestCloudPlatformProvider`; plain-module tests install
   and remove the exact platform port they need.
 - Shared UI accesses optional hosted operations only through descriptors in
   `src/lib/cloud-api-operations.ts` and `@lody/platform/react`. Never import generated
   backend declarations or call a hosted database directly.
-- A descriptor marked `public` can run before authentication and must expose only an
-  intentionally public or narrowly token-scoped DTO.
+- Protected RPC requires actual host capabilities and live operation admission;
+  its presence never permits ordinary RPC, unsupported controls or execution.
+  Control-page readers close their captured account/reader, including cold opens,
+  and retain incomplete owners until actual close before reusing that binding.
+  Electron counts unlabeled readers per window and workspace, so the control page
+  and RuntimeProvider each release one settled acquisition exactly once.
+- Encrypted visible indexes add other members' machines only from the host's verified
+  sharing view (`useEncryptedSharedMachines`), never server machine tables. Keep them out
+  of Convex-authorized probes; automatic writers and machine-RPC surfaces use
+  `withoutEncryptedSharedMachines`. [Decision](../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#member-visibility-a4).
+- `public` descriptors may run before authentication and expose only deliberately
+  public or narrowly token-scoped DTOs.
+
 - Renderer and worker builds that cannot use native top-level await must use
   `vite-top-level-await-fixed.ts`. Do not bypass its audited-version assertion.
-- Keep accidental weight out of the test module graph: Vitest re-evaluates a
-  file's whole import graph per test file. Do not re-export a heavy leaf from
-  `src/ui/index.ts`, deep-import `date-fns/locale/<tag>` rather than the barrel,
-  and keep the icon-asset `new URL` glob alone in
-  `src/components/icons/file-icons/asset-url.ts` so the test alias can replace
-  it. Rationale and measurements:
-  [module graph note](../../.agents/notes/implemented/testing/2026-09-10-components-test-module-graph.md).
+- Keep test imports light. Never re-export heavy leaves from `src/ui/index.ts`;
+  deep-import `date-fns/locale/<tag>`. Isolate the icon `new URL` glob in
+  `src/components/icons/file-icons/asset-url.ts` for the test alias.
+  See the [module graph note](../../.agents/notes/implemented/testing/2026-09-10-components-test-module-graph.md).
+
 - `vitest.config.ts` deliberately omits `vite-plugin-top-level-await` and
   `vite-tsconfig-paths`; `vite.config.ts` keeps both because the product bundle
   needs them. The plugin reads `tsconfig.vite.json`; keep the type-only React
   mappings from `tsconfig.json` out of the runtime resolver. Run the suite with
   `NODE_ENV=test` — a `production` value resolves React to a build without `act`.
-- System theme state, persistence, and browser preference tracking are owned by
-  `next-themes`. Keep Lody's wrapper focused on preview state, fixed VS Code theme
-  application, and the host bridges: it mirrors the COMMITTED theme (never a
-  preview) to the host that paints before the renderer runs — Electron main via
-  `app.setStartupThemeSource`, a native mobile shell via
-  `window.__LODY_STARTUP_THEME__.persist` (type here, like `LodyLiveActivityBridge`;
-  the shell implements it from its own storage). The renderer's own first frame
-  needs no help: `lib/boot-shell-script.ts` applies the class before parse.
-- Never `@source`-scan a third-party component library in `src/tailwind/index.css`:
-  it emits that library's utilities globally. Konsta's `last-child-hairline-b-none`
-  (unanchored `:last-child … ::after`) made every portal open/close restyle the whole
-  app. Keep `#root` off `<body>`'s tail (`lib/body-tail-sentinel.ts`, mounted by
-  `routes/__root.tsx`). Rationale:
-  [portal restyle note](../../.agents/notes/implemented/bug-fix/2026-09-23-portal-full-restyle.md).
+- `next-themes` owns system theme state, persistence and browser tracking.
+  Lody owns preview state, fixed VS Code themes and committed-theme host bridges:
+  Electron uses `app.setStartupThemeSource`; native mobile implements
+  `window.__LODY_STARTUP_THEME__.persist` from its storage (typed here like
+  `LodyLiveActivityBridge`). Never send previews to startup painters.
+  `lib/boot-shell-script.ts` applies the renderer's initial class before parse.
+
+- Never `@source`-scan third-party libraries in `src/tailwind/index.css`.
+  Keep `#root` off `<body>`'s tail with `lib/body-tail-sentinel.ts`, mounted by
+  `routes/__root.tsx`. See the [portal restyle note](../../.agents/notes/implemented/bug-fix/2026-09-23-portal-full-restyle.md).
+
 - Sidebar session-row lists use `SIDEBAR_ROW_LIST_CLASS` (`content-visibility: auto`,
   which also applies paint containment): a row must draw inside its own box (inset
   focus rings; connectors inside the leading slot). Recursive GitHub trees go through
   `lib/repo-file-paths-cache.ts`, never a direct `githubFetchFilePaths` per search.
-- Layout-level components never subscribe to high-frequency atoms (presence and its
-  clock, all sessions): host such hooks in a leaf that renders nothing
-  (`LodyLiveActivityHost`) and read sidebar navigation state at key time. Sidebar rows
-  are memoized: keep item and live-status identity while unchanged and pass
-  selection-independent handlers, or every row re-renders on each switch or tick.
-- A context over the conversation or the sidebar keeps a stable value (stable callbacks,
-  sets keyed by content): each new value makes React walk the whole subtree. An
-  `AnimatePresence` around such a subtree sets `presenceAffectsLayout={false}` unless it
-  drives `layout` animations; otherwise its context changes on every parent render.
+- Layout components never subscribe to high-frequency atoms (presence/clock/all
+  sessions). Put these hooks in a non-rendering leaf such as `LodyLiveActivityHost`;
+  read sidebar navigation state at key time. Memoized rows retain unchanged item/
+  live-status identity and receive selection-independent handlers.
+
+- Conversation/sidebar contexts keep stable callbacks and content-keyed sets.
+  Surrounding `AnimatePresence` uses `presenceAffectsLayout={false}` unless it drives
+  `layout` animations.
+
 - Dark-theme brightness ceiling (`vscode-theme-css.ts`): every text foreground token is
   held at the interface ceiling (13:1 on the canvas); only prose (`text-reading`,
   14.6:1), `text-foreground-strong` (headings, bold), the selected sidebar row and the
@@ -87,11 +97,11 @@ mobile surfaces. Background for the rules below:
 - `@lody/ui` colours come from the VS Code theme: `theme-provider.tsx` puts
   `lib/vscode-theme/lody-ui-palette.stylex.ts` on the root in the resolved mode. Override
   its tokens there with `createTheme`, never with Tailwind classes on package parts.
-- Components rendered inside conversation rows take `Tooltip`, `Popover` and `ContextMenu`
-  from `ui/armed-overlays.tsx`, not `@lody/ui`: inside an unarmed `useInteractionArm`
-  boundary they render only the trigger element until the first hover or focus. An
-  owner-opened overlay still mounts, focus that arms a row is handed back to the same
-  trigger, and arming never commits inside a press (Chromium drops the click).
+- Conversation rows import `Tooltip`, `Popover` and `ContextMenu` from
+  `ui/armed-overlays.tsx`, not `@lody/ui`. Unarmed `useInteractionArm` renders only
+  triggers until hover/focus; owner-opened overlays still mount. Return arming
+  focus to the same trigger and never commit arming inside a press.
+
 - Markdown code blocks tokenize in `lib/markdown-highlight.worker.ts`; the main thread
   keeps only cache hits and the no-worker fallback. Builds without an `es` worker format
   alias `@/lib/markdown-highlight-worker` to a null shim (see site-docs).

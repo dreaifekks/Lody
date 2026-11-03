@@ -172,3 +172,59 @@ describe('Board file tools on the caller machine', () => {
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 });
+
+describe('Board project group scope', () => {
+  it('checks every member, including additional directories and exact local machine identity', async () => {
+    const { assertBoardProjectInScope } = await import('@/lib/board-directory');
+    const { SessionProjectRunSchema } = await import('@lody/shared');
+    const scoped = normalizeBoardMeta({
+      ...board,
+      context: {
+        projects: [
+          { kind: 'local', machineId: MACHINE, localProjectId: 'allowed', name: 'Allowed' },
+        ],
+      },
+    })!;
+    const manager = {
+      syncFlockDocOrThrow: async () => {},
+      repo: { openFlockDoc: async () => ({ flock: { get: () => scoped } }) },
+    } as unknown as Parameters<typeof assertBoardProjectInScope>[0];
+    const run = SessionProjectRunSchema.parse({
+      id: 'd835a1ee-4f85-4e15-9dca-2bca912e36bf',
+      name: 'Group',
+      root: 'project-group-d835a1ee-4f85-4e15-9dca-2bca912e36bf',
+      members: {
+        first: {
+          o: 0,
+          src: { kind: 'local', machineId: MACHINE, localProjectId: 'allowed' },
+          placement: { kind: 'root', dir: 'first' },
+          path: 'first',
+          base: 'main',
+        },
+        second: {
+          o: 1,
+          src: { kind: 'local', machineId: MACHINE, localProjectId: 'outside' },
+          placement: { kind: 'root', dir: 'second' },
+          path: 'second',
+          base: 'main',
+          access: 'additional',
+        },
+      },
+    });
+    const check = () =>
+      assertBoardProjectInScope(manager, WORKSPACE, board.id, MACHINE, run, silentLogger());
+    await expect(check()).rejects.toMatchObject({ code: 'BOARD_PROJECT_OUT_OF_SCOPE' });
+    run.members.second!.src = {
+      kind: 'local',
+      machineId: 'other' as MachineId,
+      localProjectId: 'allowed' as never,
+    };
+    await expect(check()).rejects.toMatchObject({ code: 'BOARD_PROJECT_OUT_OF_SCOPE' });
+    run.members.second!.src = {
+      kind: 'local',
+      machineId: MACHINE,
+      localProjectId: 'allowed' as never,
+    };
+    await expect(check()).resolves.toBeUndefined();
+  });
+});

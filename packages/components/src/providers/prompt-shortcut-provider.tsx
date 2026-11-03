@@ -1,3 +1,9 @@
+import { useLegacyWorkspaceQueryStatus } from '@/hooks/use-workspace-feature';
+import {
+  useLegacyWorkspaceQuery,
+  useLegacyWorkspaceMutation,
+  useLegacyWorkspaceAction,
+} from '@/hooks/use-legacy-workspace-query';
 import {
   createContext,
   useContext,
@@ -21,13 +27,7 @@ import {
   type ShortcutRuntimeSnapshot,
 } from '@lody/shared/prompt-shortcuts';
 import { resolvePlatformSync } from '@lody/platform';
-import {
-  useCloudAction,
-  useCloudMutation,
-  useCloudQuery,
-  usePlatform,
-  usePlatformSession,
-} from '@lody/platform/react';
+import { usePlatform, usePlatformSession } from '@lody/platform/react';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { cloudOperations as api } from '@/lib/cloud-api-operations';
 import { scheduleIdleTask } from '@/lib/idle-task';
@@ -38,7 +38,15 @@ const Context = createContext<{
   runtime: PromptShortcutRuntime | null;
   error?: unknown;
   retry?: () => void;
+  disabled?: boolean;
 }>({ runtime: null });
+const DISABLED: ShortcutRuntimeSnapshot = {
+  entries: [],
+  pendingIds: [],
+  errors: {},
+  loading: false,
+};
+const disabledSnapshot = () => DISABLED;
 const EMPTY: ShortcutRuntimeSnapshot = { entries: [], pendingIds: [], errors: {}, loading: true };
 const noopSubscribe = () => () => {};
 const emptySnapshot = () => EMPTY;
@@ -47,11 +55,11 @@ const emptySnapshot = () => EMPTY;
 const closingDatabases = new Map<string, Promise<void>>();
 
 export function usePromptShortcuts() {
-  const { runtime, error, retry } = useContext(Context);
+  const { runtime, error, retry, disabled } = useContext(Context);
   const snapshot = useSyncExternalStore(
     runtime?.subscribe ?? noopSubscribe,
-    runtime?.getSnapshot ?? emptySnapshot,
-    emptySnapshot
+    runtime?.getSnapshot ?? (disabled ? disabledSnapshot : emptySnapshot),
+    disabled ? disabledSnapshot : emptySnapshot
   );
   return {
     runtime,
@@ -91,20 +99,24 @@ export function PromptShortcutProvider({
   const platform = usePlatform();
   const session = usePlatformSession();
   const workspaceRuntime = useAtomValue(activeWorkspaceRuntimeAtom);
+
   const scope = useResolvedWorkspaceScope({ enabled });
   const userId = session.status === 'authenticated' ? session.user.id : null;
-  const workspaceId =
-    scope.enabled && scope.workspaceId === workspaceRuntime?.workspaceId ? scope.workspaceId : null;
   const cloud = platform.capabilities.has('cloudAccount');
-  // A workspace shared through a fixed gateway (a LAN) is one user on every
-  // machine: its shortcuts sync through that gateway without hosted grants.
+  const legacyStatus = useLegacyWorkspaceQueryStatus(scope.workspaceId);
+  const workspaceId =
+    (!cloud || legacyStatus === 'allowed') &&
+    scope.enabled &&
+    scope.workspaceId === workspaceRuntime?.workspaceId
+      ? scope.workspaceId
+      : null;
   const gateway = cloud ? null : (resolvePlatformSync(platform.sync, workspaceId).streams ?? null);
-  const stage = useCloudMutation(api.promptShortcuts.stageDocument);
-  const activate = useCloudMutation(api.promptShortcuts.activateDocument);
-  const revoke = useCloudMutation(api.promptShortcuts.revokeShortcut);
-  const settle = useCloudMutation(api.promptShortcuts.settleDocument);
-  const grant = useCloudAction(api.promptShortcuts.getStreamToken);
-  const directory = useCloudQuery(
+  const stage = useLegacyWorkspaceMutation(api.promptShortcuts.stageDocument);
+  const activate = useLegacyWorkspaceMutation(api.promptShortcuts.activateDocument);
+  const revoke = useLegacyWorkspaceMutation(api.promptShortcuts.revokeShortcut);
+  const settle = useLegacyWorkspaceMutation(api.promptShortcuts.settleDocument);
+  const grant = useLegacyWorkspaceAction(api.promptShortcuts.getStreamToken);
+  const directory = useLegacyWorkspaceQuery(
     api.promptShortcuts.listAccessibleDocuments,
     cloud && workspaceId && userId ? { workspaceId } : 'skip'
   );
@@ -175,6 +187,7 @@ export function PromptShortcutProvider({
       const store = await LocalShortcutStore.open({ repo, workspaceId, userId });
       const sync = cloud
         ? new PromptShortcutSync({
+            content: { mode: 'plaintext' },
             repo,
             now: Date.now,
             grant: async (resource, write) => {
@@ -198,6 +211,7 @@ export function PromptShortcutProvider({
         : undefined;
       const lanSync = gateway
         ? new PromptShortcutSync({
+            content: { mode: 'plaintext' },
             repo,
             now: Date.now,
             grant: async (resource) => {
@@ -333,6 +347,7 @@ export function PromptShortcutProvider({
       value={{
         runtime,
         error: initializationError,
+        disabled: cloud && legacyStatus === 'blocked',
         retry: () => setGeneration((value) => value + 1),
       }}
     >

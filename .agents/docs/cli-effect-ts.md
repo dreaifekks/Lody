@@ -30,30 +30,11 @@ than repeatedly loading the entire migration roadmap.
 
 ## Effect lint
 
-`pnpm lint:effect` runs five official correctness rules and the community
-`effect/prefer-effect-fn` rule with visible warnings. It is included in
-`check:quick` and `check`; ordinary `lint` and `lint:fast` retain their existing
-rule configuration. Use `pnpm lint:effect -- apps/cli/src/lib` to narrow a run.
-The dedicated config disables nested configs so vendor or embedded workspace
-configs cannot replace this rule set. Generated code and ACP extension workspaces
-are excluded.
-
-The installing workspace includes the unpublished tooling package at
-`scripts/effect-lint`, which pins its own compatible Oxlint and Effect integration.
-The root `prepare` hook patches only those tool binaries; each invocation repeats
-that idempotent patch to support installs with `--ignore-scripts`. The runner
-explicitly selects the matching type-aware engine. Ordinary lint keeps its
-original Oxlint and oxlint-tsgolint versions and does not acquire newly introduced
-React Compiler rules. TypeScript and Effect runtime installations are unchanged.
-For an embedded checkout, run the installing parent workspace's `lint:effect`
-command; do not install a second virtual store in the public checkout.
-
-Warnings are initially advisory. After reviewing and fixing the baseline,
-correctness rules can become errors; `--deny-warnings` is available for a strict
-manual run. The checks do not prove lifecycle ownership, cancellation, or that
-`runSync` only receives synchronous programs. The
-[decision record](../notes/implemented/process/2026-10-13-effect-lint-integration.md)
-records the version selection and validation boundary.
+Generic Effect lint and its diagnostic fixtures have been removed. Retained
+checks must prove a Lody product/domain assumption or a build/release guarantee;
+lifecycle behavior belongs in the owning behavioral suite. Typechecking remains
+part of compilation validation. The previous toolchain selection is retained as
+[historical rationale](../notes/archived/process/2026-10-13-effect-lint-integration.md).
 
 ## When to use Effect
 
@@ -244,7 +225,9 @@ catch })`. Construct the Promise inside the thunk and pass the signal to the I/O
 `LoginShellEnvironmentLive` injects host selection and the existing official
 process service. Candidate shells share one Clock deadline; core composition
 never executes. `LoginShellCacheLive` owns one producer in a child Scope and
-retains its complete Exit for later readers. CLI readers retain their 3-second
+retains successful Exits for later readers. Completed failures retry on the next
+read after five seconds; unconfirmed process release retains its Exit and owner.
+CLI readers retain their 3-second
 pending-overlay behavior; cancellation and timeout affect only that local reader.
 Application shutdown rejects new readers, interrupts and joins the producer, then
 closes its child Scope. Process cleanup keeps its own bounded backend and recovery
@@ -351,6 +334,10 @@ Local-project Git is native as described above; full worktree ownership is separ
 
 ## Worktree Git execution
 
+The read-only Project group member probe also uses this boundary through
+`worktreeGitLegacy.probeLocalProjectMember`; the RPC owns the finite request and awaits
+command release. Remove this adapter when its dispatcher uses the native daemon runtime.
+
 `WorktreeGit` / `WorktreeGitLive` own native command execution, status checking and
 bounded credential-helper protocol. Layers provide official FileSystem, the process
 spawner and a per-command environment Effect. Each command owns its process Scope;
@@ -389,7 +376,9 @@ renderer and Machine RPC callers use the sole
 `createTokenProviderLegacy` port/type. Renderer teardown and CLI cloud-port
 shutdown await provider close. CLI durable transport and machine monitor borrow the
 workspace-native provider through `{provider, executor}` in that same facade,
-creating no extra runtime/cache. This is token ownership, not completion of upper
+creating no extra runtime/cache. In the CLI port those providers and Machine RPC's
+are views of one kernel per workspace (`loro/streams-token-shares.ts`): a view's
+close ends only its reads, and the last one closes the kernel. This is token ownership, not completion of upper
 Loro/daemon lifecycles. [API and decision](../../packages/shared/src/loro-streams-token/README.md).
 
 Native getToken/auth preserve terminal typed failure; only the explicit Legacy
@@ -465,6 +454,14 @@ migrated layer. Current facades:
 `pnpm check:cli-process-boundary` fails when code in those packages bypasses
 these and reaches `child_process`, `cross-spawn`, `node-pty`, `process.kill` or
 a child's `kill` directly.
+
+`publishTurnCompletionLegacy` in `session/turn-completion-legacy.ts` is consumed by
+`SessionExecutionService.releaseVisibleTurn`. The native publication policy owns
+confirmation retry/deadline; the existing host drain owns its Promise and shutdown
+signal. History/backend/notification Promise adapters remain unfinished dependencies,
+so this does not complete Turn migration. Delete the facade when these owners and
+the Session caller compose native Effects. See the
+[completion decision](../notes/implemented/bug-fix/2026-10-26-turn-completion-signals.md).
 
 Session credential acquisition also has a temporary `acquireSessionCredentialsLegacy`
 facade (`session/session-credentials.ts`): the Effect broker lease's scope belongs

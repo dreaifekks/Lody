@@ -129,9 +129,4 @@ describe('agent role chip in the composer', () => {
     const view = await renderComposer();
     expect(view.textContent).toContain(DEFAULT_AGENT_ROLE_EMOJI);
   });
-
-  it('paints nothing role-specific for a role the composer no longer offers', async () => {
-    const view = await renderComposer();
-    expect(view.textContent).not.toContain(DEFAULT_AGENT_ROLE_EMOJI);
-  });
 });

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import type { SessionMeta, WorkspaceId } from '@lody/shared';
@@ -12,16 +12,20 @@ import { SessionShareManager } from './session-share-manager';
  * The upstream share dialog for a conversation of a LAN workspace, which the
  * LAN's hub publishes. Mounted only while open.
  */
-export function LanSessionShareDialog({
+function LanSessionShareEditor({
   workspaceId,
   session,
   onClose,
   shareId,
+  embedded = false,
+  onBusyChange,
 }: {
   workspaceId: WorkspaceId;
   session: SessionMeta;
   onClose: () => void;
   shareId?: string;
+  embedded?: boolean;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useTranslation();
   const meta = useAtomValue(sessionMetaCacheAtom);
@@ -42,14 +46,36 @@ export function LanSessionShareDialog({
     candidates.map((entry) => entry.sessionId),
     shareId
   );
-  return (
+  const working = management.busy || management.phase !== 'idle';
+  useEffect(() => {
+    onBusyChange?.(working);
+  }, [onBusyChange, working]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
+  const editor = (
+    <SessionShareManager
+      embedded={embedded}
+      sessionId={session.id}
+      candidates={candidates}
+      onClose={onClose}
+      {...management}
+    />
+  );
+  return embedded ? (
+    editor
+  ) : (
     <SessionShareDialogFrame title={title} onClose={onClose}>
-      <SessionShareManager
-        sessionId={session.id}
-        candidates={candidates}
-        onClose={onClose}
-        {...management}
-      />
+      {editor}
     </SessionShareDialogFrame>
   );
+}
+
+export function LanSessionShareDialog(
+  props: Omit<Parameters<typeof LanSessionShareEditor>[0], 'embedded'>
+) {
+  return <LanSessionShareEditor {...props} />;
+}
+export function LanSessionShareEditorPanel(
+  props: Omit<Parameters<typeof LanSessionShareEditor>[0], 'embedded'>
+) {
+  return <LanSessionShareEditor {...props} embedded />;
 }

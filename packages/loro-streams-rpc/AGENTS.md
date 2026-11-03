@@ -1,71 +1,74 @@
 # packages/loro-streams-rpc
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
-Repo-wide guidelines live in the root `AGENTS.md`.
+Edit `AGENTS.md`; `CLAUDE.md` symlinks here. Root rules apply.
 
-Workspace/machine-level JSON RPC over Loro Streams. File responsibilities, the
-Web/CLI Code Collab seam, and the reasons behind the watchdog, shard selection,
-and the `file/preview` namespace are in
-[the Loro Streams Machine RPC map](../../.agents/docs/rpc-loro-streams-rpc.md).
+Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.md).
 
 ## Invariants
 
+- `./e2ee-client` is the shared Node-free implementation. Its effectful immutable
+  original store retains/readbacks before success; whole response batches are
+  atomic. `./e2ee-native` only supplies the SQLite adapter. Keep finite local
+  sealing/retention owned through completion and wipe plaintext on failure as well
+  as success. Acquire returned plaintext and owned decoded buffers atomically
+  with wipe registration; never put remote policy waits under that uninterruptible section.
+
+- Encrypted machine RPC uses one feature DTO/chunk codec and shared complete-response assembler.
+  The closed pure-read list uses fresh read authority, never execution journals; other admitted
+  Code Collab/preview actions require write authority and execution claims. Keep same-member
+  machine binding, exact originals and explicit size errors; never fall back to ordinary RPC.
+- Only verified `authorizeTarget: false` produces `e2ee_machine_not_shared`;
+  authorization failure produces `e2ee_machine_sharing_unavailable`.
+- Encrypted dispatch retains exact frames across retry/fallback. Receipt ACK never
+  completes the shared execution claim. [Ownership/close](README.md#encrypted-dispatch).
 - Request stream ids are workspace/machine scoped:
   `getLoroMachineRpcRequestStreamId(workspaceId, machineId)` returns
   `<workspaceId>:rpc:req:<machineId>`.
-- New Web runtime clients share one workspace-level response stream per runtime:
-  `getLoroWorkspaceRpcResponseStreamId(workspaceId)` returns `<workspaceId>:rpc:res`,
-  and the runtime appends `:<uuid>` before sending that exact stream id in each
-  request `replyTo`.
+- Web runtimes share one response stream: `getLoroWorkspaceRpcResponseStreamId`
+  returns `<workspaceId>:rpc:res`; append `:<uuid>` and send that exact `replyTo`.
 - `getLoroMachineRpcResponseStreamId(workspaceId, machineId)` remains the legacy
-  response stream base for direct `LoroStreamsMachineRpcClient` construction and
-  old clients. Servers must continue to append to the request's `replyTo` and accept
-  both response stream naming schemes.
-- Method names live in `src/rpc.ts` `LoroStreamsRpcMethodSchema`; client convenience
-  methods are on `LoroStreamsMachineRpcClient`.
+  response base for direct clients. Servers append to request `replyTo`, accepting
+  both naming schemes.
+- Define methods in `src/rpc.ts` `LoroStreamsRpcMethodSchema` and convenience
+  methods on `LoroStreamsMachineRpcClient`.
 - `createLoroStreamsJsonStreamClient` append must select its shard **stably** per stream
   id (`selectStableShardUrl`), never randomly.
 - JSON append timeout: `uploadTimeoutMs ?? connectTimeoutMs ?? 10000`; keep
   RPC deadlines independent of bulk uploads.
 - `readJsonLive` keeps `liveIdleTimeoutMs` (default 120s; `0` disables) and aborts
   with plain `AbortError`, so `runResponseLoop` / `runLoop` resume saved offsets.
-- Web Machine RPC responses are **SSE-first with a bounded long-poll fallback**, owned by
-  `LoroStreamsLiveModePolicy` (`src/live-mode-policy.ts`) and passed to
-  `LoroStreamsRpcResponseDispatcher` as `liveModePolicy`; it picks the mode per read, so do
-  **not** re-pin a static `liveMode` on the web json stream client. It falls back on
-  unsupported SSE, failed reads and response starvation. Appended Roost input writes
-  renew the shared response read once after 2s; retain offsets, pending calls and
-  deadlines, never replay the write or infer acceptance. Stop/cancel removes that
-  recovery; explicit pins disable it. Read the linked Machine RPC map before changes.
-  CLI request reads keep static `'sse'` plus the watchdog.
+- Web responses use SSE first and bounded long-poll fallback through
+  `LoroStreamsLiveModePolicy` (`src/live-mode-policy.ts`), passed as `liveModePolicy`
+  to `LoroStreamsRpcResponseDispatcher`. Select per read; do not pin static web
+  `liveMode`. Fall back for unsupported SSE, failed reads or response starvation.
+  Appended Roost inputs renew the shared response read once after 2s, preserving
+  offsets, calls and deadlines without replaying writes or inferring acceptance.
+  Stop/cancel removes recovery; explicit pins disable it. Read the Machine RPC map
+  before changes. CLI requests keep static `sse` and the watchdog.
 - The CLI owns/listens to the request stream via `src/machine-rpc-server.ts`
   `LoroStreamsMachineRpcServer`.
-- Handler permits wait inside tracked tasks, never behind ordinary intake. Bound
-  ordinary admission (default 128); overload replies are separately bounded.
-  History writes and `CONTROL_METHODS` have reserved pools, independent of reads.
-  Serialize mutations in their owner service, not the request loop.
+- Acquire permits inside tracked tasks without blocking intake. Bound ordinary
+  admission (default 128) and overload replies separately. Reserve independent
+  history-write and `CONTROL_METHODS` pools. Owners serialize mutations, not intake.
   `session/history-watch` retains owner encryption and readiness checks. Bound its
   separate admission at 128; checkpoint waits hold no ordinary read permit. Acquire
   that permit only for the subsequent body/change read. Stop aborts parked waits.
-- Control handlers stay fast: `session/dispatch-turn` stashes/wakes, never executes
-  an agent inline. Its TTL equals the client deadline, bounding restart replay.
-  Stop fences queued handlers; retain started work until its raw completion.
-- History writes require durable precondition-refusal retention before replying.
-  Replayed IDs keep that refusal until expiry; conflicting ID reuse and unavailable
-  request state fail closed. Details: [history readiness](../../.agents/docs/rpc-loro-streams-rpc.md#history-readiness-and-error-provenance).
-- Session orchestration authorization is checked source-side with the source CLI
-  token because workspace RPC cannot authenticate a claimed requester identity.
-  `session/live-status` reads the target
-  daemon's active-presence controller and must not infer liveness from durable
-  `SessionMeta.status` or message pointers.
+- `session/dispatch-turn` only stashes/wakes, never runs agents inline. Its TTL
+  equals the client deadline. Stop fences queued handlers and retains started work
+  through raw completion.
+- Persist history precondition refusals before replying; replay retains them until
+  expiry. Conflicting ID reuse or unavailable request state fails closed. Details: [history readiness](../../.agents/docs/rpc-loro-streams-rpc.md#history-readiness-and-error-provenance).
+- Authorize orchestration source-side with its CLI token; workspace RPC cannot
+  authenticate claimed requesters. Automation controls need target-verified,
+  operation-bound proof. `session/live-status` reads target active presence, never
+  infers liveness from `SessionMeta.status` or message pointers.
 - Remote lifecycle: [ACK contract](../../specs/machine-lifecycle-ack.md).
   RPC handlers never run installers inline. Accepted work exits via the CLI process
   boundary after a bounded ACK attempt, including delivery failure or timeout.
-- `machine/acp-capabilities-refresh` and `machine/acp-binary-install` may append
-  `machine/acp-binary-progress` result envelopes before the final response. The
-  response dispatcher must call the progress callback and keep the pending request
-  open until the final method response or error envelope arrives. Capability refresh
-  request/response context and client pending correlation are keyed by `configId`.
+- `machine/acp-capabilities-refresh` and `machine/acp-binary-install` may send
+  `machine/acp-binary-progress`. Call progress callbacks without settling pending
+  requests before their final response/error. Key capability refresh context and
+  pending correlation by `configId`.
 - Capability refresh cancellation uses the control-lane
   `machine/acp-capabilities-refresh-cancel` method keyed by the original RPC id. Client
   abort, response timeout, and response-dispatcher stop/owner cancellation all discard
@@ -93,21 +96,16 @@ and the `file/preview` namespace are in
   interaction ids. Do not reintroduce caller-supplied `customAcp`, `env`, or runtime
   overrides on Workspace Machine RPC: that transport cannot authorize a caller to
   choose a command for the target daemon.
-- Code Collab v2 file/LSP methods are ordinary `code-collab/*` Machine RPC methods
-  (`open-text`, `refresh-text`, `save-text`, `init-directory`, `open-current-diff`,
-  `open-turn-diff`, `lsp-definition`, `lsp-references`). They carry workspace-relative
-  paths, never per-file ids.
-- Remote Streams transport wraps Code Collab request params, success results, and
-  business error `data` in a v2 owner-session content-key envelope. The business
-  schemas stay unchanged; `ownerSessionId` is transport metadata and child sessions
-  use the parent owner key.
+- Code Collab v2 file/LSP work uses ordinary `code-collab/*` Machine RPC methods
+  with workspace-relative paths, never per-file ids.
+- Remote Streams wraps Code Collab params, results and business error `data` in
+  v2 owner-session content-key envelopes. Keep business schemas unchanged;
+  `ownerSessionId` is transport metadata and children use the parent owner key.
 - The CLI server validates the envelope owner against the business `sessionId`'s
   resolved owner session before dispatching Code Collab handlers; mismatches return
   `permission_denied` and must not call the file operation.
 - Session-scoped Code Collab RPC methods are not part of this transport. Add v2 work
   under the ordinary `code-collab/*` machine methods.
-- `file/preview` (File Preview v3) is a Machine RPC method OUTSIDE the `code-collab/`
-  namespace, on purpose: previewing a file must not activate Code Collab on the
-  machine. It reuses the same owner-session content envelope and the same owner
-  verification. Every encrypt/decrypt/error-decode site must go through
-  `isOwnerScopedEncryptedRpcMethod`.
+- `file/preview` (v3) stays outside `code-collab/` and must not activate Code Collab.
+  Use its owner-session envelope and verification; every encrypt/decrypt/error-decode
+  site calls `isOwnerScopedEncryptedRpcMethod`.

@@ -82,6 +82,21 @@ void test('a part of a file arrives as the agent service announced it', async (t
   assert.deepEqual(requests[0], { type: 'range', ...target, offset: 1000, length: 200_000 })
 })
 
+void test('member resources keep equal paths in different project roots distinct', async (t) => {
+  const file = pattern(32)
+  const { open, requests } = await agentService(t, file)
+  const resources = new MemberFileResources(open)
+  const primary = await resources.member(1, target, 'video/mp4')
+  const member = { ...target, rootId: 'member:second' }
+  const secondary = await resources.member(1, member, 'video/mp4')
+
+  assert.notEqual(primary.url, secondary.url)
+  const response = await resources.respond(new Request(secondary.url))
+  assert.deepEqual(await bytesOf(response.body), file)
+  assert.equal(requests.at(-1).rootId, member.rootId)
+  resources.releaseOwner(1)
+})
+
 void test('a refusal carries its code, and a part that ends early fails instead of ending', async (t) => {
   const { open } = await agentService(t, pattern(100_000), { cutAfter: 40_000 })
 
@@ -178,6 +193,8 @@ void test(
         process.execPath,
         '--experimental-strip-types',
         '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
+        '--import',
+        new URL('../../../scripts/node-test-ts-resolve.mjs', import.meta.url).href,
         '--input-type=module',
         '-e',
         script

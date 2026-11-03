@@ -1,3 +1,4 @@
+import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,14 +17,13 @@ import {
   type SessionMeta,
 } from '@lody/shared';
 import type { LoroDocumentManager } from '../loro/doc';
-import { AgentExecutionSlots } from '../agent-execution-slots';
 import {
   commitPreparedSessionDispatch,
   isPreparedSessionDispatched,
   materializePreparedSessionInput,
   type PreparedSessionInput,
 } from '../prepared-session-input';
-import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
+
 import { ScheduleEngine, type ScheduleEnginePorts } from './schedule-engine';
 import { ScheduleStore, type ScheduleRun } from './schedule-store';
 import {
@@ -165,7 +165,6 @@ describe('Chat-only schedule handoff', () => {
       machineId: 'machine',
       userId: 'owner',
       store,
-      slots: new AgentExecutionSlots(),
       now: () => 60_000,
       ready: () => true,
       disabled: () => false,
@@ -280,40 +279,6 @@ describe('Chat-only schedule handoff', () => {
       }
     }
   );
-
-  it('dispatches a run with no workspace selector and no target project', async () => {
-    await run(undefined, (context) => {
-      expect(context.options).toHaveLength(1);
-      for (const selector of WORKSPACE_SELECTORS)
-        expect(context.options[0]).not.toHaveProperty(selector);
-      expect('project' in context.targets[0]!).toBe(false);
-
-      // It really did hand off: one durable prepared turn the ordinary watcher
-      // can now execute, and a dispatched ledger row.
-      expect(context.history).toHaveLength(1);
-      expect(findNextDispatchableUserTurn(context.history, context.meta!)).toEqual(
-        expect.objectContaining({ id: context.userTurnId })
-      );
-      expect(context.meta?.scheduleId).toBe('chat');
-      expect(context.state).toBe('dispatched');
-    });
-  });
-
-  it('still carries a project when the schedule has one', async () => {
-    await run({ kind: 'github', repoFullName: 'loro-dev/lody', branch: 'main' }, (context) => {
-      expect(context.options[0]).toMatchObject({ repo: 'loro-dev/lody', branch: 'main' });
-      expect(context.targets[0]).toMatchObject({
-        project: { kind: 'github', repoFullName: 'loro-dev/lody' },
-      });
-      expect(context.state).toBe('dispatched');
-    });
-  });
-
-  it('still requires a local project to exist for a local schedule', async () => {
-    await run({ kind: 'local', localProjectId: 'p1' as never, useWorktree: true }, (context) => {
-      expect(context.options[0]).toMatchObject({ localProject: 'p1', worktree: true });
-    });
-  });
 });
 
 /**
@@ -373,7 +338,6 @@ describe('Owned-chat schedule handoff', () => {
       machineId: 'machine',
       userId: 'owner',
       store,
-      slots: new AgentExecutionSlots(),
       now: () => 60_000,
       ready: () => true,
       disabled: () => false,

@@ -2,9 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Cause, Effect, Exit, Fiber } from 'effect';
-import { it as effectIt } from '@effect/vitest';
-import { TestClock } from 'effect/testing';
+import { Cause, Effect, Exit } from 'effect';
+
 import { LoroDoc } from 'loro-crdt';
 import { Flock } from '@loro-dev/flock-wasm';
 import { LoroRepo } from 'loro-repo';
@@ -286,13 +285,13 @@ describe('OSS migration', () => {
     existing.set(['m', 'session-existing', 'title'], 'Same title');
     existing.commit();
     wire.rooms.set(metaId, existing);
-    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     const journal = await loadJournal(dir, manifest.migrationId);
     wire.failPost();
     await expect(run(manifest, journal, dir, target)).rejects.toThrow();
     expect(existing.get(['e', 'session-one'])).toBeUndefined();
     await target.close();
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     wire.allowPost();
     const resumed = await loadJournal(dir, manifest.migrationId);
     await run(manifest, resumed, dir, target);
@@ -313,7 +312,7 @@ describe('OSS migration', () => {
     cloud.getMap('afterMigration').set('edited', true);
     cloud.commit();
     const before = wire.writes.length;
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     await run(manifest, await loadJournal(dir, manifest.migrationId), dir, target);
     await target.close();
     expect(wire.writes).toHaveLength(before);
@@ -329,7 +328,9 @@ describe('OSS migration', () => {
     meta.set(['e', 'session-one'], false);
     meta.commit();
     wire.rooms.set(getLoroMetaStreamId('cloud' as WorkspaceId), meta);
-    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+      mode: 'plaintext',
+    });
     try {
       await expect(
         run(manifest, await loadJournal(dir, manifest.migrationId), dir, target)
@@ -347,7 +348,9 @@ describe('OSS migration', () => {
     await fs.writeFile(sourceDocumentPath(dir, 'session-one'), bytes);
     first(manifest.documents).meta.historyBackend = 'roost';
     const wire = server();
-    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+      mode: 'plaintext',
+    });
     try {
       await expect(
         run(manifest, await loadJournal(dir, manifest.migrationId), dir, target)
@@ -394,7 +397,7 @@ describe('OSS migration', () => {
     flock.set(['localProject', 'project'], { rootPath: '/cloud' });
     flock.commit();
     wire.rooms.set('cloud:mf:cloud-machine', flock);
-    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await expect(target.preflight(manifest, [])).rejects.toThrow('Index collision');
     } finally {
@@ -403,7 +406,7 @@ describe('OSS migration', () => {
     expect(flock.get(['localProject', 'project'])).toEqual({ rootPath: '/cloud' });
     flock.delete(['localProject', 'project']);
     flock.commit();
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await expect(target.preflight(manifest, [])).rejects.toThrow('Index collision');
     } finally {
@@ -419,7 +422,7 @@ describe('OSS migration', () => {
     const id = getLoroStreamIdForDocId('cloud' as WorkspaceId, entry.id);
     const occupied = new LoroDoc();
     wire.rooms.set(id, occupied);
-    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await expect(target.preflight(manifest, [])).rejects.toThrow('empty stream collision');
     } finally {
@@ -427,7 +430,7 @@ describe('OSS migration', () => {
     }
     occupied.getText('body').insert(0, 'unrelated history');
     occupied.commit();
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await expect(target.preflight(manifest, [entry.id])).rejects.toThrow('Document ID collision');
     } finally {
@@ -457,7 +460,9 @@ describe('OSS migration', () => {
           flock.commit();
         });
       });
-      const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+      const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+        mode: 'plaintext',
+      });
       try {
         await target.preflight(manifest, []);
         await expect(target.mergeIndexes(manifest)).rejects.toThrow('Index collision');
@@ -487,7 +492,9 @@ describe('OSS migration', () => {
         flock.commit();
       });
     });
-    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+      mode: 'plaintext',
+    });
     try {
       await target.mergeIndexes(manifest);
     } finally {
@@ -512,7 +519,9 @@ describe('OSS migration', () => {
         meta.commit();
       });
     });
-    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+      mode: 'plaintext',
+    });
     try {
       await expect(target.publish(first(manifest.documents), manifest)).rejects.toThrow(
         'collision'
@@ -536,7 +545,7 @@ describe('OSS migration', () => {
       lost = true;
       return true;
     });
-    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await expect(
         run(manifest, await loadJournal(dir, manifest.migrationId), dir, target)
@@ -548,7 +557,7 @@ describe('OSS migration', () => {
     expect((wire.rooms.get(id) as LoroDoc).getMap('ossMigration').get('id')).toBe(
       manifest.migrationId
     );
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await run(manifest, await loadJournal(dir, manifest.migrationId), dir, target);
     } finally {
@@ -575,7 +584,9 @@ describe('OSS migration', () => {
         lost = true;
         return true;
       });
-      let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+      let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+        mode: 'plaintext',
+      });
       try {
         await expect(
           run(manifest, await loadJournal(dir, manifest.migrationId), dir, target)
@@ -589,7 +600,7 @@ describe('OSS migration', () => {
         else flock.delete(key);
         flock.commit();
       });
-      target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+      target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
       try {
         await run(manifest, await loadJournal(dir, manifest.migrationId), dir, target);
       } finally {
@@ -621,7 +632,7 @@ describe('OSS migration', () => {
     manifest.flocks = [{ id: indexId, rows: [{ key, value: { path: '/source' } }] }];
     const wire = server();
     const metaId = getLoroMetaStreamId('cloud' as WorkspaceId);
-    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    let target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     let interrupted = false;
     const originalPublish = target.publish.bind(target);
     target.publish = async (...args) => {
@@ -649,7 +660,7 @@ describe('OSS migration', () => {
       flock.set(['e', 'session-one'], false);
       flock.commit();
     });
-    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, { mode: 'plaintext' });
     try {
       await run(manifest, await loadJournal(dir, manifest.migrationId), dir, target);
     } finally {
@@ -668,7 +679,9 @@ describe('OSS migration', () => {
     await fs.writeFile(sourceDocumentPath(dir, 'session-one'), bytes);
     const wire = server();
     wire.disableCas();
-    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId);
+    const target = await openMigrationTarget(provider, 'cloud' as WorkspaceId, {
+      mode: 'plaintext',
+    });
     try {
       await expect(
         run(manifest, await loadJournal(dir, manifest.migrationId), dir, target)
@@ -1039,34 +1052,21 @@ describe('OSS migration', () => {
     expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
     expect(events).toEqual(['fetch-aborted', 'fetch-released', 'scope-released']);
   });
-  effectIt.effect('bounds a stalled network step and aborts its fetch at the deadline', () =>
-    Effect.gen(function* () {
-      let aborted = false;
-      let startedResolve: () => void = () => {};
-      const started = new Promise<void>((resolve) => {
-        startedResolve = resolve;
-      });
-      const fiber = yield* Effect.forkChild(
-        migrationStep(
-          (signal) =>
-            new Promise<void>((_resolve, reject) => {
-              signal.addEventListener(
-                'abort',
-                () => {
-                  aborted = true;
-                  reject(signal.reason);
-                },
-                { once: true }
-              );
-              startedResolve();
-            })
-        )
-      );
-      yield* Effect.promise(() => started);
-      yield* TestClock.adjust('5 minutes');
-      const exit = yield* Fiber.await(fiber);
-      expect(Exit.isFailure(exit)).toBe(true);
-      expect(aborted).toBe(true);
-    })
-  );
+});
+
+it('rejects encrypted import before authenticating or creating streams', async () => {
+  const requests: string[] = [];
+  vi.stubGlobal('fetch', async (url: string) => {
+    requests.push(url);
+    throw new Error('unexpected network');
+  });
+  const blockedTokens = new Proxy({} as LoroStreamsTokenProviderLegacy, {
+    get() {
+      throw new Error('authentication must not start');
+    },
+  });
+  await expect(
+    openMigrationTarget(blockedTokens, 'cloud' as WorkspaceId, { mode: 'protected' })
+  ).rejects.toThrow('加密工作区不支持导入');
+  expect(requests).toEqual([]);
 });

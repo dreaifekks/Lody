@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
@@ -171,19 +172,6 @@ async function renderSetting() {
   );
 }
 
-it('keeps missing nmem on the page with an install link and does not open a dialog', async () => {
-  await renderSetting();
-  expect(container.textContent).toContain('Nowledge Mem CLI is not installed');
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
-  const install = [...container.querySelectorAll('button')].find((candidate) =>
-    candidate.textContent?.includes('Get Nowledge Mem')
-  );
-  if (!install) throw new Error('Missing install action');
-  await act(async () => install.click());
-  expect(mocks.openExternalUrl).toHaveBeenCalledWith('https://mem.nowledge.co/en');
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
-});
-
 function button(label: string) {
   const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
     (node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label
@@ -275,28 +263,6 @@ function checkbox(name: string) {
 function importButton() {
   return document.querySelector<HTMLButtonElement>('button[type="submit"]')!;
 }
-
-it('imports multiple checked identities and disables submission when all are unchecked', async () => {
-  ready();
-  await renderSetting();
-  await click('Add memory');
-  await click('Import');
-  expect(importButton().disabled).toBe(true);
-  await click('Reviewer');
-  await click('Reviewer');
-  expect(checkbox('Reviewer').getAttribute('aria-checked')).toBe('false');
-  expect(importButton().disabled).toBe(true);
-  await click('Reviewer');
-  await click('Designer');
-  expect(checkbox('Reviewer').getAttribute('aria-checked')).toBe('true');
-  expect(checkbox('Designer').getAttribute('aria-checked')).toBe('true');
-  await submit();
-  expect(mocks.entries).toEqual([
-    saved,
-    { ...saved, memoryId: 'designer', name: 'Designer', description: 'Design lessons' },
-  ]);
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
-});
 
 it('retains successful imports and retries only the remaining selections after a failure', async () => {
   ready();

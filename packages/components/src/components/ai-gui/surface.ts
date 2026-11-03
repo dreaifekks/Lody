@@ -94,6 +94,7 @@ export const conversationSurface = stylex.create({
     paddingBlock: conversation.activityPadding,
     paddingInline: conversation.railInset,
   },
+  thoughtStep: { paddingInline: 0 },
   userRow: { display: 'flex', width: '100%', flexDirection: 'row-reverse', columnGap: space[2] },
   mobileUserRow: { paddingLeft: '28px' },
   author: {
@@ -117,6 +118,9 @@ export const conversationSurface = stylex.create({
     },
   },
   mobileUserStack: { maxWidth: 'min(100%, 28rem)' },
+  // Editing turns the fitting bubble into a full-width column. Keep its capped
+  // content on the stack's inline-end, aligned with the metadata and avatar.
+  userEditContent: { marginInlineStart: 'auto' },
   metadata: {
     display: 'flex',
     minHeight: conversation.metadataPitch,
@@ -166,4 +170,46 @@ export const conversationSurface = stylex.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
   },
+});
+
+/**
+ * The Evidence tier of a turn: what the agent changed or produced, and the card
+ * that holds it ([hierarchy Spec](../../../../../specs/workspace-visual-hierarchy.md)).
+ * A name is the subheadline role at 500 in `label` ink, one step under the reading
+ * prose above it, which sits at body size. Everything about the name — a directory,
+ * a subtitle, a count — is quieter in ink, never in a fractional opacity. A hue
+ * belongs only to an outcome (the diff counts), and the caller supplies it.
+ *
+ * A style sets what its tier fixes. An element takes one of these, except `detail`,
+ * which nests inside a `name` and sets only weight and ink.
+ */
+export const evidenceSurface = stylex.create({
+  name: {
+    fontSize: text.subheadlineSize,
+    lineHeight: text.subheadlineLeading,
+    fontWeight: 500,
+    color: colors.label,
+  },
+  detail: { fontWeight: 400, color: colors.tertiaryLabel },
+  subtitle: {
+    fontSize: text.footnoteSize,
+    lineHeight: text.footnoteLeading,
+    fontWeight: 400,
+    color: colors.secondaryLabel,
+  },
+  failed: { color: colors.destructive },
+  caption: {
+    fontSize: text.footnoteSize,
+    lineHeight: text.footnoteLeading,
+    fontWeight: 500,
+    color: colors.secondaryLabel,
+  },
+  action: {
+    fontSize: text.footnoteSize,
+    lineHeight: text.footnoteLeading,
+    fontWeight: 500,
+    color: colors.secondaryLabel,
+  },
+  figure: { fontSize: text.footnoteSize, lineHeight: text.footnoteLeading },
+  figureUnknown: { color: colors.tertiaryLabel },
 });

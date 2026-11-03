@@ -71,6 +71,7 @@ type StoryShellProps = {
   continuable?: boolean;
   onSendMessage?: SessionChatInputAreaProps['onSendMessage'];
   disableImageUpload?: boolean;
+  isArchived?: boolean;
   claimNavigationFocus?: () => boolean;
 };
 
@@ -92,6 +93,7 @@ function StoryShell({
   onSendMessage = async () => true,
   claimNavigationFocus,
   disableImageUpload = true,
+  isArchived = false,
 }: StoryShellProps) {
   const store = useMemo(() => createStoryStore(), []);
   const session = useMemo<SessionMeta>(
@@ -106,6 +108,7 @@ function StoryShell({
       status: isAgentBusy ? { type: 'running' } : { type: 'idle' },
       cliType: 'builtin',
       agentType: 'codex',
+      isArchived,
       agentConfigId: STORY_AGENT_CONFIG_ID,
       repoFullName: 'loro-dev/lody',
       project: {
@@ -115,7 +118,7 @@ function StoryShell({
       },
       baseBranch: 'main',
     }),
-    [isAgentBusy]
+    [isAgentBusy, isArchived]
   );
 
   return (
@@ -152,6 +155,7 @@ function StoryShell({
               onSendMessage={onSendMessage}
               onStop={() => {}}
               onContinue={continuable ? () => {} : undefined}
+              onRestoreSession={() => {}}
               onRemoveQueueItem={async () => {}}
               initialInputText={initialInputText}
               disableImageUpload={disableImageUpload}
@@ -184,6 +188,10 @@ export const IdleDark: Story = {
   globals: {
     theme: 'dark',
   },
+};
+
+export const Archived: Story = {
+  args: { isArchived: true },
 };
 
 export const RunningDark: Story = {

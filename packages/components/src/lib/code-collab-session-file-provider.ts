@@ -2,6 +2,7 @@ import type { LocalFilePreviewResource } from '@lody/shared/local-file-preview';
 import { createLocalPagedFileSource } from './paged-file-source';
 import {
   CODE_COLLAB_V2_TEXT_LIMITS,
+  type CodeCollabAllChangesScope,
   type CodeCollabFileSourceState,
   type CodeCollabRole,
   type CodeCollabV2AllChangesState,
@@ -22,6 +23,7 @@ import {
   type FilePreviewV3Digest,
   type FilePreviewV3ErrorCode,
   type FilePreviewV3Response,
+  type FileDiff,
   type SessionId,
 } from '@lody/shared';
 import { SaveTextConflictError, SaveTextTransientError } from './code-collab-save-errors';
@@ -49,6 +51,7 @@ export type ParsedFileMetadataSnapshot = {
 
 export type CodeCollabSessionFileProviderRuntime = {
   readonly sessionId: SessionId;
+  downloadFile?(path: string, signal?: AbortSignal): Promise<Uint8Array | null>;
   /**
    * File Preview v3 — the read path behind `openFile`. Always resolves; a
    * transport failure arrives as `status: 'error'`.
@@ -70,10 +73,12 @@ export type CodeCollabSessionFileProviderRuntime = {
     format?: CodeCollabV2TextFormat
   ): Promise<CodeCollabV2SaveTextResponse | CodeCollabV2Error | null>;
   openCurrentDiff(
-    path: string
+    path: string,
+    scope?: CodeCollabAllChangesScope
   ): Promise<CodeCollabV2OpenCurrentDiffResponse | CodeCollabV2Error | null>;
   openAllChangesDiff(
-    focusPath?: string
+    focusPath?: string,
+    scope?: CodeCollabAllChangesScope
   ): Promise<CodeCollabV2OpenAllChangesDiffResponse | CodeCollabV2Error | null>;
   openTurnDiff(
     path: string,
@@ -335,6 +340,10 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
    * which is the only authority on what the file actually is. The machine
    * answers with a plain read; it never activates Code Collab for a preview.
    */
+  async downloadFile(path: string, signal?: AbortSignal): Promise<Uint8Array | null> {
+    return (await this.runtime?.downloadFile?.(path, signal)) ?? null;
+  }
+
   async openFile(
     pathOrFileId: string,
     _mode?: SessionFileProviderMode
@@ -356,6 +365,13 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
     const response = await this.runtime.previewFile(path, cached?.digest);
     if (!response) {
       return unavailable(indexed, 'transient-io', 'File preview request timed out.');
+    }
+    if (response.status === 'resolved-link') {
+      return unavailable(
+        indexed,
+        'transient-io',
+        'Expected file content, received link candidates.'
+      );
     }
     if (response.status === 'error') {
       return unavailable(
@@ -689,7 +705,12 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
     this.conflictCache.delete(params.conflictId);
   }
 
-  async getDiff(pathOrFileId: string, turnId?: string): Promise<SessionFileDiffResult> {
+  async getDiff(
+    pathOrFileId: string,
+    turnId?: string,
+    _fileDiff?: FileDiff,
+    options?: { readonly allChangesScope?: CodeCollabAllChangesScope }
+  ): Promise<SessionFileDiffResult> {
     const path = this.resolvePath(pathOrFileId);
     if (!this.runtime) {
       return {
@@ -702,7 +723,9 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
     if (turnId) {
       return await this.getTurnDiff(path, turnId);
     }
-    const response = await this.runtime.openCurrentDiff(path);
+    const response = await (options?.allChangesScope === undefined
+      ? this.runtime.openCurrentDiff(path)
+      : this.runtime.openCurrentDiff(path, options.allChangesScope));
     if (!response) {
       return {
         status: 'unavailable',
@@ -802,7 +825,10 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
     };
   }
 
-  async getAllChangesDiff(focusPath?: string): Promise<SessionFileAllChangesDiffResult> {
+  async getAllChangesDiff(
+    focusPath?: string,
+    scope?: CodeCollabAllChangesScope
+  ): Promise<SessionFileAllChangesDiffResult> {
     if (!this.runtime) {
       return {
         status: 'unavailable',
@@ -810,7 +836,9 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
         message: this.message ?? CODE_COLLAB_V2_UNAVAILABLE_MESSAGE,
       };
     }
-    const response = await this.runtime.openAllChangesDiff(focusPath);
+    const response = await (scope === undefined
+      ? this.runtime.openAllChangesDiff(focusPath)
+      : this.runtime.openAllChangesDiff(focusPath, scope));
     if (!response) {
       return {
         status: 'unavailable',
@@ -829,6 +857,9 @@ export class CodeCollabSessionFileProvider implements SessionFileProvider {
       return {
         status: 'unavailable',
         reason: response.reason === 'transient_io' ? 'transient-io' : 'metadata-only',
+        ...(response.reason === 'not_a_git_worktree' || response.reason === 'no_commits'
+          ? { scopeReason: response.reason }
+          : {}),
         message: response.message ?? response.reason,
       };
     }
@@ -1033,6 +1064,7 @@ function filePreviewErrorCodeToUnavailableReason(
     case 'path_not_allowed':
     case 'invalid_path':
       return 'permission-denied';
+    case 'unsupported_protocol':
     case 'session_not_found':
     case 'workspace_root_unavailable':
       return 'metadata-only';
@@ -1102,6 +1134,8 @@ function currentDiffUnavailableReasonToContentReason(
   switch (reason) {
     case 'base_unavailable':
     case 'not_changed':
+    case 'not_a_git_worktree':
+    case 'no_commits':
       return 'metadata-only';
     case 'unsupported_binary':
       return 'unsupported-special';

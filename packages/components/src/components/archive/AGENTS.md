@@ -21,3 +21,8 @@ Parent `src/components/AGENTS.md` also applies. `CLAUDE.md` is a symlink; edit `
 - `teamSharing` retains My/All scope. Without it, filter by archived machine ids;
   show machine names on local project headers only when viewing all of multiple
   machines. Truncate machine names before shrinking project names; keep counts visible.
+
+- Encrypted history visibility grants no machine access or management actions.
+  Keep automatic Machine Flock readers inside the usable machine/project indexes;
+  unavailable history uses the document-only reader.
+  [Boundary](../../../../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#member-visibility-a4).

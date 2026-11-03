@@ -23,6 +23,8 @@ older view stays refused. `ensureCurrent(view)` repeats the in-process check
 for a view obtained earlier. Freshness is relative to this device's own
 history; global freshness still depends on the log not hiding records.
 
+`canWriteRetainedEpoch(epoch)` checks only the optional durable local observation journal, without reading the source. Product content bindings use it only after a genuinely missing current key. The fifteen-minute first-observation deadline, conservative clock continuity and notice policy are defined in the [owner decision](../../../.agents/notes/implemented/architecture/2026-10-27-e2ee-epoch-receive-barrier.md); this method grants no device or role permission. Missing journal support keeps strict current-key writes.
+
 ## LedgerFeed
 
 _Requires `WorkspaceScope`, `LedgerFeedStore`. Options: origin, expected
@@ -104,7 +106,11 @@ results() / acknowledge(id)   ended tasks until acknowledged
 
 - A report is a signed claim of installation, not proof of custody.
 - `fetchAndInstall` copies and validates the whole page before writing
-  anything, and returns no `next` cursor if any install failed.
+  anything. Unreadable routing and sender/workspace/epoch/recipient hint mismatches
+  are skipped for this fetch, without journaling or rejecting their frame digests;
+  they remain retryable after the server returns honest metadata. Later rows still
+  run every normal verification. `processed` counts scanned rows, not installed keys.
+  An actual install failure returns no `next` cursor.
   `MailboxInstallError` names the failing frame (sender, `frameDigest`) so the
   application can decide on a repair.
 - Only a genuine ledger change ends a task as `Obsolete` or `Revoked`.
@@ -160,12 +166,21 @@ generate key → seal history packet → sign record → envelope per device
 → Committed: install via InstalledEpochKeys | Conflict: discard candidate key
 ```
 
-`resume` finishes the same candidate after a crash, without signing again.
+`resume` finishes the same candidate after a crash, without signing again. Once the
+matching publication original is in `LedgerSubmission`, resume skips staging/readback
+and reconciles that exact CAS, even if staging is unavailable. Candidate-only attempts
+still stage and compare readback before their first submission. A missing
+candidate may reconcile its exact retained submission only after genuine commitment or
+conflict proof; it cannot authorize CAS at an unchanged parent. Normal receiver paths
+install committed keys independently. Existing installed keys permit terminal acknowledgement
+without reopening the candidate blob. Unpublished keys never bypass CandidateProtector.
 `cleanupStaged` deletes this device's group once a different commitment
 occupies its epoch. `acknowledge` releases the finished result. Only owner or
 admin personal devices may rotate. A manager who bypasses staging and appends
 directly can withhold the key. That is a known availability limitation, not a
 confidentiality break.
+
+Independent MVP member removal uses `WorkspaceControl.execute({ _tag: "RemoveMember", membershipId })` after an authorized `DeclareCapabilities` command for code 1 has committed. It revokes every device, preserves the epoch and advises manual rotation. `EpochPublisher.publishRemoving` retains its separate atomic tag8 contract.
 
 ## WorkspaceControl and the key round
 
@@ -179,6 +194,21 @@ acknowledged only after the local feed contains the checkpoint it observed.
 `KeyDistributor`_) is one finite maintenance round: flush repairs, resume
 installs, fetch one mailbox page, send reports, reconcile and send deliveries,
 send reports again, list results. Each queue keeps its own cursor hint.
+
+
+Receive (including committed staging) and distribution run as separate finite phases.
+A failed receive cannot prevent reconciliation/delivery. `WorkspaceKeyRoundFailure`
+reports both `receive` and `distribution` Results, a separate post-send report Result,
+and retry `cursors`; successful phases advance independently and failed phases keep
+their input hints. Successful rounds retain the existing result fields.
+
+Mailbox fetch skips non-current senders without installing or journaling their keys.
+A strict signature bound to exact routing plus a genuine historical identity absent
+from current membership yields `retiredDigests`; the round queues digest-bound repair.
+Unknown senders only set `refreshRequired`, never reject their digest. Hosts must
+refresh their verified ledger and retry; the workspace facade already refreshes its
+ledger source, and desktop maintenance uses the existing verified history-ingest path
+at most once per call. This refresh occurs after independent distribution.
 
 ## E2eeWorkspace
 
@@ -201,7 +231,15 @@ opens the new personal device's workspace with the recovered keys installed.
 creates and unlocks vault-v1 vaults: a recovery file kept offline, or a
 passkey PRF. `makeWorkspaceRecovery` keeps one workspace's recovery entry
 current (setup, test, replace, skip) and performs a restore. A recovery device
-admits a new personal device, then that device installs every epoch key. The
+admits a new personal device, then that device installs every epoch key.
+Each private package is canonical CBOR with `formatVersion: 1`; a missing or
+other version, or private keys that are not the exact 48-byte RFC 8410 PKCS#8
+Ed25519/X25519 encodings, fail with `invalid-input` before upload and on read.
+`deriveRecoveryAccessCredential` derives R's service access credential (HKDF-SHA256
+over R's seed, salt genesis, info `lody-e2ee/recovery-credential/v1\0` plus R's
+public key). Setup passes its SHA-256 to `submitOriginal` with R's admission and
+`null` with every other record; `E2eeWorkspace` hands it to the platform's
+`registerRecoveryCredential` before submitting, because its ledger port carries no credential. The
 scheme is specified in the whitepaper's backup and recovery section and
 [recovery vault](../../../specs/e2ee/recovery-vault.md).
 
@@ -218,12 +256,15 @@ document key derived from the epoch key, and purpose-bound AAD.
   `DeviceIdentity`, `VerifiedLedger` and `InstalledEpochHistory`.
 - **Other transports**: `sealDocument`, `openDocument` and
   `authenticateDocument` (`/protocol`) take a document key, a signer and a
-  verified-view lookup. A new seal requires current write permission at the
-  exact current epoch, checked before encryption and again after signing. Each
+  verified-view lookup. A new seal requires current write permission and a verified published epoch
+  no later than current, checked before encryption and again after signing.
+  Pending manual rotation does not stop retained-key sends. Each
   run encrypts anew, so a retry must resend the returned bytes.
 - Reading authenticates the historical author before decrypting. A revoked
-  author's old content still opens and is attributed (`member`, or
-  `device-only` after a snapshot), but this grants no current write right.
+  author's old content still opens and is attributed to its original member,
+  also after a ledger snapshot, but this grants no current write right. This applies
+  to both Streams snapshots and updates: historical ledger admission, signature,
+  readable epoch and AEAD remain mandatory; current author validity is not a read gate.
 
 ## Delivery (inside the distributor)
 
@@ -231,3 +272,38 @@ document key derived from the epoch key, and purpose-bound AAD.
 outbox bytes take precedence over preparing new ones. An `unavailable` backend
 leaves the delivery `Pending` with the original unchanged; other backend
 failures propagate.
+
+### Retained feed origin
+
+A retained origin contains this caller's full exported v2 state and the source
+`offset` immediately after it. Restore preserves full-history versus endorsed-snapshot
+provenance. Corruption, unknown versions or another genesis return `retained-cache-invalid`:
+rebuild that optional cache from independently verified originals. A cache longer than
+its pin is also invalid. Equal lengths require equal heads. If the pin is ahead, provide
+`LedgerFeedSource`; opening verifies the suffix and proves the hash at the pin before
+persisting any catch-up. A missing or conflicting proof is `local-evidence-conflict`,
+never permission to reset the pin.
+
+After at least 64 additional records, call `rebase()` with the same `VerifiedLedger`
+used by the runtime. It first advances the pin, then CAS-replaces the origin and removes
+covered feed rows in one store transaction. Save the returned origin for next open.
+Keep original history separately if the UI needs it. An interrupted compaction must
+rebuild from originals or read a suffix to prove the existing pin; never lower it.
+
+`InstalledEpochKeys.check(epoch)` verifies a stored key's current eligibility and
+commitment, disposing its temporary material instead of returning a secret to a status reader.
+
+## Device credential binding
+
+`deviceCredentialBindingBytes`, `signDeviceCredentialBinding` and
+`verifyDeviceCredentialBinding` bind a new device's access-credential hash to an
+approver's active pairing session. The bytes are UTF-8
+`lody-e2ee/device-credential-binding/v1` followed by a zero byte, then the pinned
+genesis (32 bytes), pairing session ID (16), new Ed25519 public key (32), and
+SHA-256 of the raw credential (32). The caller supplies the trusted session and
+genesis; a valid signature neither admits a device nor replaces possession proof.
+Verification uses the existing strict Ed25519 policy. The first creator device
+does not need this proof. `test/foundation.test.ts` retains a fixed signing vector
+and checks substitution of every context field.
+
+Desktop error classification, independent paging and terminal acknowledgement are described in [key maintenance availability](../../../.agents/notes/implemented/bug-fix/2026-10-27-e2ee-key-maintenance-availability.md). `MailboxInstallError.cryptographicRejection` marks only a deterministic rejection at envelope verification; local writes, report signing and unknown native errors never authorize rejecting an envelope.

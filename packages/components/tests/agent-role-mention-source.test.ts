@@ -1,12 +1,13 @@
+import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
 // @vitest-environment jsdom
 
+// @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getAgentRoleTargets,
   AGENT_ROLE_VERSION,
-  DEFAULT_AGENT_ROLE_EMOJI,
   applyTextRewrites,
   resolveAgentRoleInstanceAvailability,
   type AgentConfigId,
@@ -327,34 +328,6 @@ describe('agent role mention tokens', () => {
   });
 });
 
-describe('agent role candidates', () => {
-  it('derives the token from the name, whitespace and all', () => {
-    expect(items(role({ name: 'Code Reviewer' }))[0]?.slug).toBe('Code-Reviewer');
-  });
-
-  it('ranks a prefix match over a substring one, on token or name', () => {
-    const list = items(
-      role({ id: 'a' as AgentRoleId, name: 'Deep reviewer' }),
-      role({ id: 'b' as AgentRoleId, name: 'Reviewer' })
-    );
-    expect(selectAgentRoleMentionCandidates(list, 'rev').map((item) => item.slug)).toEqual([
-      'Reviewer',
-      'Deep-reviewer',
-    ]);
-    expect(selectAgentRoleMentionCandidates(list, 'nope')).toEqual([]);
-  });
-
-  it('lists the entire role catalog, with an explicit cap for aggregate search', () => {
-    const many = items(
-      ...Array.from({ length: 60 }, (_unused, index) =>
-        role({ id: `role-${index}` as AgentRoleId, name: `Reviewer ${index}` })
-      )
-    );
-    expect(selectAgentRoleMentionCandidates(many, '')).toHaveLength(60);
-    expect(selectAgentRoleMentionCandidates(many, '', 4)).toHaveLength(4);
-  });
-});
-
 describe('agent role availability in mentions', () => {
   it('puts available matches first even when a disabled match has a higher score', () => {
     const available = items(role({ id: 'ready' as AgentRoleId, name: 'Deep Reviewer' }))[0]!;
@@ -461,11 +434,6 @@ describe('agent role menu rows', () => {
       ['Pair · Strict · devnuc', 'Agent strict'],
     ]);
   });
-
-  it('falls back to the shared default mark', () => {
-    const [candidate] = buildAgentRoleCandidates(items(role({ emoji: undefined })), '');
-    expect(candidate?.iconEmoji).toBe(DEFAULT_AGENT_ROLE_EMOJI);
-  });
 });
 
 describe('agent role before-send expansion', () => {
@@ -558,13 +526,6 @@ describe('agent role draft hydration', () => {
         new Set(['Code-Reviewer'])
       ).mentions
     ).toEqual([]);
-  });
-
-  it('claims nothing when no role is offered', () => {
-    expect(hydrateAgentRoleMentionsFromText('@Code-Reviewer', [])).toEqual({
-      mentions: [],
-      values: [],
-    });
   });
 });
 

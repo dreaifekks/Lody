@@ -12,6 +12,7 @@ import {
   type LodyError,
   type MachineId,
   type ProjectRef,
+  type SessionProjectRun,
   getWorkspaceFlockDocId,
   normalizeBoardMeta,
   workspaceFlockKeys,
@@ -73,7 +74,7 @@ export async function assertBoardProjectInScope(
   workspaceId: string,
   boardId: string,
   machineId: MachineId,
-  project: ProjectRef,
+  project: ProjectRef | SessionProjectRun,
   logger: Pick<Logger, 'warn'>
 ): Promise<void> {
   const board = await readSyncedBoard(manager, workspaceId, boardId, logger);
@@ -81,12 +82,14 @@ export async function assertBoardProjectInScope(
   if (
     !board ||
     !scope ||
-    isProjectInBoardScope(
-      scope,
-      project.kind === 'local'
-        ? { kind: 'local', machineId, localProjectId: project.localProjectId }
-        : project
-    )
+    ('members' in project
+      ? Object.values(project.members).every((member) => isProjectInBoardScope(scope, member.src))
+      : isProjectInBoardScope(
+          scope,
+          project.kind === 'local'
+            ? { kind: 'local', machineId, localProjectId: project.localProjectId }
+            : project
+        ))
   )
     return;
   throw new BoardProjectOutOfScopeError(

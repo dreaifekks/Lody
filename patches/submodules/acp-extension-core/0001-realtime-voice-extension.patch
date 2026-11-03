@@ -1,8 +1,8 @@
 diff --git a/src/capabilities.ts b/src/capabilities.ts
-index 5a84a24..0359526 100644
+index d64e4a9..6a41816 100644
 --- a/src/capabilities.ts
 +++ b/src/capabilities.ts
-@@ -55,6 +55,13 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
+@@ -56,6 +56,13 @@ export type LodyRateLimitsCapability = LodyVersionOneCapability & {
    query?: true;
  };
  
@@ -14,16 +14,16 @@ index 5a84a24..0359526 100644
 +};
 +
  export type LodyExtensionCapabilities = {
+   promptSuggestions?: LodyVersionOneCapability;
    subagentEvents?: LodyVersionOneCapability;
-   /** Owns title generation; pushes tagged session_info_update titles without a client request. */
-@@ -71,4 +78,5 @@ export type LodyExtensionCapabilities = {
+@@ -73,4 +80,5 @@ export type LodyExtensionCapabilities = {
    worktreeProject?: LodyVersionOneCapability;
    /** Pushes `_lody/session/activity_update` levels, including outside client prompts. */
    sessionActivity?: LodyVersionOneCapability;
 +  voice?: LodyVoiceCapability;
  };
 diff --git a/src/index.ts b/src/index.ts
-index 5fdb070..2e7d453 100644
+index 6d3070c..b08d8e4 100644
 --- a/src/index.ts
 +++ b/src/index.ts
 @@ -4,6 +4,7 @@ export * from './methods.js';
@@ -35,10 +35,10 @@ index 5fdb070..2e7d453 100644
  export * from './subagent-events.js';
  export * from './subagent-emitter.js';
 diff --git a/src/methods.ts b/src/methods.ts
-index 221c2a8..5cad42d 100644
+index 16ea11a..8483ef9 100644
 --- a/src/methods.ts
 +++ b/src/methods.ts
-@@ -13,6 +13,11 @@ export const LODY_EXTENSION_METHODS = {
+@@ -15,6 +15,11 @@ export const LODY_EXTENSION_METHODS = {
    subagentsList: '_lody/subagents/list',
    subagentsCancel: '_lody/subagents/cancel',
    subagentsOutput: '_lody/subagents/output',
@@ -50,7 +50,7 @@ index 221c2a8..5cad42d 100644
  } as const;
  
  export type LodyExtensionMethod =
-@@ -47,6 +52,22 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
+@@ -49,6 +54,22 @@ export type LodyExtensionRequestMap<TPrompt = unknown> = {
      params: LodySubagentOutputRequest;
      result: LodySubagentOutputResponse;
    };
@@ -73,7 +73,7 @@ index 221c2a8..5cad42d 100644
  };
  
  export type LodyExtensionNotificationMap = {
-@@ -55,6 +76,7 @@ export type LodyExtensionNotificationMap = {
+@@ -58,6 +79,7 @@ export type LodyExtensionNotificationMap = {
    [LODY_EXTENSION_METHODS.rateLimitsUpdate]: RateLimitsUpdate;
    [LODY_EXTENSION_METHODS.sessionSteerApplied]: LodySteerApplied;
    [LODY_EXTENSION_METHODS.sessionActivityUpdate]: LodySessionActivityUpdate;
@@ -81,7 +81,7 @@ index 221c2a8..5cad42d 100644
  };
  
  export type LodyExtensionRequestMethod = keyof LodyExtensionRequestMap;
-@@ -94,3 +116,11 @@ import type {
+@@ -97,3 +119,11 @@ import type {
    LodySubagentsListResponse,
  } from './session.js';
  import type { SessionUsageUpdate } from './usage.js';

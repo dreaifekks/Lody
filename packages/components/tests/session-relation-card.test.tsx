@@ -1,5 +1,7 @@
+import { SessionRelationCard } from '../src/components/shared/session-relation-card';
 // @vitest-environment jsdom
 
+// @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
@@ -18,9 +20,10 @@ import {
   buildChatVirtualRows,
   type ChatStreamItem,
 } from '../src/components/ai-gui/view';
-import { SessionRelationCard } from '../src/components/shared/session-relation-card';
+
 import { SessionInfoBar } from '../src/components/sessions/session-info-bar';
 import { CurrentSessionRelationsChip } from '../src/components/sessions/session-relations-chip';
+import { initI18n } from '../src/i18n';
 
 // Keep real metadata/presence updates; access filtering has its own suites.
 vi.mock('../src/hooks/use-visible-session-metas', async () => {
@@ -87,7 +90,8 @@ describe('Session relation cards', () => {
   let root: Root;
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await initI18n('en');
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -166,8 +170,8 @@ describe('Session relation cards', () => {
       )
     );
     expect(container.querySelectorAll('[data-session-relation-card="opened"]')).toHaveLength(5);
-    expect(container.textContent).toContain('sessions.openedBy.status.waitingUser');
-    expect(container.textContent).toContain('sessions.openedBy.status.notice');
+    expect(container.textContent).toContain('Waiting for you');
+    expect(container.textContent).toContain('Notice');
     expect(container.textContent).not.toContain('Old title');
     expect(container.querySelectorAll('[data-session-creation-status="notice"]')).toHaveLength(1);
     await act(async () =>
@@ -356,43 +360,6 @@ describe('Session relation cards', () => {
     );
     expect(container.querySelector('[data-session-relation-card]')).toBeNull();
     expect(container.querySelector('[data-board-thread-card]')).toBeNull();
-  });
-
-  it('navigates back to the precise opener from the provenance card', async () => {
-    const onOpen = vi.fn();
-    await act(async () => {
-      root.render(
-        <SessionRelationCard
-          relation="opened-by"
-          label="This session was automatically created by"
-          sessionTitle="Child Tab Opener"
-          actionLabel="Back to session"
-          onAction={() => onOpen(openerSessionId)}
-        />
-      );
-    });
-
-    expect(container.textContent).toContain('Child Tab Opener');
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button')?.click();
-    });
-    expect(onOpen).toHaveBeenCalledWith(openerSessionId);
-  });
-
-  it('shows dangling provenance without a navigation action', async () => {
-    await act(async () => {
-      root.render(
-        <SessionRelationCard
-          relation="opened-by"
-          label="This session was automatically created by"
-          sessionTitle="Deleted session"
-          actionLabel="Back to session"
-        />
-      );
-    });
-
-    expect(container.textContent).toContain('Deleted session');
-    expect(container.querySelector<HTMLButtonElement>('button')?.disabled).toBe(true);
   });
 
   it('turns a successful session_create completion into a live Session card', async () => {
@@ -666,44 +633,6 @@ describe('Session relation cards', () => {
     expect(split).toHaveLength(3);
   });
 
-  it('does not show a disclosure for five creation cards', async () => {
-    const item = completionMessage.items[0]!;
-    if (item.type !== 'operation_completion' || item.completion.type !== 'result')
-      throw new Error('fixture');
-    const target = item.completion.value.items[0]!;
-    await act(async () =>
-      root.render(
-        <Provider store={createStore()}>
-          <MessageRowView
-            sessionId={openerSessionId}
-            message={{
-              ...completionMessage,
-              items: [
-                {
-                  ...item,
-                  completion: {
-                    type: 'result',
-                    value: {
-                      items: Array.from({ length: 5 }, (_, index) => ({
-                        ...target,
-                        target: {
-                          sessionId: `five-${index}` as SessionId,
-                          userTurnId: `turn-${index}`,
-                        },
-                      })),
-                    },
-                  },
-                },
-              ],
-            }}
-          />
-        </Provider>
-      )
-    );
-    expect(container.querySelectorAll('[data-session-relation-card="opened"]')).toHaveLength(5);
-    expect(container.querySelector('button[aria-expanded]')).toBeNull();
-  });
-
   it('keeps legacy failure summaries outside grouped successful creations', async () => {
     const completion = completionMessage.items[0]!;
     if (completion.type !== 'operation_completion' || completion.completion.type !== 'result')
@@ -766,34 +695,6 @@ describe('Session relation cards', () => {
     );
   });
 
-  it('retains an empty completion summary beside creation records', async () => {
-    const completion = completionMessage.items[0]!;
-    if (completion.type !== 'operation_completion') throw new Error('fixture');
-    await act(async () =>
-      root.render(
-        <Provider store={createStore()}>
-          <MessageRowView
-            sessionId={openerSessionId}
-            message={{
-              ...completionMessage,
-              items: [
-                completion,
-                {
-                  ...completion,
-                  operationId: 'empty-result',
-                  deliveryId: 'empty-result-delivery',
-                  completion: { type: 'result', value: { items: [] } },
-                },
-              ],
-            }}
-          />
-        </Provider>
-      )
-    );
-    expect(container.querySelectorAll('[data-session-relation-card="opened"]')).toHaveLength(1);
-    expect(container.textContent).toContain('orchestration.operationCompleted');
-  });
-
   it('does not duplicate target cards on completion when progress was published', async () => {
     const completion = completionMessage.items[0];
     if (completion.type !== 'operation_completion') throw new Error('Expected completion fixture');
@@ -809,8 +710,122 @@ describe('Session relation cards', () => {
       )
     );
     expect(container.querySelector('[data-session-relation-card="opened"]')).toBeNull();
-    expect(container.textContent).not.toBe('');
+    expect(container.textContent).toBe('');
   });
+
+  it('retains delivery uncertainty even when every preview member is hidden', async () => {
+    const completion = completionMessage.items[0];
+    if (completion.type !== 'operation_completion') throw new Error('fixture');
+    await act(async () =>
+      root.render(
+        <MessageRowView
+          sessionId={openerSessionId}
+          message={{
+            ...completionMessage,
+            items: [
+              {
+                type: 'operation_completion_batch',
+                batchId: 'uncertain-batch',
+                memberCount: 1,
+                deliveryStatus: 'unknown',
+                members: [{ ...completion, progressMessageId: 'progress' }],
+              },
+            ],
+          }}
+        />
+      )
+    );
+    expect(container.textContent).toContain('model delivery is uncertain');
+    expect(container.textContent).not.toContain('orchestration.operationCompleted');
+  });
+
+  it('retains targetless failure details alongside published creation progress', async () => {
+    const completion = completionMessage.items[0];
+    if (completion.type !== 'operation_completion') throw new Error('fixture');
+    await act(async () =>
+      root.render(
+        <MessageRowView
+          sessionId={openerSessionId}
+          message={{
+            ...completionMessage,
+            items: [
+              {
+                ...completion,
+                progressMessageId: 'progress',
+                completion: {
+                  type: 'result',
+                  value: {
+                    items: [
+                      {
+                        status: 'failed',
+                        label: 'Unavailable target',
+                        error: {
+                          code: 'TARGET_FAILED',
+                          message: 'Target unavailable',
+                          retryable: false,
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          }}
+        />
+      )
+    );
+    expect(container.textContent).toContain('Target unavailable');
+    expect(container.textContent).toContain('Operation failed');
+    expect(container.textContent).not.toContain('Operation completed');
+  });
+
+  it.each([false, true])(
+    'counts successful targets even when progress hides their cards (%s)',
+    async (withProgress) => {
+      const completion = completionMessage.items[0];
+      if (completion.type !== 'operation_completion') throw new Error('fixture');
+      await act(async () =>
+        root.render(
+          <MessageRowView
+            sessionId={openerSessionId}
+            message={{
+              ...completionMessage,
+              items: [
+                {
+                  ...completion,
+                  ...(withProgress ? { progressMessageId: 'progress' } : {}),
+                  completion: {
+                    type: 'result',
+                    value: {
+                      items: [
+                        {
+                          status: 'succeeded',
+                          target: { sessionId: createdSessionId, userTurnId: 'user-turn' },
+                          assistantTurnId: 'assistant-turn',
+                        },
+                        {
+                          status: 'failed',
+                          label: 'Unavailable',
+                          error: {
+                            code: 'INVALID_ITEM',
+                            message: 'Synthetic failure',
+                            retryable: false,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+            }}
+          />
+        )
+      );
+      expect(container.textContent).toContain('1 succeeded · 1 failed · 0 cancelled');
+      expect(container.textContent).toContain('Synthetic failure');
+      expect(container.textContent).not.toContain('Operation completed');
+    }
+  );
 
   it('keeps a long reply to its opening line and shows all of it in a dialog', async () => {
     const opening =

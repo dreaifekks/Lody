@@ -86,7 +86,12 @@ export class LanFileHandoff {
        * runs. It throws the reason for a path the session's previews may not
        * read. Absent on a machine that gives no file by its path.
        */
-      resolvePath?: (workspaceId: string, sessionId: string, filePath: string) => Promise<string>;
+      resolvePath?: (
+        workspaceId: string,
+        sessionId: string,
+        filePath: string,
+        rootId?: string
+      ) => Promise<string>;
       sendFiles?: SendFiles;
       fetchFile?: FetchFile;
       relayRange?: RelayRange;
@@ -271,7 +276,12 @@ export class LanFileHandoff {
     if (!this.options.resolvePath) {
       throw new Error('invalid_request:this machine gives no file by its path');
     }
-    return await this.options.resolvePath(workspaceId, file.sessionId, file.path ?? '');
+    return await this.options.resolvePath(
+      workspaceId,
+      file.sessionId,
+      file.path ?? '',
+      file.rootId
+    );
   }
 
   /**

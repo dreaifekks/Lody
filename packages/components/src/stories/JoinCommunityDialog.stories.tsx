@@ -7,7 +7,7 @@ import {
 } from '@/components/settings/join-community-dialog';
 import { CompactRow, CompactSection } from '@/components/settings/compact-layout';
 import { settingContainerClass } from '@/components/settings';
-import { Button } from '@/ui';
+import { Button } from '@lody/ui/button';
 
 /**
  * Both entry points — Settings → About → Community and the sidebar help menu —

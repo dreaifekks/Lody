@@ -4,11 +4,12 @@ Parent `AGENTS.md` files also apply. `CLAUDE.md` is a symlink to this file; edit
 `AGENTS.md` only. Prefer extending a primitive here over a private replacement in a
 feature directory.
 
-## Drawer popups
+## Drawers
 
-- `DrawerContent` provides a state-backed no-drag host for popups and modals.
-  Keep portals inside that modal and outside scrolling children: body portals
-  inherit Vaul's pointer lock and clicks pass through to the underlying content.
+- Native iOS side drawers stay CSS-sized. Non-chat panels opt into
+  `nativeKeyboardInset`; chat composers own their lift.
+- `DrawerContent` keeps popup/modal hosts state-backed, no-drag, inside the
+  modal and outside scrollers. Body portals inherit pointer lock and pass clicks through.
 
 ## Emoji picker
 
@@ -105,12 +106,11 @@ Trigger/Content`, `render` instead of `asChild`, `delay` on the trigger or
 
 ## Scroll area
 
-- Keep the `@radix-ui/react-scroll-area` patch until an upstream version cancels
-  thumb polling on effect cleanup. Verify both ESM and CommonJS with
-  `tests/scroll-area-lifecycle.test.tsx` when upgrading; removing a thumb during
-  the scroll-end debounce must not retain a frame loop or detached viewport.
-- `loro-sidebar.tsx` uses `type="scroll"` so the overlay thumb appears only while
-  scrolling; do not revert to the Radix default `hover`.
+- Use `@lody/ui/scroll-area` (Base UI). Its `viewportRef` is the scrolling node;
+  never query vendor attributes from the root. Native controls share its tokens
+  through `nativeScrollbar`; `../tailwind/scrollbars.css` covers product containers.
+  Hidden bars, compact tracks and conversation gutters stay local.
+- Sidebar keeps `visibility="scroll"` (visible while scrolling), never `hover`.
 
 ## Slider
 

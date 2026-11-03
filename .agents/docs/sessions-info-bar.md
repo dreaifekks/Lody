@@ -22,6 +22,10 @@ Mobile controls remain in the same 32px row. With only machine information the b
 is a transparent row; existing items and actions retain the raised bar surface. The
 [draft Spec](../../specs/composer-machine-owner.md) owns the presentation intent.
 The parent passes already-resolved metadata and presence without new subscriptions.
+Scheduled-message drafts must not add an info-bar item. Their state is the
+composer's secondary action beside Send; the bar only carries machine, status,
+goal, schedule, and context. This is distinct from the pending Agent task countdown
+and the schedule that created the conversation.
 With the compact mobile control, a private-access label collapses to its lock icon
 at container widths up to 420px, leaving room for repository actions. Its full
 access description remains in the accessible name/title, and tap still opens
@@ -83,7 +87,10 @@ labelClassName`) so the stage diffstat never clips. Wired from
   content, right after the PR number, so it is only visible when the PR is
   expanded; one click toggles its check-run popover (`PrCiRun[]` is
   presentational; production maps the active PR's live GitHub check-run fetch
-  into it via `mapGitHubCheckRunToPrCiRun`). The verdict reads only the newest
+  into it via `mapGitHubCheckRunToPrCiRun`; live runs only list checks, while the
+  PR status mark, CI verdict and action gating read session metadata through the
+  same [read model](../notes/implemented/architecture/2026-11-02-session-pr-read-model.md)
+  as the sidebar). When live runs are listed, their summary reads only the newest
   attempt of each check (`selectLatestCheckRuns` keys by app + name, highest id
   wins), so a re-run that went green clears an earlier failure; cancelled/stale
   runs render as `cancelled` and never make CI "failed" nor enter the Fix CI
@@ -134,60 +141,60 @@ labelClassName`) so the stage diffstat never clips. Wired from
   performs the already-selected method) instead of being filtered out — dropping it
   would make proven readiness unreachable on exactly the dirty sessions that rank
   Commit & Push first. Regression coverage: `tests/session-info-bar-actions.test.tsx`
-  + the `DirtyWorktreeOutranksMerge` story. The primary action + chevron form one subtle, borderless background
-  surface with a low-contrast internal divider (single actions use the same surface without the chevron). Neither half
-  leaves an external focus outline/ring; keyboard focus stays visible as an internal background tint.
-  Under 420px,
-  compact chip values/PR number and the CI pill yield their
-  space so the primary action stays fully visible. Actions must not be duplicated below the
-  assistant response. Reply-specific
-  decisions such as Implement plan / Continue discussing stay with
-  that reply because they are not repository actions. Open preview is a plain
-  `ActionChip` at the end of the cluster (emerald MonitorPlay, no stage
-  form, opts out of promote/recency) — it replaced the desktop toolbar
-  Browser button AND the mobile header preview + PR badge (both removed;
-  mobile reaches Files/PR/Browser via the tab sheet's viewer entries). That
-  chip is AGENT-DRIVEN and must stay gated on the session actually having a
-  preview target (`hasReportedPreviewTarget` over the `SessionMeta` preview
-  summary: a `lody_report_preview_candidate` candidate, or a still-live
-  connection). It is not a generic "open the Browser panel" button — rendering
-  it on every session promised a preview that did not exist and landed on the
-  no-candidate empty state; the side-panel launcher / `+` menu (and the mobile
-  tab sheet) remain the unconditional way in. Because this standalone action can
-  be the only info-bar content in a context-less Session, it must keep the bar
-  rendered without a staged item. Focus is recency-driven
-  (item appears/changes → takes the stage); stage content leaves only by
-  promoting another item or its data disappearing. NO hand-off animation —
-  the stage remounts per item, so any fade/slide reads as jitter; stage
-  content appears instantly. Radix gotcha: popover anchors use PopoverAnchor (not Trigger) and
-  must preventDefault onPointerDownOutside when the target is the anchor,
-  or dismiss + click-toggle cancel out. GoalChip's popover reuses
-  `GoalActionButton`/`formatTokensCompact` from `session-goal-banner.tsx`.
-  Goal controls are transport-gated: the current `/goal …` prompt bridge is
-  Codex-only, so provider-neutral snapshots remain read-only until their advertised
-  `_session/goal` method is routed through the session control plane; Stop must never
-  synthesize `pause` for those providers. Paused and blocked Codex goals both expose
-  Resume; a blocked goal is waiting for explicit user continuation, not terminal.
-  An `active` goal is persistent session state,
-  not proof that an ACP prompt is running: current busy/running UI, message queue routing,
-  and completion prompts must use live turn presence only. Active goal state may still
-  gate destructive history rewrites and expose an explicit Codex Pause control.
-  ScheduleChip reuses `useResolvedScheduledTasks`/`ScheduledTaskList` from
-  `scheduled-tasks-panel.tsx` (same adaptive countdown clock, cannot drift).
-  The message queue intentionally stays OUT of the bar's items; the bar only
-  hosts it in the `queue` slot above the pill (or alone, glued to the composer,
-  when the bar is otherwise empty), because only the bar knows whether it renders.
-  The bar renders on
-  BOTH desktop and mobile from `session-chat-interface.tsx` (status + goal +
-  schedule + context); it fully replaced the sticky `SessionGoalBanner`, the
-  in-composer `ScheduledTasksPanel`, the mobile `SessionStatusStrip`
-  instance, and the `create-pr` quick action — none of those render in
-  production anymore (SessionStatusStrip stays exported for its story only).
-  Production CI detail is fetched only for the active associated PR through
-  `useGitHubPrDetails`; compact `pullRequestState` remains the cheap sidebar/action
-  decision feed. An inactive proven-ready session replaces its sidebar diff stat
-  with the green bordered Mergeable pill; the active row hides both because the
-  Info Bar owns the merge control.
+  - the `DirtyWorktreeOutranksMerge` story. The primary action + chevron form one subtle, borderless background
+    surface with a low-contrast internal divider (single actions use the same surface without the chevron). Neither half
+    leaves an external focus outline/ring; keyboard focus stays visible as an internal background tint.
+    Under 420px,
+    compact chip values/PR number and the CI pill yield their
+    space so the primary action stays fully visible. Actions must not be duplicated below the
+    assistant response. Reply-specific
+    decisions such as Implement plan / Continue discussing stay with
+    that reply because they are not repository actions. Open preview is a plain
+    `ActionChip` at the end of the cluster (emerald MonitorPlay, no stage
+    form, opts out of promote/recency) — it replaced the desktop toolbar
+    Browser button AND the mobile header preview + PR badge (both removed;
+    mobile reaches Files/PR/Browser via the tab sheet's viewer entries). That
+    chip is AGENT-DRIVEN and must stay gated on the session actually having a
+    preview target (`hasReportedPreviewTarget` over the `SessionMeta` preview
+    summary: a `lody_report_preview_candidate` candidate, or a still-live
+    connection). It is not a generic "open the Browser panel" button — rendering
+    it on every session promised a preview that did not exist and landed on the
+    no-candidate empty state; the side-panel launcher / `+` menu (and the mobile
+    tab sheet) remain the unconditional way in. Because this standalone action can
+    be the only info-bar content in a context-less Session, it must keep the bar
+    rendered without a staged item. Focus is recency-driven
+    (item appears/changes → takes the stage); stage content leaves only by
+    promoting another item or its data disappearing. NO hand-off animation —
+    the stage remounts per item, so any fade/slide reads as jitter; stage
+    content appears instantly. Radix gotcha: popover anchors use PopoverAnchor (not Trigger) and
+    must preventDefault onPointerDownOutside when the target is the anchor,
+    or dismiss + click-toggle cancel out. GoalChip's popover reuses
+    `GoalActionButton`/`formatTokensCompact` from `session-goal-banner.tsx`.
+    Goal controls are transport-gated: the current `/goal …` prompt bridge is
+    Codex-only, so provider-neutral snapshots remain read-only until their advertised
+    `_session/goal` method is routed through the session control plane; Stop must never
+    synthesize `pause` for those providers. Paused and blocked Codex goals both expose
+    Resume; a blocked goal is waiting for explicit user continuation, not terminal.
+    An `active` goal is persistent session state,
+    not proof that an ACP prompt is running: current busy/running UI, message queue routing,
+    and completion prompts must use live turn presence only. Active goal state may still
+    gate destructive history rewrites and expose an explicit Codex Pause control.
+    ScheduleChip reuses `useResolvedScheduledTasks`/`ScheduledTaskList` from
+    `scheduled-tasks-panel.tsx` (same adaptive countdown clock, cannot drift).
+    The message queue intentionally stays OUT of the bar's items; the bar only
+    hosts it in the `queue` slot above the pill (or alone, glued to the composer,
+    when the bar is otherwise empty), because only the bar knows whether it renders.
+    The bar renders on
+    BOTH desktop and mobile from `session-chat-interface.tsx` (status + goal +
+    schedule + context); it fully replaced the sticky `SessionGoalBanner`, the
+    in-composer `ScheduledTasksPanel`, the mobile `SessionStatusStrip`
+    instance, and the `create-pr` quick action — none of those render in
+    production anymore (SessionStatusStrip stays exported for its story only).
+    Production CI detail is fetched only for the active associated PR through
+    `useGitHubPrDetails`; compact `pullRequestState` remains the cheap sidebar/action
+    decision feed. An inactive proven-ready session replaces its sidebar diff stat
+    with the green bordered Mergeable pill; the active row hides both because the
+    Info Bar owns the merge control.
 
 ## Related-Sessions chip
 
@@ -218,3 +225,38 @@ the requester. **Restore collaboration** explicitly removes the barrier. Offline
 machines act after metadata sync; this is not an instantaneous cross-machine stop.
 The scope follows creation/containment edges, not every unrelated session that
 has exchanged a message. See the [decision](../notes/implemented/feature/2026-10-11-stop-conversation-tree.md).
+
+## Repositories panel and the active repository
+
+`session-project-members-chip.tsx` renders a multi-repository conversation's
+Repositories chip through the bar's `projectMembers` slot. Like Relations it is a
+plain cluster action, never staged. Its popover lists every frozen Member in
+placement order (each root followed by its submodules, siblings in snapshot
+order), indented by depth, with the repository identity, directory, branch or
+registered absolute directory for an in-place local Member, and current PR when one exists.
+The directory comes from the matching machine/project catalog; absent metadata keeps
+the in-place label. The full path and non-isolation notice remain in its hover title
+and accessible selection label. A repository without a PR
+leaves the slot empty, and unpublished work gets no separate dot. CI is the PR
+glyph's tone (green passing, red failing, amber running) while its shape keeps
+the PR status. Clicking a row selects that repository and closes the panel.
+
+Selection is view state in `atoms/session-project-member-selection.ts`, keyed by
+the workspace-owner Session so a child tab and its root agree. The context stage,
+the PR tab, live PR details/actions, and the diff stat describe the selected
+Member. With no selection the legacy first-Member projection is used, preserving
+existing conversations. A Member with no GitHub remote explicitly clears the
+repository/PR/actions instead of borrowing another Member's PR. Create PR and
+Commit & Push remain conversation-scoped because their prompt publishes every
+changed Member.
+
+## Type
+
+The bar is chrome, one tier below the conversation. `info-bar-type.ts` exports the
+footnote role (`INFO_BAR_TEXT_CLASS`) for the bar, its chips and the popovers they
+open, and the body role (`INFO_BAR_PROSE_CLASS`) only for a goal's objective, which a
+person wrote. Do not add a Tailwind size utility or a `text-[Npx]` here: both ignore
+the Appearance setting, and a caption step one pixel under the footnote reads as noise.
+A role sets size and leading only; an element takes one role. Hierarchy rules:
+[Workspace visual hierarchy](../../specs/workspace-visual-hierarchy.md) (draft);
+decision: [note](../notes/proposed/architecture/2026-10-16-workspace-visual-hierarchy.md).

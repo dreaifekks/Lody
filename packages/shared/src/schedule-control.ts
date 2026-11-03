@@ -5,7 +5,11 @@ import {
   ScheduleProposalTargetSchema,
 } from './message-schemas';
 import { RESOLVED_PERMISSION_TIERS } from './permission-tier';
-import { ScheduleDestinationSchema, ScheduleDefinitionSchema } from './schedule-types';
+import {
+  ScheduleDestinationSchema,
+  ScheduleDefinitionSchema,
+  ScheduledMessageSchema,
+} from './schedule-types';
 
 const id = z
   .string()
@@ -27,7 +31,8 @@ export const ScheduleDraftSchema = ScheduleDefinitionSchema.pick({
   retryPolicy: true,
 })
   .extend({
-    prompt: z.string().min(1).max(32768),
+    prompt: z.string().max(32768),
+    message: ScheduledMessageSchema.optional(),
     destination: ScheduleDestinationSchema.optional(),
   })
   .strict();
