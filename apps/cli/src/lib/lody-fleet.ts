@@ -1463,7 +1463,7 @@ export class LodyFleet {
               verifyRemoteControl: this.cloudPort.remoteAutomation?.verifyControl,
               auth: {
                 token: this.cliToken,
-                userId: this.userId,
+                userId: workspace.userId ?? this.userId,
                 userName: '',
                 userEmail: '',
                 machineId: this.machineId,
@@ -1751,7 +1751,7 @@ export class LodyFleet {
       verifyRemoteControl: this.cloudPort.remoteAutomation?.verifyControl,
       auth: {
         token: this.cliToken,
-        userId: this.userId,
+        userId: state.workspace.userId ?? this.userId,
         userName: '',
         userEmail: '',
         machineId: this.machineId,

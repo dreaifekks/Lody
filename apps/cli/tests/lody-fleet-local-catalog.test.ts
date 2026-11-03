@@ -1,6 +1,7 @@
 import { createLocalCloudPort, type CloudPort } from '@lody/platform';
 import {
   machineFlockKeys,
+  getSessionRoomId,
   type AgentConfigId,
   type LocalSessionControlRequest,
   type LocalSessionControlResponse,
@@ -1361,6 +1362,116 @@ it.each(['EMFILE', 'EACCES'])(
       reconcile.mockRestore();
       schedules.mockRestore();
       vi.useRealTimers();
+    }
+  }
+);
+
+it.each([false, true])(
+  'configures each LAN automation with its workspace identity (retry=%s)',
+  async (retry) => {
+    const directory = await mkdtemp(join(tmpdir(), 'fleet-lan-automations-'));
+    vi.stubEnv('LODY_DATA_DIR', directory);
+    const workspaces = ['user-1', 'user-2'].map((userId, index) => ({
+      id: `lan-workspace-${index}`,
+      name: `LAN ${index}`,
+      slug: null,
+      role: 'owner',
+      contentMode: 'plaintext' as const,
+      userId,
+    }));
+    const create = vi.spyOn(Lody, 'create').mockImplementation(async (options) => {
+      const sessionId = `${options.workspaceId}-session` as SessionId;
+      return {
+        start: async () => {},
+        cleanup: async () => {},
+        documentManager: {
+          repo: {
+            getDocMeta: async (room: string) =>
+              room === getSessionRoomId(sessionId)
+                ? { meta: { id: sessionId, userId: options.userId, machineId: options.machineId } }
+                : undefined,
+          },
+        },
+        getAutomationSessionAuthority: () => ({
+          author: (id: string) => (id === sessionId ? options.userId : undefined),
+          setAdmission: () => {},
+          setObservations: () => {},
+          setPendingWork: () => {},
+        }),
+        onSessionTerminated: () => () => {},
+        isControlPlaneReady: () => true,
+        isControlPlaneRecovering: () => false,
+        isRemoteBridgeAttached: () => false,
+        getActiveSessionCount: () => 0,
+        getConnectedRoomCount: () => 0,
+      } as unknown as Lody;
+    });
+    const reconcile = vi
+      .spyOn(projectMeta, 'reconcileMachineLocalProjectRootPaths')
+      .mockResolvedValue(undefined);
+    const schedules = vi.spyOn(scheduleWorkspace, 'createScheduleWorkspace').mockResolvedValue({
+      evaluate: async () => {},
+      dispose: async () => {},
+      hasUncertainLegacyQuota: () => false,
+    });
+    const createAutomations = automationWorkspace.createAutomationWorkspaceLegacy;
+    let failed = false;
+    const automations = vi
+      .spyOn(automationWorkspace, 'createAutomationWorkspaceLegacy')
+      .mockImplementation(async (options) => {
+        if (retry && options.workspace.id === workspaces[1].id && !failed) {
+          failed = true;
+          throw new Error('Synthetic automation startup failure');
+        }
+        return createAutomations(options);
+      });
+    const fleet = createFleetHarness(
+      createCatalogStub(() => Effect.succeed(catalogSnapshot({}))),
+      createLocalCloudPort({ identity: { userId: 'user-1' }, workspaces })
+    ).fleet as unknown as {
+      desiredWorkspaces: Map<string, unknown>;
+      runtimes: Map<string, { automations?: automationWorkspace.AutomationWorkspaceHandle }>;
+      ensureAutomations(state: unknown): Promise<automationWorkspace.AutomationWorkspaceHandle>;
+      startWorkspace(workspace: WorkspaceSummary): Promise<void>;
+      stopWorkspace(id: string): Promise<void>;
+      retryTimers: Map<string, ReturnType<typeof setTimeout>>;
+      remoteBridge: null;
+      stopped: boolean;
+    };
+    delete (fleet as unknown as { startWorkspace?: unknown }).startWorkspace;
+    fleet.remoteBridge = null;
+    try {
+      for (const workspace of workspaces) {
+        fleet.desiredWorkspaces.set(workspace.id, workspace);
+        await fleet.startWorkspace(workspace);
+        const state = fleet.runtimes.get(workspace.id)!;
+        expect(state).toBeDefined();
+        if (retry && workspace === workspaces[1]) {
+          expect(state.automations).toBeUndefined();
+          await fleet.ensureAutomations(state);
+        }
+        const owner = state.automations!;
+        const sessionId = `${workspace.id}-session`;
+        const settings = { archiveAfterMerge: true, recoverCapacity: true };
+        expect(await owner.command({ type: 'configure', sessionId, settings })).toMatchObject(
+          settings
+        );
+        expect(await owner.command({ type: 'settings' }, sessionId)).toMatchObject(settings);
+        expect(owner.ledger.rules().map((rule) => rule.ownerUserId)).toEqual([
+          workspace.userId,
+          workspace.userId,
+        ]);
+      }
+    } finally {
+      fleet.stopped = true;
+      for (const id of fleet.runtimes.keys()) await fleet.stopWorkspace(id);
+      for (const timer of fleet.retryTimers.values()) clearTimeout(timer);
+      create.mockRestore();
+      reconcile.mockRestore();
+      schedules.mockRestore();
+      automations.mockRestore();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
     }
   }
 );
