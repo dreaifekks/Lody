@@ -377,6 +377,8 @@ export type SessionInfoCardProps = {
   deletedLines?: number;
   /** Effective conversation visibility inherited from its machine/project access. */
   sharing?: SessionSharingState;
+  /** Low-stimulus mode: what a folded family's one mark stands for ("2 waiting · 1 unread"). */
+  familyActivityDescription?: string | null;
   /** Open the PR inside the app (right-panel PR tab). Falls back to `prUrl` in a new tab. */
   onOpenPullRequest?: () => void;
   /**
@@ -418,6 +420,7 @@ export function SessionInfoCard({
   addedLines,
   deletedLines,
   sharing,
+  familyActivityDescription,
   onOpenPullRequest,
   standalone,
   className,
@@ -605,6 +608,10 @@ export function SessionInfoCard({
             </div>
           ))}
         </div>
+      ) : null}
+
+      {familyActivityDescription ? (
+        <div {...stylex.props(styles.row)}>{familyActivityDescription}</div>
       ) : null}
 
       {showStatus ? (

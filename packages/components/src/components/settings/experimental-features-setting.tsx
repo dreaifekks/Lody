@@ -10,6 +10,7 @@ import {
   enabledAgentToolsAtom,
   experimentalFeaturesEnabledAtom,
   inlineWidgetExperimentEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
   planReviewExperimentEnabledAtom,
   voiceExperimentEnabledAtom,
 } from '@/atoms/settings';
@@ -46,6 +47,7 @@ export function ExperimentalFeatureRows() {
   const [boardEnabled, setBoardEnabled] = useAtom(boardExperimentEnabledAtom);
   const [boardArticleEnabled, setBoardArticleEnabled] = useAtom(boardArticleExperimentEnabledAtom);
   const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
+  const [lowStimulusEnabled, setLowStimulusEnabled] = useAtom(lowStimulusExperimentEnabledAtom);
 
   return (
     <>
@@ -59,6 +61,19 @@ export function ExperimentalFeatureRows() {
 
       {experimentalEnabled ? (
         <>
+          <CompactRow
+            label={t('settings.experimental.lowStimulus', 'Low-stimulus mode')}
+            helper={t(
+              'settings.experimental.lowStimulusHelper',
+              'Opened sessions fold into the session that opened them, one mark per row. The Dock counts only what is waiting for you.'
+            )}
+          >
+            <Switch
+              checked={lowStimulusEnabled}
+              onCheckedChange={setLowStimulusEnabled}
+              aria-label={t('settings.experimental.lowStimulus', 'Low-stimulus mode')}
+            />
+          </CompactRow>
           <CompactRow
             label={t('boards.title', 'Boards')}
             helper={t(

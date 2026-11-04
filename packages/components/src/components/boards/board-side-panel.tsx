@@ -119,6 +119,7 @@ export function boardThreadItems(
       openedBySessionId: session.openedBySessionId,
       openedByRowSessionId: session.openedByRootSessionId,
       unread: sessionHasUnreadMessages(session),
+      lastReadAt: session.lastReadAt,
       status: boardThreadStatus(session, live[index], context.lookup),
       detail: context.detail(session),
       updatedAt: new Date(session.lastMessageAt ?? session.createdAt).getTime(),

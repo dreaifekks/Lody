@@ -4707,6 +4707,8 @@
   "settings.experimental.title": "Experimental features",
   "settings.experimental.enable": "Enable experimental features",
   "settings.experimental.enableHelper": "Show features that are still being built. They can change or break.",
+  "settings.experimental.lowStimulus": "Low-stimulus mode",
+  "settings.experimental.lowStimulusHelper": "Opened sessions fold into the session that opened them, one mark per row. The Dock counts only what is waiting for you.",
   "settings.experimental.roostHistory": "Roost history",
   "settings.experimental.roostHistoryHelper": "Use Roost for new conversations. Existing conversations keep their current history backend.",
   "mention.category.file.label": "Files",

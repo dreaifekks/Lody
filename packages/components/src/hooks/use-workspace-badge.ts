@@ -3,6 +3,7 @@ import { atom, useAtomValue, useStore } from 'jotai';
 import { allActiveSessionsAtom } from '@/atoms/doc-meta';
 import { userAtom } from '@/atoms';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
 import { isElectronRenderer } from '@/lib/electron';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { useResolvedWorkspaceScope } from '@/hooks/use-resolved-workspace-scope';
@@ -36,7 +37,8 @@ export const workspaceBadgeAtom = atom<WindowBadge>((get) => {
     if (activity.isWaitingPermission) waiting += 1;
     else if (activity.hasUnreadMessages) unread += 1;
   }
-  return { unread, waiting };
+  // Low-stimulus mode: no one waiting, no number on the Dock.
+  return { unread: get(lowStimulusModeEnabledAtom) ? 0 : unread, waiting };
 });
 
 function publishBadge(badge: WindowBadge): void {

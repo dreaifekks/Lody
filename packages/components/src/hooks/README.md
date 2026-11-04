@@ -191,7 +191,8 @@ own rendered row is a placeholder. See the
 ## `useWorkspaceBadge`
 
 `workspaceBadgeAtom` derives an absolute count from complete active-session metadata
-and fresh presence, sharing the sidebar's parent/child activity summary. The elected
+and fresh presence, sharing the sidebar's parent/child activity summary; low-stimulus
+mode reports no unread, so only what waits for the user is counted. The elected
 workspace window publishes changes immediately, reasserts the snapshot every 30 seconds,
 and reconciles on focus or visibility restoration. The interval reads the current atom
 and never restarts because the count changed; failed IPC gets another opportunity even

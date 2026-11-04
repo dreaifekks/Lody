@@ -274,6 +274,67 @@ describe('sidebar navigation model opened-by tree', () => {
     expect(sessionIds(items)).toEqual(['opener', 'other']);
   });
 
+  it('starts opened sessions folded in low-stimulus mode until the user unfolds them', () => {
+    const options = {
+      ...baseOptions,
+      organizeMode: 'updated' as const,
+      lowStimulusMode: true,
+      updated: {
+        items: [
+          updatedItem('opener', '2026-04-22T10:00:00.000Z'),
+          { ...updatedItem('opened', '2026-04-22T08:00:00.000Z'), openedBySessionId: 'opener' },
+        ],
+        collapsed: false,
+        showFull: false,
+      },
+    };
+
+    expect(sessionIds(buildSidebarNavigationItems(options))).toEqual(['opener']);
+    expect(
+      sessionIds(
+        buildSidebarNavigationItems({ ...options, collapsedOpenedBySessions: { opener: false } })
+      )
+    ).toEqual(['opener', 'opened']);
+  });
+
+  it('skips sessions folded by default in low-stimulus mode across every workspace list', () => {
+    const items = buildSidebarNavigationItems({
+      ...baseOptions,
+      lowStimulusMode: true,
+      pinnedItems: [
+        { ...updatedItem('pinned', '2026-04-22T10:00:00.000Z'), isPinned: true },
+        {
+          ...updatedItem('pinned-opened', '2026-04-22T09:00:00.000Z'),
+          isPinned: true,
+          openedBySessionId: 'pinned',
+        },
+      ],
+      workspace: {
+        ...baseOptions.workspace,
+        localSections: [
+          {
+            collapsed: false,
+            projects: [
+              {
+                machineId: 'machine',
+                localProjectId: 'project',
+                collapsed: false,
+                showFull: true,
+                sessions: [{ id: 'local' }, { id: 'local-opened', openedByRowSessionId: 'local' }],
+              },
+            ],
+          },
+        ] as never,
+        chatSessions: [
+          sessionRow('chat', '2026-04-22T10:00:00.000Z'),
+          { ...sessionRow('chat-opened', '2026-04-22T09:00:00.000Z'), openedBySessionId: 'chat' },
+        ],
+      },
+    });
+
+    expect(sessionIds(items)).toEqual(['pinned', 'local', 'chat']);
+  });
+
   it('does not nest across the Pinned/Updated section boundary', () => {
     // Opener is pinned (its own section); the Session it opened is not. Neither
     // list contains both, so both rows stay top-level in their own section.

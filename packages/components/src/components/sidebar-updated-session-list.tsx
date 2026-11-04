@@ -54,6 +54,7 @@ import {
   SidebarSectionHeader,
   addSidebarGroupActivity,
   summarizeSidebarGroupActivity,
+  useSidebarGroupActivityDescription,
   withSessionSendStates,
   type SidebarGroupActivity,
   SidebarSessionTitleText,
@@ -68,6 +69,9 @@ import {
 } from '@/components/sidebar-row-shared';
 import { sessionSendStatesAtom } from '@/atoms/session-send-status';
 import { sidebarShowBranchNamesAtom } from '@/atoms/sidebar-state';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { isOpenerCollapsed } from '@/lib/low-stimulus';
+import { foldedFamilyActivity } from './sidebar-folded-family';
 import {
   sidebarCollapsedOpenedBySessionsAtom,
   toggleSidebarCollapsedOpenedBySessionAtom,
@@ -142,6 +146,8 @@ export type SidebarUpdatedItem = {
   machineName?: string | null;
   historyBackend?: SessionHistoryBackendKind;
   latestMessageAt: Date | number | string;
+  /** The session's own read receipt: low-stimulus mode reads a folded family against it. */
+  lastReadAt?: number;
   isPinned?: boolean;
   isWorking?: boolean;
   hasUnreadMessages?: boolean;
@@ -301,12 +307,14 @@ export function getVisibleUpdatedItemTree(
   orderedItems: SidebarUpdatedItem[],
   canToggleFullList: boolean,
   showFull: boolean,
-  collapsedOpenedBySessionIds?: Record<string, boolean>
+  collapsedOpenedBySessionIds?: Record<string, boolean>,
+  lowStimulusMode = false
 ): OpenedBySessionTreeNode<SidebarUpdatedItem>[] {
   const capped = canToggleFullList && !showFull && updatedBucketOverflowsPreview(orderedItems);
   return buildOpenedBySessionTree(orderedItems, {
     ...SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS,
-    isCollapsed: (openerId) => collapsedOpenedBySessionIds?.[openerId] === true,
+    isCollapsed: (openerId) =>
+      isOpenerCollapsed(lowStimulusMode, collapsedOpenedBySessionIds, openerId),
     // Updated mode IS the recency list: rank each opener by its freshest opened
     // Session so nesting can never bury a just-updated row under a stale opener.
     rootRank: updatedItemRootRank,
@@ -318,13 +326,15 @@ export function getVisibleUpdatedItems(
   orderedItems: SidebarUpdatedItem[],
   canToggleFullList: boolean,
   showFull: boolean,
-  collapsedOpenedBySessionIds?: Record<string, boolean>
+  collapsedOpenedBySessionIds?: Record<string, boolean>,
+  lowStimulusMode = false
 ): SidebarUpdatedItem[] {
   return getVisibleUpdatedItemTree(
     orderedItems,
     canToggleFullList,
     showFull,
-    collapsedOpenedBySessionIds
+    collapsedOpenedBySessionIds,
+    lowStimulusMode
   ).map((node) => node.item);
 }
 
@@ -486,6 +496,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
   // is what keeps the two sections from reaching across each other.
   const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const handleToggleOpenedBySessions = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
 
   const canToggleBucket = typeof onToggleBucket === 'function';
   const canToggleFullBucket = typeof onToggleFullBucket === 'function';
@@ -523,7 +534,8 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
             bucket.items,
             canToggleFullBucket,
             Boolean(showFullBuckets?.[bucket.key]),
-            collapsedOpenedBySessionIds
+            collapsedOpenedBySessionIds,
+            lowStimulusMode
           ),
         };
       }),
@@ -533,6 +545,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
       collapsedBuckets,
       collapsedOpenedBySessionIds,
       leadingActivity,
+      lowStimulusMode,
       sendStates,
       showFullBuckets,
     ]
@@ -651,6 +664,17 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
                       >
                         <UpdatedItemRow
                           item={node.item}
+                          familyActivity={
+                            lowStimulusMode && node.hiddenChildren.length > 0
+                              ? foldedFamilyActivity(
+                                  node.item,
+                                  node.hiddenChildren,
+                                  node.item.lastReadAt,
+                                  SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS.getId,
+                                  sendStates
+                                )
+                              : undefined
+                          }
                           now={now}
                           selected={node.item.id === selectedItemId}
                           isMobile={isMobile}
@@ -786,6 +810,7 @@ export type UpdatedItemRowProps = {
   restIcon?: ReactNode;
   onRestore?: (id: string) => void;
   item: SidebarUpdatedItem;
+  familyActivity?: SidebarGroupActivity;
   now: Date;
   selected: boolean;
   isMobile: boolean;
@@ -816,6 +841,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
   restIcon,
   onRestore,
   item,
+  familyActivity,
   now,
   selected,
   isMobile,
@@ -839,6 +865,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
   archiveConfirmLabel,
 }: UpdatedItemRowProps) {
   const { t } = useTranslation();
+  const familyActivityDescription = useSidebarGroupActivityDescription(familyActivity);
   const showSelectedState = selected;
   const useAnchor = typeof href === 'string' && href.length > 0;
   // Mobile keeps a right-edge relative time (no hover info card on touch).
@@ -1117,6 +1144,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
             isWaitingPermission={item.isWaitingPermission}
             isWorking={item.isWorking}
             hasUnreadMessages={item.hasUnreadMessages}
+            familyActivity={familyActivity}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
             restOnSecondLine={showBranchLine && (showPr || hasChanges)}
             interactiveRest={showBranchContext && (showPr || (showBranchLine && hasChanges))}
@@ -1370,6 +1398,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
       addedLines={hasChanges ? addedLines : undefined}
       deletedLines={hasChanges ? deletedLines : undefined}
       sharing={item.sharing}
+      familyActivityDescription={familyActivityDescription}
     >
       {menuRow}
     </SessionInfoHoverCard>

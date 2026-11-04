@@ -1,4 +1,6 @@
-import { boardEnabledAtom } from '@/atoms/settings';
+import { boardEnabledAtom, lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { isOpenerCollapsed } from '@/lib/low-stimulus';
+import { foldedFamilyActivity } from './sidebar-folded-family';
 import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
 import { BoardSidebar } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
@@ -382,6 +384,7 @@ type LocalProjectSessionItemProps = {
   isWorking: boolean;
   isWaitingPermission: boolean;
   hasUnreadMessages: boolean;
+  familyActivity?: SidebarGroupActivity;
   /**
    * Effective "last activity" timestamp rolled up across the session and its
    * sub-sessions. Owned by the sidebar so each row stays a pure renderer.
@@ -432,6 +435,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
   isWorking,
   isWaitingPermission,
   hasUnreadMessages,
+  familyActivity,
   effectiveLatestMessageAt,
   defaultSessionTitle,
   projectName,
@@ -457,6 +461,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
   isMobile,
 }: LocalProjectSessionItemProps) {
   const { t } = useTranslation();
+  const familyActivityDescription = useSidebarGroupActivityDescription(familyActivity);
   const moreActionsLabel = t('sessions.moreActions', 'More actions');
   const title = (session.title ?? '').trim() || defaultSessionTitle;
   // Self-ticking on the shared sidebar timer: a tick re-renders only this row's
@@ -663,6 +668,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
             isWaitingPermission={isWaitingPermission}
             isWorking={isWorking}
             hasUnreadMessages={hasUnreadMessages}
+            familyActivity={familyActivity}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
             restOnSecondLine={showMetaLine && showBranchNames && showPr}
             interactiveRest={showBranchNames && showPr}
@@ -841,6 +847,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
           prNumber={prInfo.number}
           prUrl={prInfo.url}
           sharing={sharing}
+          familyActivityDescription={familyActivityDescription}
         >
           {menuRow}
         </SessionInfoHoverCard>
@@ -991,6 +998,8 @@ function summarizeLocalSessionsActivity(
   return summarizeSidebarGroupActivity(rows);
 }
 
+type LocalSessionActivityRow = EffectiveSessionActivitySummary & { id: string };
+
 /** Two folded groups' marks as one, for a machine that folds both. */
 function addSidebarGroupActivity(
   left: SidebarGroupActivity,
@@ -1079,6 +1088,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   // Whether the branch/time detail line is shown at all — a child's tall
   // connector must match whether its opener actually renders that line.
   const showBranchNames = useAtomValue(sidebarShowBranchNamesAtom);
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   const groupKey = getLocalProjectSessionGroupKey(machineId, project.id);
   // Same opened-by presentation the GitHub/Chats groups use: MCP-opened
   // independent Sessions indent under the Session that created them, and a
@@ -1091,7 +1101,8 @@ export const LocalProjectItem = memo(function LocalProjectItem({
       // root Session, because child Tabs have no row here.
       getOpenedBySessionId: (session: SessionMeta) =>
         session.openedByRootSessionId ?? resolveOpenerRowId(session.openedBySessionId),
-      isCollapsed: (openerId: string) => collapsedOpenedBySessionIds[openerId] === true,
+      isCollapsed: (openerId: string) =>
+        isOpenerCollapsed(lowStimulusMode, collapsedOpenedBySessionIds, openerId),
       // Same contract as the other lists: this section is sorted by latest
       // activity, so an opener is ranked by its freshest opened Session.
       rootRank: (session: SessionMeta) =>
@@ -1108,6 +1119,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   }, [
     childSessionsByParent,
     collapsedOpenedBySessionIds,
+    lowStimulusMode,
     resolveOpenerRowId,
     sessionsForProject,
     whetherShowFullList,
@@ -1479,6 +1491,23 @@ export const LocalProjectItem = memo(function LocalProjectItem({
               childSessionsByParent,
               liveSessionStatuses
             );
+            const familyActivity =
+              lowStimulusMode && node.hiddenChildren.length > 0
+                ? foldedFamilyActivity<LocalSessionActivityRow>(
+                    { id: session.id, ...activity },
+                    node.hiddenChildren.map((child) => ({
+                      id: child.id,
+                      ...getEffectiveSessionActivitySummary(
+                        child,
+                        childSessionsByParent,
+                        liveSessionStatuses
+                      ),
+                    })),
+                    session.lastReadAt,
+                    (row) => row.id,
+                    sendStates
+                  )
+                : undefined;
             const openedByTree = buildSessionRowOpenedByTreeSlot(node, t, () =>
               onToggleOpenedBySessions(session.id)
             );
@@ -1495,6 +1524,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
                   isWorking={activity.isWorking}
                   isWaitingPermission={activity.isWaitingPermission}
                   hasUnreadMessages={activity.hasUnreadMessages}
+                  familyActivity={familyActivity}
                   effectiveLatestMessageAt={activity.latestMessageAt}
                   defaultSessionTitle={defaultSessionTitle}
                   projectName={inProject ? project.name : null}
@@ -2285,6 +2315,7 @@ export function LoroAppSidebar({
   // arrow keys never visit a hidden row.
   const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const handleToggleOpenedBySessions = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
 
   const toggleLocalProjectCollapsed = useCallback(
     (machineId: MachineId, localProjectId: LocalProjectId) => {
@@ -2766,6 +2797,7 @@ export function LoroAppSidebar({
         machineName: task.machineName ?? null,
         historyBackend: task.historyBackend,
         latestMessageAt: task.latestMessageAt,
+        lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
         isWorktree: task.isWorktree,
@@ -2799,6 +2831,7 @@ export function LoroAppSidebar({
         machineName: task.machineName ?? null,
         historyBackend: task.historyBackend,
         latestMessageAt: task.latestMessageAt,
+        lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
         isWorktree: task.isWorktree,
@@ -2838,6 +2871,7 @@ export function LoroAppSidebar({
         machineName: task.machineName ?? null,
         historyBackend: task.historyBackend,
         latestMessageAt: task.latestMessageAt,
+        lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
         isWorktree: task.isWorktree,
@@ -2887,6 +2921,7 @@ export function LoroAppSidebar({
             historyBackend: resolveSessionHistoryBackendKind(session),
             owner: resolveSessionAuthor(session),
             latestMessageAt: activity.latestMessageAt,
+            lastReadAt: session.lastReadAt,
             isPinned: Boolean(session.isPinned),
             isWorking: activity.isWorking,
             isWorktree: Boolean(session.isWorktree),
@@ -4068,6 +4103,7 @@ export function LoroAppSidebar({
         organizeMode,
         showFullSessionGroups,
         collapsedOpenedBySessions: collapsedOpenedBySessionIds,
+        lowStimulusMode,
         pinnedItems,
         pinnedSectionCollapsed,
         pinnedProjects: keyboardNavPinnedProjects,
@@ -4090,6 +4126,7 @@ export function LoroAppSidebar({
       chatsCollapsed,
       collapsedOpenedBySessionIds,
       githubWorktreesSectionCollapsed,
+      lowStimulusMode,
       projectGroupPlacement,
       keyboardNavLocalSections,
       keyboardNavPinnedProjects,

@@ -3,16 +3,27 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Check, ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
+import {
+  sidebarCollapsedOpenedBySessionsAtom,
+  toggleSidebarCollapsedOpenedBySessionAtom,
+} from '@/atoms/focus-layer';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { hiddenSessionHasUnread, isOpenerCollapsed } from '@/lib/low-stimulus';
 import { useWorkingHandOver } from '@/ui/working-status-mark';
 import {
   UpdatedItemRow,
   useSidebarSessionMenuLabels,
   type UpdatedItemRowProps,
 } from '../sidebar-updated-session-list';
-import { SessionRowStatusIndicator } from '../sidebar-row-shared';
+import {
+  buildSessionRowOpenedByTreeSlot,
+  SessionRowStatusIndicator,
+  type SessionRowOpenedByTreeSlot,
+} from '../sidebar-row-shared';
 
 export interface BoardThreadItem {
   id: string;
@@ -20,6 +31,8 @@ export interface BoardThreadItem {
   status: BoardSessionStatus;
   /** Output the user has not seen, as a sidebar row's blue dot. */
   unread?: boolean;
+  /** The session's own read receipt: low-stimulus mode reads a folded family against it. */
+  lastReadAt?: number;
   /** The latest conclusion's first line, only once it has been read. */
   summary?: string;
   /** "Agent · machine · project", the facts that say where it runs. */
@@ -68,6 +81,36 @@ const STATUS_ORDER: readonly BoardSessionStatus[] = [
   'idle',
 ];
 
+function strongestBoardStatus(items: readonly Pick<BoardThreadItem, 'status'>[]) {
+  return items.reduce(
+    (strongest, item) =>
+      STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest) ? item.status : strongest,
+    items[0]!.status
+  );
+}
+
+/**
+ * Low-stimulus mode's root row of a folded family: the family's strongest live
+ * state and merged unread, as the one mark every other row of it would have drawn.
+ * Only an unread member has a last message, which is what `updatedAt` then holds.
+ */
+export function foldedBoardThreadRoot(items: readonly BoardThreadItem[]): BoardThreadItem {
+  const root = items[0]!;
+  return {
+    ...root,
+    status: strongestBoardStatus(
+      items.filter((item) => item === root || item.archived !== true)
+    ),
+    unread:
+      root.unread === true ||
+      items
+        .slice(1)
+        .some((item) =>
+          hiddenSessionHasUnread(item.unread === true, item.updatedAt, root.lastReadAt)
+        ),
+  };
+}
+
 /**
  * Threads with the sessions they opened, in list order (a root, then its rows
  * one or more steps in). A family stays together under the strongest state of
@@ -85,13 +128,7 @@ export function boardThreadFamilies<
   }
   return families.map((items) => ({
     items,
-    status: items.reduce(
-      (strongest, item) =>
-        STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest)
-          ? item.status
-          : strongest,
-      items[0]!.status
-    ),
+    status: strongestBoardStatus(items),
     group:
       items[0]?.archived === true
         ? 'archived'
@@ -121,6 +158,8 @@ const styles = stylex.create({
     textAlign: 'start',
   },
   count: { fontWeight: 400, color: colors.tertiaryLabel },
+  folded: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
+  hiddenCount: { flexShrink: 0, marginInlineStart: space[1], color: colors.tertiaryLabel },
   indent: (depth: number) => ({ paddingInlineStart: `${depth * 18}px` }),
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
   danger: { color: colors.destructive },
@@ -193,19 +232,28 @@ export type BoardThreadActions = Pick<
   'onArchive' | 'onRestore' | 'onMarkUnread' | 'onRename' | 'onCopyUrl' | 'onBeginRename'
 >;
 
+type FamilyDisclosure = {
+  /** Low-stimulus mode's family disclosure on a root thread. */
+  openedByTree?: SessionRowOpenedByTreeSlot;
+  /** Family members folded under this row. */
+  hiddenCount?: number;
+};
+
 const noop = () => {};
 const BoardThreadRow = memo(function BoardThreadRow({
   actions,
   onOpen,
   selected,
   now,
+  openedByTree,
+  hiddenCount = 0,
   ...thread
 }: BoardThreadItem & {
   now: Date;
   actions?: BoardThreadActions;
   onOpen: (id: string, tabSessionId?: string) => void;
   selected: boolean;
-}) {
+} & FamilyDisclosure) {
   const { t } = useTranslation();
   const labels = useSidebarSessionMenuLabels();
   const item = useMemo(
@@ -244,8 +292,14 @@ const BoardThreadRow = memo(function BoardThreadRow({
               title={thread.title}
               onOpenParent={() => onOpen(thread.parentId!)}
             />
+          ) : hiddenCount > 0 ? (
+            <>
+              <span {...stylex.props(styles.folded)}>{thread.title}</span>
+              <span {...stylex.props(styles.hiddenCount)}>{hiddenCount}</span>
+            </>
           ) : undefined
         }
+        openedByTree={openedByTree}
         rowId={thread.id}
         item={item}
         now={now}
@@ -293,6 +347,9 @@ export function BoardThreadListView({
 }) {
   const { t } = useTranslation();
   const [folded, setFolded] = useState<Partial<Record<GroupKey, boolean>>>({ archived: true });
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
+  const collapsedFamilies = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
+  const toggleFamily = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
   const labels: Record<GroupKey, string> = {
     attention: t('boards.groups.attention', 'Needs you'),
     active: t('boards.groups.active', 'Working'),
@@ -312,10 +369,22 @@ export function BoardThreadListView({
   return (
     <div {...stylex.props(styles.list)}>
       {GROUP_ORDER.flatMap((key) => {
-        const items = families
+        const rows = families
           .filter((family) => family.group === key)
-          .flatMap((family) => family.items);
-        if (items.length === 0) return [];
+          .flatMap(({ items }): (BoardThreadItem & FamilyDisclosure)[] => {
+            const root = items[0]!;
+            if (!lowStimulusMode || items.length === 1) return items;
+            const expanded = !isOpenerCollapsed(lowStimulusMode, collapsedFamilies, root.id);
+            const openedByTree = buildSessionRowOpenedByTreeSlot(
+              { depth: 0, childCount: items.length - 1, expanded, isLastChild: false },
+              t,
+              () => toggleFamily(root.id)
+            );
+            return expanded
+              ? [{ ...root, openedByTree }, ...items.slice(1)]
+              : [{ ...foldedBoardThreadRoot(items), openedByTree, hiddenCount: items.length - 1 }];
+          });
+        if (rows.length === 0) return [];
         const isFolded = folded[key] === true;
         return [
           <button
@@ -327,11 +396,11 @@ export function BoardThreadListView({
           >
             {isFolded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             {labels[key]}
-            <span {...stylex.props(styles.count)}>{items.length}</span>
+            <span {...stylex.props(styles.count)}>{rows.length}</span>
           </button>,
           ...(isFolded
             ? []
-            : items.map((item) => (
+            : rows.map((item) => (
                 <BoardThreadRow
                   key={item.id}
                   {...item}

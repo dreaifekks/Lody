@@ -402,6 +402,18 @@ export const voiceFeatureEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(voiceExperimentEnabledAtom)
 );
 
+/** Low-stimulus mode: this device's own view, rules in `lib/low-stimulus.ts`. */
+export const lowStimulusExperimentEnabledAtom = atomWithStorage<boolean>(
+  'lody-low-stimulus-mode',
+  false,
+  undefined,
+  { getOnInit: true }
+);
+
+export const lowStimulusModeEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(lowStimulusExperimentEnabledAtom)
+);
+
 /*
  * Experimental Lody agent tools. Each switch is this device's view (cards,
  * panels, alerts); flipping one also tells every machine of the workspace which

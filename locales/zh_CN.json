@@ -4707,6 +4707,8 @@
   "settings.experimental.title": "实验功能",
   "settings.experimental.enable": "启用实验功能",
   "settings.experimental.enableHelper": "显示仍在开发中的功能。它们可能变动或出问题。",
+  "settings.experimental.lowStimulus": "低刺激模式",
+  "settings.experimental.lowStimulusHelper": "子会话折进开它们的会话，一行一个标记；Dock 只数等你的。",
   "settings.experimental.roostHistory": "Roost 历史",
   "settings.experimental.roostHistoryHelper": "让新会话使用 Roost。已有会话继续使用创建时选定的历史存储。",
   "mention.category.file.label": "文件",

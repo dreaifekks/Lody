@@ -51,6 +51,8 @@ describe('buildOpenedBySessionTree', () => {
     const [openerNode] = build(rows, { collapsed: ['opener'] });
     expect(openerNode?.expanded).toBe(false);
     expect(openerNode?.childCount).toBe(2);
+    expect(openerNode?.hiddenChildren.map((row) => row.id)).toEqual(['opened-a', 'opened-b']);
+    expect(build(rows).every((node) => node.hiddenChildren.length === 0)).toBe(true);
   });
 
   test('orphan fallback: an opener missing from this list leaves a top-level row', () => {

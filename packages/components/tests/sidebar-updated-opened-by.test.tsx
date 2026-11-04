@@ -16,6 +16,10 @@ import {
   type SidebarUpdatedItem,
 } from '../src/components/sidebar-updated-session-list';
 import { sidebarCollapsedOpenedBySessionsAtom } from '../src/atoms/focus-layer';
+import {
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import { initI18n } from '../src/i18n';
 
 function makeItem(overrides: Partial<SidebarUpdatedItem> & { id: string }): SidebarUpdatedItem {
@@ -126,15 +130,22 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
     root = undefined;
     container?.remove();
     container = undefined;
+    localStorage.clear();
     vi.restoreAllMocks();
   });
 
   function render(
     items: SidebarUpdatedItem[],
-    options: { collapsed?: Record<string, boolean>; selectedItemId?: string } = {}
+    options: {
+      collapsed?: Record<string, boolean>;
+      selectedItemId?: string;
+      lowStimulus?: boolean;
+    } = {}
   ) {
     const store = createStore();
     store.set(sidebarCollapsedOpenedBySessionsAtom, options.collapsed ?? {});
+    store.set(experimentalFeaturesEnabledAtom, options.lowStimulus === true);
+    store.set(lowStimulusExperimentEnabledAtom, options.lowStimulus === true);
     const onSelectItem = vi.fn();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -212,6 +223,67 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
     expect(
       rowOf('opened-3')?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]')
     ).toBeNull();
+  });
+
+  describe('low-stimulus mode', () => {
+    const rowOf = (id: string) => container?.querySelector(`[data-sidebar-updated-id="${id}"]`);
+    const markOf = (id: string) =>
+      rowOf(id)?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]');
+    const family = (child: Partial<SidebarUpdatedItem>, opener: Partial<SidebarUpdatedItem> = {}) => [
+      makeItem({ id: 'opener', latestMessageAt: 1_000, lastReadAt: 1_000, ...opener }),
+      makeItem({ id: 'opened', openedBySessionId: 'opener', latestMessageAt: 900, ...child }),
+    ];
+
+    it('folds opened sessions by default, keeping one disclosure on the opener', () => {
+      render(makeOpenerItems(), { lowStimulus: true });
+      expect(rowOf('opener')).not.toBeNull();
+      expect(rowOf('opened-1')).toBeNull();
+      expect(rowOf('unrelated')).not.toBeNull();
+
+      flushSync(() => {
+        rowOf('opener')
+          ?.querySelector('[data-session-opened-by-toggle]')
+          ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      });
+      expect(rowOf('opened-1')).not.toBeNull();
+    });
+
+    it('leaves an unfolded family to its rows, each with its own mark', () => {
+      render(family({ hasUnreadMessages: true }, { lastReadAt: 950 }), {
+        lowStimulus: true,
+        collapsed: { opener: false },
+      });
+      expect(markOf('opener')).toBeNull();
+      expect(markOf('opened')).not.toBeNull();
+    });
+
+    it('draws a hidden session waiting for the user on the opener', () => {
+      render(family({ isWaitingPermission: true, isWorking: true }), { lowStimulus: true });
+      expect(markOf('opener')?.querySelector('.lucide-hand')).not.toBeNull();
+    });
+
+    it('draws a hidden running session on the opener', () => {
+      render(family({ isWorking: true }), { lowStimulus: true });
+      expect(markOf('opener')?.querySelector('[data-session-working-indicator]')).not.toBeNull();
+    });
+
+    it('drops a hidden unread the read of the opener covers, and keeps a newer one', () => {
+      render(family({ hasUnreadMessages: true, latestMessageAt: 900 }), { lowStimulus: true });
+      expect(markOf('opener')).toBeNull();
+
+      flushSync(() => root?.unmount());
+      container?.remove();
+      render(family({ hasUnreadMessages: true, latestMessageAt: 1_100 }), { lowStimulus: true });
+      expect(markOf('opener')).not.toBeNull();
+    });
+
+    it('without the mode, an opener folded by the user does not draw what it hides', () => {
+      render(family({ isWaitingPermission: true, hasUnreadMessages: true, latestMessageAt: 1_100 }), {
+        collapsed: { opener: true },
+      });
+      expect(rowOf('opened')).toBeNull();
+      expect(markOf('opener')).toBeNull();
+    });
   });
 
   it('offers collapse from the opener context menu', () => {

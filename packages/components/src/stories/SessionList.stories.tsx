@@ -3,6 +3,7 @@ import { createStore, Provider } from 'jotai';
 import { SessionList } from '@/components/session-list';
 import type { SessionListProps } from '@/components/session-list';
 import { sidebarCollapsedOpenedBySessionsAtom } from '@/atoms/focus-layer';
+import { experimentalFeaturesEnabledAtom, lowStimulusExperimentEnabledAtom } from '@/atoms/settings';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const meta = {
@@ -21,6 +22,7 @@ type TaskListDemoProps = SessionListProps & {
   containerClassName?: string;
   /** Seeds the shared sidebar collapse atom so a story can show a folded opener. */
   collapsedOpenedBySessionIds?: Record<string, boolean>;
+  lowStimulusMode?: boolean;
 };
 
 function TaskListDemo({
@@ -30,6 +32,7 @@ function TaskListDemo({
   selectedSessionId,
   containerClassName,
   collapsedOpenedBySessionIds,
+  lowStimulusMode = false,
 }: TaskListDemoProps) {
   const [selectedId, setSelectedId] = useState<string | null>(selectedSessionId ?? null);
   const [repoState, setRepoState] = useState(repos);
@@ -111,8 +114,10 @@ function TaskListDemo({
     if (collapsedOpenedBySessionIds) {
       next.set(sidebarCollapsedOpenedBySessionsAtom, collapsedOpenedBySessionIds);
     }
+    next.set(experimentalFeaturesEnabledAtom, lowStimulusMode);
+    next.set(lowStimulusExperimentEnabledAtom, lowStimulusMode);
     return next;
-  }, [collapsedOpenedBySessionIds]);
+  }, [collapsedOpenedBySessionIds, lowStimulusMode]);
 
   return (
     <div className={frameClassName}>
@@ -822,4 +827,43 @@ export const OpenedSessionsCollapsed: Story = {
     selectedSessionId: 'mcp-opener',
   },
   render: (args) => <TaskListDemo {...args} collapsedOpenedBySessionIds={{ 'mcp-opener': true }} />,
+};
+
+/** An opener last read `readMinutesAgo` ago and one Session it opened, a minute older than that. */
+const lowStimulusFamily = (
+  id: string,
+  title: string,
+  readMinutesAgo: number,
+  opened: Partial<StoryTask>
+) => [
+  buildStateTask(id, title, 'loro-dev/lody', readMinutesAgo, {
+    lastReadAt: NOW - readMinutesAgo * 60 * 1000,
+  }),
+  buildStateTask(`${id}-reviewer`, `Review: ${title}`, 'loro-dev/lody', readMinutesAgo + 1, {
+    openedBySessionId: id,
+    ...opened,
+  }),
+];
+
+/**
+ * Low-stimulus mode: opened Sessions start folded and each family draws one mark
+ * on its opener. First row: a hidden Session waits for the user, so the hand stands
+ * for the whole family. Second row: a hidden Session finished after the opener was
+ * last read, so the dot asks for it. Third row: the hidden unread predates that read,
+ * so the family rests with no mark at all.
+ */
+export const OpenedSessionsLowStimulus: Story = {
+  name: 'Opened Sessions (MCP) · Low-stimulus mode',
+  args: {
+    repos: [{ repoFullName: 'loro-dev/lody', collapsed: false }],
+    sessions: [
+      ...lowStimulusFamily('waiting', 'Sync upstream', 3, { isWaitingPermission: true }),
+      ...lowStimulusFamily('newer', 'Review the sidebar change', 10, {
+        hasUnreadMessages: true,
+        latestMessageAt: NOW - 60 * 1000,
+      }),
+      ...lowStimulusFamily('covered', 'Audit archive behavior', 20, { hasUnreadMessages: true }),
+    ],
+  },
+  render: (args) => <TaskListDemo {...args} lowStimulusMode />,
 };

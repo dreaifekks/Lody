@@ -46,6 +46,8 @@ export type OpenedBySessionTreeNode<T> = {
   childCount: number;
   /** False only when `childCount > 0` and the user collapsed the opener. */
   expanded: boolean;
+  /** The opened Sessions a collapsed opener hides; empty otherwise. */
+  hiddenChildren: readonly T[];
 };
 
 export type BuildOpenedBySessionTreeOptions<T> = {
@@ -252,6 +254,7 @@ export function buildOpenedBySessionTree<T>(
       isLastChild: false,
       childCount: children.length,
       expanded,
+      hiddenChildren: expanded ? [] : children,
     });
     if (!expanded) continue;
     children.forEach((child, index) => {
@@ -263,6 +266,7 @@ export function buildOpenedBySessionTree<T>(
         isLastChild: index === children.length - 1,
         childCount: 0,
         expanded: true,
+        hiddenChildren: [],
       });
     });
   }

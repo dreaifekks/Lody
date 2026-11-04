@@ -337,6 +337,7 @@ export function mapSessionMetaToSessionListRow(
     prCiState: prInfo.ciState,
     prReadiness: prInfo.readiness,
     latestMessageAt,
+    lastReadAt: session.lastReadAt,
     addedLines: lineChange.add,
     deletedLines: lineChange.del,
     isWorking: liveStatus != null,

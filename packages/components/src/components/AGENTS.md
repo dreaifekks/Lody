@@ -45,10 +45,11 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
   `SHOW_FULL_BUCKET_THRESHOLD` count roots. Pass `rootRank` everywhere; an opener
   ranks by its freshest opened Session.
 
-- `sidebarCollapsedOpenedBySessionsAtom` defaults expanded. Preserve both navigation
-  directions through the tree, row "Go to Opener Session", `SessionHeaderMenu.openedByRelations`
-  and successful-create/precise-opener cards. Mobile uses the same two fields and
-  per-bucket tree without disclosure, per [mobile/AGENTS.md](mobile/AGENTS.md).
+- `sidebarCollapsedOpenedBySessionsAtom` defaults expanded (folded in low-stimulus mode:
+  `lib/low-stimulus.ts`). Preserve both navigation directions through the tree, row
+  "Go to Opener Session", `SessionHeaderMenu.openedByRelations` and
+  successful-create/precise-opener cards. Mobile: same two fields, per-bucket tree; see
+  [mobile/AGENTS.md](mobile/AGENTS.md).
 
 - Follow the [Session relation Spec](../../../../specs/session-relations.md): archive
   contains Tabs and optionally opened Sessions via `useArchiveSessionWithConfirmation`.
