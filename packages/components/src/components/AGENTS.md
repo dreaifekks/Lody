@@ -23,9 +23,10 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
   child workspaces; exclude contained children from `sessionListAtom` rows.
 
 - Top-level opener/unrelated rows keep flat alignment. `session-row-leading-slot.tsx`
-  owns disclosure for openers and ├/└ for children; hover replaces either with ⋯
-  at the same 7px centre, regardless of activity. Only child slots widen 14px→26px,
-  indenting titles 12px without moving backgrounds. Context menus reuse the toggle.
+  owns disclosure for openers and ├/└ for children; hover replaces a child's connector
+  or a resting glyph with ⋯ at the same 7px centre, regardless of activity, while an
+  opener keeps its disclosure (its menu opens by right-click). Only child slots widen
+  14px→26px, indenting titles 12px without moving backgrounds.
 
 - Conversation titles stay `font-normal`; pin with the glyph, never weight.
 - Sidebar row radius, inset, ink, hover/selected fill and title clipping use

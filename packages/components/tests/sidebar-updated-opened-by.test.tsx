@@ -197,6 +197,14 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
     expect(onSelectItem).not.toHaveBeenCalled();
   });
 
+  it('keeps the disclosure under the pointer: an opener row never swaps it for ⋯', () => {
+    render(makeOpenerItems());
+    const opener = container?.querySelector('[data-sidebar-updated-id="opener"]');
+    expect(opener?.querySelector('[data-session-opened-by-toggle]')).not.toBeNull();
+    // The menu still opens by right-click (covered below); no hover ⋯ competes for the slot.
+    expect(opener?.querySelector('button[aria-label="More actions"]')).toBeNull();
+  });
+
   it('keeps the connectors on a working or unread child and puts status at the row end', () => {
     // `opened-1` is working and `opened-2` is unread: the rows most likely to be
     // watched are exactly the ones that used to lose their ├/└ to a status mark.

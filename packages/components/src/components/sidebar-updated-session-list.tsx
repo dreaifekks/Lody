@@ -1101,7 +1101,6 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
             menuLabel={contextMenuLabels.moreActions}
             openedByTree={openedByTree}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
-            restPointerClassName="group-hover/row:pointer-events-none group-data-[menu-open]/row:pointer-events-none"
             revealClassName="group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[menu-open]/row:opacity-100 group-data-[menu-open]/row:pointer-events-auto"
           />
         </div>
