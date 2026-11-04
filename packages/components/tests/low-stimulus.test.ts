@@ -67,6 +67,16 @@ describe('toggling an opener', () => {
     );
   });
 
+  it('folds on the first tap of a list that shows the upstream default in the mode', () => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(lowStimulusExperimentEnabledAtom, true);
+    store.set(toggleSidebarCollapsedOpenedBySessionAtom, 'opener', false);
+    expect(store.get(sidebarCollapsedOpenedBySessionsAtom)).toEqual({ opener: true });
+    store.set(toggleSidebarCollapsedOpenedBySessionAtom, 'opener', true);
+    expect(store.get(sidebarCollapsedOpenedBySessionsAtom)).toEqual({ opener: false });
+  });
+
   it('folds an expanded opener on the first click without the mode', () => {
     const store = createStore();
     store.set(toggleSidebarCollapsedOpenedBySessionAtom, 'opener');

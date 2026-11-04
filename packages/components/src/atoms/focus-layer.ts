@@ -65,18 +65,19 @@ export const sidebarCollapsedOpenedBySessionsAtom = atom<Record<string, boolean>
 /**
  * Fold/unfold one opener's Sessions. Every session list renders the same
  * disclosure, so the update lives here once instead of as an identical
- * `useCallback` in each of them.
+ * `useCallback` in each of them. A list that keeps the upstream default while
+ * the mode is on (the mobile list, whose rows draw no family mark) passes what
+ * it shows as `shownCollapsed`, so its first tap acts on that.
  */
 export const toggleSidebarCollapsedOpenedBySessionAtom = atom(
   null,
-  (get, set, openerSessionId: string) => {
+  (get, set, openerSessionId: string, shownCollapsed?: boolean) => {
     const current = get(sidebarCollapsedOpenedBySessionsAtom);
     set(sidebarCollapsedOpenedBySessionsAtom, {
       ...current,
-      [openerSessionId]: !isOpenerCollapsed(
-        get(lowStimulusModeEnabledAtom),
-        current,
-        openerSessionId
+      [openerSessionId]: !(
+        shownCollapsed ??
+        isOpenerCollapsed(get(lowStimulusModeEnabledAtom), current, openerSessionId)
       ),
     });
   }
