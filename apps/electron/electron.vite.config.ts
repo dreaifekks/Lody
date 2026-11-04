@@ -102,6 +102,9 @@ export default defineConfig(({ mode }) => {
             '@devframes/hub',
             '@devframes/json-render',
             '@lody/cli-supervisor',
+            '@lody/cloud-api',
+            '@lody/loro-streams-rpc',
+            '@lody/platform',
             '@lody/shared',
             'devframe',
             'effect'
