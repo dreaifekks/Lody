@@ -49,6 +49,8 @@ export type LodyWidgetHostMessage =
       code: string;
       mode: LodyWidgetColorMode;
       vars: Record<string, string>;
+      /** The code is a page of its own, not a widget sized to its content. */
+      page?: boolean;
     }
   | { type: 'lody-widget:theme'; mode: LodyWidgetColorMode; vars: Record<string, string> };
 
@@ -218,16 +220,26 @@ function runScripts(root){
   }
   next();
 }
-function render(code){
+function adoptAttributes(from,to){
+  for(var i=0;i<from.attributes.length;i++){var a=from.attributes[i];if(!to.hasAttribute(a.name))to.setAttribute(a.name,a.value);}
+}
+function render(code,page){
   if(rendered)return;rendered=true;
   var root=document.getElementById('lody-widget-root'),tpl=document.createElement('template');
+  // A fragment drops a complete document's html and body tags, and with them
+  // the state its styles may hang on. The page's own attributes (theme) stay.
+  // Not for a widget: its height is measured from the root, without the body.
+  if(page){
+    var doc=new DOMParser().parseFromString(code,'text/html');
+    adoptAttributes(doc.documentElement,document.documentElement);adoptAttributes(doc.body,document.body);
+  }
   tpl.innerHTML=code;root.appendChild(tpl.content);runScripts(root);
   if(window.ResizeObserver)new ResizeObserver(measure).observe(root);
   window.addEventListener('load',measure);measure();
 }
 window.addEventListener('message',function(e){
   if(e.source!==host)return;var d=e.data;if(!d||typeof d!=='object')return;
-  if(d.type==='lody-widget:render'&&typeof d.code==='string'){theme(d.mode,d.vars||{});render(d.code);}
+  if(d.type==='lody-widget:render'&&typeof d.code==='string'){theme(d.mode,d.vars||{});render(d.code,d.page===true);}
   else if(d.type==='lody-widget:theme'){theme(d.mode,d.vars||{});}
 });
 post({type:'lody-widget:ready'});
