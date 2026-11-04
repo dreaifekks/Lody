@@ -87,7 +87,8 @@ changes. With the mode off every list is the upstream one.
 
 Waiting, failures and agent notifications always pass through. Not covered: a folded
 project or machine header and a Board's Sidebar row still count their rows' own
-unread, the phone list folds with no family mark, and an opened Session being
+unread, the phone list is untouched (it folds only by the user's choice, as before,
+because its rows have no family mark), and an opened Session being
 viewed has no highlighted row while its family is folded.
 
 ## Voice

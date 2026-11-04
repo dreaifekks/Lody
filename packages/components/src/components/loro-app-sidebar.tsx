@@ -999,6 +999,7 @@ function summarizeLocalSessionsActivity(
 }
 
 type LocalSessionActivityRow = EffectiveSessionActivitySummary & { id: string };
+const EMPTY_FAMILY_ACTIVITIES: ReadonlyMap<string, SidebarGroupActivity> = new Map();
 
 /** Two folded groups' marks as one, for a machine that folds both. */
 function addSidebarGroupActivity(
@@ -1164,6 +1165,29 @@ export const LocalProjectItem = memo(function LocalProjectItem({
       sessionsForProject,
     ]
   );
+  // Low-stimulus mode: the one mark each folded family draws, resolved once per
+  // tree so a memoized row keeps its identity across unrelated updates.
+  const familyActivityBySessionId = useMemo(() => {
+    if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
+    const activityRow = (session: SessionMeta): LocalSessionActivityRow => ({
+      id: session.id,
+      ...getEffectiveSessionActivitySummary(session, childSessionsByParent, liveSessionStatuses),
+    });
+    return new Map(
+      sessionNodes
+        .filter((node) => node.hiddenChildren.length > 0)
+        .map((node) => [
+          node.item.id,
+          foldedFamilyActivity<LocalSessionActivityRow>(
+            activityRow(node.item),
+            node.hiddenChildren.map(activityRow),
+            node.item.lastReadAt,
+            (row) => row.id,
+            sendStates
+          ),
+        ])
+    );
+  }, [childSessionsByParent, liveSessionStatuses, lowStimulusMode, sendStates, sessionNodes]);
   const collapsedActivityDescription = useSidebarGroupActivityDescription(collapsedActivity);
   const ariaLabel = [baseAriaLabel, removalStateLabel, collapsedActivityDescription]
     .filter(Boolean)
@@ -1491,23 +1515,6 @@ export const LocalProjectItem = memo(function LocalProjectItem({
               childSessionsByParent,
               liveSessionStatuses
             );
-            const familyActivity =
-              lowStimulusMode && node.hiddenChildren.length > 0
-                ? foldedFamilyActivity<LocalSessionActivityRow>(
-                    { id: session.id, ...activity },
-                    node.hiddenChildren.map((child) => ({
-                      id: child.id,
-                      ...getEffectiveSessionActivitySummary(
-                        child,
-                        childSessionsByParent,
-                        liveSessionStatuses
-                      ),
-                    })),
-                    session.lastReadAt,
-                    (row) => row.id,
-                    sendStates
-                  )
-                : undefined;
             const openedByTree = buildSessionRowOpenedByTreeSlot(node, t, () =>
               onToggleOpenedBySessions(session.id)
             );
@@ -1524,7 +1531,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
                   isWorking={activity.isWorking}
                   isWaitingPermission={activity.isWaitingPermission}
                   hasUnreadMessages={activity.hasUnreadMessages}
-                  familyActivity={familyActivity}
+                  familyActivity={familyActivityBySessionId.get(session.id)}
                   effectiveLatestMessageAt={activity.latestMessageAt}
                   defaultSessionTitle={defaultSessionTitle}
                   projectName={inProject ? project.name : null}

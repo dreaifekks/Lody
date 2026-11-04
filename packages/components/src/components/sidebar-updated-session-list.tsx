@@ -281,6 +281,7 @@ function updatedItemRootRank(item: SidebarUpdatedItem): number {
 
 /** Stable identity for a collapsed bucket's (absent) rows. */
 const EMPTY_TREE_NODES: OpenedBySessionTreeNode<SidebarUpdatedItem>[] = [];
+const EMPTY_FAMILY_ACTIVITIES: ReadonlyMap<string, SidebarGroupActivity> = new Map();
 
 /** Tree accessors shared by the renderer and the keyboard navigation model. */
 export const SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS = {
@@ -518,6 +519,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
           return {
             overflows: updatedBucketOverflowsPreview(bucket.items),
             nodes: EMPTY_TREE_NODES,
+            familyActivityById: EMPTY_FAMILY_ACTIVITIES,
             // A folded bucket still says whether anything inside needs the user.
             collapsedActivity: addSidebarGroupActivity(
               summarizeSidebarGroupActivity(
@@ -527,16 +529,36 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
             ),
           };
         }
+        const nodes = getVisibleUpdatedItemTree(
+          bucket.items,
+          canToggleFullBucket,
+          Boolean(showFullBuckets?.[bucket.key]),
+          collapsedOpenedBySessionIds,
+          lowStimulusMode
+        );
+        // Low-stimulus mode: the one mark each folded family draws, resolved
+        // here so a memoized row keeps its identity across unrelated updates.
+        const familyActivityById = lowStimulusMode
+          ? new Map(
+              nodes
+                .filter((node) => node.hiddenChildren.length > 0)
+                .map((node) => [
+                  node.item.id,
+                  foldedFamilyActivity(
+                    node.item,
+                    node.hiddenChildren,
+                    node.item.lastReadAt,
+                    SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS.getId,
+                    sendStates
+                  ),
+                ])
+            )
+          : EMPTY_FAMILY_ACTIVITIES;
         return {
           collapsedActivity: null,
           overflows: updatedBucketOverflowsPreview(bucket.items),
-          nodes: getVisibleUpdatedItemTree(
-            bucket.items,
-            canToggleFullBucket,
-            Boolean(showFullBuckets?.[bucket.key]),
-            collapsedOpenedBySessionIds,
-            lowStimulusMode
-          ),
+          nodes,
+          familyActivityById,
         };
       }),
     [
@@ -596,10 +618,12 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
             overflows,
             nodes: visibleNodes,
             collapsedActivity,
+            familyActivityById,
           } = bucketTrees[bucketIndex] ?? {
             overflows: false,
             nodes: EMPTY_TREE_NODES,
             collapsedActivity: null,
+            familyActivityById: EMPTY_FAMILY_ACTIVITIES,
           };
           // Only a bucket that actually contains an opened Session enables the
           // tree wrapper. Unrelated top-level rows keep their flat geometry.
@@ -664,17 +688,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
                       >
                         <UpdatedItemRow
                           item={node.item}
-                          familyActivity={
-                            lowStimulusMode && node.hiddenChildren.length > 0
-                              ? foldedFamilyActivity(
-                                  node.item,
-                                  node.hiddenChildren,
-                                  node.item.lastReadAt,
-                                  SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS.getId,
-                                  sendStates
-                                )
-                              : undefined
-                          }
+                          familyActivity={familyActivityById.get(node.item.id)}
                           now={now}
                           selected={node.item.id === selectedItemId}
                           isMobile={isMobile}

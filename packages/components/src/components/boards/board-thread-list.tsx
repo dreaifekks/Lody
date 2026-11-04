@@ -12,6 +12,8 @@ import {
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '@/atoms/focus-layer';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { sessionSendStatesAtom } from '@/atoms/session-send-status';
+import type { SessionSendState } from '@/lib/session-send-status';
 import { hiddenSessionHasUnread, isOpenerCollapsed } from '@/lib/low-stimulus';
 import { useWorkingHandOver } from '@/ui/working-status-mark';
 import {
@@ -19,10 +21,12 @@ import {
   useSidebarSessionMenuLabels,
   type UpdatedItemRowProps,
 } from '../sidebar-updated-session-list';
+import { foldedFamilyActivity } from '../sidebar-folded-family';
 import {
   buildSessionRowOpenedByTreeSlot,
   SessionRowStatusIndicator,
   type SessionRowOpenedByTreeSlot,
+  type SidebarGroupActivity,
 } from '../sidebar-row-shared';
 
 export interface BoardThreadItem {
@@ -111,6 +115,37 @@ export function foldedBoardThreadRoot(items: readonly BoardThreadItem[]): BoardT
   };
 }
 
+/** A member as the row flags a folded family counts; its send state joins later. */
+function boardFamilyRow(item: BoardThreadItem) {
+  return {
+    id: item.id,
+    isWaitingPermission: item.status === 'waiting_user',
+    isWorking: GROUP_BY_STATUS[item.status] === 'active',
+    hasUnreadMessages: item.unread === true,
+    latestMessageAt: item.updatedAt,
+  };
+}
+
+/**
+ * The one mark a folded family's root draws, counted as the sidebar counts a
+ * folded family: every member's live state, the hidden members' unread narrowed
+ * by the root's last read, and every member's local send state, so a hidden
+ * member's failed send still outranks everything.
+ */
+export function boardFamilyActivity(
+  items: readonly BoardThreadItem[],
+  sendStates: Readonly<Record<string, SessionSendState>>
+): SidebarGroupActivity {
+  const root = items[0]!;
+  return foldedFamilyActivity(
+    boardFamilyRow(root),
+    items.slice(1).filter((item) => item.archived !== true).map(boardFamilyRow),
+    root.lastReadAt,
+    (row) => row.id,
+    sendStates
+  );
+}
+
 /**
  * Threads with the sessions they opened, in list order (a root, then its rows
  * one or more steps in). A family stays together under the strongest state of
@@ -158,8 +193,6 @@ const styles = stylex.create({
     textAlign: 'start',
   },
   count: { fontWeight: 400, color: colors.tertiaryLabel },
-  folded: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
-  hiddenCount: { flexShrink: 0, marginInlineStart: space[1], color: colors.tertiaryLabel },
   indent: (depth: number) => ({ paddingInlineStart: `${depth * 18}px` }),
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
   danger: { color: colors.destructive },
@@ -235,8 +268,8 @@ export type BoardThreadActions = Pick<
 type FamilyDisclosure = {
   /** Low-stimulus mode's family disclosure on a root thread. */
   openedByTree?: SessionRowOpenedByTreeSlot;
-  /** Family members folded under this row. */
-  hiddenCount?: number;
+  /** The one mark of the family folded under this row. */
+  familyActivity?: SidebarGroupActivity;
 };
 
 const noop = () => {};
@@ -246,7 +279,7 @@ const BoardThreadRow = memo(function BoardThreadRow({
   selected,
   now,
   openedByTree,
-  hiddenCount = 0,
+  familyActivity,
   ...thread
 }: BoardThreadItem & {
   now: Date;
@@ -292,14 +325,10 @@ const BoardThreadRow = memo(function BoardThreadRow({
               title={thread.title}
               onOpenParent={() => onOpen(thread.parentId!)}
             />
-          ) : hiddenCount > 0 ? (
-            <>
-              <span {...stylex.props(styles.folded)}>{thread.title}</span>
-              <span {...stylex.props(styles.hiddenCount)}>{hiddenCount}</span>
-            </>
           ) : undefined
         }
         openedByTree={openedByTree}
+        familyActivity={familyActivity}
         rowId={thread.id}
         item={item}
         now={now}
@@ -350,6 +379,7 @@ export function BoardThreadListView({
   const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   const collapsedFamilies = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const toggleFamily = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
+  const sendStates = useAtomValue(sessionSendStatesAtom);
   const labels: Record<GroupKey, string> = {
     attention: t('boards.groups.attention', 'Needs you'),
     active: t('boards.groups.active', 'Working'),
@@ -382,7 +412,13 @@ export function BoardThreadListView({
             );
             return expanded
               ? [{ ...root, openedByTree }, ...items.slice(1)]
-              : [{ ...foldedBoardThreadRoot(items), openedByTree, hiddenCount: items.length - 1 }];
+              : [
+                  {
+                    ...foldedBoardThreadRoot(items),
+                    openedByTree,
+                    familyActivity: boardFamilyActivity(items, sendStates),
+                  },
+                ];
           });
         if (rows.length === 0) return [];
         const isFolded = folded[key] === true;

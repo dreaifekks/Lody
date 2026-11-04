@@ -321,6 +321,7 @@ function sessionRowRootRank(session: SessionListRow): number {
 
 /** Stable identity for a collapsed group's (absent) rows. */
 const EMPTY_TREE_NODES: OpenedBySessionTreeNode<SessionListRow>[] = [];
+const EMPTY_FAMILY_ACTIVITIES: ReadonlyMap<string, SidebarGroupActivity> = new Map();
 
 /**
  * Rows a group renders, in render order, with their "opened by" tree geometry.
@@ -1795,6 +1796,25 @@ const SessionGroupSection = memo(function SessionGroupSection({
         : null,
     [group.collapsed, group.sessions, sendStates]
   );
+  // Low-stimulus mode: the one mark each folded family draws, resolved once per
+  // tree so a memoized row keeps its identity across unrelated updates.
+  const familyActivityBySessionId = useMemo(() => {
+    if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
+    return new Map(
+      visibleNodes
+        .filter((node) => node.hiddenChildren.length > 0)
+        .map((node) => [
+          node.item.sessionId,
+          foldedFamilyActivity(
+            node.item,
+            node.hiddenChildren,
+            node.item.lastReadAt,
+            SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
+            sendStates
+          ),
+        ])
+    );
+  }, [lowStimulusMode, sendStates, visibleNodes]);
   const toggleListLabel = whetherShowFullList
     ? t('sessions.showLess', 'Show less')
     : t('sessions.showAll', 'Show all ({{count}})', { count: group.sessions.length });
@@ -2042,17 +2062,7 @@ const SessionGroupSection = memo(function SessionGroupSection({
             <SessionGroupRow
               key={node.item.sessionId}
               node={node}
-              familyActivity={
-                lowStimulusMode && node.hiddenChildren.length > 0
-                  ? foldedFamilyActivity(
-                      node.item,
-                      node.hiddenChildren,
-                      node.item.lastReadAt,
-                      SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
-                      sendStates
-                    )
-                  : undefined
-              }
+              familyActivity={familyActivityBySessionId.get(node.item.sessionId)}
               isSelected={node.item.sessionId === selectedSessionId}
               groupKind={group.kind}
               groupRepoFullName={group.repoFullName}

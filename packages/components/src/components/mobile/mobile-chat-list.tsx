@@ -23,8 +23,6 @@ import {
   sidebarCollapsedOpenedBySessionsAtom,
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '@/atoms/focus-layer';
-import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
-import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { buildSessionRowOpenedByTreeSlot } from '@/components/sidebar-row-shared';
 import { cn } from '@/lib/utils';
 import { Button } from '@lody/ui/button';
@@ -475,7 +473,6 @@ export function MobileChatListCard({
      opener in the drawer and in the mobile list can never disagree. */
   const collapsedOpeners = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const toggleCollapsedOpener = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
-  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   /* A capped bucket renders at most `MOBILE_CHAT_PREVIEW_MAX_ROOTS` top-level
      rows. `maxRoots` is applied AFTER `rootRank`, so the preview keeps the
      pinned-first / latest-activity order the bucket already promises — it
@@ -487,14 +484,14 @@ export function MobileChatListCard({
     () =>
       buildOpenedBySessionTree(chats, {
         ...CHAT_OPENED_BY_TREE_ACCESSORS,
-        isCollapsed: (openerId) => isOpenerCollapsed(lowStimulusMode, collapsedOpeners, openerId),
+        isCollapsed: (openerId) => collapsedOpeners[openerId] === true,
         /* Bucket order is pinned-first then latest activity; rank an opener by
            its freshest opened Session so nesting cannot bury a just-updated
            row under a stale opener. */
         rootRank: (chat) => pinnedFirstRootRank(chat.latestMessageAt ?? 0, chat.isPinned),
         ...(capped ? { maxRoots: MOBILE_CHAT_PREVIEW_MAX_ROOTS } : {}),
       }),
-    [capped, chats, collapsedOpeners, lowStimulusMode]
+    [capped, chats, collapsedOpeners]
   );
   /* Gate the toggle on TOP-LEVEL rows, matching what the cap actually limits:
      five openers plus the Sessions they opened is not an overflowing bucket,

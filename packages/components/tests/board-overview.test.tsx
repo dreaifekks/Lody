@@ -91,6 +91,8 @@ import {
   type BoardThreadItem,
 } from '../src/components/boards/board-thread-list';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
+import { sessionSendStatusesAtom } from '../src/atoms/session-send-status';
+import type { SessionSendStatus } from '../src/lib/session-send-status';
 import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
 import { BoardRenameDialog } from '../src/components/boards/board-rename-dialog';
 import {
@@ -1225,10 +1227,15 @@ describe('Board side panel', () => {
       thread('child', { depth: 1, ...child }),
     ];
     afterEach(() => localStorage.clear());
-    async function mountList(threads: BoardThreadItem[], lowStimulus = true) {
+    async function mountList(
+      threads: BoardThreadItem[],
+      lowStimulus = true,
+      sendStatuses: Record<string, SessionSendStatus> = {}
+    ) {
       const store = createStore();
       store.set(experimentalFeaturesEnabledAtom, lowStimulus);
       store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+      store.set(sessionSendStatusesAtom, sendStatuses);
       const view = await mount(
         <Provider store={store}>
           <BoardThreadListView now={new Date(0)} threads={threads} onOpen={() => {}} />
@@ -1246,12 +1253,14 @@ describe('Board side panel', () => {
       };
     }
 
-    it('folds a family into its root, with the disclosure and the count of what it hides', async () => {
+    it('folds a family into its root, with the disclosure naming what it hides', async () => {
       const view = await mountList([...family({}), thread('child-2', { depth: 1 })]);
       try {
         expect(view.row('root')).not.toBeNull();
         expect(view.row('child')).toBeNull();
-        expect(view.row('root')?.textContent).toContain('2');
+        expect(
+          view.row('root')?.querySelector('[data-session-opened-by-toggle]')?.getAttribute('aria-label')
+        ).toContain('2');
         expect(view.headers()).toEqual(['Idle1']);
 
         await act(async () => {
@@ -1300,6 +1309,23 @@ describe('Board side panel', () => {
       try {
         expect(view.headers()).toEqual(['Needs you1']);
         expect(view.row('root')?.querySelector('[aria-label="Failed"]')).not.toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws the failed send of a hidden member on the root, above its own unread', async () => {
+      const view = await mountList(family({ unread: true, updatedAt: 300 }), true, {
+        child: {
+          state: 'failed',
+          progress: 0,
+          sentBytes: 0,
+          totalBytes: 0,
+          unsentNewConversation: false,
+        },
+      });
+      try {
+        expect(view.mark('root')?.getAttribute('data-session-send-state')).toBe('failed');
       } finally {
         await view.unmount();
       }
