@@ -1379,6 +1379,35 @@ describe('Board side panel', () => {
     ]);
   });
 
+  it('in low-stimulus mode counts a folded family as its panel row does', () => {
+    const board = testBoard();
+    const root = makeSession('root', { lastMessageAt: 100, lastReadAt: 200 });
+    const covered = makeSession('covered', {
+      openedBySessionId: 'root' as SessionId,
+      lastMessageAt: 150,
+      lastReadAt: 100,
+    });
+    const newer = makeSession('newer', {
+      openedBySessionId: 'root' as SessionId,
+      lastMessageAt: 300,
+      lastReadAt: 100,
+    });
+    const folded = () => true;
+    const unfolded = () => false;
+    expect(boardActivity(board, [root, covered], new Map(), folded).hasUnreadMessages).toBe(false);
+    expect(boardActivity(board, [root, covered], new Map(), unfolded).hasUnreadMessages).toBe(
+      true
+    );
+    expect(boardActivity(board, [root, newer], new Map(), folded).hasUnreadMessages).toBe(true);
+    // The coordinator's own unread lights the row whatever is folded.
+    const coordinator = makeSession('coordinator', { lastMessageAt: 30, lastReadAt: 20 });
+    expect(
+      boardActivity(board, [coordinator, root, covered], new Map(), folded).hasUnreadMessages
+    ).toBe(true);
+    // Without the mode the member's own unread lights the row as before.
+    expect(boardActivity(board, [root, covered], new Map()).hasUnreadMessages).toBe(true);
+  });
+
   it('marks a Board by its strongest member state', () => {
     const board = testBoard();
     const working = makeSession('working');

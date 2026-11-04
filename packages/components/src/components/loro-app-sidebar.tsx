@@ -2125,6 +2125,11 @@ export function LoroAppSidebar({
   const { boards } = useWorkspaceCatalog();
   const [boardsCollapsed, setBoardsCollapsed] = useAtom(boardsSectionCollapsedAtom);
   const [creatingBoard, setCreatingBoard] = useState(false);
+  // Read once for every list below and for the Board rows: the keyboard model
+  // and the rows must agree on what is folded, and in low-stimulus mode a
+  // Board row counts unread the way its panel folds the families.
+  const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   const boardItems = useMemo(
     () =>
       boardsEnabled
@@ -2135,10 +2140,24 @@ export function LoroAppSidebar({
               id: board.id,
               name: board.name,
               coordinatorSessionId: board.coordinatorSessionId,
-              activity: boardActivity(board, allActiveSessions, liveSessionStatuses),
+              activity: boardActivity(
+                board,
+                allActiveSessions,
+                liveSessionStatuses,
+                lowStimulusMode
+                  ? (rootId) => isOpenerCollapsed(true, collapsedOpenedBySessionIds, rootId)
+                  : undefined
+              ),
             }))
         : [],
-    [allActiveSessions, boards, boardsEnabled, liveSessionStatuses]
+    [
+      allActiveSessions,
+      boards,
+      boardsEnabled,
+      collapsedOpenedBySessionIds,
+      liveSessionStatuses,
+      lowStimulusMode,
+    ]
   );
   const openBoard = useCallback(
     (coordinatorSessionId: SessionId) => {
@@ -2319,9 +2338,7 @@ export function LoroAppSidebar({
   // Shared with SessionList (same atom) so an opener collapsed in one sidebar
   // surface stays collapsed in the other, and with the keyboard nav model so
   // arrow keys never visit a hidden row.
-  const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const handleToggleOpenedBySessions = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
-  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
 
   const toggleLocalProjectCollapsed = useCallback(
     (machineId: MachineId, localProjectId: LocalProjectId) => {

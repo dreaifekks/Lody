@@ -1,5 +1,6 @@
 import type { BoardMeta, SessionId, SessionMeta, SessionStatus } from '@lody/shared';
 import { deriveBoardSessionStatus, isBoardSessionStopped } from '@lody/shared';
+import { hiddenSessionHasUnread } from '@/lib/low-stimulus';
 import { buildOpenedBySessionTree } from '@/lib/session-opened-by-tree';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import { formatExplicitSessionTabSearch } from '@/lib/session-tab-url';
@@ -96,22 +97,52 @@ export type BoardActivity = {
  * A Board row reads as one conversation row over all its members, the
  * coordinator included: someone waits for the user, someone works, someone has
  * output the user has not seen. The row draws the strongest, as a session row
- * with Tabs does.
+ * with Tabs does. In low-stimulus mode `isFolded` names the thread families the
+ * panel folds, and the row counts unread as that panel shows it.
  */
 export function boardActivity(
-  board: Pick<BoardMeta, 'id'>,
+  board: Pick<BoardMeta, 'id' | 'coordinatorSessionId'>,
   sessions: readonly SessionMeta[],
-  liveStatuses: ReadonlyMap<string, SessionStatus>
+  liveStatuses: ReadonlyMap<string, SessionStatus>,
+  isFolded?: (rootId: SessionId) => boolean
 ): BoardActivity {
   const activity = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
-  for (const session of sessions) {
-    if (session.boardId !== board.id) continue;
+  const members = sessions.filter((session) => session.boardId === board.id);
+  for (const session of members) {
     const live = liveStatuses.get(session.id);
     if (awaitsUser(session, live)) activity.isWaitingPermission = true;
     if (live) activity.isWorking = true;
-    if (sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
+    if (!isFolded && sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
   }
+  if (isFolded) activity.hasUnreadMessages = boardUnreadAsPanelShows(board, members, isFolded);
   return activity;
+}
+
+/**
+ * The panel's rule, over the same rows it lists: a folded family's hidden member
+ * counts only for output newer than the root's last read; an unfolded family
+ * and the coordinator count their own unread as they always did.
+ */
+function boardUnreadAsPanelShows(
+  board: Pick<BoardMeta, 'coordinatorSessionId'>,
+  members: readonly SessionMeta[],
+  isFolded: (rootId: SessionId) => boolean
+): boolean {
+  const coordinator = members.find((session) => session.id === board.coordinatorSessionId);
+  if (coordinator && sessionHasUnreadMessages(coordinator)) return true;
+  let root: SessionMeta | undefined;
+  let folded = false;
+  const threads = members.filter((session) => session.id !== board.coordinatorSessionId);
+  for (const { session, depth } of buildBoardRows(threads)) {
+    if (depth === 0) {
+      root = session;
+      folded = isFolded(session.id);
+    }
+    if (!sessionHasUnreadMessages(session)) continue;
+    if (depth === 0 || !folded || !root) return true;
+    if (hiddenSessionHasUnread(true, session.lastMessageAt ?? 0, root.lastReadAt)) return true;
+  }
+  return false;
 }
 
 /** Selection follows membership, including a contained Tab with its own Board id. */

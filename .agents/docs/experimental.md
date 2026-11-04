@@ -85,11 +85,12 @@ changes. With the mode off every list is the upstream one.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
-Waiting, failures and agent notifications always pass through. Not covered: a folded
-project or machine header and a Board's Sidebar row still count their rows' own
-unread, the phone list is untouched (it folds only by the user's choice, as before,
-because its rows have no family mark), and an opened Session being
-viewed has no highlighted row while its family is folded.
+A Board's Sidebar row counts unread the way its panel folds the families
+(`boardActivity` with the fold record), so the two agree. Waiting, failures and agent
+notifications always pass through. Not covered: a folded project or machine header
+still counts its rows' own unread, the phone list is untouched (it folds only by the
+user's choice, as before, because its rows have no family mark), and an opened Session
+being viewed has no highlighted row while its family is folded.
 
 ## Voice
 
