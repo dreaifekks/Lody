@@ -271,3 +271,113 @@ describe('VoiceHost shutdown', () => {
     expect(launchGate.sawSignal).toBeNull();
   });
 });
+
+describe('VoiceHost Gemini tokens', () => {
+  /** Stands for a real key in these tests; it must never leave the request header. */
+  const KEY = 'test-gemini-key-value';
+  const NOW = Date.parse('2026-11-07T12:00:00.000Z');
+
+  function geminiHost(options: {
+    env?: NodeJS.ProcessEnv;
+    lanEnv?: Record<string, string>;
+    answer?: { status: number; body: unknown };
+  }) {
+    const requests: { url: string; headers: Record<string, string>; body: unknown }[] = [];
+    const answer = options.answer ?? { status: 200, body: { name: 'auth_tokens/abc123' } };
+    const host = new VoiceHost({
+      workspaceId: 'workspace-1',
+      machineId: 'machine-1',
+      logger,
+      getAgentConfig: async () => codexConfig,
+      now: () => NOW,
+      env: options.env ?? {},
+      ...(options.lanEnv ? { lanEnv: () => options.lanEnv ?? {} } : {}),
+      fetch: async (url, init) => {
+        requests.push({
+          url: String(url),
+          headers: init?.headers as Record<string, string>,
+          body: JSON.parse(String(init?.body)),
+        });
+        return new Response(JSON.stringify(answer.body), { status: answer.status });
+      },
+    });
+    return { host, requests };
+  }
+
+  it('signs a single-use token from the LAN table, the key only in the request header', async () => {
+    const { host, requests } = geminiHost({ lanEnv: { GEMINI_API_KEY: KEY } });
+
+    const response = await host.handle({ action: 'geminiToken', mode: 'conversation' });
+
+    expect(response).toEqual({
+      success: true,
+      action: 'geminiToken',
+      token: 'auth_tokens/abc123',
+      model: 'gemini-3.8-live',
+      expireTime: '2026-11-07T12:30:00.000Z',
+      newSessionExpireTime: '2026-11-07T12:01:00.000Z',
+    });
+    expect(JSON.stringify(response)).not.toContain(KEY);
+    expect(requests).toHaveLength(1);
+    const [request] = requests;
+    expect(request?.url).toBe('https://generativelanguage.googleapis.com/v1beta/auth_tokens');
+    expect(request?.headers['x-goog-api-key']).toBe(KEY);
+    expect(JSON.stringify(request?.body)).not.toContain(KEY);
+    expect(request?.body).toEqual({
+      uses: 1,
+      expireTime: '2026-11-07T12:30:00.000Z',
+      newSessionExpireTime: '2026-11-07T12:01:00.000Z',
+      bidiGenerateContentSetup: {
+        model: 'models/gemini-3.8-live',
+        generationConfig: { responseModalities: ['AUDIO'] },
+      },
+      fieldMask: 'model,generationConfig.responseModalities',
+    });
+    // No adapter process is involved in a Gemini call.
+    expect(launchGate.spawned).toBe(0);
+  });
+
+  it("prefers the machine's own environment and locks dictation to transcription", async () => {
+    const { host, requests } = geminiHost({
+      env: { GEMINI_API_KEY: 'machine-key' },
+      lanEnv: { GEMINI_API_KEY: KEY },
+    });
+
+    const response = await host.handle({ action: 'geminiToken', mode: 'dictation' });
+
+    expect(requests[0]?.headers['x-goog-api-key']).toBe('machine-key');
+    expect(response).toMatchObject({ success: true, model: 'gemini-3.5-transcribe-live' });
+    expect(requests[0]?.body).toMatchObject({
+      bidiGenerateContentSetup: {
+        model: 'models/gemini-3.5-transcribe-live',
+        generationConfig: { responseModalities: ['TEXT'] },
+      },
+    });
+  });
+
+  it('says where to set the key when the machine has none, without calling Gemini', async () => {
+    const { host, requests } = geminiHost({ lanEnv: {} });
+
+    const response = await host.handle({ action: 'geminiToken', mode: 'dictation' });
+
+    expect(response).toMatchObject({ success: false });
+    expect(response.success === false && response.error).toContain(
+      'lody lan env set GEMINI_API_KEY'
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it("reports Gemini's refusal without the key", async () => {
+    const { host } = geminiHost({
+      env: { GEMINI_API_KEY: KEY },
+      answer: { status: 400, body: { error: { message: 'API key not valid.' } } },
+    });
+
+    const response = await host.handle({ action: 'geminiToken', mode: 'conversation' });
+
+    expect(response).toEqual({
+      success: false,
+      error: 'Gemini did not sign a voice token (HTTP 400): API key not valid.',
+    });
+  });
+});

@@ -360,6 +360,7 @@ export class Lody {
         lanWorkspace: options.lanWorkspace,
         askLanMemberDirect: options.askLanMemberDirect,
         boardFiles: options.boardFiles,
+        lanEnv: options.lanEnv,
         readWorkspaceAccess: options.readWorkspaceAccess,
         remoteAutomation: options.remoteAutomation,
         cloudPort: options.cloudPort,

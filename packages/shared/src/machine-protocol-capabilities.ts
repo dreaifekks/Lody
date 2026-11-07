@@ -429,8 +429,9 @@ export function machineSupportsLocalFileResourcesProtocol(
 /**
  * v2: `start` accepts `context`, background the voice starts from.
  * v3: `start` accepts `voice`; the `voices` action lists voices.
+ * v4: the `geminiToken` action signs a Gemini Live token with the machine's key.
  */
-export const REALTIME_VOICE_PROTOCOL_VERSION = 3;
+export const REALTIME_VOICE_PROTOCOL_VERSION = 4;
 
 /** Whether the daemon hosts experimental realtime voice calls (`machine/voice`). */
 export function machineSupportsRealtimeVoice(
@@ -454,6 +455,16 @@ export function machineSupportsRealtimeVoiceSelection(
   machine: MachineProtocolCapabilityCarrier | null | undefined
 ): boolean {
   return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 3);
+}
+
+/**
+ * Whether the machine signs Gemini Live tokens; older daemons reject
+ * `geminiToken`. Signing still fails when it has no `GEMINI_API_KEY`.
+ */
+export function machineSupportsGeminiVoice(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(machine, MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice, 4);
 }
 
 export function machineSupportsPiExtensions(

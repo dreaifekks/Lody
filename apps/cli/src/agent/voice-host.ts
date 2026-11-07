@@ -1,6 +1,7 @@
 import os from 'os';
 import type { ChildProcess } from 'node:child_process';
 import * as acp from '@agentclientprotocol/sdk';
+import { z } from 'zod';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import {
   LODY_EXTENSION_METHODS,
@@ -13,6 +14,7 @@ import {
   type AgentConfigId,
   type AgentConfigMeta,
   type MachineVoiceEvent,
+  type MachineVoiceMode,
   type MachineVoiceRequest,
   type MachineVoiceResponse,
 } from '@lody/shared';
@@ -38,6 +40,21 @@ import type { Logger } from '@/utils/logger';
 /** A call nobody polls for this long has lost its renderer; end it. */
 const ABANDONED_CALL_MS = 45_000;
 const VOICE_EVENT_METHOD = LODY_EXTENSION_METHODS.voiceEvent.replace(/^_/, '');
+
+const GEMINI_AUTH_TOKENS_URL = 'https://generativelanguage.googleapis.com/v1beta/auth_tokens';
+/** The Live model a Gemini call of each mode runs on, and what it answers in; both locked into its token. */
+export const GEMINI_VOICE_MODELS: Record<MachineVoiceMode, { model: string; modality: string }> = {
+  conversation: { model: 'gemini-3.8-live', modality: 'AUDIO' },
+  // Transcription only: it answers with the user's words, never speaks.
+  dictation: { model: 'gemini-3.5-transcribe-live', modality: 'TEXT' },
+};
+/** A call must connect this soon after signing. */
+const GEMINI_NEW_SESSION_WINDOW_MS = 60_000;
+/** A call (and every reconnection that resumes it) lasts at most this long per token. */
+const GEMINI_TOKEN_LIFETIME_MS = 30 * 60_000;
+const GEMINI_SIGN_TIMEOUT_MS = 15_000;
+const GeminiAuthTokenSchema = z.object({ name: z.string().min(1) });
+const GeminiErrorSchema = z.object({ error: z.object({ message: z.string() }) });
 
 type VoiceCall = {
   id: string;
@@ -68,8 +85,12 @@ export type VoiceHostDeps = {
   workspaceId: string;
   machineId: string;
   getAgentConfig: (configId: AgentConfigId) => Promise<AgentConfigMeta | null>;
+  /** The LAN's environment variables; the daemon's own environment wins over them. */
+  lanEnv?: () => Readonly<Record<string, string>>;
   logger: Logger;
   now?: () => number;
+  env?: NodeJS.ProcessEnv;
+  fetch?: typeof fetch;
 };
 
 /**
@@ -121,6 +142,8 @@ export class VoiceHost {
           return await this.poll(request.voiceSessionId, request.after, request.waitMs ?? 0);
         case 'voices':
           return await this.listVoices(request.configId as AgentConfigId);
+        case 'geminiToken':
+          return await this.signGeminiToken(request.mode);
         default:
           return { success: false, error: 'Unknown voice action' };
       }
@@ -191,6 +214,59 @@ export class VoiceHost {
         defaultVoice: response.defaultVoice,
       };
     });
+  }
+
+  /**
+   * Signs a single-use Gemini Live token with this machine's `GEMINI_API_KEY`.
+   * The key never leaves the machine: the renderer gets only the token, which
+   * is locked to the mode's model and reply modality. `sessionResumption` stays
+   * unlocked on purpose: a locked field overwrites the connection's own, and the
+   * renderer's resumption `handle` must survive to reconnect a call.
+   */
+  private async signGeminiToken(mode: MachineVoiceMode): Promise<MachineVoiceResponse> {
+    const key =
+      (this.deps.env ?? process.env).GEMINI_API_KEY || this.deps.lanEnv?.().GEMINI_API_KEY;
+    if (!key) {
+      throw new Error(
+        'GEMINI_API_KEY is not set on this machine. Set it with `lody lan env set GEMINI_API_KEY` or in the environment of its Lody service.'
+      );
+    }
+    const now = this.now();
+    const { model, modality } = GEMINI_VOICE_MODELS[mode];
+    const expireTime = new Date(now + GEMINI_TOKEN_LIFETIME_MS).toISOString();
+    const newSessionExpireTime = new Date(now + GEMINI_NEW_SESSION_WINDOW_MS).toISOString();
+    const response = await (this.deps.fetch ?? fetch)(GEMINI_AUTH_TOKENS_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        uses: 1,
+        expireTime,
+        newSessionExpireTime,
+        bidiGenerateContentSetup: {
+          model: `models/${model}`,
+          generationConfig: { responseModalities: [modality] },
+        },
+        // Locks only these; the call sets its own instructions, tools, voice and resumption.
+        fieldMask: 'model,generationConfig.responseModalities',
+      }),
+      signal: AbortSignal.timeout(GEMINI_SIGN_TIMEOUT_MS),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    const token = GeminiAuthTokenSchema.safeParse(body);
+    if (!response.ok || !token.success) {
+      const failure = GeminiErrorSchema.safeParse(body);
+      throw new Error(
+        `Gemini did not sign a voice token (HTTP ${response.status})${failure.success ? `: ${failure.data.error.message}` : ''}`
+      );
+    }
+    return {
+      success: true,
+      action: 'geminiToken',
+      token: token.data.name,
+      model,
+      expireTime,
+      newSessionExpireTime,
+    };
   }
 
   /**

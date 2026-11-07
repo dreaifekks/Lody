@@ -238,7 +238,7 @@ describe('MessageHandler machine registration', () => {
       preparedSessionInput: 1,
       sessionCancelActiveTurn: 1,
       scheduleAgentRoles: 1,
-      realtimeVoice: 3,
+      realtimeVoice: 4,
       messageQuotes: 1,
       sessionInputAttachments: 1,
       sessionCollaborationControl: 1,

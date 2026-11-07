@@ -173,6 +173,23 @@ describe('workspace Flock helpers', () => {
     expect(getWorkspaceVoiceSetting({})).toBeNull();
   });
 
+  it('reads a row without a provider as Codex and a Gemini row without an agent config', () => {
+    const key = workspaceFlockKeys.voiceSetting();
+    const codex = { version: 1, configId: 'config-1', machineId: 'machine-1' };
+    expect(parseWorkspaceFlockRow(key, { ...codex, provider: 'codex' })).toEqual({
+      key,
+      value: codex,
+    });
+    const gemini = { version: 1, provider: 'gemini', machineId: 'machine-2', voice: 'kore' };
+    // A config left over from the Codex choice is not part of a Gemini row.
+    expect(parseWorkspaceFlockRow(key, { ...gemini, configId: 'config-1' })).toEqual({
+      key,
+      value: gemini,
+    });
+    expect(parseWorkspaceFlockRow(key, { ...gemini, machineId: '' })).toBeUndefined();
+    expect(parseWorkspaceFlockRow(key, { ...codex, provider: 'other' })).toBeUndefined();
+  });
+
   it('keeps the offered agent tools, known ids only, in canonical order', () => {
     const key = workspaceFlockKeys.agentToolsSetting();
     expect(
