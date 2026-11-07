@@ -40,6 +40,7 @@ import {
   getServerNow,
   machineSupportsLanFileRanges,
   machineSupportsPiExtensions,
+  machineSupportsGeminiVoice,
   machineSupportsRealtimeVoice,
   machineSupportsRealtimeVoiceContext,
   machineSupportsRealtimeVoiceSelection,
@@ -1895,6 +1896,9 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
       const protocolCapabilities = await deps.getMachineProtocolCapabilities(machineId);
       if (!machineSupportsRealtimeVoice({ protocolCapabilities })) {
         return fail('This machine does not support voice. Update the local agent.');
+      }
+      if (request.action === 'geminiToken' && !machineSupportsGeminiVoice({ protocolCapabilities })) {
+        return fail('This machine cannot sign Gemini voice tokens yet. Update Lody on it.');
       }
       if (
         request.action === 'start' &&

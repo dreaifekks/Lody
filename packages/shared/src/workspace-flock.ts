@@ -46,17 +46,31 @@ export type WorkspaceFlockKey =
   | WorkspaceFlockAgentRoleKey
   | WorkspaceFlockSettingKey;
 
-/** The Codex agent config every device of the workspace uses for experimental voice. */
-export type WorkspaceVoiceSetting = {
-  version: 1;
-  configId: AgentConfigId;
-  machineId: MachineId;
-  /**
-   * The voice calls use, a name the agent's Codex lists; absent follows Codex's
-   * default. Optional so clients that predate it keep reading the row.
-   */
-  voice?: string;
-};
+/**
+ * What every device of the workspace uses for experimental voice: a Codex
+ * agent config (no `provider`, as every row written before Gemini), or Gemini
+ * Live with the machine that signs its tokens. A Gemini row has no `configId`,
+ * so clients that predate it ignore it rather than start a Codex call.
+ */
+export type WorkspaceVoiceSetting =
+  | {
+      version: 1;
+      provider?: 'codex';
+      configId: AgentConfigId;
+      machineId: MachineId;
+      /**
+       * The voice calls use, a name the agent's Codex lists; absent follows Codex's
+       * default. Optional so clients that predate it keep reading the row.
+       */
+      voice?: string;
+    }
+  | {
+      version: 1;
+      provider: 'gemini';
+      machineId: MachineId;
+      /** A Gemini voice, lower-cased (`kore`); absent follows the default. */
+      voice?: string;
+    };
 
 /**
  * Next-message suggestions negotiated through the upstream ACP capability.
@@ -115,12 +129,18 @@ const isVoiceName = (value: unknown): value is string =>
 export const isWorkspaceVoiceSetting = (value: unknown): value is WorkspaceVoiceSetting => {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
+  if (
+    record['version'] !== 1 ||
+    typeof record['machineId'] !== 'string' ||
+    record['machineId'].length === 0
+  ) {
+    return false;
+  }
+  if (record['provider'] === 'gemini') return true;
   return (
-    record['version'] === 1 &&
+    (record['provider'] === undefined || record['provider'] === 'codex') &&
     typeof record['configId'] === 'string' &&
-    record['configId'].length > 0 &&
-    typeof record['machineId'] === 'string' &&
-    record['machineId'].length > 0
+    record['configId'].length > 0
   );
 };
 
@@ -344,15 +364,14 @@ export const parseWorkspaceFlockRow = (
   }
   if (parsedKey.kind === 'voiceSetting') {
     if (!isWorkspaceVoiceSetting(value)) return undefined;
+    // A malformed voice is dropped, not the agent choice that carries it.
+    const voice = isVoiceName(value.voice) ? { voice: value.voice } : {};
     return {
       key: parsedKey.key,
-      value: {
-        version: 1,
-        configId: value.configId,
-        machineId: value.machineId,
-        // A malformed voice is dropped, not the agent choice that carries it.
-        ...(isVoiceName(value.voice) ? { voice: value.voice } : {}),
-      },
+      value:
+        value.provider === 'gemini'
+          ? { version: 1, provider: 'gemini', machineId: value.machineId, ...voice }
+          : { version: 1, configId: value.configId, machineId: value.machineId, ...voice },
     };
   }
   if (parsedKey.kind === 'promptSuggestionsSetting') {

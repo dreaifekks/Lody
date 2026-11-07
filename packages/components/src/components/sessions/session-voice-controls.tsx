@@ -16,6 +16,7 @@ import {
   buildVoiceSessionContext,
   buildVoiceTurnMessage,
   resolveVoiceLatestReply,
+  GEMINI_VOICE_CONVERSATION_INSTRUCTIONS,
   VOICE_CONVERSATION_INSTRUCTIONS,
   voiceMergeWindowMs,
   type VoiceTranscriptLine,
@@ -75,35 +76,49 @@ function SessionVoiceControlsInner({
   latestReplyRef.current = latestReply;
   /** The newest reply the voice already knows: present at call start, or relayed since. */
   const relayedKeyRef = useRef<string | null>(null);
-  /** Voice turns sent and not yet answered by a relayed reply, with their paraphrases. */
-  const awaitingRef = useRef<{ message: string; understanding: string[] }[]>([]);
+  /**
+   * Voice turns sent and not yet answered by a relayed reply, with their
+   * paraphrases and the Gemini hand-offs they carry.
+   */
+  const awaitingRef = useRef<{ message: string; understanding: string[]; callIds: string[] }[]>([]);
   /** Everything said in the call since the last voice turn was sent. */
   const spokenRef = useRef<VoiceTranscriptLine[]>([]);
   const modeRef = useRef<'conversation' | 'dictation' | null>(null);
+  /** Hand-offs still inside the merge window, each with its Gemini call id when it has one. */
   const requestBufferRef = useRef<{
-    understanding: string[];
+    fragments: { text: string; callId?: string }[];
     timer: ReturnType<typeof setTimeout>;
     graceUsed: boolean;
   } | null>(null);
-  const appendRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const appendRef = useRef<(text: string, callIds?: readonly string[]) => Promise<void>>(
+    async () => {}
+  );
 
-  const sendVoiceTurn = (understanding: string[]) => {
+  const sendVoiceTurn = (understanding: string[], callIds: string[]) => {
     const spoken = spokenRef.current;
     spokenRef.current = [];
     const message = buildVoiceTurnMessage({ spoken, understanding });
-    const batch = { message, understanding };
+    const batch = { message, understanding, callIds };
     awaitingRef.current = [...awaitingRef.current, batch];
     if (!onVoiceRequest) return;
     void onVoiceRequest(message).then((accepted) => {
       if (accepted) return;
       awaitingRef.current = awaitingRef.current.filter((entry) => entry !== batch);
       void appendRef.current(
-        `The request "${understanding.join(' ')}" could not be sent to the background agent. Tell the user.`
+        `The request "${understanding.join(' ')}" could not be sent to the background agent. Tell the user.`,
+        callIds
       );
     });
   };
   const sendVoiceTurnRef = useRef(sendVoiceTurn);
   sendVoiceTurnRef.current = sendVoiceTurn;
+
+  const sendBufferedRef = useRef((fragments: { text: string; callId?: string }[]) =>
+    sendVoiceTurnRef.current(
+      fragments.map((fragment) => fragment.text),
+      fragments.flatMap((fragment) => (fragment.callId ? [fragment.callId] : []))
+    )
+  );
 
   const flushRequestsRef = useRef<() => void>(() => {});
   flushRequestsRef.current = () => {
@@ -116,7 +131,7 @@ function SessionVoiceControlsInner({
       return;
     }
     requestBufferRef.current = null;
-    sendVoiceTurnRef.current(buffer.understanding);
+    sendBufferedRef.current(buffer.fragments);
   };
 
   const voice = useVoiceCall({
@@ -137,17 +152,31 @@ function SessionVoiceControlsInner({
         );
       }
     },
-    onRequest: (text) => {
+    onRequest: (text, callId) => {
       // The voice hands off at a pause, so one sentence said with a breath in it
       // can arrive as two requests; fragments close together become one message,
       // and words that trail off mid-sentence hold the window open longer.
       const buffer = requestBufferRef.current;
       if (buffer) clearTimeout(buffer.timer);
       requestBufferRef.current = {
-        understanding: [...(buffer?.understanding ?? []), text],
+        fragments: [...(buffer?.fragments ?? []), callId ? { text, callId } : { text }],
         timer: setTimeout(() => flushRequestsRef.current(), voiceMergeWindowMs(spokenRef.current)),
         graceUsed: buffer?.graceUsed ?? false,
       };
+    },
+    onRequestCancelled: (callId) => {
+      // Withdrawn while still in the merge window: never send it. One already
+      // sent stays with the agent; its answer reaches the voice as a plain turn.
+      const buffer = requestBufferRef.current;
+      if (!buffer) return;
+      const fragments = buffer.fragments.filter((fragment) => fragment.callId !== callId);
+      if (fragments.length === buffer.fragments.length) return;
+      if (fragments.length > 0) {
+        buffer.fragments = fragments;
+        return;
+      }
+      clearTimeout(buffer.timer);
+      requestBufferRef.current = null;
     },
     onError: (message) => {
       toast.error(t('sessions.voice.error', 'Voice stopped'), { description: message });
@@ -163,7 +192,7 @@ function SessionVoiceControlsInner({
     if (!buffer) return;
     clearTimeout(buffer.timer);
     requestBufferRef.current = null;
-    sendVoiceTurnRef.current(buffer.understanding);
+    sendBufferedRef.current(buffer.fragments);
   }, [voice.state]);
 
   // Every reply that finishes during the call goes back to the voice, answered
@@ -187,7 +216,10 @@ function SessionVoiceControlsInner({
     });
     awaitingRef.current = awaitingRef.current.filter((entry) => !answered.includes(entry));
     const requests = answered.flatMap((entry) => entry.understanding);
-    void append(buildVoiceRelay(latestReply, requests));
+    void append(
+      buildVoiceRelay(latestReply, requests),
+      answered.flatMap((entry) => entry.callIds)
+    );
   }, [append, callLive, isAgentBusy, latestReply]);
 
   const toggle = useCallback(
@@ -209,7 +241,10 @@ function SessionVoiceControlsInner({
       awaitingRef.current = [];
       spokenRef.current = [];
       void voice.start(mode, {
-        instructions: VOICE_CONVERSATION_INSTRUCTIONS,
+        instructions:
+          voice.provider === 'gemini'
+            ? GEMINI_VOICE_CONVERSATION_INSTRUCTIONS
+            : VOICE_CONVERSATION_INSTRUCTIONS,
         context: buildVoiceSessionContext(turnsRef.current) ?? undefined,
       });
     },

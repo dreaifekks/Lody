@@ -8,6 +8,10 @@ import { AgentConfigIdSchema } from './message-schemas';
  * negotiates the call and reports spoken requests. Events are pulled with
  * `poll`, which waits briefly for the next one, because every RPC transport
  * answers a request exactly once.
+ *
+ * The Gemini Live backend uses the machine only to sign a short-lived token
+ * with its `GEMINI_API_KEY` (`geminiToken`); the renderer then holds the
+ * Live WebSocket itself, so its calls never use start, append, stop or poll.
  */
 export const MACHINE_VOICE_POLL_MAX_WAIT_MS = 15_000;
 
@@ -26,6 +30,10 @@ export const MACHINE_VOICE_SELECTION_UNSUPPORTED =
  */
 export const MachineVoiceModeSchema = z.enum(['conversation', 'dictation']);
 export type MachineVoiceMode = z.infer<typeof MachineVoiceModeSchema>;
+
+/** Which service speaks: a Codex agent's realtime voice, or Gemini Live. */
+export const MachineVoiceProviderSchema = z.enum(['codex', 'gemini']);
+export type MachineVoiceProvider = z.infer<typeof MachineVoiceProviderSchema>;
 
 export const MachineVoiceNameSchema = z
   .string()
@@ -57,6 +65,8 @@ export const MachineVoiceRequestSchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ action: z.literal('stop'), voiceSessionId: z.string().min(1).max(200) }).strict(),
+  /** A single-use Gemini Live token for one call of `mode` (protocol v4). */
+  z.object({ action: z.literal('geminiToken'), mode: MachineVoiceModeSchema }).strict(),
   z
     .object({
       action: z.literal('poll'),
@@ -105,6 +115,20 @@ export const MachineVoiceResponseSchema = z.union([
       action: z.literal('voices'),
       voices: z.array(MachineVoiceNameSchema).max(100),
       defaultVoice: MachineVoiceNameSchema,
+    })
+    .strict(),
+  z
+    .object({
+      success: z.literal(true),
+      action: z.literal('geminiToken'),
+      /** The token's name (`auth_tokens/…`), the credential the Live WebSocket accepts. */
+      token: z.string().min(1),
+      /** The model the token is locked to, e.g. `gemini-3.8-live`. */
+      model: z.string().min(1),
+      /** RFC 3339; the token stops working, also for resuming the call. */
+      expireTime: z.string(),
+      /** RFC 3339; the call must have connected by then. */
+      newSessionExpireTime: z.string(),
     })
     .strict(),
   z.object({ success: z.literal(true), action: z.enum(['append', 'stop']) }).strict(),

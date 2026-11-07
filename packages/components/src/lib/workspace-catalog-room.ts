@@ -58,6 +58,15 @@ type WorkspaceCatalogListener = (snapshot: WorkspaceCatalogSnapshot) => void;
 
 const EMPTY_ROWS = Object.freeze({}) as WorkspaceFlockRowMap;
 
+/** Every field of a voice row, so a change to any of them reaches Settings and calls. */
+const voiceSettingKey = (setting: WorkspaceVoiceSetting) =>
+  JSON.stringify([
+    setting.provider ?? 'codex',
+    setting.provider === 'gemini' ? null : setting.configId,
+    setting.machineId,
+    setting.voice ?? null,
+  ]);
+
 export const EMPTY_WORKSPACE_CATALOG: WorkspaceCatalogSnapshot = Object.freeze({
   servers: Object.freeze([]) as unknown as WorkspaceMcpServerMeta[],
   roles: Object.freeze([]) as unknown as AgentRole[],
@@ -135,11 +144,7 @@ function publish(room: SharedCatalogRoom, rows: WorkspaceFlockRowMap, synced: bo
   const nextVoice = getWorkspaceVoiceSetting(rows);
   // Every field counts: a row that only changes `voice` must reach Settings and calls.
   const voice =
-    nextVoice &&
-    room.snapshot.voice &&
-    nextVoice.configId === room.snapshot.voice.configId &&
-    nextVoice.machineId === room.snapshot.voice.machineId &&
-    nextVoice.voice === room.snapshot.voice.voice
+    nextVoice && room.snapshot.voice && voiceSettingKey(nextVoice) === voiceSettingKey(room.snapshot.voice)
       ? room.snapshot.voice
       : nextVoice;
   const promptSuggestions = isWorkspacePromptSuggestionsEnabled(rows);

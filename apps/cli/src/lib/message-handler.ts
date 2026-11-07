@@ -741,6 +741,8 @@ export interface MessageHandlerConfig {
   ) => Promise<readonly unknown[] | null>;
   /** Board shared directories of this workspace, as this machine reaches them. */
   boardFiles?: BoardFilesPort;
+  /** The environment variables the LAN keeps; voice reads `GEMINI_API_KEY` from them. */
+  lanEnv?: () => Readonly<Record<string, string>>;
   /** The fleet's access verdict for this workspace; cloud daemon commands resolve from it. */
   readWorkspaceAccess?: () => DaemonWorkspaceAccess;
   cloudPort: CloudPort;
@@ -841,6 +843,7 @@ export class MessageHandler {
   private readonly lanWorkspace: boolean;
   private readonly boardFiles: BoardFilesPort | undefined;
   private readonly askLanMemberDirect?: MessageHandlerConfig['askLanMemberDirect'];
+  private readonly lanEnv: MessageHandlerConfig['lanEnv'];
   private readonly readWorkspaceAccess?: () => DaemonWorkspaceAccess;
   private readonly machineLifecycleCapability: MachineLifecycleCapability;
   /** Per session, the user turn whose prompt the provider last answered. */
@@ -3209,6 +3212,7 @@ export class MessageHandler {
     this.lanWorkspace = config.lanWorkspace === true;
     this.boardFiles = config.boardFiles;
     this.askLanMemberDirect = config.askLanMemberDirect;
+    this.lanEnv = config.lanEnv;
     this.readWorkspaceAccess = config.readWorkspaceAccess;
     this.machineLifecycleCapability = config.machineLifecycleCapability ?? {
       launchMode: 'foreground',
@@ -6696,6 +6700,7 @@ export class MessageHandler {
       machineId: this.machineId,
       getAgentConfig: async (configId) =>
         await this.workspaceDocument.getAgentConfigForMachineLaunch(configId, this.machineId),
+      ...(this.lanEnv ? { lanEnv: this.lanEnv } : {}),
       logger: this.logger,
     });
     return this.voiceHostInstance;

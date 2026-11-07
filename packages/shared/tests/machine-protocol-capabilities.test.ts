@@ -10,13 +10,14 @@ import {
   machineSupportsRealtimeVoice,
   machineSupportsRealtimeVoiceContext,
   machineSupportsRealtimeVoiceSelection,
+  machineSupportsGeminiVoice,
   machineSupportsSubagentEvents,
   machineSupportsIosSimulatorControls,
   negotiatedAcpCapabilitiesRefreshForce,
   REALTIME_VOICE_PROTOCOL_VERSION,
   resolveNewSessionHistoryBackend,
 } from '../src/machine-protocol-capabilities';
-import { MachineVoiceRequestSchema } from '../src/machine-voice';
+import { MachineVoiceRequestSchema, MachineVoiceResponseSchema } from '../src/machine-voice';
 import {
   MachineAcpCapabilitiesRefreshRequestSchema,
   safeParseLocalSessionControlRequest,
@@ -120,6 +121,28 @@ describe('realtime voice protocol capability', () => {
     expect(machineSupportsRealtimeVoiceSelection(v2)).toBe(false);
     expect(machineSupportsRealtimeVoiceContext(v2)).toBe(true);
     expect(machineSupportsRealtimeVoiceSelection(current)).toBe(true);
+  });
+
+  it('lets only a v4 daemon sign Gemini tokens, with a strict request and answer', () => {
+    expect(machineSupportsGeminiVoice({ protocolCapabilities: { realtimeVoice: 3 } })).toBe(false);
+    expect(
+      machineSupportsGeminiVoice({
+        protocolCapabilities: { realtimeVoice: REALTIME_VOICE_PROTOCOL_VERSION },
+      })
+    ).toBe(true);
+    const request = { action: 'geminiToken', mode: 'conversation' };
+    expect(MachineVoiceRequestSchema.safeParse(request).success).toBe(true);
+    expect(MachineVoiceRequestSchema.safeParse({ ...request, apiKey: 'x' }).success).toBe(false);
+    const answer = {
+      success: true,
+      action: 'geminiToken',
+      token: 'auth_tokens/abc',
+      model: 'gemini-3.8-live',
+      expireTime: '2026-11-07T12:30:00.000Z',
+      newSessionExpireTime: '2026-11-07T12:01:00.000Z',
+    };
+    expect(MachineVoiceResponseSchema.safeParse(answer).success).toBe(true);
+    expect(MachineVoiceResponseSchema.safeParse({ ...answer, token: '' }).success).toBe(false);
   });
 
   it('accepts a voice and a voice list request, which the v2 schema would reject', () => {
