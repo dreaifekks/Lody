@@ -277,6 +277,24 @@ describe('SessionVoiceControls conversation', () => {
     expect(call.append.mock.calls[1]![1]).toEqual([]);
   });
 
+  it('drops a hand-off the user talked over before it left the merge window', () => {
+    call.provider = 'gemini';
+    render();
+    startConversation();
+    heard('user', '改一下配置，');
+    act(() => call.handlers!.onRequest!('Change the config', 'call-1'));
+    act(() => call.handlers!.onRequest!('and restart it', 'call-2'));
+    act(() => call.handlers!.onRequestCancelled!('call-2'));
+    wait(3_500);
+    expect(sent).toHaveLength(1);
+    expect(parseVoiceTurn(sent[0]!)?.understanding).toEqual(['Change the config']);
+
+    act(() => call.handlers!.onRequest!('Delete the branch', 'call-3'));
+    act(() => call.handlers!.onRequestCancelled!('call-3'));
+    wait(5_000);
+    expect(sent).toHaveLength(1);
+  });
+
   it('keeps a spoken request waiting while a typed turn queued before it finishes', () => {
     startConversation();
     heard('user', '顺便跑下测试');

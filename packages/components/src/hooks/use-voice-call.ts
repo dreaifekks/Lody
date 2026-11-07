@@ -29,6 +29,8 @@ export type VoiceCallHandlers = {
    * the hand-off, so `append` can answer exactly that call.
    */
   onRequest?: (text: string, callId?: string) => void;
+  /** Gemini withdrew the hand-off `callId` because the user talked over it. */
+  onRequestCancelled?: (callId: string) => void;
   onError?: (message: string) => void;
 };
 
@@ -217,6 +219,7 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
             onUserTranscript: (text) => handlersRef.current.onUserTranscript?.(text),
             onTranscript: (line) => handlersRef.current.onTranscript?.(line),
             onRequest: (text, callId) => handlersRef.current.onRequest?.(text, callId),
+            onRequestCancelled: (callId) => handlersRef.current.onRequestCancelled?.(callId),
             // Dictation keeps the voice silent; never play whatever it might say.
             onAudio: (pcm, rate) => {
               if (nextMode === 'conversation') gemini.player.play(pcm, rate);

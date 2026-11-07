@@ -5,6 +5,10 @@
  * talks over it.
  */
 
+// Emitted as its own same-origin file: a small asset would otherwise be inlined
+// as a `data:` URL, which the desktop renderer's CSP refuses to run.
+import captureWorkletUrl from './gemini-pcm-capture.worklet.js?worker&url';
+
 const CAPTURE_RATE = 16_000;
 /** About 100 ms per message, the chunk size the Live docs suggest. */
 const CAPTURE_CHUNK_SAMPLES = 1_600;
@@ -16,9 +20,7 @@ export async function startGeminiPcmCapture(
 ): Promise<() => void> {
   const context = new AudioContext({ sampleRate: CAPTURE_RATE });
   try {
-    await context.audioWorklet.addModule(
-      new URL('./gemini-pcm-capture.worklet.js', import.meta.url).href
-    );
+    await context.audioWorklet.addModule(captureWorkletUrl);
     const source = context.createMediaStreamSource(microphone);
     const node = new AudioWorkletNode(context, 'gemini-pcm-capture');
     let pending = new Int16Array(CAPTURE_CHUNK_SAMPLES);

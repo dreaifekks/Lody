@@ -224,8 +224,10 @@ export class VoiceHost {
    * renderer's resumption `handle` must survive to reconnect a call.
    */
   private async signGeminiToken(mode: MachineVoiceMode): Promise<MachineVoiceResponse> {
-    const key =
-      (this.deps.env ?? process.env).GEMINI_API_KEY || this.deps.lanEnv?.().GEMINI_API_KEY;
+    // A pasted value often ends in a newline, which no header may carry.
+    const key = (
+      (this.deps.env ?? process.env).GEMINI_API_KEY || this.deps.lanEnv?.().GEMINI_API_KEY
+    )?.trim();
     if (!key) {
       throw new Error(
         'GEMINI_API_KEY is not set on this machine. Set it with `lody lan env set GEMINI_API_KEY` or in the environment of its Lody service.'
@@ -235,6 +237,8 @@ export class VoiceHost {
     const { model, modality } = GEMINI_VOICE_MODELS[mode];
     const expireTime = new Date(now + GEMINI_TOKEN_LIFETIME_MS).toISOString();
     const newSessionExpireTime = new Date(now + GEMINI_NEW_SESSION_WINDOW_MS).toISOString();
+    // What fails here (a header that rejects the value, a network error) may
+    // quote the key; only a description that cannot hold it leaves the machine.
     const response = await (this.deps.fetch ?? fetch)(GEMINI_AUTH_TOKENS_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
@@ -250,13 +254,18 @@ export class VoiceHost {
         fieldMask: 'model,generationConfig.responseModalities',
       }),
       signal: AbortSignal.timeout(GEMINI_SIGN_TIMEOUT_MS),
+    }).catch((error: unknown) => {
+      const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+      const kind =
+        typeof cause === 'string' ? cause : error instanceof Error ? error.name : 'error';
+      throw new Error(`Could not ask Gemini for a voice token (${kind})`);
     });
     const body: unknown = await response.json().catch(() => null);
     const token = GeminiAuthTokenSchema.safeParse(body);
     if (!response.ok || !token.success) {
       const failure = GeminiErrorSchema.safeParse(body);
       throw new Error(
-        `Gemini did not sign a voice token (HTTP ${response.status})${failure.success ? `: ${failure.data.error.message}` : ''}`
+        `Gemini did not sign a voice token (HTTP ${response.status})${failure.success ? `: ${failure.data.error.message.split(key).join('[GEMINI_API_KEY]')}` : ''}`
       );
     }
     return {

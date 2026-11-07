@@ -62,7 +62,9 @@ export const GEMINI_LIVE_DEFAULT_VOICE = 'Kore';
 /** The Live API's name for a stored (lower-cased) voice; an unknown one plays the default. */
 export function geminiLiveVoiceName(stored: string | null | undefined): string {
   const lower = stored?.toLowerCase();
-  return GEMINI_LIVE_VOICES.find((voice) => voice.toLowerCase() === lower) ?? GEMINI_LIVE_DEFAULT_VOICE;
+  return (
+    GEMINI_LIVE_VOICES.find((voice) => voice.toLowerCase() === lower) ?? GEMINI_LIVE_DEFAULT_VOICE
+  );
 }
 
 export type GeminiLiveToken = {
@@ -90,6 +92,8 @@ export type GeminiLiveCallHandlers = {
   onTranscriptPiece?: (piece: { role: 'user' | 'assistant'; text: string }) => void;
   /** The voice handed a request to the agent; answer it with `reply(text, [callId])`. */
   onRequest?: (text: string, callId: string) => void;
+  /** The server withdrew a hand-off because the user talked over it; drop it if unsent. */
+  onRequestCancelled?: (callId: string) => void;
   /** 24 kHz (or the stated rate) mono PCM16 to play after what is already queued. */
   onAudio?: (pcm: Int16Array, sampleRate: number) => void;
   /** The user talked over the voice: drop everything still queued to play. */
@@ -143,7 +147,8 @@ const HAND_OFF_DECLARATION = {
     properties: {
       request: {
         type: 'STRING',
-        description: "The request, close to the user's own words, with what the conversation made clear.",
+        description:
+          "The request, close to the user's own words, with what the conversation made clear.",
       },
     },
     required: ['request'],
@@ -156,6 +161,12 @@ export class GeminiLiveCall {
   private ready = false;
   private stopped = false;
   private resumeHandle: string | null = null;
+  /** Whether the server's latest word is that the session can be resumed from here. */
+  private resumable = false;
+  /** Hand-offs made after the latest handle; a session resumed from it never saw them. */
+  private readonly callsSinceHandle = new Set<string>();
+  /** A GoAway arrived while not resumable: move once the server reports a resumable point. */
+  private leaving = false;
   private reconnecting = false;
   /** Hand-offs the voice made that no reply has answered or the server cancelled. */
   private readonly pendingCalls = new Set<string>();
@@ -313,7 +324,9 @@ export class GeminiLiveCall {
       generationConfig: {
         responseModalities: ['AUDIO'],
         speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: geminiLiveVoiceName(this.options.voice) } },
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: geminiLiveVoiceName(this.options.voice) },
+          },
         },
       },
       ...(this.options.instructions
@@ -339,6 +352,10 @@ export class GeminiLiveCall {
     }
     this.reconnecting = true;
     this.ready = false;
+    this.leaving = false;
+    // The resumed session knows nothing of these; their answers become plain turns.
+    for (const id of this.callsSinceHandle) this.pendingCalls.delete(id);
+    this.callsSinceHandle.clear();
     const previous = this.socket;
     this.socket = null;
     previous?.close(1000, 'reconnecting');
@@ -375,15 +392,22 @@ export class GeminiLiveCall {
 
   private handle(message: ServerMessage): void {
     const { handlers } = this.options;
-    if (message.sessionResumptionUpdate?.resumable && message.sessionResumptionUpdate.newHandle) {
-      this.resumeHandle = message.sessionResumptionUpdate.newHandle;
+    const resumption = message.sessionResumptionUpdate;
+    if (resumption) {
+      this.resumable = resumption.resumable === true && Boolean(resumption.newHandle);
+      if (this.resumable && resumption.newHandle) {
+        this.resumeHandle = resumption.newHandle;
+        this.callsSinceHandle.clear();
+      }
     }
     if (message.usageMetadata) handlers.onUsage?.(message.usageMetadata);
     const content = message.serverContent;
     if (content) {
       if (this.options.mode === 'dictation') {
         if (content.inputTranscription?.text) this.dictated += content.inputTranscription.text;
-        const hearing = content.inputTranscription ? '' : (content.interimInputTranscription?.text ?? '');
+        const hearing = content.inputTranscription
+          ? ''
+          : (content.interimInputTranscription?.text ?? '');
         if (content.inputTranscription?.text || content.interimInputTranscription?.text) {
           handlers.onUserTranscript?.(this.dictated + hearing);
         }
@@ -421,11 +445,19 @@ export class GeminiLiveCall {
       // What the user said comes before the request it led to.
       this.flushUser();
       this.pendingCalls.add(call.id);
+      this.callsSinceHandle.add(call.id);
       handlers.onRequest?.(request, call.id);
     }
-    for (const id of message.toolCallCancellation?.ids ?? []) this.pendingCalls.delete(id);
-    // The server ends this connection soon; move to a new one while it still answers.
-    if (message.goAway !== undefined) this.reconnect('the server is closing the connection');
+    for (const id of message.toolCallCancellation?.ids ?? []) {
+      this.pendingCalls.delete(id);
+      this.callsSinceHandle.delete(id);
+      handlers.onRequestCancelled?.(id);
+    }
+    // The server ends this connection soon. Move while it still answers, but only
+    // from a point the server can resume; until then (a hand-off or a reply in
+    // progress) wait for one, or for the connection to close.
+    if (message.goAway !== undefined) this.leaving = true;
+    if (this.leaving && this.resumable) this.reconnect('the server is closing the connection');
   }
 }
 

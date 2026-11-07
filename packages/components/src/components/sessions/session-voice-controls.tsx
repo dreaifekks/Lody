@@ -80,15 +80,13 @@ function SessionVoiceControlsInner({
    * Voice turns sent and not yet answered by a relayed reply, with their
    * paraphrases and the Gemini hand-offs they carry.
    */
-  const awaitingRef = useRef<{ message: string; understanding: string[]; callIds: string[] }[]>(
-    []
-  );
+  const awaitingRef = useRef<{ message: string; understanding: string[]; callIds: string[] }[]>([]);
   /** Everything said in the call since the last voice turn was sent. */
   const spokenRef = useRef<VoiceTranscriptLine[]>([]);
   const modeRef = useRef<'conversation' | 'dictation' | null>(null);
+  /** Hand-offs still inside the merge window, each with its Gemini call id when it has one. */
   const requestBufferRef = useRef<{
-    understanding: string[];
-    callIds: string[];
+    fragments: { text: string; callId?: string }[];
     timer: ReturnType<typeof setTimeout>;
     graceUsed: boolean;
   } | null>(null);
@@ -115,6 +113,13 @@ function SessionVoiceControlsInner({
   const sendVoiceTurnRef = useRef(sendVoiceTurn);
   sendVoiceTurnRef.current = sendVoiceTurn;
 
+  const sendBufferedRef = useRef((fragments: { text: string; callId?: string }[]) =>
+    sendVoiceTurnRef.current(
+      fragments.map((fragment) => fragment.text),
+      fragments.flatMap((fragment) => (fragment.callId ? [fragment.callId] : []))
+    )
+  );
+
   const flushRequestsRef = useRef<() => void>(() => {});
   flushRequestsRef.current = () => {
     const buffer = requestBufferRef.current;
@@ -126,7 +131,7 @@ function SessionVoiceControlsInner({
       return;
     }
     requestBufferRef.current = null;
-    sendVoiceTurnRef.current(buffer.understanding, buffer.callIds);
+    sendBufferedRef.current(buffer.fragments);
   };
 
   const voice = useVoiceCall({
@@ -154,11 +159,24 @@ function SessionVoiceControlsInner({
       const buffer = requestBufferRef.current;
       if (buffer) clearTimeout(buffer.timer);
       requestBufferRef.current = {
-        understanding: [...(buffer?.understanding ?? []), text],
-        callIds: [...(buffer?.callIds ?? []), ...(callId ? [callId] : [])],
+        fragments: [...(buffer?.fragments ?? []), callId ? { text, callId } : { text }],
         timer: setTimeout(() => flushRequestsRef.current(), voiceMergeWindowMs(spokenRef.current)),
         graceUsed: buffer?.graceUsed ?? false,
       };
+    },
+    onRequestCancelled: (callId) => {
+      // Withdrawn while still in the merge window: never send it. One already
+      // sent stays with the agent; its answer reaches the voice as a plain turn.
+      const buffer = requestBufferRef.current;
+      if (!buffer) return;
+      const fragments = buffer.fragments.filter((fragment) => fragment.callId !== callId);
+      if (fragments.length === buffer.fragments.length) return;
+      if (fragments.length > 0) {
+        buffer.fragments = fragments;
+        return;
+      }
+      clearTimeout(buffer.timer);
+      requestBufferRef.current = null;
     },
     onError: (message) => {
       toast.error(t('sessions.voice.error', 'Voice stopped'), { description: message });
@@ -174,7 +192,7 @@ function SessionVoiceControlsInner({
     if (!buffer) return;
     clearTimeout(buffer.timer);
     requestBufferRef.current = null;
-    sendVoiceTurnRef.current(buffer.understanding, buffer.callIds);
+    sendBufferedRef.current(buffer.fragments);
   }, [voice.state]);
 
   // Every reply that finishes during the call goes back to the voice, answered

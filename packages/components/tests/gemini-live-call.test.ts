@@ -34,7 +34,9 @@ class FakeSocket implements GeminiLiveSocket {
   }
 
   sentOf(kind: string): Record<string, unknown>[] {
-    return this.sent.filter((message) => kind in message).map((message) => message[kind] as Record<string, unknown>);
+    return this.sent
+      .filter((message) => kind in message)
+      .map((message) => message[kind] as Record<string, unknown>);
   }
 }
 
@@ -65,6 +67,7 @@ function setUp(options: { mode?: 'conversation' | 'dictation'; context?: string 
     onRequest: record('request'),
     onAudio: record('audio'),
     onInterrupted: record('interrupted'),
+    onRequestCancelled: record('cancelled'),
     onClosed: record('closed'),
   };
   const call = new GeminiLiveCall({
@@ -180,7 +183,9 @@ describe('GeminiLiveCall conversation', () => {
     latest().receive({ serverContent: { inputTranscription: { text: '构建为什么挂了' } } });
     latest().receive({
       toolCall: {
-        functionCalls: [{ id: 'call-1', name: 'hand_off_to_agent', args: { request: '查构建失败原因' } }],
+        functionCalls: [
+          { id: 'call-1', name: 'hand_off_to_agent', args: { request: '查构建失败原因' } },
+        ],
       },
     });
     latest().receive({ serverContent: { outputTranscription: { text: '好的，' } } });
@@ -204,7 +209,9 @@ describe('GeminiLiveCall conversation', () => {
     latest().receive({
       serverContent: {
         modelTurn: {
-          parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: btoa('\x10\x00\x20\x00') } }],
+          parts: [
+            { inlineData: { mimeType: 'audio/pcm;rate=24000', data: btoa('\x10\x00\x20\x00') } },
+          ],
         },
         outputTranscription: { text: '我先说' },
       },
@@ -259,19 +266,25 @@ describe('GeminiLiveCall conversation', () => {
       },
     ]);
     expect(latest().sentOf('clientContent')).toEqual([
-      { turns: [{ role: 'user', parts: [{ text: 'A typed turn finished.' }] }], turnComplete: true },
+      {
+        turns: [{ role: 'user', parts: [{ text: 'A typed turn finished.' }] }],
+        turnComplete: true,
+      },
     ]);
   });
 
   it('forgets a hand-off the server cancelled, so its answer arrives as a turn', async () => {
-    const { call, latest, accept } = setUp();
+    const { call, latest, accept, events } = setUp();
     void call.start();
     await accept();
     latest().receive({
-      toolCall: { functionCalls: [{ id: 'call-1', name: 'hand_off_to_agent', args: { request: '查' } }] },
+      toolCall: {
+        functionCalls: [{ id: 'call-1', name: 'hand_off_to_agent', args: { request: '查' } }],
+      },
     });
     latest().receive({ toolCallCancellation: { ids: ['call-1'] } });
     await settle();
+    expect(events.at(-1)).toEqual({ kind: 'cancelled', value: 'call-1' });
 
     call.reply('Done.', ['call-1']);
 
@@ -287,10 +300,13 @@ describe('GeminiLiveCall reconnection', () => {
     const { call, sockets, latest, accept, tokens, events } = setUp({ context: 'background' });
     void call.start();
     await accept();
-    latest().receive({ sessionResumptionUpdate: { newHandle: 'handle-1', resumable: true } });
     latest().receive({
-      toolCall: { functionCalls: [{ id: 'call-1', name: 'hand_off_to_agent', args: { request: '查' } }] },
+      toolCall: {
+        functionCalls: [{ id: 'call-1', name: 'hand_off_to_agent', args: { request: '查' } }],
+      },
     });
+    // The handle is taken after the hand-off, so the resumed session holds it.
+    latest().receive({ sessionResumptionUpdate: { newHandle: 'handle-1', resumable: true } });
     latest().receive({ goAway: { timeLeft: '10s' } });
     await settle();
 
@@ -312,6 +328,55 @@ describe('GeminiLiveCall reconnection', () => {
       }),
     ]);
     expect(events.filter((event) => event.kind === 'closed')).toEqual([]);
+  });
+
+  it('waits for a resumable point after GoAway instead of resuming from before a hand-off', async () => {
+    const { call, sockets, latest, accept } = setUp();
+    void call.start();
+    await accept();
+    latest().receive({ sessionResumptionUpdate: { newHandle: 'handle-a', resumable: true } });
+    latest().receive({
+      toolCall: {
+        functionCalls: [{ id: 'call-b', name: 'hand_off_to_agent', args: { request: '查' } }],
+      },
+    });
+    latest().receive({ sessionResumptionUpdate: { resumable: false } });
+    latest().receive({ goAway: { timeLeft: '10s' } });
+    await settle();
+    expect(sockets).toHaveLength(1);
+
+    latest().receive({ sessionResumptionUpdate: { newHandle: 'handle-c', resumable: true } });
+    await settle();
+    expect(sockets).toHaveLength(2);
+    await accept();
+    expect(latest().sentOf('setup')[0]?.['sessionResumption']).toEqual({ handle: 'handle-c' });
+    // The hand-off is part of the resumed session, so its answer is still its result.
+    call.reply('Found it.', ['call-b']);
+    expect(latest().sentOf('toolResponse')).toHaveLength(1);
+  });
+
+  it('answers a hand-off the resumed session never saw as a plain turn', async () => {
+    const { call, latest, accept } = setUp();
+    void call.start();
+    await accept();
+    latest().receive({ sessionResumptionUpdate: { newHandle: 'handle-a', resumable: true } });
+    latest().receive({
+      toolCall: {
+        functionCalls: [{ id: 'call-b', name: 'hand_off_to_agent', args: { request: '查' } }],
+      },
+    });
+    latest().receive({ sessionResumptionUpdate: { resumable: false } });
+    await settle();
+    latest().serverClose(1011, 'connection lost');
+    await settle();
+    await accept();
+
+    expect(latest().sentOf('setup')[0]?.['sessionResumption']).toEqual({ handle: 'handle-a' });
+    call.reply('Found it.', ['call-b']);
+    expect(latest().sentOf('toolResponse')).toEqual([]);
+    expect(latest().sentOf('clientContent')).toEqual([
+      { turns: [{ role: 'user', parts: [{ text: 'Found it.' }] }], turnComplete: true },
+    ]);
   });
 
   it('asks the machine for a new token when the connection drops after the first one ran out', async () => {
@@ -340,7 +405,9 @@ describe('GeminiLiveCall reconnection', () => {
     await settle();
 
     expect(sockets).toHaveLength(1);
-    expect(events).toEqual([{ kind: 'closed', value: 'Gemini Live ended the call: internal error' }]);
+    expect(events).toEqual([
+      { kind: 'closed', value: 'Gemini Live ended the call: internal error' },
+    ]);
   });
 
   it('ignores the old connection once stopped', async () => {

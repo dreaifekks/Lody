@@ -367,6 +367,26 @@ describe('VoiceHost Gemini tokens', () => {
     expect(requests).toHaveLength(0);
   });
 
+  it('keeps the key out of the answer when the request itself throws with it', async () => {
+    const pasted = 'test-gemini\nkey-value';
+    const host = new VoiceHost({
+      workspaceId: 'workspace-1',
+      machineId: 'machine-1',
+      logger,
+      getAgentConfig: async () => codexConfig,
+      env: { GEMINI_API_KEY: pasted },
+      // The real fetch: its header check rejects the value and quotes it.
+    });
+
+    const response = await host.handle({ action: 'geminiToken', mode: 'conversation' });
+
+    expect(response).toEqual({
+      success: false,
+      error: 'Could not ask Gemini for a voice token (TypeError)',
+    });
+    expect(JSON.stringify(response)).not.toContain('key-value');
+  });
+
   it("reports Gemini's refusal without the key", async () => {
     const { host } = geminiHost({
       env: { GEMINI_API_KEY: KEY },
