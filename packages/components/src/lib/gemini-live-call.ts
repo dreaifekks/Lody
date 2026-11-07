@@ -1,4 +1,5 @@
 import type { MachineVoiceMode } from '@lody/shared';
+import { geminiLiveVoice } from './gemini-live-voices';
 
 /**
  * A Gemini Live call over the raw v1beta WebSocket, signed by a machine's
@@ -18,54 +19,6 @@ export const GEMINI_HAND_OFF_FUNCTION = 'hand_off_to_agent';
 
 /** A token this close to expiring is not trusted to carry a reconnection; a fresh one is signed. */
 const TOKEN_RENEW_MARGIN_MS = 60_000;
-
-/**
- * The prebuilt voices of Gemini's native audio models, as the speech
- * generation page lists them. Settings stores them lower-cased.
- */
-export const GEMINI_LIVE_VOICES = [
-  'Zephyr',
-  'Puck',
-  'Charon',
-  'Kore',
-  'Fenrir',
-  'Leda',
-  'Orus',
-  'Aoede',
-  'Callirrhoe',
-  'Autonoe',
-  'Enceladus',
-  'Iapetus',
-  'Umbriel',
-  'Algieba',
-  'Despina',
-  'Erinome',
-  'Algenib',
-  'Rasalgethi',
-  'Laomedeia',
-  'Achernar',
-  'Alnilam',
-  'Schedar',
-  'Gacrux',
-  'Pulcherrima',
-  'Achird',
-  'Zubenelgenubi',
-  'Vindemiatrix',
-  'Sadachbia',
-  'Sadaltager',
-  'Sulafat',
-] as const;
-
-/** The voice of the official Live examples, used until one is chosen. */
-export const GEMINI_LIVE_DEFAULT_VOICE = 'Kore';
-
-/** The Live API's name for a stored (lower-cased) voice; an unknown one plays the default. */
-export function geminiLiveVoiceName(stored: string | null | undefined): string {
-  const lower = stored?.toLowerCase();
-  return (
-    GEMINI_LIVE_VOICES.find((voice) => voice.toLowerCase() === lower) ?? GEMINI_LIVE_DEFAULT_VOICE
-  );
-}
 
 export type GeminiLiveToken = {
   token: string;
@@ -218,20 +171,18 @@ export class GeminiLiveCall {
       });
       return;
     }
-    // The docs show `scheduling` inside `response`; the generated API type has it
-    // beside `response`. Both are sent so either reading schedules the answer.
+    // `scheduling` is the function response's own field: a real call honoured it
+    // there and ignored the same value inside `response`, which the docs show.
     this.sendTurn({
       toolResponse: {
-        functionResponses: open.map((id, index) => {
-          const scheduling = index === 0 ? 'WHEN_IDLE' : 'SILENT';
-          const result = index === 0 ? text : 'Answered together with the first of these requests.';
-          return {
-            id,
-            name: GEMINI_HAND_OFF_FUNCTION,
-            response: { result, scheduling },
-            scheduling,
-          };
-        }),
+        functionResponses: open.map((id, index) => ({
+          id,
+          name: GEMINI_HAND_OFF_FUNCTION,
+          response: {
+            result: index === 0 ? text : 'Answered together with the first of these requests.',
+          },
+          scheduling: index === 0 ? 'WHEN_IDLE' : 'SILENT',
+        })),
       },
     });
   }
@@ -325,7 +276,7 @@ export class GeminiLiveCall {
         responseModalities: ['AUDIO'],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: geminiLiveVoiceName(this.options.voice) },
+            prebuiltVoiceConfig: { voiceName: geminiLiveVoice(this.options.voice).name },
           },
         },
       },

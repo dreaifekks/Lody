@@ -50,18 +50,38 @@ export async function startGeminiPcmCapture(
   }
 }
 
+/** How long a reply the user talks over takes to fade out, instead of stopping mid-wave. */
+const FADE_SECONDS = 0.03;
+/**
+ * The echo canceller learns the speakers only by hearing them. Measured in
+ * Electron 44, the voice's first 0.5-2 s come back into the microphone at
+ * nearly the level played, whatever plays them (WebAudio, an audio element, a
+ * WebRTC track); Gemini takes that for the user talking over it, interrupts,
+ * and the cut-off syllable is the "beep" users hear. Until the voice has been
+ * heard this long, the microphone is held while it speaks.
+ */
+const ECHO_SETTLE_SECONDS = 2.5;
+
 export type GeminiPcmPlayer = {
   play(pcm: Int16Array, sampleRate: number): void;
-  /** Silences and forgets everything queued. */
+  /** Fades out and forgets everything queued. */
   clear(): void;
   close(): void;
+  /** The voice is speaking before the echo canceller has learned it: send silence instead of the microphone. */
+  holdsMicrophone(): boolean;
 };
 
 export function createGeminiPcmPlayer(): GeminiPcmPlayer {
   const context = new AudioContext();
   void context.resume().catch(() => {});
+  /** Every reply plays through one gain, so a cut can fade it; a new reply gets a fresh one. */
+  let output = context.createGain();
+  output.connect(context.destination);
   const playing = new Set<AudioBufferSourceNode>();
   let nextStart = 0;
+  /** Seconds of the voice played or still queued to play. */
+  let scheduled = 0;
+  const queued = () => Math.max(0, nextStart - context.currentTime);
   return {
     play(pcm, sampleRate) {
       if (pcm.length === 0) return;
@@ -70,21 +90,34 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
       for (let i = 0; i < pcm.length; i += 1) samples[i] = (pcm[i] ?? 0) / 0x8000;
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      source.connect(output);
       const startAt = Math.max(context.currentTime, nextStart);
       source.start(startAt);
       nextStart = startAt + buffer.duration;
+      scheduled += buffer.duration;
       playing.add(source);
       source.onended = () => playing.delete(source);
     },
     clear() {
-      for (const source of playing) source.stop();
+      const now = context.currentTime;
+      scheduled -= queued();
+      const fading = output;
+      fading.gain.setValueAtTime(fading.gain.value, now);
+      fading.gain.linearRampToValueAtTime(0, now + FADE_SECONDS);
+      for (const source of playing) source.stop(now + FADE_SECONDS);
       playing.clear();
+      setTimeout(() => fading.disconnect(), (FADE_SECONDS + 0.1) * 1000);
+      output = context.createGain();
+      output.connect(context.destination);
       nextStart = 0;
     },
     close() {
       this.clear();
       void context.close();
+    },
+    holdsMicrophone() {
+      const pending = queued();
+      return pending > 0 && scheduled - pending < ECHO_SETTLE_SECONDS;
     },
   };
 }

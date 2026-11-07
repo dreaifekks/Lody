@@ -235,7 +235,10 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
         gemini.call = live;
         await live.start();
         if (call.stopped) return;
-        gemini.stopCapture = await startGeminiPcmCapture(microphone, (pcm) => live.sendAudio(pcm));
+        gemini.stopCapture = await startGeminiPcmCapture(microphone, (pcm) =>
+          // Silence keeps the stream's timing while the echo canceller is still learning the voice.
+          live.sendAudio(gemini.player.holdsMicrophone() ? new Int16Array(pcm.length) : pcm)
+        );
         if (call.stopped) {
           gemini.stopCapture();
           return;
