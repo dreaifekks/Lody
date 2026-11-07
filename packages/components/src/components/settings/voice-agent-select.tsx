@@ -18,9 +18,14 @@ import {
 import { useVoiceList, useVoicePreview } from '@/hooks/use-voice-preview';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import { GEMINI_LIVE_DEFAULT_VOICE, GEMINI_LIVE_VOICES } from '@/lib/gemini-live-call';
+import {
+  GEMINI_LIVE_DEFAULT_VOICE,
+  GEMINI_LIVE_VOICES,
+  geminiLiveVoice,
+  geminiLiveVoiceLabel,
+} from '@/lib/gemini-live-voices';
 import type { VoicePreviewFailure } from '@/lib/voice-preview';
-import { voicePreviewClip } from '@/lib/voice-preview-clips';
+import { geminiVoicePreviewKey, voicePreviewClip } from '@/lib/voice-preview-clips';
 import { writeWorkspaceVoiceSetting } from '@/lib/workspace-catalog-write';
 import { toast } from '@/lib/toast';
 import { CompactRow } from './compact-layout';
@@ -44,8 +49,8 @@ const NO_VOICES: readonly string[] = [];
 
 /** Gemini voices as Settings stores them; the Live API gets the capitalized names. */
 const GEMINI_VOICE_LIST = {
-  voices: GEMINI_LIVE_VOICES.map((voice) => voice.toLowerCase()),
-  defaultVoice: GEMINI_LIVE_DEFAULT_VOICE.toLowerCase(),
+  voices: GEMINI_LIVE_VOICES.map((voice) => voice.name.toLowerCase()),
+  defaultVoice: GEMINI_LIVE_DEFAULT_VOICE.name.toLowerCase(),
 };
 
 /** The select's value for "follow Codex's default voice"; no Codex voice name has capitals. */
@@ -261,7 +266,7 @@ export function VoiceNameRow() {
         value: DEFAULT_VOICE,
         label: gemini
           ? t('settings.experimental.voiceNameGeminiDefault', 'Gemini default ({{voice}})', {
-              voice: voiceLabel(GEMINI_VOICE_LIST.defaultVoice),
+              voice: geminiLiveVoiceLabel(GEMINI_LIVE_DEFAULT_VOICE),
             })
           : defaultVoice
             ? t('settings.experimental.voiceNameDefaultNamed', 'Codex default ({{voice}})', {
@@ -269,7 +274,10 @@ export function VoiceNameRow() {
               })
             : t('settings.experimental.voiceNameDefault', 'Codex default'),
       },
-      ...voices.map((voice) => ({ value: voice, label: voiceLabel(voice) })),
+      ...voices.map((voice) => ({
+        value: voice,
+        label: gemini ? geminiLiveVoiceLabel(geminiLiveVoice(voice)) : voiceLabel(voice),
+      })),
     ],
     [defaultVoice, gemini, voices, t]
   );
@@ -307,7 +315,9 @@ export function VoiceNameRow() {
     );
   }
 
-  const target = chosen ?? defaultVoice;
+  const voice = chosen ?? defaultVoice;
+  // Samples are keyed by voice name; Gemini's carry a prefix, apart from Codex's.
+  const target = voice !== null && gemini ? geminiVoicePreviewKey(voice) : voice;
   // A voice Codex added after this build has no sample; it can still be chosen.
   const hasSample = target !== null && voicePreviewClip(target) !== null;
   const previewing = preview.state.status !== 'idle' && preview.state.voice === target;
@@ -344,31 +354,28 @@ export function VoiceNameRow() {
             ))}
           </Select.Content>
         </Select.Root>
-        {/* Gemini voices have no bundled samples. */}
-        {gemini ? null : (
-          <Tooltip.Root>
-            <Tooltip.Trigger
-              render={
-                <Button
-                  type="button"
-                  icon
-                  variant="ghost"
-                  size="small"
-                  aria-label={previewLabel}
-                  aria-pressed={previewing}
-                  disabled={!hasSample || (preview.callActive && !previewing)}
-                  onClick={() => {
-                    if (previewing) preview.stop();
-                    else if (target) preview.play(target);
-                  }}
-                >
-                  {previewing ? <Square /> : <Play />}
-                </Button>
-              }
-            />
-            <Tooltip.Content side="top">{previewLabel}</Tooltip.Content>
-          </Tooltip.Root>
-        )}
+        <Tooltip.Root>
+          <Tooltip.Trigger
+            render={
+              <Button
+                type="button"
+                icon
+                variant="ghost"
+                size="small"
+                aria-label={previewLabel}
+                aria-pressed={previewing}
+                disabled={!hasSample || (preview.callActive && !previewing)}
+                onClick={() => {
+                  if (previewing) preview.stop();
+                  else if (target) preview.play(target);
+                }}
+              >
+                {previewing ? <Square /> : <Play />}
+              </Button>
+            }
+          />
+          <Tooltip.Content side="top">{previewLabel}</Tooltip.Content>
+        </Tooltip.Root>
       </div>
     </CompactRow>
   );
