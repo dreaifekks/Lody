@@ -11,9 +11,10 @@ const call = vi.hoisted(() => ({
   handlers: null as VoiceCallHandlers | null,
   state: 'idle' as 'idle' | 'connecting' | 'active',
   mode: null as 'conversation' | 'dictation' | null,
+  provider: 'codex' as 'codex' | 'gemini',
   start: vi.fn(),
   stop: vi.fn(),
-  append: vi.fn(async (_text: string) => {}),
+  append: vi.fn(async (_text: string, _callIds?: readonly string[]) => {}),
 }));
 
 vi.mock('@/atoms/settings', () => ({ voiceFeatureEnabledAtom: atom(true) }));
@@ -25,6 +26,7 @@ vi.mock('@/hooks/use-voice-call', () => ({
       state: call.state,
       mode: call.mode,
       available: true,
+      provider: call.provider,
       start: call.start,
       stop: call.stop,
       append: call.append,
@@ -89,6 +91,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   call.state = 'idle';
   call.mode = null;
+  call.provider = 'codex';
   call.start.mockReset();
   call.append.mockClear();
   sent = [];
@@ -245,6 +248,33 @@ describe('SessionVoiceControls conversation', () => {
     };
     render();
     expect(call.append.mock.calls[1]![0]).toMatch(/turn the user typed/);
+  });
+
+  it('answers the Gemini hand-offs a reply settles by their call ids', () => {
+    call.provider = 'gemini';
+    render();
+    startConversation();
+    expect(call.start.mock.calls[0]![1].instructions).toContain('call hand_off_to_agent');
+    heard('user', '跑一下测试，');
+    act(() => call.handlers!.onRequest!('Run the tests', 'call-1'));
+    act(() => call.handlers!.onRequest!('and the linter', 'call-2'));
+    wait(3_500);
+    expect(sent).toHaveLength(1);
+    props = { turns: [...props.turns, userTurn('u2', sent[0]!)], isAgentBusy: true };
+    render();
+    props = {
+      turns: [...props.turns, replyTurn('a2', '<lody-voice-say>都过了。</lody-voice-say>')],
+      isAgentBusy: false,
+    };
+    render();
+
+    expect(call.append.mock.calls[0]![1]).toEqual(['call-1', 'call-2']);
+    props = {
+      turns: [...props.turns, userTurn('u3', 'typed'), replyTurn('a3', 'Done typing.')],
+      isAgentBusy: false,
+    };
+    render();
+    expect(call.append.mock.calls[1]![1]).toEqual([]);
   });
 
   it('keeps a spoken request waiting while a typed turn queued before it finishes', () => {

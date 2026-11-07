@@ -8,6 +8,8 @@ import type {
 } from '@lody/shared';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useVoiceAgentSelection } from '@/hooks/use-voice-agent-selection';
+import { createGeminiPcmPlayer, startGeminiPcmCapture } from '@/lib/gemini-live-audio';
+import { GeminiLiveCall, openBrowserGeminiSocket } from '@/lib/gemini-live-call';
 import { beginVoiceCall } from '@/lib/voice-activity';
 
 /** How long the machine holds one poll open while nothing happens. */
@@ -22,25 +24,37 @@ export type VoiceCallHandlers = {
   onUserTranscript?: (text: string) => void;
   /** A finished utterance of either side, transcribed by the voice (conversation only). */
   onTranscript?: (line: { role: 'user' | 'assistant'; text: string }) => void;
-  /** A spoken request the voice handed off (conversation only). */
-  onRequest?: (text: string) => void;
+  /**
+   * A spoken request the voice handed off (conversation only). Gemini names
+   * the hand-off, so `append` can answer exactly that call.
+   */
+  onRequest?: (text: string, callId?: string) => void;
   onError?: (message: string) => void;
 };
 
 type ActiveCall = {
   machineId: MachineId;
   voiceSessionId: string | null;
-  peer: RTCPeerConnection;
+  /** Codex: the WebRTC peer to OpenAI. */
+  peer: RTCPeerConnection | null;
+  /** Gemini: the Live WebSocket call, the speakers and the microphone feed. */
+  gemini: {
+    call: GeminiLiveCall | null;
+    player: ReturnType<typeof createGeminiPcmPlayer>;
+    stopCapture: (() => void) | null;
+  } | null;
   microphone: MediaStream;
   audio: HTMLAudioElement | null;
   stopped: boolean;
 };
 
 /**
- * One realtime voice call hosted by the Codex agent chosen in Settings. The
+ * One realtime voice call hosted by what Settings chose. Codex: the
  * microphone and the WebRTC peer live here; the machine only negotiates the
- * call and reports spoken requests, which this hook polls for. Dictation reads
- * the user's words straight from the call's event channel.
+ * call and reports spoken requests, which this hook polls for, and dictation
+ * reads the user's words straight from the call's event channel. Gemini Live:
+ * the machine only signs a token; the WebSocket, the microphone and the
+ * speakers all live here.
  */
 export function useVoiceCall(handlers: VoiceCallHandlers) {
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
@@ -83,7 +97,12 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
     if (call.stopped) return;
     call.stopped = true;
     call.microphone.getTracks().forEach((track) => track.stop());
-    call.peer.close();
+    call.peer?.close();
+    if (call.gemini) {
+      call.gemini.stopCapture?.();
+      call.gemini.call?.stop();
+      call.gemini.player.close();
+    }
     if (call.audio) {
       call.audio.pause();
       call.audio.srcObject = null;
@@ -155,6 +174,77 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
     [fail, request, teardown]
   );
 
+  const startGemini = useCallback(
+    async (
+      machineId: MachineId,
+      voice: string | null,
+      nextMode: MachineVoiceMode,
+      microphone: MediaStream,
+      options: { instructions?: string | undefined; context?: string | undefined }
+    ) => {
+      const gemini: NonNullable<ActiveCall['gemini']> = {
+        call: null,
+        player: createGeminiPcmPlayer(),
+        stopCapture: null,
+      };
+      const call: ActiveCall = {
+        machineId,
+        voiceSessionId: null,
+        peer: null,
+        gemini,
+        microphone,
+        audio: null,
+        stopped: false,
+      };
+      callRef.current = call;
+      const issueToken = async () => {
+        const response = await request(machineId, { action: 'geminiToken', mode: nextMode });
+        if (!response.success) throw new Error(response.error);
+        if (response.action !== 'geminiToken') throw new Error('The machine signed no token.');
+        return response;
+      };
+      try {
+        const live = new GeminiLiveCall({
+          mode: nextMode,
+          token: await issueToken(),
+          issueToken,
+          openSocket: openBrowserGeminiSocket,
+          now: Date.now,
+          ...(options.instructions ? { instructions: options.instructions } : {}),
+          ...(options.context ? { context: options.context } : {}),
+          voice,
+          handlers: {
+            onUserTranscript: (text) => handlersRef.current.onUserTranscript?.(text),
+            onTranscript: (line) => handlersRef.current.onTranscript?.(line),
+            onRequest: (text, callId) => handlersRef.current.onRequest?.(text, callId),
+            // Dictation keeps the voice silent; never play whatever it might say.
+            onAudio: (pcm, rate) => {
+              if (nextMode === 'conversation') gemini.player.play(pcm, rate);
+            },
+            onInterrupted: () => gemini.player.clear(),
+            onClosed: (reason) => {
+              if (reason) fail(call, reason);
+              else teardown(call);
+            },
+          },
+        });
+        if (call.stopped) return;
+        gemini.call = live;
+        await live.start();
+        if (call.stopped) return;
+        gemini.stopCapture = await startGeminiPcmCapture(microphone, (pcm) => live.sendAudio(pcm));
+        if (call.stopped) {
+          gemini.stopCapture();
+          return;
+        }
+        setState('active');
+      } catch (error) {
+        fail(call, error instanceof Error ? error.message : String(error));
+      }
+    },
+    [fail, request, teardown]
+  );
+
   const start = useCallback(
     async (
       nextMode: MachineVoiceMode,
@@ -192,11 +282,19 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
         microphone.getTracks().forEach((track) => track.stop());
         return;
       }
+      if (selection.provider === 'gemini') {
+        await startGemini(selection.machineId, selection.voice, nextMode, microphone, {
+          instructions,
+          context,
+        });
+        return;
+      }
       const peer = new RTCPeerConnection();
       const call: ActiveCall = {
         machineId: selection.machineId,
         voiceSessionId: null,
         peer,
+        gemini: null,
         microphone,
         audio: null,
         stopped: false,
@@ -261,12 +359,16 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
         fail(call, error instanceof Error ? error.message : String(error));
       }
     },
-    [fail, pollEvents, request, selection]
+    [fail, pollEvents, request, selection, startGemini]
   );
 
   const append = useCallback(
-    async (text: string) => {
+    async (text: string, callIds?: readonly string[]) => {
       const call = callRef.current;
+      if (call?.gemini && !call.stopped) {
+        call.gemini.call?.reply(text, callIds);
+        return;
+      }
       if (!call?.voiceSessionId || call.stopped) return;
       const response = await request(call.machineId, {
         action: 'append',
@@ -286,7 +388,15 @@ export function useVoiceCall(handlers: VoiceCallHandlers) {
     [stop]
   );
 
-  return { state, mode, available: selection !== null, start, stop, append };
+  return {
+    state,
+    mode,
+    available: selection !== null,
+    provider: selection?.provider ?? null,
+    start,
+    stop,
+    append,
+  };
 }
 
 function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {

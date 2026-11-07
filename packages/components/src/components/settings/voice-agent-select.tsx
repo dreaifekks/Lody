@@ -1,23 +1,24 @@
 import { useMemo } from 'react';
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import * as stylex from '@stylexjs/stylex';
 import { Play, Square } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { Select } from '@lody/ui/select';
 import { Tooltip } from '@lody/ui/tooltip';
-import {
-  MACHINE_VOICE_SELECTION_UNSUPPORTED,
-  type AgentConfigId,
-  type MachineId,
-} from '@lody/shared';
+import { MACHINE_VOICE_SELECTION_UNSUPPORTED, machineSupportsGeminiVoice } from '@lody/shared';
 import { getAllAgentConfigAtom } from '@/atoms';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { voiceAgentScopeAtom, voiceAgentSelectionAtom, voiceNameAtom } from '@/atoms/settings';
-import { useVoiceAgentSelection } from '@/hooks/use-voice-agent-selection';
+import {
+  formatVoiceAgentSelection,
+  parseVoiceAgentSelection,
+  useVoiceAgentSelection,
+} from '@/hooks/use-voice-agent-selection';
 import { useVoiceList, useVoicePreview } from '@/hooks/use-voice-preview';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { GEMINI_LIVE_DEFAULT_VOICE, GEMINI_LIVE_VOICES } from '@/lib/gemini-live-call';
 import type { VoicePreviewFailure } from '@/lib/voice-preview';
 import { voicePreviewClip } from '@/lib/voice-preview-clips';
 import { writeWorkspaceVoiceSetting } from '@/lib/workspace-catalog-write';
@@ -41,6 +42,12 @@ const styles = stylex.create({
 
 const NO_VOICES: readonly string[] = [];
 
+/** Gemini voices as Settings stores them; the Live API gets the capitalized names. */
+const GEMINI_VOICE_LIST = {
+  voices: GEMINI_LIVE_VOICES.map((voice) => voice.toLowerCase()),
+  defaultVoice: GEMINI_LIVE_DEFAULT_VOICE.toLowerCase(),
+};
+
 /** The select's value for "follow Codex's default voice"; no Codex voice name has capitals. */
 const DEFAULT_VOICE = 'Default';
 
@@ -49,8 +56,9 @@ const voiceLabel = (voice: string) => voice.charAt(0).toUpperCase() + voice.slic
 type VoiceScope = 'shared' | 'device';
 
 /**
- * Which built-in Codex agent (and so which account) hosts voice. Shared, every
- * device of the workspace follows one choice; otherwise this device keeps its own.
+ * What hosts voice: a built-in Codex agent (and so which account), or Gemini
+ * Live with the machine that signs its tokens. Shared, every device of the
+ * workspace follows one choice; otherwise this device keeps its own.
  */
 export function VoiceAgentRows() {
   const { t } = useTranslation();
@@ -59,7 +67,9 @@ export function VoiceAgentRows() {
   const { machines } = useVisibleMachineMetas({ includeMachineFlock: false });
   const { voice: sharedVoice } = useWorkspaceCatalog();
   const [scope, setScope] = useAtom(voiceAgentScopeAtom);
-  const [deviceSelection, setDeviceSelection] = useAtom(voiceAgentSelectionAtom);
+  const setDeviceSelection = useSetAtom(voiceAgentSelectionAtom);
+  const [, setDeviceVoice] = useAtom(voiceNameAtom);
+  const current = useVoiceAgentSelection();
 
   const scopeOptions = useMemo(
     () => [
@@ -69,41 +79,62 @@ export function VoiceAgentRows() {
     [t]
   );
 
-  const agentOptions = useMemo(
+  const codexOptions = useMemo(
     () =>
       configs
         .filter((config) => config.cliType === 'builtin' && config.agentType === 'codex')
         .map((config) => {
           const machineName = machines.get(config.machineId)?.name;
           return {
-            value: `${config.id}:${config.machineId}`,
+            value: formatVoiceAgentSelection({
+              provider: 'codex',
+              configId: config.id,
+              machineId: config.machineId,
+            }),
             label: machineName ? `${config.name} · ${machineName}` : config.name,
           };
         }),
     [configs, machines]
   );
+  // Any machine whose Lody signs Gemini tokens; it needs its own GEMINI_API_KEY to succeed.
+  const geminiOptions = useMemo(
+    () =>
+      [...machines.values()]
+        .filter((machine) => machineSupportsGeminiVoice(machine))
+        .map((machine) => ({
+          value: formatVoiceAgentSelection({ provider: 'gemini', machineId: machine.id }),
+          label: t('settings.experimental.voiceGeminiOption', 'Gemini Live · {{machine}}', {
+            machine: machine.name,
+          }),
+        })),
+    [machines, t]
+  );
+  const agentOptions = useMemo(
+    () => [...codexOptions, ...geminiOptions],
+    [codexOptions, geminiOptions]
+  );
 
-  const selected =
-    scope === 'shared'
-      ? sharedVoice
-        ? `${sharedVoice.configId}:${sharedVoice.machineId}`
-        : null
-      : deviceSelection;
+  const selected = current ? formatVoiceAgentSelection(current) : null;
 
   const choose = (value: string) => {
+    const next = parseVoiceAgentSelection(value);
+    if (!next) return;
+    // A voice belongs to its provider: switching provider returns to the default.
+    const sameProvider = current?.provider === next.provider;
     if (scope === 'device') {
       setDeviceSelection(value);
+      if (!sameProvider) setDeviceVoice(null);
       return;
     }
     if (!runtime) return;
-    const separator = value.indexOf(':');
-    void writeWorkspaceVoiceSetting(runtime, {
-      version: 1,
-      configId: value.slice(0, separator) as AgentConfigId,
-      machineId: value.slice(separator + 1) as MachineId,
-      // The voice stays when the agent changes; one its Codex lacks falls back to the default.
-      ...(sharedVoice?.voice ? { voice: sharedVoice.voice } : {}),
-    }).catch((error: unknown) => {
+    const voice = sameProvider && sharedVoice?.voice ? { voice: sharedVoice.voice } : {};
+    void writeWorkspaceVoiceSetting(
+      runtime,
+      next.provider === 'gemini'
+        ? { version: 1, provider: 'gemini', machineId: next.machineId, ...voice }
+        : // The voice stays when the agent changes; one its Codex lacks falls back to the default.
+          { version: 1, configId: next.configId, machineId: next.machineId, ...voice }
+    ).catch((error: unknown) => {
       toast.error(
         t('settings.experimental.voiceAgentSaveFailed', 'Could not save the voice agent'),
         {
@@ -150,7 +181,10 @@ export function VoiceAgentRows() {
       <CompactRow label={t('settings.experimental.voiceAgent', 'Voice agent')}>
         {agentOptions.length === 0 ? (
           <span className="text-muted-foreground text-xs">
-            {t('settings.experimental.voiceNoCodex', 'Add a Codex agent first')}
+            {t(
+              'settings.experimental.voiceNoHost',
+              'Add a Codex agent, or update Lody on a machine for Gemini Live'
+            )}
           </span>
         ) : (
           <Select.Root
@@ -165,7 +199,7 @@ export function VoiceAgentRows() {
                 <Select.Value
                   placeholder={t(
                     'settings.experimental.voiceAgentPlaceholder',
-                    'Choose a Codex agent'
+                    'Choose a voice agent'
                   )}
                 />
               </Select.Trigger>
@@ -196,13 +230,16 @@ export function VoiceNameRow() {
   const [, setDeviceVoice] = useAtom(voiceNameAtom);
   const { voice: sharedVoice } = useWorkspaceCatalog();
   const selection = useVoiceAgentSelection();
+  const gemini = selection?.provider === 'gemini';
   const machineId = selection?.machineId;
-  const configId = selection?.configId;
+  const configId = selection?.provider === 'codex' ? selection.configId : undefined;
   const agent = useMemo(
     () => (machineId && configId ? { machineId, configId } : null),
     [machineId, configId]
   );
-  const list = useVoiceList(agent);
+  const codexList = useVoiceList(agent);
+  // Gemini's voices are a fixed list; nothing to ask a machine for.
+  const list = gemini ? ({ status: 'ready', list: GEMINI_VOICE_LIST } as const) : codexList;
   const preview = useVoicePreview({
     onError: (failure: VoicePreviewFailure, message: string) => {
       toast.error(t('settings.experimental.voicePreviewFailed', 'Could not play this voice'), {
@@ -222,15 +259,19 @@ export function VoiceNameRow() {
     () => [
       {
         value: DEFAULT_VOICE,
-        label: defaultVoice
-          ? t('settings.experimental.voiceNameDefaultNamed', 'Codex default ({{voice}})', {
-              voice: voiceLabel(defaultVoice),
+        label: gemini
+          ? t('settings.experimental.voiceNameGeminiDefault', 'Gemini default ({{voice}})', {
+              voice: voiceLabel(GEMINI_VOICE_LIST.defaultVoice),
             })
-          : t('settings.experimental.voiceNameDefault', 'Codex default'),
+          : defaultVoice
+            ? t('settings.experimental.voiceNameDefaultNamed', 'Codex default ({{voice}})', {
+                voice: voiceLabel(defaultVoice),
+              })
+            : t('settings.experimental.voiceNameDefault', 'Codex default'),
       },
       ...voices.map((voice) => ({ value: voice, label: voiceLabel(voice) })),
     ],
-    [defaultVoice, voices, t]
+    [defaultVoice, gemini, voices, t]
   );
 
   const choose = (value: string) => {
@@ -240,16 +281,14 @@ export function VoiceNameRow() {
       return;
     }
     if (!runtime || !sharedVoice) return;
-    void writeWorkspaceVoiceSetting(runtime, {
-      version: 1,
-      configId: sharedVoice.configId,
-      machineId: sharedVoice.machineId,
-      ...(voice ? { voice } : {}),
-    }).catch((error: unknown) => {
-      toast.error(t('settings.experimental.voiceNameSaveFailed', 'Could not save the voice'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    });
+    const { voice: _previous, ...host } = sharedVoice;
+    void writeWorkspaceVoiceSetting(runtime, { ...host, ...(voice ? { voice } : {}) }).catch(
+      (error: unknown) => {
+        toast.error(t('settings.experimental.voiceNameSaveFailed', 'Could not save the voice'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    );
   };
 
   const label = t('settings.experimental.voiceName', 'Speaking voice');
@@ -305,28 +344,31 @@ export function VoiceNameRow() {
             ))}
           </Select.Content>
         </Select.Root>
-        <Tooltip.Root>
-          <Tooltip.Trigger
-            render={
-              <Button
-                type="button"
-                icon
-                variant="ghost"
-                size="small"
-                aria-label={previewLabel}
-                aria-pressed={previewing}
-                disabled={!hasSample || (preview.callActive && !previewing)}
-                onClick={() => {
-                  if (previewing) preview.stop();
-                  else if (target) preview.play(target);
-                }}
-              >
-                {previewing ? <Square /> : <Play />}
-              </Button>
-            }
-          />
-          <Tooltip.Content side="top">{previewLabel}</Tooltip.Content>
-        </Tooltip.Root>
+        {/* Gemini voices have no bundled samples. */}
+        {gemini ? null : (
+          <Tooltip.Root>
+            <Tooltip.Trigger
+              render={
+                <Button
+                  type="button"
+                  icon
+                  variant="ghost"
+                  size="small"
+                  aria-label={previewLabel}
+                  aria-pressed={previewing}
+                  disabled={!hasSample || (preview.callActive && !previewing)}
+                  onClick={() => {
+                    if (previewing) preview.stop();
+                    else if (target) preview.play(target);
+                  }}
+                >
+                  {previewing ? <Square /> : <Play />}
+                </Button>
+              }
+            />
+            <Tooltip.Content side="top">{previewLabel}</Tooltip.Content>
+          </Tooltip.Root>
+        )}
       </div>
     </CompactRow>
   );

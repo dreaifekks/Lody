@@ -38,6 +38,14 @@ void test('every renderer entry may call the GitHub API for pull request details
   }
 })
 
+void test('every renderer entry may open a Gemini Live voice call, and nothing else of Google', () => {
+  for (const html of [rendererHtml, devbarHtml]) {
+    const sources = getDirectiveSources(html, 'connect-src')
+    assert.ok(sources.includes('wss://generativelanguage.googleapis.com'))
+    assert.ok(!sources.some((source) => source.startsWith('https://generativelanguage')))
+  }
+})
+
 void test('every renderer entry may fetch GitHub avatars into the avatar cache', () => {
   for (const html of [rendererHtml, devbarHtml]) {
     assert.ok(

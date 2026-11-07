@@ -93,6 +93,42 @@ voice to speak.
   `packages/components/src/components/sessions/session-voice-controls.tsx`,
   `packages/components/src/lib/voice-conversation.ts`.
 
+### Gemini Live backend
+
+The same rows can choose "Gemini Live · <machine>" instead of a Codex agent.
+Gemini speaks and takes turns; the session's agent still does the work, through
+the same `<lody-voice-turn>` messages and `<lody-voice-say>` relays.
+
+- Key: `GEMINI_API_KEY` (paid per use) stays on the chosen machine. Its Lody
+  service environment wins; otherwise the LAN table (`lody lan env set
+  GEMINI_API_KEY`) supplies it. The machine only signs a single-use ephemeral
+  token (`machine/voice` `geminiToken`, protocol `realtimeVoice` v4:
+  `POST v1beta/auth_tokens`, connect within 1 minute, valid 30 minutes, locked
+  to the model and reply modality). Only the token reaches the renderer.
+- Call: the renderer opens the v1beta `BidiGenerateContentConstrained`
+  WebSocket itself (`packages/components/src/lib/gemini-live-call.ts`, raw
+  JSON, no SDK), streams 16 kHz PCM16 from an AudioWorklet and plays 24 kHz
+  PCM16 through WebAudio (`gemini-live-audio.ts`); `interrupted` drops what is
+  queued. The CSP allows only `wss://generativelanguage.googleapis.com`.
+- Hand-off: the voice calls `hand_off_to_agent({ request })` (`NON_BLOCKING`).
+  A reply that answers it goes back as that call's `toolResponse`
+  (`WHEN_IDLE`, a merged second call `SILENT`); any other relay, such as a typed
+  turn, is a `clientContent` turn. A call the server cancels is forgotten.
+  Instructions: `GEMINI_VOICE_CONVERSATION_INSTRUCTIONS`, kept apart from
+  Codex's.
+- Long calls: `sessionResumption` plus `contextWindowCompression.slidingWindow`.
+  On GoAway or a dropped connection the call reconnects with the latest handle,
+  on the same token while it lasts and a new one after; replies written in
+  between are held. No handle yet means the call ends.
+- Dictation: `gemini-3.5-transcribe-live` (text only); conversation:
+  `gemini-3.8-live`. Voices: the 30 prebuilt TTS voices, stored lower-cased,
+  default Kore, no samples (the preview button is hidden).
+- Row: `{ version: 1, provider: 'gemini', machineId, voice? }` without
+  `configId`, so older clients ignore it; a row without `provider` is Codex.
+  This-device: `gemini:<machineId>` in `voiceAgentSelectionAtom`.
+- Unverified: a real call (wire details where the docs disagree: the token body
+  form, `scheduling` placement, transcript end marks), the Mac and phones.
+
 ## Notifications from agents
 
 `lody_notify_user` lets an agent ask for the user's attention: a decision it

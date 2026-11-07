@@ -48,7 +48,12 @@ describe('useVoiceAgentSelection', () => {
     store.set(voiceNameAtom, 'cove');
     render(store);
 
-    expect(latest).toEqual({ configId: 'config-1', machineId: 'machine-1', voice: 'maple' });
+    expect(latest).toEqual({
+      provider: 'codex',
+      configId: 'config-1',
+      machineId: 'machine-1',
+      voice: 'maple',
+    });
   });
 
   it("follows Codex's default when the shared row names no voice", () => {
@@ -59,7 +64,12 @@ describe('useVoiceAgentSelection', () => {
     } as WorkspaceVoiceSetting;
     render(createStore());
 
-    expect(latest).toEqual({ configId: 'config-1', machineId: 'machine-1', voice: null });
+    expect(latest).toEqual({
+      provider: 'codex',
+      configId: 'config-1',
+      machineId: 'machine-1',
+      voice: null,
+    });
   });
 
   it("takes this device's own voice with this device's own agent", () => {
@@ -75,6 +85,29 @@ describe('useVoiceAgentSelection', () => {
     store.set(voiceNameAtom, 'juniper');
     render(store);
 
-    expect(latest).toEqual({ configId: 'config-2', machineId: 'machine-2', voice: 'juniper' });
+    expect(latest).toEqual({
+      provider: 'codex',
+      configId: 'config-2',
+      machineId: 'machine-2',
+      voice: 'juniper',
+    });
+  });
+
+  it('reads Gemini Live from the shared row and from this device alike', () => {
+    catalog.voice = {
+      version: 1,
+      provider: 'gemini',
+      machineId: 'machine-1',
+      voice: 'kore',
+    } as WorkspaceVoiceSetting;
+    const store = createStore();
+    render(store);
+    expect(latest).toEqual({ provider: 'gemini', machineId: 'machine-1', voice: 'kore' });
+
+    act(() => {
+      store.set(voiceAgentScopeAtom, 'device');
+      store.set(voiceAgentSelectionAtom, 'gemini:machine-2');
+    });
+    expect(latest).toEqual({ provider: 'gemini', machineId: 'machine-2', voice: null });
   });
 });
