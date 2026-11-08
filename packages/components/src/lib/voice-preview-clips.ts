@@ -25,7 +25,25 @@ const CLIPS: Readonly<Record<string, string>> = {
   vale,
 };
 
+/**
+ * The Gemini Live voices' samples, recorded from Live calls by
+ * `scripts/generate-gemini-voice-previews.mjs`, keyed `gemini-<voice>`.
+ */
+const GEMINI_CLIPS: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob<string>('../assets/voice-previews/gemini-*.webm', {
+      eager: true,
+      import: 'default',
+      query: '?url',
+    })
+  ).map(([file, url]) => [file.replace(/^.*\/(gemini-[a-z]+)\.webm$/, '$1'), url])
+);
+
 /** The sample's URL, or null when this build bundles none for the voice. */
 export function voicePreviewClip(voice: string): string | null {
+  if (Object.hasOwn(GEMINI_CLIPS, voice)) return GEMINI_CLIPS[voice] ?? null;
   return Object.hasOwn(CLIPS, voice) ? (CLIPS[voice] ?? null) : null;
 }
+
+/** The key `voicePreviewClip` knows a Gemini voice (stored lower-cased) by. */
+export const geminiVoicePreviewKey = (voice: string) => `gemini-${voice}`;

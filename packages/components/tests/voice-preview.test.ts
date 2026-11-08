@@ -9,7 +9,8 @@ import {
   VoicePreviewError,
   type VoicePreviewAudio,
 } from '../src/lib/voice-preview';
-import { voicePreviewClip } from '../src/lib/voice-preview-clips';
+import { GEMINI_LIVE_VOICES } from '../src/lib/gemini-live-voices';
+import { geminiVoicePreviewKey, voicePreviewClip } from '../src/lib/voice-preview-clips';
 
 const selection = vi.hoisted(() => ({ voice: 'maple' }));
 vi.mock('@/hooks/use-voice-agent-selection', () => ({
@@ -172,6 +173,17 @@ describe('voicePreviewClip', () => {
     }
     expect(voicePreviewClip('aurora')).toBeNull();
     expect(voicePreviewClip('toString')).toBeNull();
+  });
+
+  it('bundles a sample of every Gemini Live voice under its own prefix', () => {
+    for (const voice of GEMINI_LIVE_VOICES) {
+      const name = voice.name.toLowerCase();
+      expect(voicePreviewClip(geminiVoicePreviewKey(name))).toMatch(
+        new RegExp(`gemini-${name}\\.webm`)
+      );
+    }
+    // A Codex voice and a Gemini voice never share a sample.
+    expect(voicePreviewClip(geminiVoicePreviewKey('cove'))).toBeNull();
   });
 });
 

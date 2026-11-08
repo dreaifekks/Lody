@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GeminiLiveCall,
   type GeminiLiveCallHandlers,
   type GeminiLiveSocket,
   type GeminiLiveToken,
 } from '../src/lib/gemini-live-call';
+import { createGeminiPcmPlayer } from '../src/lib/gemini-live-audio';
 
 /** A Live WebSocket the test plays the server side of. */
 class FakeSocket implements GeminiLiveSocket {
@@ -250,16 +251,13 @@ describe('GeminiLiveCall conversation', () => {
           {
             id: 'call-1',
             name: 'hand_off_to_agent',
-            response: { result: 'Build fixed.', scheduling: 'WHEN_IDLE' },
+            response: { result: 'Build fixed.' },
             scheduling: 'WHEN_IDLE',
           },
           {
             id: 'call-2',
             name: 'hand_off_to_agent',
-            response: {
-              result: 'Answered together with the first of these requests.',
-              scheduling: 'SILENT',
-            },
+            response: { result: 'Answered together with the first of these requests.' },
             scheduling: 'SILENT',
           },
         ],
@@ -443,5 +441,150 @@ describe('GeminiLiveCall dictation', () => {
       { kind: 'dictated', value: '今天天气不错。' },
       { kind: 'dictated', value: '今天天气不错。明天' },
     ]);
+  });
+});
+
+/**
+ * A WebAudio clock the test moves by hand, recording what the player
+ * schedules: when each source starts and stops, and how the gain moves.
+ */
+class FakeAudioContext {
+  /** Moved by the test; every read moves it a hair on, as a real context's clock runs. */
+  time = 0;
+  reads = 0;
+  get currentTime() {
+    this.reads += 1;
+    return this.time + this.reads * 1e-6;
+  }
+  set currentTime(value: number) {
+    this.time = value;
+  }
+  readonly destination = {};
+  readonly gains: { ramps: [string, number, number][]; disconnected: boolean }[] = [];
+  readonly sources: { startAt: number; stopAt: number | null; duration: number }[] = [];
+  async resume() {}
+  async close() {}
+  createBuffer(_channels: number, length: number, rate: number) {
+    return { duration: length / rate, getChannelData: () => new Float32Array(length) };
+  }
+  createGain() {
+    const record = { ramps: [] as [string, number, number][], disconnected: false };
+    this.gains.push(record);
+    return {
+      gain: {
+        value: 1,
+        setValueAtTime: (value: number, at: number) => record.ramps.push(['set', value, at]),
+        linearRampToValueAtTime: (value: number, at: number) =>
+          record.ramps.push(['ramp', value, at]),
+      },
+      connect() {},
+      disconnect: () => {
+        record.disconnected = true;
+      },
+    };
+  }
+  createBufferSource() {
+    const record = { startAt: -1, stopAt: null as number | null, duration: 0 };
+    this.sources.push(record);
+    return {
+      buffer: null as { duration: number } | null,
+      onended: null,
+      connect() {},
+      start(at: number) {
+        record.startAt = at;
+        record.duration = this.buffer?.duration ?? 0;
+      },
+      stop: (at: number) => {
+        record.stopAt = at;
+      },
+    };
+  }
+}
+
+describe('Gemini PCM player', () => {
+  const near = (value: number) => expect.closeTo(value, 4);
+  let context: FakeAudioContext;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    context = new FakeAudioContext();
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor() {
+          return context;
+        }
+      }
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const second = new Int16Array(24_000);
+
+  it('plays chunks back to back and fades a cut reply out instead of stopping it mid-wave', () => {
+    const player = createGeminiPcmPlayer();
+    player.play(second, 24_000);
+    player.play(second, 24_000);
+    expect(context.sources.map((source) => source.startAt)).toEqual([near(0), near(1)]);
+
+    context.currentTime = 0.5;
+    player.clear();
+
+    expect(context.sources.map((source) => source.stopAt)).toEqual([near(0.53), near(0.53)]);
+    expect(context.gains[0]?.ramps).toEqual([
+      ['set', 1, near(0.5)],
+      ['ramp', 0, near(0.53)],
+    ]);
+    vi.advanceTimersByTime(200);
+    expect(context.gains[0]?.disconnected).toBe(true);
+    // The next reply plays at full level, straight away.
+    player.play(second, 24_000);
+    expect(context.sources[2]?.startAt).toBeCloseTo(0.5, 4);
+    expect(context.gains).toHaveLength(2);
+  });
+
+  it('holds the microphone for the first seconds of every reply, the second as much as the first', () => {
+    const player = createGeminiPcmPlayer();
+    expect(player.holdsMicrophone()).toBe(false);
+    player.play(second, 24_000);
+    player.play(second, 24_000);
+    player.play(second, 24_000);
+    context.currentTime = 2.4;
+    expect(player.holdsMicrophone()).toBe(true);
+    // 2.5 s into a reply the canceller has caught up: barging in works again.
+    context.currentTime = 2.6;
+    expect(player.holdsMicrophone()).toBe(false);
+    // Silent between replies: the user can talk.
+    context.currentTime = 9;
+    expect(player.holdsMicrophone()).toBe(false);
+    // The next reply starts its own window, however long the call has run.
+    player.play(new Int16Array(24_000 * 3), 24_000);
+    context.currentTime = 11.4;
+    expect(player.holdsMicrophone()).toBe(true);
+    context.currentTime = 11.6;
+    expect(player.holdsMicrophone()).toBe(false);
+  });
+
+  it('keeps a reply resuming after a late chunk in the same window', () => {
+    const player = createGeminiPcmPlayer();
+    player.play(new Int16Array(24_000 * 4), 24_000);
+    // A chunk 0.2 s late leaves the queue dry for a moment.
+    context.currentTime = 4.2;
+    player.play(new Int16Array(24_000 * 3), 24_000);
+    expect(player.holdsMicrophone()).toBe(false);
+  });
+
+  it('gives the reply after an interruption its own window', () => {
+    const player = createGeminiPcmPlayer();
+    player.play(new Int16Array(24_000 * 5), 24_000);
+    context.currentTime = 4;
+    expect(player.holdsMicrophone()).toBe(false);
+    player.clear();
+    context.currentTime = 4.5;
+    player.play(new Int16Array(24_000 * 5), 24_000);
+    context.currentTime = 6.5;
+    expect(player.holdsMicrophone()).toBe(true);
   });
 });

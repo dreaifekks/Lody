@@ -50,18 +50,46 @@ export async function startGeminiPcmCapture(
   }
 }
 
+/** How long a reply the user talks over takes to fade out, instead of stopping mid-wave. */
+const FADE_SECONDS = 0.03;
+/**
+ * The echo canceller learns the speakers only by hearing them. Measured in
+ * Electron 44, the voice's first 0.5-2 s come back into the microphone at
+ * nearly the level played, whatever plays them (WebAudio, an audio element, a
+ * WebRTC track); Gemini takes that for the user talking over it, interrupts,
+ * and the cut-off syllable is the "beep" users hear. The canceller loses the
+ * speakers again over the silence between replies (users heard the beep when
+ * the second reply began), so every reply holds the microphone for this long
+ * from its first sound.
+ */
+const ECHO_SETTLE_SECONDS = 2.5;
+/**
+ * A reply starts after the voice was quiet this long, or after a cut; a
+ * shorter gap is the same reply resuming after a late chunk, which must not
+ * hold the microphone again.
+ */
+const REPLY_GAP_SECONDS = 1;
+
 export type GeminiPcmPlayer = {
   play(pcm: Int16Array, sampleRate: number): void;
-  /** Silences and forgets everything queued. */
+  /** Fades out and forgets everything queued. */
   clear(): void;
   close(): void;
+  /** The voice is in the first seconds of a reply, before the echo canceller has caught up: send silence instead of the microphone. */
+  holdsMicrophone(): boolean;
 };
 
 export function createGeminiPcmPlayer(): GeminiPcmPlayer {
   const context = new AudioContext();
   void context.resume().catch(() => {});
+  /** Every reply plays through one gain, so a cut can fade it; a new reply gets a fresh one. */
+  let output = context.createGain();
+  output.connect(context.destination);
   const playing = new Set<AudioBufferSourceNode>();
   let nextStart = 0;
+  /** When the reply now playing began. */
+  let replyStart = 0;
+  const queued = () => Math.max(0, nextStart - context.currentTime);
   return {
     play(pcm, sampleRate) {
       if (pcm.length === 0) return;
@@ -70,21 +98,33 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
       for (let i = 0; i < pcm.length; i += 1) samples[i] = (pcm[i] ?? 0) / 0x8000;
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
-      const startAt = Math.max(context.currentTime, nextStart);
+      source.connect(output);
+      const now = context.currentTime;
+      if (nextStart === 0 || now - nextStart >= REPLY_GAP_SECONDS) replyStart = now;
+      const startAt = Math.max(now, nextStart);
       source.start(startAt);
       nextStart = startAt + buffer.duration;
       playing.add(source);
       source.onended = () => playing.delete(source);
     },
     clear() {
-      for (const source of playing) source.stop();
+      const now = context.currentTime;
+      const fading = output;
+      fading.gain.setValueAtTime(fading.gain.value, now);
+      fading.gain.linearRampToValueAtTime(0, now + FADE_SECONDS);
+      for (const source of playing) source.stop(now + FADE_SECONDS);
       playing.clear();
+      setTimeout(() => fading.disconnect(), (FADE_SECONDS + 0.1) * 1000);
+      output = context.createGain();
+      output.connect(context.destination);
       nextStart = 0;
     },
     close() {
       this.clear();
       void context.close();
+    },
+    holdsMicrophone() {
+      return queued() > 0 && context.currentTime - replyStart < ECHO_SETTLE_SECONDS;
     },
   };
 }

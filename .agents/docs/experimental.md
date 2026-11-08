@@ -108,11 +108,27 @@ the same `<lody-voice-turn>` messages and `<lody-voice-say>` relays.
 - Call: the renderer opens the v1beta `BidiGenerateContentConstrained`
   WebSocket itself (`packages/components/src/lib/gemini-live-call.ts`, raw
   JSON, no SDK), streams 16 kHz PCM16 from an AudioWorklet and plays 24 kHz
-  PCM16 through WebAudio (`gemini-live-audio.ts`); `interrupted` drops what is
-  queued. The CSP allows only `wss://generativelanguage.googleapis.com`.
+  PCM16 through WebAudio (`gemini-live-audio.ts`); `interrupted` fades out
+  (30 ms) what is queued. The CSP allows only
+  `wss://generativelanguage.googleapis.com`.
+- Echo: Chromium's echo canceller (Electron 44, also Chrome 149) does cancel
+  WebAudio output, but only once it has heard the speakers: measured on a
+  PipeWire loopback, the voice's first 0.5-2 s return to the microphone at
+  about 0.75 of the level played, whether it plays through WebAudio, an audio
+  element or a WebRTC track. Gemini takes that for the user, interrupts 0.26 s
+  in, and the cut-off syllable is the short "beep". It comes back at the start
+  of later replies too, after the silence between them, so the renderer sends
+  silence instead of the microphone for the first 2.5 s of every reply (one
+  that starts after 1 s of quiet or after an interruption; a shorter gap is
+  the same reply resuming after a late chunk).
+  In a real three-turn call with that echo injected at the start of each
+  reply, a guard counted over the whole call let the second reply be cut at
+  0.29 s; the per-reply guard let all three play uninterrupted.
 - Hand-off: the voice calls `hand_off_to_agent({ request })` (`NON_BLOCKING`).
   A reply that answers it goes back as that call's `toolResponse`
-  (`WHEN_IDLE`, a merged second call `SILENT`); any other relay, such as a typed
+  (`WHEN_IDLE`, a merged second call `SILENT`). `scheduling` is a field of the
+  function response itself: a real call honoured it there and ignored it inside
+  `response`, where the docs put it. Any other relay, such as a typed
   turn, is a `clientContent` turn. A call the server cancels is forgotten.
   Instructions: `GEMINI_VOICE_CONVERSATION_INSTRUCTIONS`, kept apart from
   Codex's.
@@ -121,13 +137,31 @@ the same `<lody-voice-turn>` messages and `<lody-voice-say>` relays.
   on the same token while it lasts and a new one after; replies written in
   between are held. No handle yet means the call ends.
 - Dictation: `gemini-3.5-transcribe-live` (text only); conversation:
-  `gemini-3.8-live`. Voices: the 30 prebuilt TTS voices, stored lower-cased,
-  default Kore, no samples (the preview button is hidden).
+  `gemini-3.8-live`. Voices: the 30 prebuilt voices with the doc's one-word
+  character (`Kore · Firm`, `gemini-live-voices.ts`), stored lower-cased,
+  default Kore. Samples (`assets/voice-previews/gemini-*.webm`, 16 kbps Opus,
+  250 KB for 30) are recorded from Live calls by
+  `scripts/generate-gemini-voice-previews.mjs`, checked against the voice's
+  transcript; Live because it is the voice a call uses, and a free-tier key
+  allows only 10 TTS requests a day per model.
+- Token: `auth_tokens` takes `bidiGenerateContentSetup` plus `fieldMask`; the
+  docs' REST form `liveConnectConstraints` is refused (HTTP 400). The locked
+  model and modality hold against a setup asking for others, while unlocked
+  fields such as `systemInstruction` apply.
+- Measured (one call, two spoken turns and a hand-off): end of speech to
+  transcript and hand-off about 0.8 s, result sent to first audio 0.3 s, end
+  of speech to a spoken reply about 1 s. Audio arrives far faster than it
+  plays. The user's words arrive as one `inputTranscription` with no
+  `finished` mark, just before `voiceActivity` `ACTIVITY_END`; the voice's
+  arrive in pieces up to `generationComplete`. `promptTokenCount` counts the
+  whole context again every turn (1058, 1159, 1432), so a call costs more the
+  longer it runs, until the sliding window caps it; that call came to under
+  $0.01 at paid rates.
 - Row: `{ version: 1, provider: 'gemini', machineId, voice? }` without
   `configId`, so older clients ignore it; a row without `provider` is Codex.
   This-device: `gemini:<machineId>` in `voiceAgentSelectionAtom`.
-- Unverified: a real call (wire details where the docs disagree: the token body
-  form, `scheduling` placement, transcript end marks), the Mac and phones.
+- Unverified: the echo window on macOS and on phones (measured only on Linux),
+  and resumption against a real GoAway.
 
 ## Notifications from agents
 
