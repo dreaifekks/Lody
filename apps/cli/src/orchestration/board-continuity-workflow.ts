@@ -91,6 +91,15 @@ const CONTENDED = new Set([
 ]);
 
 /**
+ * Of those, a history rewrite or a short operation held the Session's history
+ * lease, as the dispatch check after each turn does while the next step begins.
+ * The step tries again after a pause, since the refused attempt starts another
+ * such check as it returns.
+ */
+const MOMENTARY = new Set(['rewrite-barrier', 'claim-contended']);
+const MOMENTARY_RETRY_MS = 1_000;
+
+/**
  * After a renewal attempt: renewed, still pending when it never started, or given
  * up with a reason when the turn itself failed, so a failing agent is not retried
  * on every wake.
@@ -394,24 +403,30 @@ export class BoardContinuityWorkflow {
         yieldToInbox?: boolean;
       } = {}
     ) {
-      // The user's next turn and Inbox results go first; the next idle period retries.
-      if (
-        maintenance.busy(meta.id) ||
-        (options.yieldToInbox !== false && maintenance.inbox(meta.id).runnable)
-      )
-        return 'yielded';
-      if (!this.ports.active()) return 'inactive';
-      const driving = yield* history.readDrivingState;
-      const config: SessionTurnInputConfig = driving?.turn.inputConfig ?? {};
-      return yield* maintenance.runTurn({
-        sessionId: meta.id,
-        stepTurnId: boardMaintenanceStepId(runId, name),
-        prompt,
-        config,
-        userId: driving?.turn.userId ?? meta.userId,
-        ...(options.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
-        ...(options.freshAgentSession ? { freshAgentSession: true } : {}),
-      });
+      for (;;) {
+        // The user's next turn and Inbox results go first; the next idle period retries.
+        if (
+          maintenance.busy(meta.id) ||
+          (options.yieldToInbox !== false && maintenance.inbox(meta.id).runnable)
+        )
+          return 'yielded';
+        if (!this.ports.active()) return 'inactive';
+        const driving = yield* history.readDrivingState;
+        const config: SessionTurnInputConfig = driving?.turn.inputConfig ?? {};
+        const outcome = yield* maintenance.runTurn({
+          sessionId: meta.id,
+          stepTurnId: boardMaintenanceStepId(runId, name),
+          prompt,
+          config,
+          userId: driving?.turn.userId ?? meta.userId,
+          ...(options.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
+          ...(options.freshAgentSession ? { freshAgentSession: true } : {}),
+        });
+        if (!MOMENTARY.has(outcome)) return outcome;
+        yield* Effect.sleep(MOMENTARY_RETRY_MS);
+        // A Stop meanwhile holds maintenance until the user speaks again.
+        if (maintenance.inbox(meta.id).paused) return outcome;
+      }
     }.bind(this)
   );
 
