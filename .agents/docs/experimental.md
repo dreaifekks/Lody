@@ -116,10 +116,13 @@ the same `<lody-voice-turn>` messages and `<lody-voice-say>` relays.
   PipeWire loopback, the voice's first 0.5-2 s return to the microphone at
   about 0.75 of the level played, whether it plays through WebAudio, an audio
   element or a WebRTC track. Gemini takes that for the user, interrupts 0.26 s
-  in, and the cut-off syllable is the short "beep" heard at the start of a
-  call. Until 2.5 s of the voice have played, the renderer sends silence
-  instead of the microphone while it speaks; a real call with that echo
-  injected then ran uninterrupted.
+  in, and the cut-off syllable is the short "beep". It comes back at the start
+  of later replies too, after the silence between them, so the renderer sends
+  silence instead of the microphone for the first 2.5 s of every reply (one
+  that starts once the queue has run dry, including after an interruption).
+  In a real three-turn call with that echo injected at the start of each
+  reply, a guard counted over the whole call let the second reply be cut at
+  0.29 s; the per-reply guard let all three play uninterrupted.
 - Hand-off: the voice calls `hand_off_to_agent({ request })` (`NON_BLOCKING`).
   A reply that answers it goes back as that call's `toolResponse`
   (`WHEN_IDLE`, a merged second call `SILENT`). `scheduling` is a field of the

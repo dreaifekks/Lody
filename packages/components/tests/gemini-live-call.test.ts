@@ -449,7 +449,16 @@ describe('GeminiLiveCall dictation', () => {
  * schedules: when each source starts and stops, and how the gain moves.
  */
 class FakeAudioContext {
-  currentTime = 0;
+  /** Moved by the test; every read moves it a hair on, as a real context's clock runs. */
+  time = 0;
+  reads = 0;
+  get currentTime() {
+    this.reads += 1;
+    return this.time + this.reads * 1e-6;
+  }
+  set currentTime(value: number) {
+    this.time = value;
+  }
   readonly destination = {};
   readonly gains: { ramps: [string, number, number][]; disconnected: boolean }[] = [];
   readonly sources: { startAt: number; stopAt: number | null; duration: number }[] = [];
@@ -493,6 +502,7 @@ class FakeAudioContext {
 }
 
 describe('Gemini PCM player', () => {
+  const near = (value: number) => expect.closeTo(value, 4);
   let context: FakeAudioContext;
   beforeEach(() => {
     vi.useFakeTimers();
@@ -517,49 +527,55 @@ describe('Gemini PCM player', () => {
     const player = createGeminiPcmPlayer();
     player.play(second, 24_000);
     player.play(second, 24_000);
-    expect(context.sources.map((source) => source.startAt)).toEqual([0, 1]);
+    expect(context.sources.map((source) => source.startAt)).toEqual([near(0), near(1)]);
 
     context.currentTime = 0.5;
     player.clear();
 
-    expect(context.sources.map((source) => source.stopAt)).toEqual([0.53, 0.53]);
+    expect(context.sources.map((source) => source.stopAt)).toEqual([near(0.53), near(0.53)]);
     expect(context.gains[0]?.ramps).toEqual([
-      ['set', 1, 0.5],
-      ['ramp', 0, 0.53],
+      ['set', 1, near(0.5)],
+      ['ramp', 0, near(0.53)],
     ]);
     vi.advanceTimersByTime(200);
     expect(context.gains[0]?.disconnected).toBe(true);
     // The next reply plays at full level, straight away.
     player.play(second, 24_000);
-    expect(context.sources[2]?.startAt).toBe(0.5);
+    expect(context.sources[2]?.startAt).toBeCloseTo(0.5, 4);
     expect(context.gains).toHaveLength(2);
   });
 
-  it('holds the microphone while the voice speaks its first seconds, until the echo canceller has heard it', () => {
+  it('holds the microphone for the first seconds of every reply, the second as much as the first', () => {
     const player = createGeminiPcmPlayer();
     expect(player.holdsMicrophone()).toBe(false);
     player.play(second, 24_000);
     player.play(second, 24_000);
-    expect(player.holdsMicrophone()).toBe(true);
-    context.currentTime = 2;
-    // Silent between replies: the user can talk.
-    expect(player.holdsMicrophone()).toBe(false);
     player.play(second, 24_000);
     context.currentTime = 2.4;
     expect(player.holdsMicrophone()).toBe(true);
+    // 2.5 s into a reply the canceller has caught up: barging in works again.
     context.currentTime = 2.6;
-    // 2.6 s heard: barging in works again.
+    expect(player.holdsMicrophone()).toBe(false);
+    // Silent between replies: the user can talk.
+    context.currentTime = 9;
+    expect(player.holdsMicrophone()).toBe(false);
+    // The next reply starts its own window, however long the call has run.
+    player.play(new Int16Array(24_000 * 3), 24_000);
+    context.currentTime = 11.4;
+    expect(player.holdsMicrophone()).toBe(true);
+    context.currentTime = 11.6;
     expect(player.holdsMicrophone()).toBe(false);
   });
 
-  it('counts a cut reply only as far as it was heard', () => {
+  it('gives the reply after an interruption its own window', () => {
     const player = createGeminiPcmPlayer();
-    player.play(new Int16Array(24_000 * 3), 24_000);
-    context.currentTime = 0.5;
+    player.play(new Int16Array(24_000 * 5), 24_000);
+    context.currentTime = 4;
+    expect(player.holdsMicrophone()).toBe(false);
     player.clear();
-    player.play(second, 24_000);
-    context.currentTime = 1.4;
-    // 0.5 s of the cut reply and 0.9 s of this one.
+    context.currentTime = 4.5;
+    player.play(new Int16Array(24_000 * 5), 24_000);
+    context.currentTime = 6.5;
     expect(player.holdsMicrophone()).toBe(true);
   });
 });

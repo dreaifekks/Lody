@@ -57,8 +57,10 @@ const FADE_SECONDS = 0.03;
  * Electron 44, the voice's first 0.5-2 s come back into the microphone at
  * nearly the level played, whatever plays them (WebAudio, an audio element, a
  * WebRTC track); Gemini takes that for the user talking over it, interrupts,
- * and the cut-off syllable is the "beep" users hear. Until the voice has been
- * heard this long, the microphone is held while it speaks.
+ * and the cut-off syllable is the "beep" users hear. The canceller loses the
+ * speakers again over the silence between replies (users heard the beep when
+ * the second reply began), so every reply that starts after the queue ran dry
+ * holds the microphone for this long from its first sound.
  */
 const ECHO_SETTLE_SECONDS = 2.5;
 
@@ -67,7 +69,7 @@ export type GeminiPcmPlayer = {
   /** Fades out and forgets everything queued. */
   clear(): void;
   close(): void;
-  /** The voice is speaking before the echo canceller has learned it: send silence instead of the microphone. */
+  /** The voice is in the first seconds of a reply, before the echo canceller has caught up: send silence instead of the microphone. */
   holdsMicrophone(): boolean;
 };
 
@@ -79,8 +81,8 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
   output.connect(context.destination);
   const playing = new Set<AudioBufferSourceNode>();
   let nextStart = 0;
-  /** Seconds of the voice played or still queued to play. */
-  let scheduled = 0;
+  /** When the reply now playing began: the first chunk after the queue ran dry. */
+  let replyStart = 0;
   const queued = () => Math.max(0, nextStart - context.currentTime);
   return {
     play(pcm, sampleRate) {
@@ -91,16 +93,17 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(output);
-      const startAt = Math.max(context.currentTime, nextStart);
+      const now = context.currentTime;
+      // Nothing left to play: this chunk opens a new reply.
+      if (nextStart <= now) replyStart = now;
+      const startAt = Math.max(now, nextStart);
       source.start(startAt);
       nextStart = startAt + buffer.duration;
-      scheduled += buffer.duration;
       playing.add(source);
       source.onended = () => playing.delete(source);
     },
     clear() {
       const now = context.currentTime;
-      scheduled -= queued();
       const fading = output;
       fading.gain.setValueAtTime(fading.gain.value, now);
       fading.gain.linearRampToValueAtTime(0, now + FADE_SECONDS);
@@ -116,8 +119,7 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
       void context.close();
     },
     holdsMicrophone() {
-      const pending = queued();
-      return pending > 0 && scheduled - pending < ECHO_SETTLE_SECONDS;
+      return queued() > 0 && context.currentTime - replyStart < ECHO_SETTLE_SECONDS;
     },
   };
 }
