@@ -1,4 +1,6 @@
 import { atom } from 'jotai';
+import { isOpenerCollapsed } from '@/lib/low-stimulus';
+import { lowStimulusModeEnabledAtom } from './settings';
 
 /** Group key for the "Chats" (no-repo) sidebar group. */
 export const ONLY_CHATS_KEY = '__only_chats__';
@@ -54,23 +56,29 @@ export const sidebarShowFullListAtom = atom<Record<string, boolean>>({});
  * Opener session ids whose MCP-opened independent Sessions are collapsed in the
  * sidebar tree (`lib/session-opened-by-tree.ts`). Absence means EXPANDED: the
  * opened Sessions are ordinary sidebar rows, so defaulting to collapsed would
- * hide conversations the user can see today. Shared with the keyboard
- * navigation model so the flat nav list matches what is rendered.
+ * hide conversations the user can see today; low-stimulus mode reverses that
+ * default and reads the record through `isOpenerCollapsed`. Shared with the
+ * keyboard navigation model so the flat nav list matches what is rendered.
  */
 export const sidebarCollapsedOpenedBySessionsAtom = atom<Record<string, boolean>>({});
 
 /**
  * Fold/unfold one opener's Sessions. Every session list renders the same
  * disclosure, so the update lives here once instead of as an identical
- * `useCallback` in each of them.
+ * `useCallback` in each of them. A list that keeps the upstream default while
+ * the mode is on (the mobile list, whose rows draw no family mark) passes what
+ * it shows as `shownCollapsed`, so its first tap acts on that.
  */
 export const toggleSidebarCollapsedOpenedBySessionAtom = atom(
   null,
-  (get, set, openerSessionId: string) => {
+  (get, set, openerSessionId: string, shownCollapsed?: boolean) => {
     const current = get(sidebarCollapsedOpenedBySessionsAtom);
     set(sidebarCollapsedOpenedBySessionsAtom, {
       ...current,
-      [openerSessionId]: !current[openerSessionId],
+      [openerSessionId]: !(
+        shownCollapsed ??
+        isOpenerCollapsed(get(lowStimulusModeEnabledAtom), current, openerSessionId)
+      ),
     });
   }
 );

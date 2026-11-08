@@ -73,6 +73,9 @@ import {
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '@/atoms/focus-layer';
 import { sidebarShowBranchNamesAtom } from '@/atoms/sidebar-state';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { isOpenerCollapsed } from '@/lib/low-stimulus';
+import { foldedFamilyActivity } from './sidebar-folded-family';
 import {
   buildOpenedBySessionTree,
   countOpenedByTreeRoots,
@@ -108,6 +111,7 @@ import {
   SidebarGroupActivityMark,
   SIDEBAR_UNSENT_TITLE_CLASS,
   summarizeSidebarGroupActivity,
+  useSidebarGroupActivityDescription,
   type SidebarGroupActivity,
   useSessionUnsentNewConversation,
   withSessionSendStates,
@@ -163,6 +167,8 @@ export type SessionListRow = {
   prCiState?: SessionPullRequestCiState | null;
   prReadiness?: SessionPullRequestReadiness | null;
   latestMessageAt: Date | number | string;
+  /** The session's own read receipt: low-stimulus mode reads a folded family against it. */
+  lastReadAt?: number;
   addedLines: number;
   deletedLines: number;
   isWorking: boolean;
@@ -315,6 +321,7 @@ function sessionRowRootRank(session: SessionListRow): number {
 
 /** Stable identity for a collapsed group's (absent) rows. */
 const EMPTY_TREE_NODES: OpenedBySessionTreeNode<SessionListRow>[] = [];
+const EMPTY_FAMILY_ACTIVITIES: ReadonlyMap<string, SidebarGroupActivity> = new Map();
 
 /**
  * Rows a group renders, in render order, with their "opened by" tree geometry.
@@ -324,11 +331,13 @@ const EMPTY_TREE_NODES: OpenedBySessionTreeNode<SessionListRow>[] = [];
 export function getVisibleSessionGroupTree(
   group: SessionRowGroup,
   whetherShowFullList: boolean,
-  collapsedOpenedBySessionIds?: Record<string, boolean>
+  collapsedOpenedBySessionIds?: Record<string, boolean>,
+  lowStimulusMode = false
 ): OpenedBySessionTreeNode<SessionListRow>[] {
   return buildOpenedBySessionTree(group.sessions, {
     ...SESSION_ROW_OPENED_BY_TREE_ACCESSORS,
-    isCollapsed: (openerId) => collapsedOpenedBySessionIds?.[openerId] === true,
+    isCollapsed: (openerId) =>
+      isOpenerCollapsed(lowStimulusMode, collapsedOpenedBySessionIds, openerId),
     rootRank: sessionRowRootRank,
     ...(whetherShowFullList ? {} : { maxRoots: MAX_VISIBLE_SESSIONS }),
   });
@@ -337,11 +346,15 @@ export function getVisibleSessionGroupTree(
 export function getVisibleSessionGroupRows(
   group: SessionRowGroup,
   whetherShowFullList: boolean,
-  collapsedOpenedBySessionIds?: Record<string, boolean>
+  collapsedOpenedBySessionIds?: Record<string, boolean>,
+  lowStimulusMode = false
 ): SessionListRow[] {
-  return getVisibleSessionGroupTree(group, whetherShowFullList, collapsedOpenedBySessionIds).map(
-    (node) => node.item
-  );
+  return getVisibleSessionGroupTree(
+    group,
+    whetherShowFullList,
+    collapsedOpenedBySessionIds,
+    lowStimulusMode
+  ).map((node) => node.item);
 }
 
 /** True when the group has more TOP-LEVEL rows than the compact preview shows. */
@@ -674,6 +687,7 @@ type SessionGroupRowProps = Pick<
   | 'isMobile'
 > & {
   node: OpenedBySessionTreeNode<SessionListRow>;
+  familyActivity?: SidebarGroupActivity;
   isSelected: boolean;
   groupKind: SessionRowGroup['kind'];
   groupRepoFullName: SessionRowGroup['repoFullName'];
@@ -727,6 +741,7 @@ function setSidebarSessionTitleSwipeOffset(
  */
 const SessionGroupRow = memo(function SessionGroupRow({
   node,
+  familyActivity,
   isSelected,
   groupKind,
   groupRepoFullName,
@@ -761,6 +776,7 @@ const SessionGroupRow = memo(function SessionGroupRow({
   } | null>(null);
   const suppressTitleClickRef = useRef(false);
   const { t } = useTranslation();
+  const familyActivityDescription = useSidebarGroupActivityDescription(familyActivity);
   const isSelectable = typeof onSelectSession === 'function';
   const session = node.item;
   const openerSessionId = normalizeSessionRowId(session.openedBySessionId);
@@ -1187,6 +1203,7 @@ const SessionGroupRow = memo(function SessionGroupRow({
             isWaitingPermission={session.isWaitingPermission}
             isWorking={session.isWorking}
             hasUnreadMessages={session.hasUnreadMessages}
+            familyActivity={familyActivity}
             restOnSecondLine={showMetaLine && showBranchNames && (hasPr || hasChanges)}
             interactiveRest={showBranchNames && (hasPr || (showMetaLine && hasChanges))}
             restIcon={
@@ -1432,6 +1449,7 @@ const SessionGroupRow = memo(function SessionGroupRow({
       addedLines={hasChanges ? session.addedLines : undefined}
       deletedLines={hasChanges ? session.deletedLines : undefined}
       sharing={session.sharing}
+      familyActivityDescription={familyActivityDescription}
     >
       {menuRow}
     </SessionInfoHoverCard>
@@ -1748,6 +1766,7 @@ const SessionGroupSection = memo(function SessionGroupSection({
   // message), so without a memo these O(n) resolutions would re-run at
   // agent-activity frequency just to show five rows. A collapsed group renders
   // nothing, so it skips them entirely.
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   const { canToggleFullList, visibleNodes, showTreeGutter } = useMemo(() => {
     if (group.collapsed) {
       return { canToggleFullList: false, visibleNodes: EMPTY_TREE_NODES, showTreeGutter: false };
@@ -1755,7 +1774,8 @@ const SessionGroupSection = memo(function SessionGroupSection({
     const nodes = getVisibleSessionGroupTree(
       group,
       whetherShowFullList,
-      collapsedOpenedBySessionIds
+      collapsedOpenedBySessionIds,
+      lowStimulusMode
     );
     return {
       canToggleFullList: sessionGroupOverflowsPreview(group),
@@ -1764,7 +1784,7 @@ const SessionGroupSection = memo(function SessionGroupSection({
       // tree wrapper. Within it, unrelated top-level rows keep flat geometry.
       showTreeGutter: hasOpenedByTreeNesting(nodes),
     };
-  }, [collapsedOpenedBySessionIds, group, whetherShowFullList]);
+  }, [collapsedOpenedBySessionIds, group, lowStimulusMode, whetherShowFullList]);
   // A folded group still says whether anything inside it needs the user.
   const sendStates = useAtomValue(sessionSendStatesAtom);
   const collapsedActivity = useMemo(
@@ -1776,6 +1796,25 @@ const SessionGroupSection = memo(function SessionGroupSection({
         : null,
     [group.collapsed, group.sessions, sendStates]
   );
+  // Low-stimulus mode: the one mark each folded family draws, resolved once per
+  // tree so a memoized row keeps its identity across unrelated updates.
+  const familyActivityBySessionId = useMemo(() => {
+    if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
+    return new Map(
+      visibleNodes
+        .filter((node) => node.hiddenChildren.length > 0)
+        .map((node) => [
+          node.item.sessionId,
+          foldedFamilyActivity(
+            node.item,
+            node.hiddenChildren,
+            node.item.lastReadAt,
+            SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
+            sendStates
+          ),
+        ])
+    );
+  }, [lowStimulusMode, sendStates, visibleNodes]);
   const toggleListLabel = whetherShowFullList
     ? t('sessions.showLess', 'Show less')
     : t('sessions.showAll', 'Show all ({{count}})', { count: group.sessions.length });
@@ -2023,6 +2062,7 @@ const SessionGroupSection = memo(function SessionGroupSection({
             <SessionGroupRow
               key={node.item.sessionId}
               node={node}
+              familyActivity={familyActivityBySessionId.get(node.item.sessionId)}
               isSelected={node.item.sessionId === selectedSessionId}
               groupKind={group.kind}
               groupRepoFullName={group.repoFullName}

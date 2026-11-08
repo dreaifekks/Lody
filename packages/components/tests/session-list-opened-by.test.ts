@@ -22,6 +22,10 @@ import {
 } from '../src/components/sessions/session-list-rows';
 import { sidebarCollapsedOpenedBySessionsAtom } from '../src/atoms/focus-layer';
 import { sidebarShowBranchNamesAtom } from '../src/atoms/sidebar-state';
+import {
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import { initI18n } from '../src/i18n';
 
 const REPO = 'loro-dev/lody';
@@ -136,6 +140,7 @@ describe('SessionList opened-by rendering', () => {
     root = undefined;
     container?.remove();
     container = undefined;
+    localStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -241,6 +246,45 @@ describe('SessionList opened-by rendering', () => {
     });
 
     expect(container?.querySelector('[data-sidebar-session-meta]')).toBeNull();
+  });
+
+  it('in low-stimulus mode folds opened Sessions and draws the family mark on the opener', () => {
+    const { store } = renderList([
+      makeRow({ sessionId: 'opener', latestMessageAt: 200, lastReadAt: 200 }),
+      makeRow({
+        sessionId: 'waiting',
+        openedBySessionId: 'opener',
+        latestMessageAt: 100,
+        isWaitingPermission: true,
+      }),
+      makeRow({
+        sessionId: 'read-through',
+        openedBySessionId: 'opener',
+        latestMessageAt: 100,
+        hasUnreadMessages: true,
+      }),
+    ]);
+    const row = (id: string) => container?.querySelector(`[data-sidebar-session-id="${id}"]`);
+    const mark = () =>
+      row('opener')?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]');
+    // Without the mode nothing is hidden and the opener draws only itself.
+    expect(row('waiting')).not.toBeNull();
+    expect(mark()).toBeNull();
+
+    flushSync(() => {
+      store.set(experimentalFeaturesEnabledAtom, true);
+      store.set(lowStimulusExperimentEnabledAtom, true);
+    });
+    expect(row('waiting')).toBeNull();
+    expect(mark()?.querySelector('.lucide-hand')).not.toBeNull();
+  });
+
+  it('carries the read receipt of a session onto its row', () => {
+    const [row] = buildSessionListRows(
+      [{ id: 's1', userId: 'user-1', createdAt: '2026-04-22', lastReadAt: 123 } as SessionMeta],
+      { scope: 'my', currentUserId: 'user-1', defaultTitle: 'Untitled' }
+    );
+    expect(row?.lastReadAt).toBe(123);
   });
 
   it('keeps collapse reachable from the context menu while the opener is working', () => {

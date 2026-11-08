@@ -15,6 +15,7 @@ While it is on, its rows follow the master switch in the same section:
 
 | Switch | Atom (localStorage key) |
 | --- | --- |
+| Low-stimulus mode | `lowStimulusExperimentEnabledAtom` (`lody-low-stimulus-mode`) |
 | Voice | `voiceExperimentEnabledAtom` (`lody-voice-experiment-enabled`) |
 | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
 | Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
@@ -58,6 +59,38 @@ depend on that device switch alone, not on the workspace row.
 Roost history remains disabled for the LAN platform, including its developer switch.
 Existing conversations retain Loro history; the native Roost runtime is still packaged
 because the upstream daemon imports it during startup.
+
+## Low-stimulus mode
+
+Attention is this screen's matter, so the switch is per device and never synced.
+Display only: nothing is written to a session, and no CLI, push or iOS behavior
+changes. With the mode off every list is the upstream one.
+
+- **One row per family.** Sessions an agent opened start folded under the row of
+  the Session that opened them, in the Sidebar lists and in a Board's thread list
+  (a thread with the Sessions it opened and its Tabs). `isOpenerCollapsed` in
+  `packages/components/src/lib/low-stimulus.ts` reads the shared, in-memory
+  `sidebarCollapsedOpenedBySessionsAtom`: absent means folded, `false` means the user
+  unfolded it. A restart folds everything again.
+- **One mark per family.** A folded root draws `foldedFamilyActivity`
+  (`components/sidebar-folded-family.ts`) through the row's ordinary
+  `SessionRowStatusIndicator`: send failed, then waiting, working, sending, unread.
+  The row's hover card says how many of each. A Board root draws the family's
+  strongest live status and merged unread the same way; a failed member lifts the
+  family into "Needs you" as before.
+- **Reading the root clears what came before.** A hidden Session counts as unread only
+  for output newer than the root's own `lastReadAt` (`hiddenSessionHasUnread`). The
+  receipt holds the root's last message time, so output after that keeps its mark
+  until the root speaks again or the hidden Session is read.
+- **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
+  bounce on a new wait is unchanged.
+
+A Board's Sidebar row counts unread the way its panel folds the families
+(`boardActivity` with the fold record), so the two agree. Waiting, failures and agent
+notifications always pass through. Not covered: a folded project or machine header
+still counts its rows' own unread, the phone list is untouched (it folds only by the
+user's choice, as before, because its rows have no family mark), and an opened Session
+being viewed has no highlighted row while its family is folded.
 
 ## Voice
 

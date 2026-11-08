@@ -13,6 +13,11 @@ import type {
   SessionStatus,
 } from '@lody/shared';
 
+import { getDefaultStore } from 'jotai';
+import {
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import { LocalProjectItem } from '../src/components/loro-app-sidebar';
 import { LoroSidebar } from '../src/components/loro-sidebar';
 import { SessionList, type SessionListRow } from '../src/components/session-list';
@@ -300,6 +305,61 @@ describe('sidebar local project row', () => {
     render({ ...baseOptions, whetherShowFullList: true });
     expect(container?.querySelectorAll('[data-sidebar-session-id]')).toHaveLength(7);
     expect(container?.querySelector('[data-sidebar-show-more]')?.textContent).toBe('Show less');
+  });
+
+  describe('in low-stimulus mode', () => {
+    const store = getDefaultStore();
+    const rowOf = (id: string) => container?.querySelector(`[data-sidebar-session-id="${id}"]`);
+    const markOf = (id: string) =>
+      rowOf(id)?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]');
+    const renderFamily = (
+      child: Partial<SessionMeta>,
+      liveSessionStatuses: ReadonlyMap<string, SessionStatus> = NO_LIVE_STATUSES
+    ) =>
+      render({
+        onNavigateProject: () => undefined,
+        onNewChatInProject: () => undefined,
+        liveSessionStatuses,
+        sessions: [
+          localSession('opener', { lastMessageAt: 100, lastReadAt: 100 }),
+          localSession('opened', {
+            openedBySessionId: 'opener' as SessionId,
+            lastMessageAt: 90,
+            lastReadAt: 50,
+            ...child,
+          }),
+        ],
+      });
+
+    beforeEach(() => {
+      store.set(experimentalFeaturesEnabledAtom, true);
+      store.set(lowStimulusExperimentEnabledAtom, true);
+    });
+    afterEach(() => {
+      store.set(experimentalFeaturesEnabledAtom, false);
+      store.set(lowStimulusExperimentEnabledAtom, false);
+      localStorage.clear();
+    });
+
+    it('keeps a hidden Session waiting for the user on the opener row', () => {
+      renderFamily(
+        {},
+        new Map<string, SessionStatus>([['opened', { type: 'requestPermission' } as SessionStatus]])
+      );
+      expect(rowOf('opened')).toBeNull();
+      expect(markOf('opener')?.querySelector('.lucide-hand')).not.toBeNull();
+    });
+
+    it('drops a hidden unread the read of the opener covers', () => {
+      renderFamily({});
+      expect(rowOf('opened')).toBeNull();
+      expect(markOf('opener')).toBeNull();
+    });
+
+    it('shows hidden output newer than that read', () => {
+      renderFamily({ lastMessageAt: 150 });
+      expect(markOf('opener')).not.toBeNull();
+    });
   });
 
   it('keeps the status of the Sessions a folded project hides on its header', () => {

@@ -37,7 +37,7 @@ import { BoardThreadPaneView } from '../src/components/boards/board-panel-view';
 import { act, Profiler, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { LoroRepo } from 'loro-repo';
 import {
   getSessionRoomId,
@@ -85,8 +85,14 @@ import { changeBoardMembership } from '../src/components/boards/board-membership
 import { BoardNotesEditor } from '../src/components/boards/board-notes-panel';
 import { BoardSidePanel } from '../src/components/boards/board-side-panel';
 import { BoardSettings, BoardSettingsDialog } from '../src/components/boards/board-settings-panel';
-import { BoardThreadListView } from '../src/components/boards/board-thread-list';
+import {
+  BoardThreadListView,
+  foldedBoardThreadRoot,
+  type BoardThreadItem,
+} from '../src/components/boards/board-thread-list';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
+import { sessionSendStatusesAtom } from '../src/atoms/session-send-status';
+import type { SessionSendStatus } from '../src/lib/session-send-status';
 import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
 import { BoardRenameDialog } from '../src/components/boards/board-rename-dialog';
 import {
@@ -98,7 +104,11 @@ import {
 } from '../src/components/boards/board-project-scope';
 import { BoardSidebar } from '../src/components/boards/board-sidebar-section';
 import { SessionHeaderMenu } from '../src/components/sessions/session-chat-interface';
-import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';
+import {
+  boardExperimentEnabledAtom,
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import {
   boardActivity,
   resolveBoardThreadPageNavigation,
@@ -1202,6 +1212,161 @@ describe('Board side panel', () => {
     }
   });
 
+  describe('low-stimulus mode', () => {
+    const thread = (id: string, patch: Partial<BoardThreadItem> = {}): BoardThreadItem => ({
+      id,
+      title: id,
+      status: 'idle',
+      detail: '',
+      updatedLabel: '',
+      updatedAt: 100,
+      ...patch,
+    });
+    const family = (child: Partial<BoardThreadItem>, root: Partial<BoardThreadItem> = {}) => [
+      thread('root', { lastReadAt: 200, ...root }),
+      thread('child', { depth: 1, ...child }),
+    ];
+    afterEach(() => localStorage.clear());
+    async function mountList(
+      threads: BoardThreadItem[],
+      lowStimulus = true,
+      sendStatuses: Record<string, SessionSendStatus> = {}
+    ) {
+      const store = createStore();
+      store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+      store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+      store.set(sessionSendStatusesAtom, sendStatuses);
+      const view = await mount(
+        <Provider store={store}>
+          <BoardThreadListView now={new Date(0)} threads={threads} onOpen={() => {}} />
+        </Provider>
+      );
+      const row = (id: string) => view.host.querySelector(`[data-sidebar-updated-id="${id}"]`);
+      return {
+        ...view,
+        row,
+        mark: (id: string) => row(id)?.querySelector('[data-session-row-indicator]') ?? null,
+        headers: () =>
+          [...view.host.querySelectorAll('button[aria-expanded]:not([data-session-opened-by-toggle])')].map(
+            (header) => header.textContent
+          ),
+      };
+    }
+
+    it('folds a family into its root, with the disclosure naming what it hides', async () => {
+      const view = await mountList([...family({}), thread('child-2', { depth: 1 })]);
+      try {
+        expect(view.row('root')).not.toBeNull();
+        expect(view.row('child')).toBeNull();
+        expect(
+          view.row('root')?.querySelector('[data-session-opened-by-toggle]')?.getAttribute('aria-label')
+        ).toContain('2');
+        expect(view.headers()).toEqual(['Idle1']);
+
+        await act(async () => {
+          view.row('root')
+            ?.querySelector('[data-session-opened-by-toggle]')
+            ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        expect(view.row('child')).not.toBeNull();
+        expect(view.headers()).toEqual(['Idle3']);
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('leaves a thread with no family as a plain row', async () => {
+      const view = await mountList([thread('alone')]);
+      try {
+        expect(view.row('alone')?.querySelector('[data-session-opened-by-toggle]')).toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws what a member is waiting for on the root, in the group it lifts the family to', async () => {
+      const view = await mountList(family({ status: 'waiting_user' }));
+      try {
+        expect(view.headers()).toEqual(['Needs you1']);
+        expect(view.mark('root')?.querySelector('.lucide-hand')).not.toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws a running member on the root', async () => {
+      const view = await mountList(family({ status: 'running' }));
+      try {
+        expect(view.headers()).toEqual(['Working1']);
+        expect(view.mark('root')?.querySelector('[data-session-working-indicator]')).not.toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws a failed member on the root', async () => {
+      const view = await mountList(family({ status: 'failed' }));
+      try {
+        expect(view.headers()).toEqual(['Needs you1']);
+        expect(view.row('root')?.querySelector('[aria-label="Failed"]')).not.toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws the failed send of a hidden member on the root, above its own unread', async () => {
+      const view = await mountList(family({ unread: true, updatedAt: 300 }), true, {
+        child: {
+          state: 'failed',
+          progress: 0,
+          sentBytes: 0,
+          totalBytes: 0,
+          unsentNewConversation: false,
+        },
+      });
+      try {
+        expect(view.mark('root')?.getAttribute('data-session-send-state')).toBe('failed');
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('drops a member unread the read of the root covers, and keeps a newer one', async () => {
+      const covered = await mountList(family({ unread: true, updatedAt: 150 }));
+      try {
+        expect(covered.mark('root')).toBeNull();
+      } finally {
+        await covered.unmount();
+      }
+      const newer = await mountList(family({ unread: true, updatedAt: 300 }));
+      try {
+        expect(newer.mark('root')).not.toBeNull();
+      } finally {
+        await newer.unmount();
+      }
+    });
+
+    it('does not let an archived member speak for the family', () => {
+      const root = foldedBoardThreadRoot(
+        family({ status: 'waiting_user', archived: true, unread: false })
+      );
+      expect(root.status).toBe('idle');
+    });
+
+    it('without the mode lists every member flat with its own mark', async () => {
+      const view = await mountList(family({ unread: true, updatedAt: 150 }), false);
+      try {
+        expect(view.row('child')).not.toBeNull();
+        expect(view.mark('child')).not.toBeNull();
+        expect(view.mark('root')).toBeNull();
+        expect(view.row('root')?.querySelector('[data-session-opened-by-toggle]')).toBeNull();
+        expect(view.headers()).toEqual(['Idle2']);
+      } finally {
+        await view.unmount();
+      }
+    });
+  });
+
   it('keeps Board conversations out of outside lists while Boards are on', () => {
     const coordinator = makeSession('coordinator', { boardRole: 'coordinator' });
     const thread = makeSession('thread');
@@ -1212,6 +1377,35 @@ describe('Board side panel', () => {
       thread,
       chat,
     ]);
+  });
+
+  it('in low-stimulus mode counts a folded family as its panel row does', () => {
+    const board = testBoard();
+    const root = makeSession('root', { lastMessageAt: 100, lastReadAt: 200 });
+    const covered = makeSession('covered', {
+      openedBySessionId: 'root' as SessionId,
+      lastMessageAt: 150,
+      lastReadAt: 100,
+    });
+    const newer = makeSession('newer', {
+      openedBySessionId: 'root' as SessionId,
+      lastMessageAt: 300,
+      lastReadAt: 100,
+    });
+    const folded = () => true;
+    const unfolded = () => false;
+    expect(boardActivity(board, [root, covered], new Map(), folded).hasUnreadMessages).toBe(false);
+    expect(boardActivity(board, [root, covered], new Map(), unfolded).hasUnreadMessages).toBe(
+      true
+    );
+    expect(boardActivity(board, [root, newer], new Map(), folded).hasUnreadMessages).toBe(true);
+    // The coordinator's own unread lights the row whatever is folded.
+    const coordinator = makeSession('coordinator', { lastMessageAt: 30, lastReadAt: 20 });
+    expect(
+      boardActivity(board, [coordinator, root, covered], new Map(), folded).hasUnreadMessages
+    ).toBe(true);
+    // Without the mode the member's own unread lights the row as before.
+    expect(boardActivity(board, [root, covered], new Map()).hasUnreadMessages).toBe(true);
   });
 
   it('marks a Board by its strongest member state', () => {

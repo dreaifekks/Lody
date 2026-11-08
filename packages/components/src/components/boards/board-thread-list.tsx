@@ -3,16 +3,31 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Check, ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BoardSessionStatus } from '@lody/shared';
+import {
+  sidebarCollapsedOpenedBySessionsAtom,
+  toggleSidebarCollapsedOpenedBySessionAtom,
+} from '@/atoms/focus-layer';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { sessionSendStatesAtom } from '@/atoms/session-send-status';
+import type { SessionSendState } from '@/lib/session-send-status';
+import { hiddenSessionHasUnread, isOpenerCollapsed } from '@/lib/low-stimulus';
 import { useWorkingHandOver } from '@/ui/working-status-mark';
 import {
   UpdatedItemRow,
   useSidebarSessionMenuLabels,
   type UpdatedItemRowProps,
 } from '../sidebar-updated-session-list';
-import { SessionRowStatusIndicator } from '../sidebar-row-shared';
+import { foldedFamilyActivity } from '../sidebar-folded-family';
+import {
+  buildSessionRowOpenedByTreeSlot,
+  SessionRowStatusIndicator,
+  type SessionRowOpenedByTreeSlot,
+  type SidebarGroupActivity,
+} from '../sidebar-row-shared';
 
 export interface BoardThreadItem {
   id: string;
@@ -20,6 +35,8 @@ export interface BoardThreadItem {
   status: BoardSessionStatus;
   /** Output the user has not seen, as a sidebar row's blue dot. */
   unread?: boolean;
+  /** The session's own read receipt: low-stimulus mode reads a folded family against it. */
+  lastReadAt?: number;
   /** The latest conclusion's first line, only once it has been read. */
   summary?: string;
   /** "Agent · machine · project", the facts that say where it runs. */
@@ -68,6 +85,67 @@ const STATUS_ORDER: readonly BoardSessionStatus[] = [
   'idle',
 ];
 
+function strongestBoardStatus(items: readonly Pick<BoardThreadItem, 'status'>[]) {
+  return items.reduce(
+    (strongest, item) =>
+      STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest) ? item.status : strongest,
+    items[0]!.status
+  );
+}
+
+/**
+ * Low-stimulus mode's root row of a folded family: the family's strongest live
+ * state and merged unread, as the one mark every other row of it would have drawn.
+ * Only an unread member has a last message, which is what `updatedAt` then holds.
+ */
+export function foldedBoardThreadRoot(items: readonly BoardThreadItem[]): BoardThreadItem {
+  const root = items[0]!;
+  return {
+    ...root,
+    status: strongestBoardStatus(
+      items.filter((item) => item === root || item.archived !== true)
+    ),
+    unread:
+      root.unread === true ||
+      items
+        .slice(1)
+        .some((item) =>
+          hiddenSessionHasUnread(item.unread === true, item.updatedAt, root.lastReadAt)
+        ),
+  };
+}
+
+/** A member as the row flags a folded family counts; its send state joins later. */
+function boardFamilyRow(item: BoardThreadItem) {
+  return {
+    id: item.id,
+    isWaitingPermission: item.status === 'waiting_user',
+    isWorking: GROUP_BY_STATUS[item.status] === 'active',
+    hasUnreadMessages: item.unread === true,
+    latestMessageAt: item.updatedAt,
+  };
+}
+
+/**
+ * The one mark a folded family's root draws, counted as the sidebar counts a
+ * folded family: every member's live state, the hidden members' unread narrowed
+ * by the root's last read, and every member's local send state, so a hidden
+ * member's failed send still outranks everything.
+ */
+export function boardFamilyActivity(
+  items: readonly BoardThreadItem[],
+  sendStates: Readonly<Record<string, SessionSendState>>
+): SidebarGroupActivity {
+  const root = items[0]!;
+  return foldedFamilyActivity(
+    boardFamilyRow(root),
+    items.slice(1).filter((item) => item.archived !== true).map(boardFamilyRow),
+    root.lastReadAt,
+    (row) => row.id,
+    sendStates
+  );
+}
+
 /**
  * Threads with the sessions they opened, in list order (a root, then its rows
  * one or more steps in). A family stays together under the strongest state of
@@ -85,13 +163,7 @@ export function boardThreadFamilies<
   }
   return families.map((items) => ({
     items,
-    status: items.reduce(
-      (strongest, item) =>
-        STATUS_ORDER.indexOf(item.status) < STATUS_ORDER.indexOf(strongest)
-          ? item.status
-          : strongest,
-      items[0]!.status
-    ),
+    status: strongestBoardStatus(items),
     group:
       items[0]?.archived === true
         ? 'archived'
@@ -193,19 +265,28 @@ export type BoardThreadActions = Pick<
   'onArchive' | 'onRestore' | 'onMarkUnread' | 'onRename' | 'onCopyUrl' | 'onBeginRename'
 >;
 
+type FamilyDisclosure = {
+  /** Low-stimulus mode's family disclosure on a root thread. */
+  openedByTree?: SessionRowOpenedByTreeSlot;
+  /** The one mark of the family folded under this row. */
+  familyActivity?: SidebarGroupActivity;
+};
+
 const noop = () => {};
 const BoardThreadRow = memo(function BoardThreadRow({
   actions,
   onOpen,
   selected,
   now,
+  openedByTree,
+  familyActivity,
   ...thread
 }: BoardThreadItem & {
   now: Date;
   actions?: BoardThreadActions;
   onOpen: (id: string, tabSessionId?: string) => void;
   selected: boolean;
-}) {
+} & FamilyDisclosure) {
   const { t } = useTranslation();
   const labels = useSidebarSessionMenuLabels();
   const item = useMemo(
@@ -246,6 +327,8 @@ const BoardThreadRow = memo(function BoardThreadRow({
             />
           ) : undefined
         }
+        openedByTree={openedByTree}
+        familyActivity={familyActivity}
         rowId={thread.id}
         item={item}
         now={now}
@@ -293,6 +376,10 @@ export function BoardThreadListView({
 }) {
   const { t } = useTranslation();
   const [folded, setFolded] = useState<Partial<Record<GroupKey, boolean>>>({ archived: true });
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
+  const collapsedFamilies = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
+  const toggleFamily = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
+  const sendStates = useAtomValue(sessionSendStatesAtom);
   const labels: Record<GroupKey, string> = {
     attention: t('boards.groups.attention', 'Needs you'),
     active: t('boards.groups.active', 'Working'),
@@ -312,10 +399,28 @@ export function BoardThreadListView({
   return (
     <div {...stylex.props(styles.list)}>
       {GROUP_ORDER.flatMap((key) => {
-        const items = families
+        const rows = families
           .filter((family) => family.group === key)
-          .flatMap((family) => family.items);
-        if (items.length === 0) return [];
+          .flatMap(({ items }): (BoardThreadItem & FamilyDisclosure)[] => {
+            const root = items[0]!;
+            if (!lowStimulusMode || items.length === 1) return items;
+            const expanded = !isOpenerCollapsed(lowStimulusMode, collapsedFamilies, root.id);
+            const openedByTree = buildSessionRowOpenedByTreeSlot(
+              { depth: 0, childCount: items.length - 1, expanded, isLastChild: false },
+              t,
+              () => toggleFamily(root.id)
+            );
+            return expanded
+              ? [{ ...root, openedByTree }, ...items.slice(1)]
+              : [
+                  {
+                    ...foldedBoardThreadRoot(items),
+                    openedByTree,
+                    familyActivity: boardFamilyActivity(items, sendStates),
+                  },
+                ];
+          });
+        if (rows.length === 0) return [];
         const isFolded = folded[key] === true;
         return [
           <button
@@ -327,11 +432,11 @@ export function BoardThreadListView({
           >
             {isFolded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             {labels[key]}
-            <span {...stylex.props(styles.count)}>{items.length}</span>
+            <span {...stylex.props(styles.count)}>{rows.length}</span>
           </button>,
           ...(isFolded
             ? []
-            : items.map((item) => (
+            : rows.map((item) => (
                 <BoardThreadRow
                   key={item.id}
                   {...item}

@@ -543,7 +543,10 @@ export function MobileChatListCard({
              and its "Show N opened sessions" count stay identical across
              platforms and only need translating once. */
           const treeSlot = buildSessionRowOpenedByTreeSlot(node, t, () =>
-            toggleCollapsedOpener(node.id)
+            /* This list keeps the upstream fold default even in low-stimulus
+               mode (its rows draw no family mark), so it tells the shared
+               toggle what it shows. */
+            toggleCollapsedOpener(node.id, !node.expanded)
           );
           /* The chevron only renders while the leading node is free, so only
              then does the row put a tap target in the back-swipe strip. */

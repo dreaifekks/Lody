@@ -23,9 +23,10 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
   child workspaces; exclude contained children from `sessionListAtom` rows.
 
 - Top-level opener/unrelated rows keep flat alignment. `session-row-leading-slot.tsx`
-  owns disclosure for openers and ├/└ for children; hover replaces either with ⋯
-  at the same 7px centre, regardless of activity. Only child slots widen 14px→26px,
-  indenting titles 12px without moving backgrounds. Context menus reuse the toggle.
+  owns disclosure for openers and ├/└ for children; hover replaces a child's connector
+  or a resting glyph with ⋯ at the same 7px centre, regardless of activity, while an
+  opener keeps its disclosure (its menu opens by right-click). Only child slots widen
+  14px→26px, indenting titles 12px without moving backgrounds.
 
 - Conversation titles stay `font-normal`; pin with the glyph, never weight.
 - Sidebar row radius, inset, ink, hover/selected fill and title clipping use
@@ -45,10 +46,11 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
   `SHOW_FULL_BUCKET_THRESHOLD` count roots. Pass `rootRank` everywhere; an opener
   ranks by its freshest opened Session.
 
-- `sidebarCollapsedOpenedBySessionsAtom` defaults expanded. Preserve both navigation
-  directions through the tree, row "Go to Opener Session", `SessionHeaderMenu.openedByRelations`
-  and successful-create/precise-opener cards. Mobile uses the same two fields and
-  per-bucket tree without disclosure, per [mobile/AGENTS.md](mobile/AGENTS.md).
+- `sidebarCollapsedOpenedBySessionsAtom` defaults expanded (folded in low-stimulus mode:
+  `lib/low-stimulus.ts`). Preserve both navigation directions through the tree, row
+  "Go to Opener Session", `SessionHeaderMenu.openedByRelations` and
+  successful-create/precise-opener cards. Mobile: same two fields, per-bucket tree; see
+  [mobile/AGENTS.md](mobile/AGENTS.md).
 
 - Follow the [Session relation Spec](../../../../specs/session-relations.md): archive
   contains Tabs and optionally opened Sessions via `useArchiveSessionWithConfirmation`.

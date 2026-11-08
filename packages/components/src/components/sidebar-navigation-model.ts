@@ -10,6 +10,7 @@ import {
   type SessionListRepoState,
   type SessionListRow,
 } from '@/components/session-list';
+import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { buildOpenedBySessionTree, countOpenedByTreeRoots } from '@/lib/session-opened-by-tree';
 import {
   getVisibleUpdatedItems,
@@ -55,6 +56,8 @@ export type SidebarNavigationModelOptions = {
    * Keyboard navigation must skip rows the user cannot see.
    */
   collapsedOpenedBySessions?: Record<string, boolean>;
+  /** Low-stimulus mode: opened Sessions start collapsed (`isOpenerCollapsed`). */
+  lowStimulusMode?: boolean;
   pinnedItems: SidebarUpdatedItem[];
   pinnedSectionCollapsed: boolean;
   /** Pinned local projects, listed in the Pinned section before its Sessions. */
@@ -81,13 +84,19 @@ function emitSessionGroup(
   items: SidebarNavItem[],
   group: SessionRowGroup,
   showFullSessionGroups: Record<string, boolean>,
-  collapsedOpenedBySessions: Record<string, boolean>
+  collapsedOpenedBySessions: Record<string, boolean>,
+  lowStimulusMode: boolean
 ): void {
   items.push({ kind: 'group-header', groupKey: group.key, collapsed: group.collapsed });
   if (group.collapsed) return;
 
   const showFull = showFullSessionGroups[group.key] ?? false;
-  for (const session of getVisibleSessionGroupRows(group, showFull, collapsedOpenedBySessions)) {
+  for (const session of getVisibleSessionGroupRows(
+    group,
+    showFull,
+    collapsedOpenedBySessions,
+    lowStimulusMode
+  )) {
     items.push({ kind: 'session', sessionId: session.sessionId, groupKey: group.key });
   }
 
@@ -100,11 +109,12 @@ function emitLocalSections(
   items: SidebarNavItem[],
   sections: SidebarNavigationLocalSection[],
   showFullSessionGroups: Record<string, boolean>,
-  collapsedOpenedBySessions: Record<string, boolean>
+  collapsedOpenedBySessions: Record<string, boolean>,
+  lowStimulusMode: boolean
 ): void {
   for (const section of sections) {
     if (section.collapsed) continue;
-    emitLocalProjects(items, section.projects, collapsedOpenedBySessions);
+    emitLocalProjects(items, section.projects, collapsedOpenedBySessions, lowStimulusMode);
     if (section.projectGroups?.length) {
       for (const group of buildGroups(
         section.projectGroupSessions ?? [],
@@ -113,7 +123,13 @@ function emitLocalSections(
         undefined,
         section.projectGroups
       )) {
-        emitSessionGroup(items, group, showFullSessionGroups, collapsedOpenedBySessions);
+        emitSessionGroup(
+          items,
+          group,
+          showFullSessionGroups,
+          collapsedOpenedBySessions,
+          lowStimulusMode
+        );
       }
     }
   }
@@ -122,7 +138,8 @@ function emitLocalSections(
 function emitLocalProjects(
   items: SidebarNavItem[],
   projects: SidebarNavigationLocalProject[],
-  collapsedOpenedBySessions: Record<string, boolean>
+  collapsedOpenedBySessions: Record<string, boolean>,
+  lowStimulusMode: boolean
 ): void {
   for (const project of projects) {
     const projectKey = getLocalProjectSessionGroupKey(project.machineId, project.localProjectId);
@@ -138,7 +155,8 @@ function emitLocalProjects(
     const nodes = buildOpenedBySessionTree(project.sessions, {
       getId: (session) => session.id,
       getOpenedBySessionId: (session) => session.openedByRowSessionId ?? null,
-      isCollapsed: (openerId) => collapsedOpenedBySessions[openerId] === true,
+      isCollapsed: (openerId) =>
+        isOpenerCollapsed(lowStimulusMode, collapsedOpenedBySessions, openerId),
       rootRank: (session) => session.rootRankMs ?? 0,
       ...(project.showFull ? {} : { maxRoots: MAX_VISIBLE_SESSIONS }),
     });
@@ -160,6 +178,7 @@ export function buildSidebarNavigationItems({
   organizeMode,
   showFullSessionGroups,
   collapsedOpenedBySessions = {},
+  lowStimulusMode = false,
   pinnedItems,
   pinnedSectionCollapsed,
   pinnedProjects = [],
@@ -170,13 +189,14 @@ export function buildSidebarNavigationItems({
 
   if (!pinnedSectionCollapsed) {
     // Pinned projects render before the pinned Sessions, in pin order.
-    emitLocalProjects(items, pinnedProjects, collapsedOpenedBySessions);
+    emitLocalProjects(items, pinnedProjects, collapsedOpenedBySessions, lowStimulusMode);
     // The Pinned section renders through the same list component, so it gets the
     // same opened-by tree — resolved inside the pinned items ONLY, which is what
     // keeps a pinned opener from swallowing an unpinned row (and vice versa).
     const pinnedNodes = buildOpenedBySessionTree(sortUpdatedItems(pinnedItems), {
       ...SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS,
-      isCollapsed: (openerId) => collapsedOpenedBySessions[openerId] === true,
+      isCollapsed: (openerId) =>
+        isOpenerCollapsed(lowStimulusMode, collapsedOpenedBySessions, openerId),
     });
     for (const node of pinnedNodes) {
       items.push({ kind: 'session', sessionId: node.item.id, groupKey: '__pinned__' });
@@ -190,7 +210,8 @@ export function buildSidebarNavigationItems({
       orderedItems,
       true,
       updated.showFull,
-      collapsedOpenedBySessions
+      collapsedOpenedBySessions,
+      lowStimulusMode
     )) {
       items.push({ kind: 'session', sessionId: item.id, groupKey: '__updated__' });
     }
@@ -201,7 +222,8 @@ export function buildSidebarNavigationItems({
     items,
     workspace.localSections,
     showFullSessionGroups,
-    collapsedOpenedBySessions
+    collapsedOpenedBySessions,
+    lowStimulusMode
   );
 
   if (!workspace.githubSectionCollapsed) {
@@ -212,12 +234,24 @@ export function buildSidebarNavigationItems({
       undefined,
       workspace.projectGroups
     )) {
-      emitSessionGroup(items, group, showFullSessionGroups, collapsedOpenedBySessions);
+      emitSessionGroup(
+        items,
+        group,
+        showFullSessionGroups,
+        collapsedOpenedBySessions,
+        lowStimulusMode
+      );
     }
   }
 
   for (const group of buildGroups(workspace.chatSessions, [], workspace.chatsCollapsed)) {
-    emitSessionGroup(items, group, showFullSessionGroups, collapsedOpenedBySessions);
+    emitSessionGroup(
+      items,
+      group,
+      showFullSessionGroups,
+      collapsedOpenedBySessions,
+      lowStimulusMode
+    );
   }
 
   return items;

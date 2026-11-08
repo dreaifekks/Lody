@@ -101,6 +101,7 @@ describe('General settings sections', () => {
     expect(titles.slice(-2)).toEqual(['Experimental features', 'Advanced']);
     expect(section('Experimental features')?.switches).toEqual([
       'Enable experimental features',
+      'Low-stimulus mode',
       'Boards',
       'Voice',
       'Notifications from agents',

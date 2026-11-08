@@ -101,8 +101,6 @@ export function SessionRowLeadingSlot({
   restIcon,
   /** Fade the rest state while hovering (e.g. 'group-hover/row:opacity-0' for named groups). */
   fadeClassName = 'group-hover:opacity-0 group-data-[menu-open]:opacity-0',
-  /** Disable an opener disclosure while its ⋯ replacement is active. */
-  restPointerClassName = 'group-hover:pointer-events-none group-data-[menu-open]:pointer-events-none',
   /** Reveal the ⋯ button while hovering. */
   revealClassName = 'group-hover:opacity-100 group-hover:pointer-events-auto group-data-[menu-open]:opacity-100 group-data-[menu-open]:pointer-events-auto',
 }: {
@@ -112,12 +110,15 @@ export function SessionRowLeadingSlot({
   /** A glyph resting in the slot of a row without a tree (a Board); ⋯ replaces it on hover. */
   restIcon?: ReactNode;
   fadeClassName?: string;
-  restPointerClassName?: string;
   revealClassName?: string;
 }) {
   const childTree = openedByTree?.kind === 'child' ? openedByTree : null;
   const openerTree = openedByTree?.kind === 'opener' ? openedByTree : null;
-  const restClassName = showMenuButton
+  // An opener keeps its disclosure under the pointer: the fold is what the row
+  // is hovered for, and its menu still opens by right-click. Only a child's
+  // connector or a resting glyph gives way to ⋯.
+  const menuReplacesRest = showMenuButton === true && !openerTree;
+  const restClassName = menuReplacesRest
     ? cn('transition-opacity duration-100', fadeClassName)
     : undefined;
   const controlLeftClassName = childTree ? TREE_CONTROL_LEFT_CLASS : 'left-1/2';
@@ -145,8 +146,7 @@ export function SessionRowLeadingSlot({
           className={cn(
             'relative z-20 flex h-3.5 w-3.5 items-center justify-center rounded-sm',
             'text-sidebar-foreground-muted transition-[opacity,color] duration-100',
-            'hover:text-sidebar-foreground focus-visible:outline-hidden',
-            showMenuButton && cn(restClassName, restPointerClassName)
+            'hover:text-sidebar-foreground focus-visible:outline-hidden'
           )}
         >
           <ChevronDown
@@ -188,7 +188,7 @@ export function SessionRowLeadingSlot({
       ) : restIcon ? (
         <span className={cn('flex', restClassName)}>{restIcon}</span>
       ) : null}
-      {showMenuButton ? (
+      {menuReplacesRest ? (
         <button
           type="button"
           aria-label={menuLabel}

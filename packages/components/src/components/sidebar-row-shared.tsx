@@ -669,6 +669,7 @@ export function SidebarRowEndSlot({
   isWaitingPermission,
   isWorking,
   hasUnreadMessages,
+  familyActivity,
   restIcon,
   archive,
   interactiveRest = false,
@@ -684,28 +685,42 @@ export function SidebarRowEndSlot({
   isWaitingPermission?: boolean;
   isWorking?: boolean;
   hasUnreadMessages?: boolean;
+  /** Low-stimulus mode's folded family: draws its one mark in place of the row's own flags. */
+  familyActivity?: SidebarGroupActivity;
   restIcon?: ReactNode;
   archive?: ReactNode;
   interactiveRest?: boolean;
   restOnSecondLine?: boolean;
   fadeClassName?: string;
 }) {
+  const waiting = familyActivity ? familyActivity.waiting > 0 : isWaitingPermission;
+  const unread = familyActivity ? familyActivity.unread > 0 : hasUnreadMessages;
   // The end slot outlives the status mark, so the hand-over hold lives here.
-  const drawWorking = useWorkingHandOver(isWorking === true, hasUnreadMessages === true);
+  const drawWorking = useWorkingHandOver(
+    familyActivity ? familyActivity.working > 0 : isWorking === true,
+    unread === true
+  );
   const sendStatus = useAtomValue(sessionSendStatusAtomFamily(sessionId ?? ''));
   const sendLabel = useSessionSendLabel(sendStatus);
+  const sendState = familyActivity
+    ? familyActivity.failed
+      ? 'failed'
+      : familyActivity.sending
+        ? 'sending'
+        : null
+    : sendStatus?.state;
   const hasStatus = hasSessionRowStatus({
-    isWaitingPermission,
+    isWaitingPermission: waiting,
     isWorking: drawWorking,
-    hasUnreadMessages,
-    sendState: sendStatus?.state,
+    hasUnreadMessages: unread,
+    sendState,
   });
   const statusContent = hasStatus ? (
     <SessionRowStatusIndicator
-      isWaitingPermission={isWaitingPermission}
+      isWaitingPermission={waiting}
       isWorking={drawWorking}
-      hasUnreadMessages={hasUnreadMessages}
-      sendState={sendStatus?.state}
+      hasUnreadMessages={unread}
+      sendState={sendState}
       sendProgress={sendStatus && sendStatus.totalBytes > 0 ? sendStatus.progress : undefined}
       sendLabel={sendLabel}
     />
@@ -748,7 +763,7 @@ export function SidebarRowEndSlot({
   );
 }
 
-type SessionRowStatusFlags = {
+export type SessionRowStatusFlags = {
   isWaitingPermission?: boolean;
   isWorking?: boolean;
   hasUnreadMessages?: boolean;

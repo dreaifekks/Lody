@@ -43,6 +43,10 @@ vi.mock('../../../apps/electron/node_modules/electron', () => ({
 
 import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
+import {
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import { useWorkspaceBadge, workspaceBadgeAtom } from '../src/hooks/use-workspace-badge';
 import {
   WindowBadgeService,
@@ -140,6 +144,34 @@ describe('workspace badge reconciliation', () => {
     expect(dock).toBe('1');
     await act(async () => setSessions(session('root', { isArchived: true })));
     expect(dock).toBe('');
+  });
+
+  it('in low-stimulus mode counts only what waits for the user', async () => {
+    const waiting = session('waiting', { lastReadAt: 200 });
+    setSessions(session('unread'), waiting);
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(lowStimulusExperimentEnabledAtom, true);
+    await mount();
+    expect(dock).toBe('');
+    await act(async () => {
+      store.set(lodyPresenceNowMsAtom, 1_000);
+      store.set(lodyPresenceStatesAtom, {
+        waiting: {
+          kind: 'session',
+          sessionId: waiting.id,
+          machineId: waiting.machineId,
+          instanceId: 'worker' as LodyPresenceInstanceId,
+          updatedAt: 1_000,
+          status: { type: 'requestPermission' },
+        },
+      });
+    });
+    expect(store.get(workspaceBadgeAtom)).toEqual({ unread: 0, waiting: 1 });
+    expect(dock).toBe('1');
+    await act(async () => store.set(lowStimulusExperimentEnabledAtom, false));
+    expect(store.get(workspaceBadgeAtom)).toEqual({ unread: 1, waiting: 1 });
+    expect(dock).toBe('2');
+    localStorage.clear();
   });
 
   it('rolls child and side-chat unread/waiting into one closed parent row', async () => {
