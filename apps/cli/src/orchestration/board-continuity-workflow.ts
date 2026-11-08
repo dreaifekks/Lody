@@ -79,16 +79,22 @@ const newConversationPrompt = (input: {
 type TailRow = SessionDirectoryScalars & { position: number };
 
 /**
- * Step outcomes that prove the turn never started: another turn took the
- * Session first, or this Worker is stopping. Retrying later is safe.
+ * Step outcomes that prove the turn never started: another turn or a rewrite
+ * held the Session, or this Worker is stopping. Retrying later is safe.
  */
-const CONTENDED = new Set(['yielded', 'inactive', 'duplicate']);
+const CONTENDED = new Set([
+  'yielded',
+  'inactive',
+  'duplicate',
+  'rewrite-barrier',
+  'claim-contended',
+]);
 
 /**
- * The turn never started because a history rewrite or a short operation held
- * the Session's history lease, as the dispatch check after each turn does while
- * the next step begins. The step tries again after a pause: the refused attempt
- * starts another such check as it returns.
+ * Of those, a history rewrite or a short operation held the Session's history
+ * lease, as the dispatch check after each turn does while the next step begins.
+ * The step tries again after a pause, since the refused attempt starts another
+ * such check as it returns.
  */
 const MOMENTARY = new Set(['rewrite-barrier', 'claim-contended']);
 const MOMENTARY_RETRY_MS = 1_000;
@@ -418,6 +424,8 @@ export class BoardContinuityWorkflow {
         });
         if (!MOMENTARY.has(outcome)) return outcome;
         yield* Effect.sleep(MOMENTARY_RETRY_MS);
+        // A Stop meanwhile holds maintenance until the user speaks again.
+        if (maintenance.inbox(meta.id).paused) return outcome;
       }
     }.bind(this)
   );

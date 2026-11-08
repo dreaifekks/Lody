@@ -3106,29 +3106,34 @@ describe('Board coordinator continuity', () => {
     }
   });
 
+  /**
+   * Starts an idle run whose first try of `step` a short operation turns away,
+   * as the dispatch check after the previous turn does, and resolves once the
+   * step waits to try again.
+   */
+  const refuseOnce = async (h: Harness, step: string) => {
+    let timers: number | undefined;
+    h.maintenance.refuse = (request) => {
+      if (timers !== undefined || !request.stepTurnId.endsWith(`:${step}`)) return undefined;
+      timers = vi.getTimerCount();
+      return 'rewrite-barrier';
+    };
+    h.coordinator.start();
+    h.advance(10 * 60_000 + 1);
+    await h.drain();
+    await vi.waitFor(() => {
+      if (timers === undefined) throw new Error(`the ${step} step has not been turned away`);
+      expect(vi.getTimerCount()).toBe(timers + 1);
+    });
+  };
+
   it.each(['memory', 'compact', 'renew'])(
     'tries the %s step again after a history lease turned it away, and completes the run',
     async (step) => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const h = await largeIdleCoordinator();
       try {
-        // A short operation, such as the dispatch check after the previous turn, holds the lease.
-        let held = true;
-        let timersAtRefusal = 0;
-        let turnedAway!: () => void;
-        const refused = new Promise<void>((resolve) => (turnedAway = resolve));
-        h.maintenance.refuse = (request) => {
-          if (!held || !request.stepTurnId.endsWith(`:${step}`)) return undefined;
-          held = false;
-          timersAtRefusal = vi.getTimerCount();
-          turnedAway();
-          return 'rewrite-barrier';
-        };
-        h.coordinator.start();
-        h.advance(10 * 60_000 + 1);
-        await h.drain();
-        await refused;
-        await vi.waitFor(() => expect(vi.getTimerCount()).toBe(timersAtRefusal + 1));
+        await refuseOnce(h, step);
         // Waiting to try again: the run is not given up.
         expect(records(h)).toEqual([expect.not.objectContaining({ status: 'interrupted' })]);
         await vi.advanceTimersByTimeAsync(1_000);
@@ -3140,6 +3145,41 @@ describe('Board coordinator continuity', () => {
           expect.objectContaining({ kind: 'compact', status: 'done', renewed: true }),
         ]);
         expect(records(h)).toEqual([expect.not.objectContaining({ reason: expect.anything() })]);
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
+  it.each(['memory', 'compact'])(
+    'gives the %s step up when the user stops a turn while it waits to try again',
+    async (step) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const h = await largeIdleCoordinator();
+      try {
+        await refuseOnce(h, step);
+        // Meanwhile the user's message runs and they press Stop: the Inbox stays paused.
+        const input = {
+          workspaceId: h.workspaceId,
+          sessionId: h.coordinatorId,
+          userId: 'user-1',
+          inputId: 'stopped-turn',
+          kind: 'task' as const,
+          config: {},
+        };
+        expect(h.store.inbox.accept(input)).toBe(true);
+        expect(h.store.inbox.begin(input, 'stopped-execution')).toBe(true);
+        expect(h.store.inbox.pause(input, 'stopped-execution')).toBe(true);
+        h.store.inbox.release({ ...input, executionId: 'stopped-execution', outcome: 'user_stop' });
+        await vi.advanceTimersByTimeAsync(1_000);
+        // The run ends either way: given up, not tried again.
+        await until(h, () =>
+          records(h).some((record) => record.status === 'interrupted' || record.renewed === true)
+        );
+        expect(steps(h)).toEqual(step === 'memory' ? ['memory'] : ['memory', 'compact']);
+        expect(records(h)).toEqual([
+          expect.objectContaining({ status: 'interrupted', reason: 'rewrite-barrier' }),
+        ]);
       } finally {
         await h.close();
       }
