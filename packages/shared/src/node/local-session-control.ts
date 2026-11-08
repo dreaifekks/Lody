@@ -643,7 +643,7 @@ export function isLocalSessionControlRequest(value: unknown): value is LocalSess
       typeof value.customAcp === 'undefined' &&
       typeof value.runtimeOverrides === 'undefined' &&
       typeof value.env === 'undefined' &&
-      typeof value.methodId === 'undefined'
+      (value.action === 'start' || typeof value.methodId === 'undefined')
     );
   }
 
