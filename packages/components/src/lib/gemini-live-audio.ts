@@ -59,10 +59,16 @@ const FADE_SECONDS = 0.03;
  * WebRTC track); Gemini takes that for the user talking over it, interrupts,
  * and the cut-off syllable is the "beep" users hear. The canceller loses the
  * speakers again over the silence between replies (users heard the beep when
- * the second reply began), so every reply that starts after the queue ran dry
- * holds the microphone for this long from its first sound.
+ * the second reply began), so every reply holds the microphone for this long
+ * from its first sound.
  */
 const ECHO_SETTLE_SECONDS = 2.5;
+/**
+ * A reply starts after the voice was quiet this long, or after a cut; a
+ * shorter gap is the same reply resuming after a late chunk, which must not
+ * hold the microphone again.
+ */
+const REPLY_GAP_SECONDS = 1;
 
 export type GeminiPcmPlayer = {
   play(pcm: Int16Array, sampleRate: number): void;
@@ -81,7 +87,7 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
   output.connect(context.destination);
   const playing = new Set<AudioBufferSourceNode>();
   let nextStart = 0;
-  /** When the reply now playing began: the first chunk after the queue ran dry. */
+  /** When the reply now playing began. */
   let replyStart = 0;
   const queued = () => Math.max(0, nextStart - context.currentTime);
   return {
@@ -94,8 +100,7 @@ export function createGeminiPcmPlayer(): GeminiPcmPlayer {
       source.buffer = buffer;
       source.connect(output);
       const now = context.currentTime;
-      // Nothing left to play: this chunk opens a new reply.
-      if (nextStart <= now) replyStart = now;
+      if (nextStart === 0 || now - nextStart >= REPLY_GAP_SECONDS) replyStart = now;
       const startAt = Math.max(now, nextStart);
       source.start(startAt);
       nextStart = startAt + buffer.duration;

@@ -119,7 +119,8 @@ the same `<lody-voice-turn>` messages and `<lody-voice-say>` relays.
   in, and the cut-off syllable is the short "beep". It comes back at the start
   of later replies too, after the silence between them, so the renderer sends
   silence instead of the microphone for the first 2.5 s of every reply (one
-  that starts once the queue has run dry, including after an interruption).
+  that starts after 1 s of quiet or after an interruption; a shorter gap is
+  the same reply resuming after a late chunk).
   In a real three-turn call with that echo injected at the start of each
   reply, a guard counted over the whole call let the second reply be cut at
   0.29 s; the per-reply guard let all three play uninterrupted.

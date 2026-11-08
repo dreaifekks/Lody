@@ -567,6 +567,15 @@ describe('Gemini PCM player', () => {
     expect(player.holdsMicrophone()).toBe(false);
   });
 
+  it('keeps a reply resuming after a late chunk in the same window', () => {
+    const player = createGeminiPcmPlayer();
+    player.play(new Int16Array(24_000 * 4), 24_000);
+    // A chunk 0.2 s late leaves the queue dry for a moment.
+    context.currentTime = 4.2;
+    player.play(new Int16Array(24_000 * 3), 24_000);
+    expect(player.holdsMicrophone()).toBe(false);
+  });
+
   it('gives the reply after an interruption its own window', () => {
     const player = createGeminiPcmPlayer();
     player.play(new Int16Array(24_000 * 5), 24_000);
