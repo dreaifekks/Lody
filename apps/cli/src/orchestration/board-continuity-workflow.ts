@@ -79,16 +79,19 @@ const newConversationPrompt = (input: {
 type TailRow = SessionDirectoryScalars & { position: number };
 
 /**
- * Step outcomes that prove the turn never started: another turn or a rewrite
- * held the Session, or this Worker is stopping. Retrying later is safe.
+ * Step outcomes that prove the turn never started: another turn took the
+ * Session first, or this Worker is stopping. Retrying later is safe.
  */
-const CONTENDED = new Set([
-  'yielded',
-  'inactive',
-  'duplicate',
-  'rewrite-barrier',
-  'claim-contended',
-]);
+const CONTENDED = new Set(['yielded', 'inactive', 'duplicate']);
+
+/**
+ * The turn never started because a history rewrite or a short operation held
+ * the Session's history lease, as the dispatch check after each turn does while
+ * the next step begins. The step tries again after a pause: the refused attempt
+ * starts another such check as it returns.
+ */
+const MOMENTARY = new Set(['rewrite-barrier', 'claim-contended']);
+const MOMENTARY_RETRY_MS = 1_000;
 
 /**
  * After a renewal attempt: renewed, still pending when it never started, or given
@@ -394,24 +397,28 @@ export class BoardContinuityWorkflow {
         yieldToInbox?: boolean;
       } = {}
     ) {
-      // The user's next turn and Inbox results go first; the next idle period retries.
-      if (
-        maintenance.busy(meta.id) ||
-        (options.yieldToInbox !== false && maintenance.inbox(meta.id).runnable)
-      )
-        return 'yielded';
-      if (!this.ports.active()) return 'inactive';
-      const driving = yield* history.readDrivingState;
-      const config: SessionTurnInputConfig = driving?.turn.inputConfig ?? {};
-      return yield* maintenance.runTurn({
-        sessionId: meta.id,
-        stepTurnId: boardMaintenanceStepId(runId, name),
-        prompt,
-        config,
-        userId: driving?.turn.userId ?? meta.userId,
-        ...(options.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
-        ...(options.freshAgentSession ? { freshAgentSession: true } : {}),
-      });
+      for (;;) {
+        // The user's next turn and Inbox results go first; the next idle period retries.
+        if (
+          maintenance.busy(meta.id) ||
+          (options.yieldToInbox !== false && maintenance.inbox(meta.id).runnable)
+        )
+          return 'yielded';
+        if (!this.ports.active()) return 'inactive';
+        const driving = yield* history.readDrivingState;
+        const config: SessionTurnInputConfig = driving?.turn.inputConfig ?? {};
+        const outcome = yield* maintenance.runTurn({
+          sessionId: meta.id,
+          stepTurnId: boardMaintenanceStepId(runId, name),
+          prompt,
+          config,
+          userId: driving?.turn.userId ?? meta.userId,
+          ...(options.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
+          ...(options.freshAgentSession ? { freshAgentSession: true } : {}),
+        });
+        if (!MOMENTARY.has(outcome)) return outcome;
+        yield* Effect.sleep(MOMENTARY_RETRY_MS);
+      }
     }.bind(this)
   );
 

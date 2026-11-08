@@ -2050,6 +2050,8 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
     duringStep: async (_request: MaintenanceTurnRequest) => {},
     afterStep: (_request: MaintenanceTurnRequest) => {},
     outcome: (_request: MaintenanceTurnRequest): string => 'completed',
+    /** An outcome for a turn turned away before it started, which leaves no history. */
+    refuse: (_request: MaintenanceTurnRequest): string | undefined => undefined,
     active: false,
     held: new Set<SessionId>(),
     /** Maintenance steps and Inbox launches in the order they reached the Session. */
@@ -2079,6 +2081,8 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
       runBoardMaintenanceTurn: async (request: MaintenanceTurnRequest) => {
         maintenance.runs.push(request);
         maintenance.timeline.push(`step:${request.stepTurnId.split(':').at(-1)}`);
+        const refused = maintenance.refuse(request);
+        if (refused) return refused;
         maintenance.active = true;
         try {
           await maintenance.duringStep(request);
@@ -3101,6 +3105,46 @@ describe('Board coordinator continuity', () => {
       await h.close();
     }
   });
+
+  it.each(['memory', 'compact', 'renew'])(
+    'tries the %s step again after a history lease turned it away, and completes the run',
+    async (step) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const h = await largeIdleCoordinator();
+      try {
+        // A short operation, such as the dispatch check after the previous turn, holds the lease.
+        let held = true;
+        let timersAtRefusal = 0;
+        let turnedAway!: () => void;
+        const refused = new Promise<void>((resolve) => (turnedAway = resolve));
+        h.maintenance.refuse = (request) => {
+          if (!held || !request.stepTurnId.endsWith(`:${step}`)) return undefined;
+          held = false;
+          timersAtRefusal = vi.getTimerCount();
+          turnedAway();
+          return 'rewrite-barrier';
+        };
+        h.coordinator.start();
+        h.advance(10 * 60_000 + 1);
+        await h.drain();
+        await refused;
+        await vi.waitFor(() => expect(vi.getTimerCount()).toBe(timersAtRefusal + 1));
+        // Waiting to try again: the run is not given up.
+        expect(records(h)).toEqual([expect.not.objectContaining({ status: 'interrupted' })]);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+        expect(steps(h)).toEqual(
+          ['memory', 'compact', 'renew'].flatMap((name) => (name === step ? [name, name] : [name]))
+        );
+        expect(records(h)).toEqual([
+          expect.objectContaining({ kind: 'compact', status: 'done', renewed: true }),
+        ]);
+        expect(records(h)).toEqual([expect.not.objectContaining({ reason: expect.anything() })]);
+      } finally {
+        await h.close();
+      }
+    }
+  );
 
   it('keeps results from the old agent between the handoff and the new agent', async () => {
     const h = await largeIdleCoordinator(40_000);
