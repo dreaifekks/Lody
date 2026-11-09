@@ -21,6 +21,7 @@ import {
   type WorkspaceSidebarGroups,
 } from '../src/components/sessions/session-list-rows';
 import { sidebarCollapsedOpenedBySessionsAtom } from '../src/atoms/focus-layer';
+import { setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import { sidebarShowBranchNamesAtom } from '../src/atoms/sidebar-state';
 import {
   experimentalFeaturesEnabledAtom,
@@ -277,6 +278,33 @@ describe('SessionList opened-by rendering', () => {
     });
     expect(row('waiting')).toBeNull();
     expect(mark()?.querySelector('.lucide-hand')).not.toBeNull();
+  });
+
+  it('in low-stimulus mode drops newer hidden output once the opener has been on screen', () => {
+    // The opener's receipt stops at its own last message (200), whenever it was read.
+    const { store } = renderList([
+      makeRow({ sessionId: 'opener', latestMessageAt: 200, lastReadAt: 200 }),
+      makeRow({
+        sessionId: 'newer',
+        openedBySessionId: 'opener',
+        latestMessageAt: 300,
+        hasUnreadMessages: true,
+      }),
+    ]);
+    const mark = () =>
+      container
+        ?.querySelector('[data-sidebar-session-id="opener"]')
+        ?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]');
+    flushSync(() => {
+      store.set(experimentalFeaturesEnabledAtom, true);
+      store.set(lowStimulusExperimentEnabledAtom, true);
+    });
+    expect(mark()).not.toBeNull();
+
+    flushSync(() => store.set(setConversationOnScreenAtom, 'opener', true, 400));
+    expect(mark()).toBeNull();
+    flushSync(() => store.set(setConversationOnScreenAtom, 'opener', false, 500));
+    expect(mark()).toBeNull();
   });
 
   it('carries the read receipt of a session onto its row', () => {

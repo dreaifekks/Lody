@@ -14,6 +14,7 @@ import type {
 } from '@lody/shared';
 
 import { getDefaultStore } from 'jotai';
+import { setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import {
   experimentalFeaturesEnabledAtom,
   lowStimulusExperimentEnabledAtom,
@@ -359,6 +360,14 @@ describe('sidebar local project row', () => {
     it('shows hidden output newer than that read', () => {
       renderFamily({ lastMessageAt: 150 });
       expect(markOf('opener')).not.toBeNull();
+    });
+
+    it('drops that newer output once the opener conversation has been on screen', () => {
+      renderFamily({ lastMessageAt: 150 });
+      act(() => store.set(setConversationOnScreenAtom, 'opener', true, 200));
+      expect(markOf('opener')).toBeNull();
+      act(() => store.set(setConversationOnScreenAtom, 'opener', false, 210));
+      expect(markOf('opener')).toBeNull();
     });
   });
 

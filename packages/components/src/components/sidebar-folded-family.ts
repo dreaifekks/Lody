@@ -10,14 +10,15 @@ import {
 /**
  * What a folded family's root row draws in low-stimulus mode: the root and its
  * hidden Sessions counted as a folded group counts its rows, with each hidden
- * Session's unread state first narrowed by the root's last read.
+ * Session's unread state first narrowed by how far the root is read
+ * (`familyReadThroughAtom`).
  */
 export function foldedFamilyActivity<
   Row extends SessionRowStatusFlags & { latestMessageAt: Date | number | string },
 >(
   root: Row,
   hiddenChildren: readonly Row[],
-  rootLastReadAt: number | undefined,
+  rootReadThrough: number,
   getSessionId: (row: Row) => string,
   sendStates: Readonly<Record<string, SessionSendState>>
 ): SidebarGroupActivity {
@@ -26,7 +27,7 @@ export function foldedFamilyActivity<
     hasUnreadMessages: hiddenSessionHasUnread(
       child.hasUnreadMessages === true,
       new Date(child.latestMessageAt).getTime(),
-      rootLastReadAt
+      rootReadThrough
     ),
   }));
   return summarizeSidebarGroupActivity(

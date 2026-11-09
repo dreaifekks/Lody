@@ -91,6 +91,7 @@ import {
   type BoardThreadItem,
 } from '../src/components/boards/board-thread-list';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
+import { setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import { sessionSendStatusesAtom } from '../src/atoms/session-send-status';
 import type { SessionSendStatus } from '../src/lib/session-send-status';
 import { useBoardActions, useBoardLifecycle } from '../src/components/boards/board-lifecycle';
@@ -1244,6 +1245,7 @@ describe('Board side panel', () => {
       const row = (id: string) => view.host.querySelector(`[data-sidebar-updated-id="${id}"]`);
       return {
         ...view,
+        store,
         row,
         mark: (id: string) => row(id)?.querySelector('[data-session-row-indicator]') ?? null,
         headers: () =>
@@ -1346,9 +1348,24 @@ describe('Board side panel', () => {
       }
     });
 
+    it('clears newer member output once the root thread has been on screen', async () => {
+      // A receipt stops at the root's own last message (100), whenever it was read.
+      const view = await mountList(family({ unread: true, updatedAt: 300 }, { lastReadAt: 100 }));
+      try {
+        expect(view.mark('root')).not.toBeNull();
+        await act(async () => view.store.set(setConversationOnScreenAtom, 'root', true, 400));
+        expect(view.mark('root')).toBeNull();
+        await act(async () => view.store.set(setConversationOnScreenAtom, 'root', false, 500));
+        expect(view.mark('root')).toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
     it('does not let an archived member speak for the family', () => {
       const root = foldedBoardThreadRoot(
-        family({ status: 'waiting_user', archived: true, unread: false })
+        family({ status: 'waiting_user', archived: true, unread: false }),
+        200
       );
       expect(root.status).toBe('idle');
     });
@@ -1392,13 +1409,18 @@ describe('Board side panel', () => {
       lastMessageAt: 300,
       lastReadAt: 100,
     });
-    const folded = () => true;
-    const unfolded = () => false;
+    const receiptOnly = (_rootId: string, rootLastReadAt: number | undefined) =>
+      rootLastReadAt ?? -Infinity;
+    const folded = { isFolded: () => true, readThrough: receiptOnly };
+    const unfolded = { isFolded: () => false, readThrough: receiptOnly };
     expect(boardActivity(board, [root, covered], new Map(), folded).hasUnreadMessages).toBe(false);
     expect(boardActivity(board, [root, covered], new Map(), unfolded).hasUnreadMessages).toBe(
       true
     );
     expect(boardActivity(board, [root, newer], new Map(), folded).hasUnreadMessages).toBe(true);
+    // The root's conversation was on screen after that newer output.
+    const seenAfter = { isFolded: () => true, readThrough: () => 400 };
+    expect(boardActivity(board, [root, newer], new Map(), seenAfter).hasUnreadMessages).toBe(false);
     // The coordinator's own unread lights the row whatever is folded.
     const coordinator = makeSession('coordinator', { lastMessageAt: 30, lastReadAt: 20 });
     expect(

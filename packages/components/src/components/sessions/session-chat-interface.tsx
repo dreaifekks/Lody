@@ -414,6 +414,7 @@ import {
   UNSTARTED_TRAILING_USER_TURN_TIMEOUT_MS,
 } from '@/lib/session-dispatch-state';
 import { shouldMarkSessionRead } from '@/lib/session-read-receipt';
+import { useLowStimulusConversationSeen } from '@/hooks/use-low-stimulus-conversation-seen';
 import { recordSessionRenderTrace, shortTraceId } from '@/lib/session-render-trace';
 import { getPathLauncherIcon } from '@/components/icons/path-launcher-icon';
 import {
@@ -4481,6 +4482,7 @@ export const SessionChatInterface = memo(
       session.id,
       session.lastMessageAt,
     ]);
+    useLowStimulusConversationSeen(session.id, !hideMessageArea && isVisible && !preparingWindow);
 
     const isDispatching = inputActionState === 'dispatching';
     const isAgentBusy = isSessionPromptBusy({

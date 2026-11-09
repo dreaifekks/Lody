@@ -79,18 +79,25 @@ changes. With the mode off every list is the upstream one.
   strongest live status and merged unread the same way; a failed member lifts the
   family into "Needs you" as before.
 - **Reading the root clears what came before.** A hidden Session counts as unread only
-  for output newer than the root's own `lastReadAt` (`hiddenSessionHasUnread`). The
-  receipt holds the root's last message time, so output after that keeps its mark
-  until the root speaks again or the hidden Session is read.
+  for output newer than the user's last read of the root (`hiddenSessionHasUnread`
+  against `familyReadThrough`): the later of the root's `lastReadAt` and the last
+  time its conversation was on this device's screen. The receipt alone is not the
+  time of reading. It holds the root's own last message time, so a root that said
+  nothing since would cover nothing its family did after. A conversation surface
+  reports both ends of being on screen through `useLowStimulusConversationSeen`,
+  under the visibility its read receipt requires; `atoms/low-stimulus-seen.ts` keeps
+  the newest 200 in this device's `localStorage`. While a root is on screen its
+  family draws no unread; output after it left counts again.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
-A Board's Sidebar row counts unread the way its panel folds the families
-(`boardActivity` with the fold record), so the two agree. Waiting, failures and agent
-notifications always pass through. Not covered: a folded project or machine header
-still counts its rows' own unread, the phone list is untouched (it folds only by the
-user's choice, as before, because its rows have no family mark), and an opened Session
-being viewed has no highlighted row while its family is folded.
+A Board's Sidebar row counts unread the way its panel shows the families
+(`boardActivity` with the fold record and each root's read-through), so the two
+agree. Waiting, failures and agent notifications always pass through. Not covered:
+a folded project or machine header still counts its rows' own unread, the phone list
+is untouched (it folds only by the user's choice, as before, because its rows have no
+family mark), and an opened Session being viewed has no highlighted row while its
+family is folded.
 
 ## Voice
 

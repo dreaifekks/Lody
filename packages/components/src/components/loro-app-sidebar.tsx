@@ -1,5 +1,6 @@
 import { getProjectBoundMachineId } from '@lody/shared';
 import { boardEnabledAtom, lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { familyReadThroughAtom } from '@/atoms/low-stimulus-seen';
 import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { foldedFamilyActivity } from './sidebar-folded-family';
 import { boardsSectionCollapsedAtom } from '@/atoms/sidebar-state';
@@ -1160,6 +1161,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
   );
   // Low-stimulus mode: the one mark each folded family draws, resolved once per
   // tree so a memoized row keeps its identity across unrelated updates.
+  const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const familyActivityBySessionId = useMemo(() => {
     if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
     const activityRow = (session: SessionMeta): LocalSessionActivityRow => ({
@@ -1174,13 +1176,20 @@ export const LocalProjectItem = memo(function LocalProjectItem({
           foldedFamilyActivity<LocalSessionActivityRow>(
             activityRow(node.item),
             node.hiddenChildren.map(activityRow),
-            node.item.lastReadAt,
+            familyReadThrough(node.item.id, node.item.lastReadAt),
             (row) => row.id,
             sendStates
           ),
         ])
     );
-  }, [childSessionsByParent, liveSessionStatuses, lowStimulusMode, sendStates, sessionNodes]);
+  }, [
+    childSessionsByParent,
+    familyReadThrough,
+    liveSessionStatuses,
+    lowStimulusMode,
+    sendStates,
+    sessionNodes,
+  ]);
   const collapsedActivityDescription = useSidebarGroupActivityDescription(collapsedActivity);
   const ariaLabel = [baseAriaLabel, removalStateLabel, collapsedActivityDescription]
     .filter(Boolean)
@@ -2125,6 +2134,7 @@ export function LoroAppSidebar({
   // Board row counts unread the way its panel folds the families.
   const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
+  const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const boardItems = useMemo(
     () =>
       boardsEnabled
@@ -2140,7 +2150,11 @@ export function LoroAppSidebar({
                 allActiveSessions,
                 liveSessionStatuses,
                 lowStimulusMode
-                  ? (rootId) => isOpenerCollapsed(true, collapsedOpenedBySessionIds, rootId)
+                  ? {
+                      isFolded: (rootId) =>
+                        isOpenerCollapsed(true, collapsedOpenedBySessionIds, rootId),
+                      readThrough: familyReadThrough,
+                    }
                   : undefined
               ),
             }))
@@ -2150,6 +2164,7 @@ export function LoroAppSidebar({
       boards,
       boardsEnabled,
       collapsedOpenedBySessionIds,
+      familyReadThrough,
       liveSessionStatuses,
       lowStimulusMode,
     ]

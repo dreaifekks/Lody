@@ -69,6 +69,7 @@ import {
 import { sessionSendStatesAtom } from '@/atoms/session-send-status';
 import { sidebarShowBranchNamesAtom } from '@/atoms/sidebar-state';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { familyReadThroughAtom } from '@/atoms/low-stimulus-seen';
 import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { foldedFamilyActivity } from './sidebar-folded-family';
 import {
@@ -496,6 +497,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
   const collapsedOpenedBySessionIds = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const handleToggleOpenedBySessions = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
   const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
+  const familyReadThrough = useAtomValue(familyReadThroughAtom);
 
   const canToggleBucket = typeof onToggleBucket === 'function';
   const canToggleFullBucket = typeof onToggleFullBucket === 'function';
@@ -545,7 +547,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
                   foldedFamilyActivity(
                     node.item,
                     node.hiddenChildren,
-                    node.item.lastReadAt,
+                    familyReadThrough(node.item.id, node.item.lastReadAt),
                     SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS.getId,
                     sendStates
                   ),
@@ -564,6 +566,7 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
       canToggleFullBucket,
       collapsedBuckets,
       collapsedOpenedBySessionIds,
+      familyReadThrough,
       leadingActivity,
       lowStimulusMode,
       sendStates,

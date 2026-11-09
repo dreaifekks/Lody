@@ -17,14 +17,28 @@ export function isOpenerCollapsed(
 }
 
 /**
+ * How far the user has read a family's root: its read receipt, or the last time
+ * its conversation was on this screen, whichever is later. The receipt alone is
+ * not the time of reading. It holds the root's own last message time, so opening
+ * a root that has said nothing since would cover nothing its family did after.
+ */
+export function familyReadThrough(
+  rootLastReadAt: number | undefined,
+  rootSeenAt: number | undefined
+): number {
+  return Math.max(rootLastReadAt ?? -Infinity, rootSeenAt ?? -Infinity);
+}
+
+/**
  * Whether a hidden family member still asks to be read: its own unread state,
- * further limited to output newer than the user's last read of the root. A thread
- * reports its children's conclusions, so reading it covers what came before.
+ * further limited to output newer than the user's last read of the root
+ * (`familyReadThrough`). A thread reports its children's conclusions, so reading
+ * it covers what came before.
  */
 export function hiddenSessionHasUnread(
   hasUnread: boolean,
   latestMessageAtMs: number,
-  rootLastReadAt: number | undefined
+  rootReadThrough: number
 ): boolean {
-  return hasUnread && latestMessageAtMs > (rootLastReadAt ?? -Infinity);
+  return hasUnread && latestMessageAtMs > rootReadThrough;
 }

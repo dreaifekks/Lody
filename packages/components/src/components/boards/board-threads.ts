@@ -93,18 +93,26 @@ export type BoardActivity = {
   hasUnreadMessages: boolean;
 };
 
+/** Low-stimulus mode's view of a Board's thread families, as its panel shows them. */
+export type BoardFamilyView = {
+  /** Whether the panel folds the family of this root. */
+  isFolded: (rootId: SessionId) => boolean;
+  /** How far the user has read this root (`familyReadThroughAtom`). */
+  readThrough: (rootId: SessionId, rootLastReadAt: number | undefined) => number;
+};
+
 /**
  * A Board row reads as one conversation row over all its members, the
  * coordinator included: someone waits for the user, someone works, someone has
  * output the user has not seen. The row draws the strongest, as a session row
- * with Tabs does. In low-stimulus mode `isFolded` names the thread families the
- * panel folds, and the row counts unread as that panel shows it.
+ * with Tabs does. In low-stimulus mode `families` is how the panel shows the
+ * thread families, and the row counts unread as that panel does.
  */
 export function boardActivity(
   board: Pick<BoardMeta, 'id' | 'coordinatorSessionId'>,
   sessions: readonly SessionMeta[],
   liveStatuses: ReadonlyMap<string, SessionStatus>,
-  isFolded?: (rootId: SessionId) => boolean
+  families?: BoardFamilyView
 ): BoardActivity {
   const activity = { isWaitingPermission: false, isWorking: false, hasUnreadMessages: false };
   const members = sessions.filter((session) => session.boardId === board.id);
@@ -112,21 +120,21 @@ export function boardActivity(
     const live = liveStatuses.get(session.id);
     if (awaitsUser(session, live)) activity.isWaitingPermission = true;
     if (live) activity.isWorking = true;
-    if (!isFolded && sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
+    if (!families && sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
   }
-  if (isFolded) activity.hasUnreadMessages = boardUnreadAsPanelShows(board, members, isFolded);
+  if (families) activity.hasUnreadMessages = boardUnreadAsPanelShows(board, members, families);
   return activity;
 }
 
 /**
  * The panel's rule, over the same rows it lists: a folded family's hidden member
- * counts only for output newer than the root's last read; an unfolded family
- * and the coordinator count their own unread as they always did.
+ * counts only for output newer than the user's last read of the root; an unfolded
+ * family and the coordinator count their own unread as they always did.
  */
 function boardUnreadAsPanelShows(
   board: Pick<BoardMeta, 'coordinatorSessionId'>,
   members: readonly SessionMeta[],
-  isFolded: (rootId: SessionId) => boolean
+  { isFolded, readThrough }: BoardFamilyView
 ): boolean {
   const coordinator = members.find((session) => session.id === board.coordinatorSessionId);
   if (coordinator && sessionHasUnreadMessages(coordinator)) return true;
@@ -140,7 +148,8 @@ function boardUnreadAsPanelShows(
     }
     if (!sessionHasUnreadMessages(session)) continue;
     if (depth === 0 || !folded || !root) return true;
-    if (hiddenSessionHasUnread(true, session.lastMessageAt ?? 0, root.lastReadAt)) return true;
+    const rootReadThrough = readThrough(root.id, root.lastReadAt);
+    if (hiddenSessionHasUnread(true, session.lastMessageAt ?? 0, rootReadThrough)) return true;
   }
   return false;
 }
