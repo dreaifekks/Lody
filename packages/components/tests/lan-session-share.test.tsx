@@ -242,7 +242,9 @@ describe('what a LAN share publishes of a conversation', () => {
       { type: 'content', content: { type: 'text', text: `output of ${id}` } },
     ],
   });
+  // Earlier text of any length is work: the long report folds like a short line.
   const report = `The cause: ${'the test waits on a real timer. '.repeat(10)}`.trim();
+  const interim = `Interim: ${'the second run still reads the private log. '.repeat(8)}`.trim();
   const turn = (id: string, answer: string) => [
     {
       id: `${id}-u`,
@@ -288,12 +290,17 @@ describe('what a LAN share publishes of a conversation', () => {
         },
       ],
     },
-    // Still running: no answer yet, so nothing of it but substantive text.
+    // Still running: no answer yet, so nothing of it, however long.
     {
       id: `${id}-r`,
       role: 'assistant',
       timestamp: '2026-10-09T08:02:00.000Z',
-      items: [{ type: 'text', text: 'Looking again.' }, command(`${id}3`, 'cat /etc/hosts')],
+      items: [
+        { type: 'text', text: 'Looking again.' },
+        command(`${id}3`, 'cat /etc/hosts'),
+        { type: 'text', text: interim },
+        command(`${id}6`, 'pnpm test'),
+      ],
     },
     // Still running and closing in a short line: narration, not an answer.
     {
@@ -340,6 +347,8 @@ describe('what a LAN share publishes of a conversation', () => {
       for (const secret of [
         'private reasoning',
         'Running the tests first.',
+        'The cause:',
+        'Interim:',
         'rm -rf',
         'output of',
         'old line',
@@ -364,7 +373,6 @@ describe('what a LAN share publishes of a conversation', () => {
       ]) {
         expect([index, text.includes(secret)]).toEqual([index, false]);
       }
-      expect(text).toContain(report);
       expect(text).toContain(index === 0 ? 'Fixed: use fake timers.' : 'The child answer.');
       expect(text).toContain(index === 0 ? 'Question r?' : 'Question c?');
     }
@@ -376,7 +384,7 @@ describe('what a LAN share publishes of a conversation', () => {
     }>;
     expect(root.map((entry) => entry.id)).toEqual(['r-u', 'r-a']);
     expect(root[1]?.endedAt).toBe(Date.parse('2026-10-09T08:01:00.000Z'));
-    expect(root[1]?.items.map((item) => item.type)).toEqual(['text', 'text']);
+    expect(root[1]?.items.map((item) => item.type)).toEqual(['text']);
   });
 
   describe('a picture a machine keeps as a file', () => {

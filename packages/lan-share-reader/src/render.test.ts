@@ -19,6 +19,26 @@ const render = (history: Json) =>
     history
   );
 
+/** What a reader sees of each message row: a closed step shows its summary only. */
+const shown = (page: HTMLElement) =>
+  [...page.querySelectorAll<HTMLElement>('.message > *')]
+    .filter((node) => !node.hidden)
+    .map((node) =>
+      (node instanceof HTMLDetailsElement && !node.open
+        ? node.querySelector('summary')
+        : node
+      )?.textContent
+        ?.replace(/\s+/g, ' ')
+        .trim()
+    );
+
+const command = (id: string, line: string, status = 'completed') => ({
+  type: 'tool_call',
+  toolCallId: id,
+  status,
+  content: [{ type: 'terminal_command', command: line }],
+});
+
 describe('the reader page', () => {
   it('renders Markdown without letting a conversation run anything', () => {
     const page = render([
@@ -72,12 +92,6 @@ describe('the reader page', () => {
   });
 
   describe('a finished turn', () => {
-    const command = (id: string, line: string, status = 'completed') => ({
-      type: 'tool_call',
-      toolCallId: id,
-      status,
-      content: [{ type: 'terminal_command', command: line }],
-    });
     const report = `The cause: ${'the test waits on a real timer. '.repeat(10)}`.trim();
     const turn = (fields: { [key: string]: Json }) => ({
       id: 'a1',
@@ -94,24 +108,12 @@ describe('the reader page', () => {
       ],
       ...fields,
     });
-    /** What a reader sees of each assistant row: a closed step shows its summary only. */
-    const shown = (page: HTMLElement) =>
-      [...page.querySelectorAll<HTMLElement>('.message > *')]
-        .filter((node) => !node.hidden)
-        .map((node) =>
-          (node instanceof HTMLDetailsElement && !node.open
-            ? node.querySelector('summary')
-            : node
-          )?.textContent
-            ?.replace(/\s+/g, ' ')
-            .trim()
-        );
 
-    it('shows the answer and folds its work into one row with the duration', () => {
+    it('shows the answer and folds its work, earlier text however long, into one row', () => {
       const page = render([
         turn({ finished: true, endedAt: Date.parse('2026-10-09T08:01:44.000Z') }),
       ]);
-      expect(shown(page)).toEqual(['Worked for 1m 44s', report, 'Fixed: fake timers']);
+      expect(shown(page)).toEqual(['Worked for 1m 44s', 'Fixed: fake timers']);
 
       const row = page.querySelector<HTMLButtonElement>('button.worked')!;
       expect(row.getAttribute('aria-expanded')).toBe('false');
@@ -135,7 +137,7 @@ describe('the reader page', () => {
       expect(group.querySelector('details.failed')?.textContent).toContain('vitest --repeat 200');
       expect(page.textContent).not.toContain('Let me look.');
       row.click();
-      expect(shown(page)).toHaveLength(3);
+      expect(shown(page)).toHaveLength(2);
     });
 
     it('shows of a published turn exactly what it shows folded, and no row to open', () => {
@@ -180,7 +182,7 @@ describe('the reader page', () => {
       expect(shown(endsInWork)).toEqual(['Checking.', 'Ran 1 command']);
     });
 
-    it('keeps the answer a thin closing note follows', () => {
+    it('folds the answer a thin closing note follows, as the desktop does', () => {
       const page = render([
         {
           id: 'a1',
@@ -195,11 +197,7 @@ describe('the reader page', () => {
           ],
         },
       ]);
-      expect(shown(page)).toEqual([
-        'Took 2 steps',
-        'The build is in dist/app.js.',
-        'The background task finished too.',
-      ]);
+      expect(shown(page)).toEqual(['Took 2 steps', 'The background task finished too.']);
     });
 
     it('folds a plan and the work after its approval each on its own', () => {
@@ -388,5 +386,142 @@ describe('the reader page', () => {
       { id: 'c3', depth: 1 },
       { id: 'c2', depth: 2 },
     ]);
+  });
+});
+
+describe('what a share publishes of a turn', () => {
+  const long = `Findings so far: ${'the cache key ignores the locale. '.repeat(10)}`.trim();
+  const structured = '## Next\n\n- read the cache\n- rebuild the key';
+  const table = '| file | state |\n| --- | --- |\n| cache.ts | stale |';
+  const answer = 'Fixed: the cache key now includes the locale.';
+  const assistant = (id: string, items: Json[], fields: { [key: string]: Json } = {}) => ({
+    id,
+    role: 'assistant',
+    timestamp: '2026-11-10T08:00:00.000Z',
+    items,
+    ...fields,
+  });
+  /** The history a share carries, as JSON, and the page a reader opens on it. */
+  const publish = (history: Json[]) => {
+    const published = projectLanShareHistory(history) as Json;
+    return { json: JSON.stringify(published), page: render(published) };
+  };
+  const expectLeftOut = (json: string, texts: string[]) => {
+    for (const text of texts) expect([text, json.includes(text)]).toEqual([text, false]);
+  };
+
+  it('publishes the closing text and no earlier text, however long or structured', () => {
+    expect(long.length).toBeGreaterThanOrEqual(300);
+    const { json, page } = publish([
+      assistant(
+        'a1',
+        [
+          { type: 'thought', text: 'Let me look.' },
+          { type: 'text', text: long },
+          command('t1', 'rg cacheKey'),
+          { type: 'text', text: structured },
+          command('t2', 'pnpm test'),
+          { type: 'text', text: table },
+          command('t3', 'pnpm test'),
+          { type: 'text', text: answer },
+          { type: 'text', text: 'All tests pass.' },
+        ],
+        { finished: true }
+      ),
+    ]);
+    expectLeftOut(json, ['Findings so far', 'read the cache', 'cache.ts', 'Let me look.', 'rg ']);
+    // The whole closing run is the answer.
+    expect(shown(page)).toEqual([answer, 'All tests pass.']);
+    expect(page.querySelector('.worked')).toBeNull();
+  });
+
+  it('publishes a thin closing note alone, not the text before it', () => {
+    const { json, page } = publish([
+      assistant(
+        'a1',
+        [
+          { type: 'text', text: 'Starting the build.' },
+          command('t1', 'pnpm build'),
+          { type: 'text', text: 'The build is in dist/app.js.' },
+          command('t2', 'cat task.log'),
+          { type: 'text', text: 'Done.' },
+        ],
+        { finished: true }
+      ),
+    ]);
+    expectLeftOut(json, ['Starting the build.', 'dist/app.js']);
+    expect(shown(page)).toEqual(['Done.']);
+  });
+
+  it('publishes no text of a segment still running or showing no answer', () => {
+    const { json, page } = publish([
+      { id: 'u1', role: 'user', items: [{ type: 'text', text: 'Why is it stale?' }] },
+      // Still running: what it said so far is the process, however long.
+      assistant('a1', [{ type: 'text', text: long }, command('t1', 'rg cacheKey')]),
+      assistant('a2', [command('t2', 'pnpm test'), { type: 'text', text: answer }]),
+      // Over, but ending in work.
+      assistant('a3', [{ type: 'text', text: structured }, command('t3', 'pnpm test')], {
+        finished: true,
+      }),
+      // Cut off by a restart: the notice is no answer.
+      assistant(
+        'a4',
+        [
+          { type: 'text', text: table },
+          command('t4', 'pnpm test'),
+          { type: 'system_notice', name: 'chat_failed' },
+        ],
+        { finished: true }
+      ),
+      // The plan is answered; the work after its approval stopped mid-step.
+      assistant(
+        'a5',
+        [
+          { type: 'text', text: 'Plan: rebuild the key.' },
+          { type: 'tool_call', toolCallId: 'p', kind: 'switch_mode', title: 'Exited Plan Mode' },
+          command('t5', 'pnpm test'),
+          { type: 'text', text: long },
+          command('t6', 'pnpm build'),
+        ],
+        { finished: true }
+      ),
+    ]);
+    expect((JSON.parse(json) as Array<{ id: string }>).map((entry) => entry.id)).toEqual([
+      'u1',
+      'a5',
+    ]);
+    expectLeftOut(json, ['Findings so far', answer, 'read the cache', 'cache.ts', 'Exited']);
+    expect(shown(page)).toEqual(['Why is it stale?', 'Plan: rebuild the key.']);
+  });
+
+  it('publishes the pictures the desktop never folds, after the answer and between steps', () => {
+    const { json, page } = publish([
+      assistant(
+        'a1',
+        [
+          { type: 'text', text: long },
+          command('t1', 'pnpm screenshot'),
+          { type: 'image', imageId: 'a1', fileName: 'before.png' },
+          command('t2', 'pnpm build'),
+          { type: 'text', text: answer },
+          { type: 'image', imageId: 'a1', fileName: 'after.png' },
+        ],
+        { finished: true }
+      ),
+    ]);
+    const [turn] = JSON.parse(json) as Array<{ items: Array<{ [key: string]: string }> }>;
+    expect(turn?.items.map((item) => item.fileName ?? item.text)).toEqual([
+      'before.png',
+      answer,
+      'after.png',
+    ]);
+    expectLeftOut(json, ['Findings so far', 'pnpm']);
+    const message = page.querySelector('.message')!;
+    expect([...message.children].map((node) => node.className)).toEqual(['images', 'md', 'images']);
+    expect([...message.querySelectorAll('img')].map((node) => node.alt)).toEqual([
+      'before.png',
+      'after.png',
+    ]);
+    expect(message.querySelector('.md')?.textContent?.trim()).toBe(answer);
   });
 });

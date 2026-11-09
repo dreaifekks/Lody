@@ -290,10 +290,10 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
   }
 }
 
-// A finished turn reads like the desktop's: its answer shows, and the work
-// before it (thinking, tool calls, short narration) folds into one row. The
-// rules are those the window publishes by, in `lan-share-visible.ts` of
-// `@lody/shared`, which imports nothing and is bundled by its path.
+// A finished turn reads like the desktop's: its closing text shows, and the
+// work before it (thinking, tool calls and every earlier text) folds into one
+// row. The rules are those the window publishes by, in `lan-share-visible.ts`
+// of `@lody/shared`, which imports nothing and is bundled by its path.
 
 const isShownStep = (item: JsonObject): boolean =>
   item.type === 'tool_call' && item.kind !== 'think';
