@@ -72,6 +72,7 @@ import {
 } from '@/atoms/focus-layer';
 import { sidebarShowBranchNamesAtom } from '@/atoms/sidebar-state';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { familyReadThroughAtom } from '@/atoms/low-stimulus-seen';
 import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { foldedFamilyActivity } from './sidebar-folded-family';
 import {
@@ -1779,6 +1780,7 @@ const SessionGroupSection = memo(function SessionGroupSection({
   );
   // Low-stimulus mode: the one mark each folded family draws, resolved once per
   // tree so a memoized row keeps its identity across unrelated updates.
+  const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const familyActivityBySessionId = useMemo(() => {
     if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
     return new Map(
@@ -1789,13 +1791,13 @@ const SessionGroupSection = memo(function SessionGroupSection({
           foldedFamilyActivity(
             node.item,
             node.hiddenChildren,
-            node.item.lastReadAt,
+            familyReadThrough(node.item.sessionId, node.item.lastReadAt),
             SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
             sendStates
           ),
         ])
     );
-  }, [lowStimulusMode, sendStates, visibleNodes]);
+  }, [familyReadThrough, lowStimulusMode, sendStates, visibleNodes]);
   const toggleListLabel = whetherShowFullList
     ? t('sessions.showLess', 'Show less')
     : t('sessions.showAll', 'Show all ({{count}})', { count: group.sessions.length });

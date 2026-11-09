@@ -1,16 +1,29 @@
-import { createStore } from 'jotai';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { createStore, Provider } from 'jotai';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   sidebarCollapsedOpenedBySessionsAtom,
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '../src/atoms/focus-layer';
+import { familyReadThroughAtom, setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import {
   experimentalFeaturesEnabledAtom,
   lowStimulusExperimentEnabledAtom,
   lowStimulusModeEnabledAtom,
 } from '../src/atoms/settings';
 import { foldedFamilyActivity } from '../src/components/sidebar-folded-family';
-import { hiddenSessionHasUnread, isOpenerCollapsed } from '../src/lib/low-stimulus';
+import { useLowStimulusConversationSeen } from '../src/hooks/use-low-stimulus-conversation-seen';
+import {
+  familyReadThrough,
+  hiddenSessionHasUnread,
+  isOpenerCollapsed,
+} from '../src/lib/low-stimulus';
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Row = {
   id: string;
@@ -20,10 +33,12 @@ type Row = {
   isWaitingPermission?: boolean;
 };
 
-const family = (root: Row, hidden: Row[], rootLastReadAt?: number, sendStates = {}) =>
-  foldedFamilyActivity(root, hidden, rootLastReadAt, (row) => row.id, sendStates);
+const family = (root: Row, hidden: Row[], rootReadThrough = -Infinity, sendStates = {}) =>
+  foldedFamilyActivity(root, hidden, rootReadThrough, (row) => row.id, sendStates);
 
 const root: Row = { id: 'root', latestMessageAt: 100 };
+
+afterEach(() => localStorage.clear());
 
 describe('isOpenerCollapsed', () => {
   it('reads an absent opener as expanded without the mode and folded with it', () => {
@@ -94,12 +109,186 @@ describe('hiddenSessionHasUnread', () => {
 
   it('counts output newer than that read, and any unread output of a never-read root', () => {
     expect(hiddenSessionHasUnread(true, 300, 200)).toBe(true);
-    expect(hiddenSessionHasUnread(true, 300, undefined)).toBe(true);
+    expect(hiddenSessionHasUnread(true, 300, familyReadThrough(undefined, undefined))).toBe(true);
   });
 
   it('never makes a read or closed session unread', () => {
     expect(hiddenSessionHasUnread(false, 300, 200)).toBe(false);
-    expect(hiddenSessionHasUnread(false, 300, undefined)).toBe(false);
+    expect(hiddenSessionHasUnread(false, 300, familyReadThrough(undefined, undefined))).toBe(false);
+  });
+});
+
+describe('familyReadThrough', () => {
+  it('is the later of the read receipt and the last time the root was on screen', () => {
+    expect(familyReadThrough(100, 300)).toBe(300);
+    expect(familyReadThrough(300, 100)).toBe(300);
+    expect(familyReadThrough(100, undefined)).toBe(100);
+    expect(familyReadThrough(undefined, 300)).toBe(300);
+  });
+});
+
+// A read receipt holds the root's own last message time, never the time of reading.
+// This root last spoke at 100 and is read through 100; its hidden Session spoke later.
+describe('reading a folded family through its root', () => {
+  const hiddenUnread = (store: ReturnType<typeof createStore>, latestMessageAt: number) =>
+    family(
+      root,
+      [{ id: 'child', latestMessageAt, hasUnreadMessages: true }],
+      store.get(familyReadThroughAtom)('root', 100)
+    ).unread;
+  /** Another window's write, as this window hears of it. */
+  const hearStored = (seenAt: Record<string, number>) =>
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'lody-low-stimulus-seen-at',
+        newValue: JSON.stringify(seenAt),
+        storageArea: localStorage,
+      })
+    );
+
+  beforeEach(() => localStorage.clear());
+
+  it('keeps newer hidden output until the root conversation has been on screen', () => {
+    const store = createStore();
+    expect(hiddenUnread(store, 150)).toBe(1);
+    store.set(setConversationOnScreenAtom, 'root', true, 200);
+    store.set(setConversationOnScreenAtom, 'root', false, 210);
+    expect(hiddenUnread(store, 150)).toBe(0);
+  });
+
+  it('counts nothing a hidden Session says while the root is on screen', () => {
+    const store = createStore();
+    store.set(setConversationOnScreenAtom, 'root', true, 200);
+    expect(hiddenUnread(store, 9_000)).toBe(0);
+  });
+
+  it('counts hidden output again once it is newer than the moment the root left the screen', () => {
+    const store = createStore();
+    store.set(setConversationOnScreenAtom, 'root', true, 200);
+    store.set(setConversationOnScreenAtom, 'root', false, 300);
+    expect(hiddenUnread(store, 300)).toBe(0);
+    expect(hiddenUnread(store, 301)).toBe(1);
+  });
+
+  it('reads each root on its own and never behind its receipt', () => {
+    const store = createStore();
+    store.set(setConversationOnScreenAtom, 'other', true, 200);
+    expect(hiddenUnread(store, 150)).toBe(1);
+    store.set(setConversationOnScreenAtom, 'root', true, 40);
+    store.set(setConversationOnScreenAtom, 'root', false, 50);
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(100);
+  });
+
+  it('still knows after a restart that a conversation showing at the time had been seen', () => {
+    createStore().set(setConversationOnScreenAtom, 'root', true, 200);
+    const restarted = createStore();
+    // Mounting reads this device's storage, as the module does when the app loads.
+    const unsubscribe = restarted.sub(familyReadThroughAtom, () => {});
+    expect(restarted.get(familyReadThroughAtom)('root', 100)).toBe(200);
+    unsubscribe();
+  });
+
+  it('remembers the 200 conversations seen last and falls back to the receipt for older ones', () => {
+    const store = createStore();
+    for (let at = 1; at <= 201; at += 1) {
+      store.set(setConversationOnScreenAtom, `session-${at}`, true, at);
+      store.set(setConversationOnScreenAtom, `session-${at}`, false, at);
+    }
+    const readThrough = store.get(familyReadThroughAtom);
+    expect(readThrough('session-1', undefined)).toBe(-Infinity);
+    expect(readThrough('session-2', undefined)).toBe(2);
+    expect(readThrough('session-201', undefined)).toBe(201);
+  });
+
+  it('keeps what another window saw when this one writes without having heard of it', () => {
+    const first = createStore();
+    first.set(setConversationOnScreenAtom, 'root', true, 200);
+    first.set(setConversationOnScreenAtom, 'root', false, 210);
+    // No storage event reached the second window before it wrote.
+    createStore().set(setConversationOnScreenAtom, 'other', true, 230);
+    const restarted = createStore();
+    const unsubscribe = restarted.sub(familyReadThroughAtom, () => {});
+    expect(restarted.get(familyReadThroughAtom)('root', 100)).toBe(210);
+    expect(restarted.get(familyReadThroughAtom)('other', 100)).toBe(230);
+    unsubscribe();
+  });
+
+  it('adds what another window stored to its own instead of replacing it', () => {
+    const store = createStore();
+    const unsubscribe = store.sub(familyReadThroughAtom, () => {});
+    store.set(setConversationOnScreenAtom, 'root', true, 200);
+    store.set(setConversationOnScreenAtom, 'root', false, 210);
+    // That window wrote before it heard of this one's root, and saw an older moment of it.
+    hearStored({ other: 230 });
+    hearStored({ root: 205 });
+    expect(hiddenUnread(store, 208)).toBe(0);
+    expect(store.get(familyReadThroughAtom)('other', 100)).toBe(230);
+    unsubscribe();
+  });
+});
+
+describe('useLowStimulusConversationSeen', () => {
+  let host: HTMLDivElement;
+  let reactRoot: Root;
+  const Surface = (props: { sessionId: string; onScreen: boolean }) => {
+    useLowStimulusConversationSeen(props.sessionId, props.onScreen);
+    return null;
+  };
+  const show = (store: ReturnType<typeof createStore>, onScreen: boolean, sessionId = 'root') =>
+    act(() =>
+      reactRoot.render(
+        createElement(Provider, { store }, createElement(Surface, { sessionId, onScreen }))
+      )
+    );
+  const modeStore = (lowStimulus: boolean) => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+    store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+    return store;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000);
+    host = document.createElement('div');
+    reactRoot = createRoot(host);
+  });
+  afterEach(() => {
+    act(() => reactRoot.unmount());
+    vi.useRealTimers();
+  });
+
+  it('reads a conversation through now while it is on screen, then through the moment it left', () => {
+    const store = modeStore(true);
+    show(store, true);
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(Infinity);
+    vi.setSystemTime(2_000);
+    show(store, false);
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(2_000);
+  });
+
+  it('records the moment a conversation on screen is unmounted or replaced by another', () => {
+    const store = modeStore(true);
+    show(store, true);
+    vi.setSystemTime(3_000);
+    show(store, true, 'next');
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(3_000);
+    expect(store.get(familyReadThroughAtom)('next', 100)).toBe(Infinity);
+    vi.setSystemTime(4_000);
+    act(() => reactRoot.unmount());
+    expect(store.get(familyReadThroughAtom)('next', 100)).toBe(4_000);
+  });
+
+  it('records nothing while the mode is off, and starts when it turns on', () => {
+    const store = modeStore(false);
+    show(store, true);
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(100);
+    act(() => {
+      store.set(experimentalFeaturesEnabledAtom, true);
+      store.set(lowStimulusExperimentEnabledAtom, true);
+    });
+    expect(store.get(familyReadThroughAtom)('root', 100)).toBe(Infinity);
   });
 });
 

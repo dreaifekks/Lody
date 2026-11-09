@@ -16,6 +16,7 @@ import {
   type SidebarUpdatedItem,
 } from '../src/components/sidebar-updated-session-list';
 import { sidebarCollapsedOpenedBySessionsAtom } from '../src/atoms/focus-layer';
+import { setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import {
   experimentalFeaturesEnabledAtom,
   lowStimulusExperimentEnabledAtom,
@@ -151,22 +152,24 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
     document.body.appendChild(container);
     root = createRoot(container);
 
-    flushSync(() => {
-      root?.render(
-        React.createElement(
-          Provider,
-          { store },
-          React.createElement(SidebarUpdatedSessionList, {
-            items,
-            now: new Date('2026-04-22T12:00:00.000Z'),
-            selectedItemId: options.selectedItemId ?? null,
-            onSelectItem,
-          })
-        )
-      );
-    });
+    const show = (list: SidebarUpdatedItem[]) =>
+      flushSync(() => {
+        root?.render(
+          React.createElement(
+            Provider,
+            { store },
+            React.createElement(SidebarUpdatedSessionList, {
+              items: list,
+              now: new Date('2026-04-22T12:00:00.000Z'),
+              selectedItemId: options.selectedItemId ?? null,
+              onSelectItem,
+            })
+          )
+        );
+      });
+    show(items);
 
-    return { onSelectItem };
+    return { onSelectItem, store, show };
   }
 
   function depthOf(id: string): string | null | undefined {
@@ -282,6 +285,24 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
       flushSync(() => root?.unmount());
       container?.remove();
       render(family({ hasUnreadMessages: true, latestMessageAt: 1_100 }), { lowStimulus: true });
+      expect(markOf('opener')).not.toBeNull();
+    });
+
+    it('clears newer hidden output once the opener has been on screen, until more follows', () => {
+      // A receipt stops at the opener's own last message (1_000), whenever it was read.
+      const newer = (latestMessageAt: number) =>
+        family({ hasUnreadMessages: true, latestMessageAt });
+      const { store, show } = render(newer(1_100), { lowStimulus: true });
+      expect(markOf('opener')).not.toBeNull();
+
+      flushSync(() => store.set(setConversationOnScreenAtom, 'opener', true, 1_200));
+      expect(markOf('opener')).toBeNull();
+      show(newer(1_250));
+      expect(markOf('opener')).toBeNull();
+
+      flushSync(() => store.set(setConversationOnScreenAtom, 'opener', false, 1_300));
+      expect(markOf('opener')).toBeNull();
+      show(newer(1_400));
       expect(markOf('opener')).not.toBeNull();
     });
 

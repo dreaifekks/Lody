@@ -11,6 +11,7 @@ import {
   sidebarCollapsedOpenedBySessionsAtom,
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '@/atoms/focus-layer';
+import { familyReadThroughAtom } from '@/atoms/low-stimulus-seen';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
 import { sessionSendStatesAtom } from '@/atoms/session-send-status';
 import type { SessionSendState } from '@/lib/session-send-status';
@@ -35,7 +36,7 @@ export interface BoardThreadItem {
   status: BoardSessionStatus;
   /** Output the user has not seen, as a sidebar row's blue dot. */
   unread?: boolean;
-  /** The session's own read receipt: low-stimulus mode reads a folded family against it. */
+  /** The session's own read receipt, one half of how far a folded family's root is read. */
   lastReadAt?: number;
   /** The latest conclusion's first line, only once it has been read. */
   summary?: string;
@@ -98,7 +99,10 @@ function strongestBoardStatus(items: readonly Pick<BoardThreadItem, 'status'>[])
  * state and merged unread, as the one mark every other row of it would have drawn.
  * Only an unread member has a last message, which is what `updatedAt` then holds.
  */
-export function foldedBoardThreadRoot(items: readonly BoardThreadItem[]): BoardThreadItem {
+export function foldedBoardThreadRoot(
+  items: readonly BoardThreadItem[],
+  rootReadThrough: number
+): BoardThreadItem {
   const root = items[0]!;
   return {
     ...root,
@@ -110,7 +114,7 @@ export function foldedBoardThreadRoot(items: readonly BoardThreadItem[]): BoardT
       items
         .slice(1)
         .some((item) =>
-          hiddenSessionHasUnread(item.unread === true, item.updatedAt, root.lastReadAt)
+          hiddenSessionHasUnread(item.unread === true, item.updatedAt, rootReadThrough)
         ),
   };
 }
@@ -129,18 +133,18 @@ function boardFamilyRow(item: BoardThreadItem) {
 /**
  * The one mark a folded family's root draws, counted as the sidebar counts a
  * folded family: every member's live state, the hidden members' unread narrowed
- * by the root's last read, and every member's local send state, so a hidden
+ * by how far the root is read, and every member's local send state, so a hidden
  * member's failed send still outranks everything.
  */
 export function boardFamilyActivity(
   items: readonly BoardThreadItem[],
-  sendStates: Readonly<Record<string, SessionSendState>>
+  sendStates: Readonly<Record<string, SessionSendState>>,
+  rootReadThrough: number
 ): SidebarGroupActivity {
-  const root = items[0]!;
   return foldedFamilyActivity(
-    boardFamilyRow(root),
+    boardFamilyRow(items[0]!),
     items.slice(1).filter((item) => item.archived !== true).map(boardFamilyRow),
-    root.lastReadAt,
+    rootReadThrough,
     (row) => row.id,
     sendStates
   );
@@ -380,6 +384,7 @@ export function BoardThreadListView({
   const collapsedFamilies = useAtomValue(sidebarCollapsedOpenedBySessionsAtom);
   const toggleFamily = useSetAtom(toggleSidebarCollapsedOpenedBySessionAtom);
   const sendStates = useAtomValue(sessionSendStatesAtom);
+  const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const labels: Record<GroupKey, string> = {
     attention: t('boards.groups.attention', 'Needs you'),
     active: t('boards.groups.active', 'Working'),
@@ -410,15 +415,15 @@ export function BoardThreadListView({
               t,
               () => toggleFamily(root.id)
             );
-            return expanded
-              ? [{ ...root, openedByTree }, ...items.slice(1)]
-              : [
-                  {
-                    ...foldedBoardThreadRoot(items),
-                    openedByTree,
-                    familyActivity: boardFamilyActivity(items, sendStates),
-                  },
-                ];
+            if (expanded) return [{ ...root, openedByTree }, ...items.slice(1)];
+            const rootReadThrough = familyReadThrough(root.id, root.lastReadAt);
+            return [
+              {
+                ...foldedBoardThreadRoot(items, rootReadThrough),
+                openedByTree,
+                familyActivity: boardFamilyActivity(items, sendStates, rootReadThrough),
+              },
+            ];
           });
         if (rows.length === 0) return [];
         const isFolded = folded[key] === true;
