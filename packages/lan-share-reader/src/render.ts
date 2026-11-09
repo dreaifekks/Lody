@@ -5,6 +5,7 @@ import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
 import {
   isLanShareActivity as isActivity,
+  isLanShareAnswerOnly,
   isLanShareTurnFinished,
   lanShareAnswered,
   lanShareSegments,
@@ -290,10 +291,11 @@ function renderItem(context: RenderContext, item: Json): HTMLElement | null {
   }
 }
 
-// A finished turn reads like the desktop's: its answer shows, and the work
-// before it (thinking, tool calls, short narration) folds into one row. The
-// rules are those the window publishes by, in `lan-share-visible.ts` of
-// `@lody/shared`, which imports nothing and is bundled by its path.
+// A finished turn reads like the desktop's: its closing text shows, and the
+// work before it (thinking, tool calls and every earlier text) folds into one
+// row. The rules are those the window publishes by, in `lan-share-visible.ts`
+// of `@lody/shared`, bundled by its path; a turn the window published by them
+// holds its answers only and shows as it is.
 
 const isShownStep = (item: JsonObject): boolean =>
   item.type === 'tool_call' && item.kind !== 'think';
@@ -445,14 +447,15 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
     nodes.set(item, node);
     kept.push(item);
   }
-  const finished = isLanShareTurnFinished(entry);
+  // A turn as a LAN published it holds its answers only, folded once already.
+  const folds = isLanShareTurnFinished(entry) && !isLanShareAnswerOnly(entry);
   // A plan's exit card closes a segment of its own, folded on its own.
   const segments = lanShareSegments(kept);
   const duration = durationOf(entry);
   return segments.flatMap((segment, index) => {
     const last = index === segments.length - 1;
     const segmentTasks = last ? tasks : [];
-    const work = finished ? workOf(segment) : new Set<number>();
+    const work = folds ? workOf(segment) : new Set<number>();
     const shown: HTMLElement[] = [];
     const folding: HTMLElement[] = [];
     let steps = segmentTasks.length;
@@ -477,7 +480,7 @@ function renderAssistant(context: RenderContext, entry: JsonObject, items: Json[
     folding.push(...segmentTasks);
     const answered = lanShareAnswered(segment, work);
     // Thinking alone is work too: the row then says how long the turn took.
-    if (!finished || !answered || (work.size === 0 && segmentTasks.length === 0)) return shown;
+    if (!folds || !answered || (work.size === 0 && segmentTasks.length === 0)) return shown;
     // The turn's duration covers every segment, so only the last claims it.
     const label =
       duration !== null && last

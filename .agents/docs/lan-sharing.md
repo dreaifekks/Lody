@@ -35,21 +35,33 @@ message in a row of their own, at the size the desktop shows them and beside
 its text, never inside it; a click opens the whole picture. Only the answers are published: before the
 exporter sees a history, `projectLanShareHistory`
 (`packages/shared/src/lan-share-visible.ts`) keeps the user's messages and,
-of each assistant turn, what the reader shows with the work folded (the
-closing text, earlier text of 300 characters or with structure, and the
-answer's pictures and files). Every entry and item is rebuilt from the
+of each assistant turn, what the reader shows with the work folded. The rule
+is the desktop's: a finished turn keeps its closing run of text and the
+pictures and files the desktop never folds, and every earlier text folds with
+the work, however long or structured. A plan-review or widget card is no work
+either, so the answer before it stays the answer, but the card itself is not
+published. Every entry and item is rebuilt from the
 fields the reader reads (a text keeps its text, an assistant turn its id and
 times, never its input configuration), so nothing rides along in another
 field. An entry an agent wrote keeps who wrote it: the agent's or Role's
 name, the model and the effort, without any id; the reader says it above the
 message, once until the writer of that side changes. Of an assistant turn the
 model and effort are those the turn recorded as having run (`modelInfo`, the
-names the desktop shows), before what its author was configured with. Thinking, tool calls with their commands and diffs, short narration,
-subagent tasks, plans and notices never leave the window; a turn that shows
-no answer (still running, or ending in work) keeps only its substantive
-text, and one left empty is dropped. The reader folds by the same file, so a published turn shows what
-it would have shown folded, and no row to open. A share published before
-this keeps its full history until it is updated. The shell writes the frozen package to a
+names the desktop shows), before what its author was configured with. Thinking,
+tool calls with their commands and diffs, every text before the closing run,
+subagent tasks, plans and notices never leave the window, nor does anything of
+a turn that shows no answer (still running, or ending in work); a turn left
+empty is dropped. Each assistant turn it keeps is marked `answerOnly`, and the
+reader shows a marked turn as it is, with no row to open: folded again, a
+picture between the answers of two segments (around a plan's approval) would
+read as the work before the last answer. A turn without the mark is folded by
+the same file. A share keeps what it was published with until it is updated:
+one published before this projection carries its full history, which the
+reader folds; one published by an earlier projection carries no mark, so the
+reader folds it again, which hides only text a picture separates from the
+closing text, under "Worked for …", and still shows the long or structured
+earlier text the first rule kept, since without the steps between them that
+text reads as part of the closing run. The shell writes the frozen package to a
 temporary directory and hands it to the agent service of its own machine
 (`lan/share-publish`), as it hands over the files of a message; the agent
 service uploads it to the hub of the workspace's LAN with the credential and
@@ -103,8 +115,8 @@ which drops raw HTML and unsafe link targets) and lists the conversations
 when there are several. It reads like the desktop's share page. A run of
 tool calls is one folded row that says what it did ("Ran 3 commands · Edited
 1 file", counted as the desktop counts); thinking is counted but never shown.
-A finished turn shows its answer (with earlier text of 300 characters or with
-structure), and the work before it folds into one "Worked for …" row, or a
+A finished turn shows its closing text, as the desktop does, and the work
+before it, earlier text included, folds into one "Worked for …" row, or a
 step count when the history holds no duration; opened, each group returns to
 its place. The page leads with Lody's mark. The CLI build copies the page, the
 icon and the default preview banner beside its bundle, where the hub reads them.

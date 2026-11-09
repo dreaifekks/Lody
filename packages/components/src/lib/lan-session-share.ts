@@ -204,8 +204,9 @@ export function toLanShareEntry(
  * store backs. Every other file is left out, as sharing leaves files out.
  *
  * Only the answers are published: each history goes through
- * `projectLanShareHistory` first, so thinking, tool calls, diffs and short
- * narration never leave this window, whatever the reader page would fold.
+ * `projectLanShareHistory` first, so thinking, tool calls, diffs and every
+ * text before a turn's closing run never leave this window, whatever the
+ * reader page would fold.
  */
 export async function captureLanSessionShare(options: {
   workspaceId: string;

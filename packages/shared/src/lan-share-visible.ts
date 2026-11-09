@@ -1,25 +1,40 @@
 // What a reader of a LAN share sees of an assistant turn: its answer, and not
 // the work before it. The reader page folds that work by these rules, and the
 // window publishes nothing else, so the two must agree; both use this file,
-// which imports nothing (the reader bundles it by its path). The rules follow
-// `ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts` of
-// `@lody/components`. See `.agents/docs/lan-sharing.md#shared-conversations`.
+// which imports only `lody-agent-tool-names.ts`, itself importing nothing (the
+// reader bundles both by path). The rules are the desktop's
+// (`ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts` of
+// `@lody/components`): a finished turn shows its closing run of text, and every
+// earlier text folds with the work, however long it is.
+// See `.agents/docs/lan-sharing.md#shared-conversations`.
+import { agentSurfaceToolOf, toolArguments, type ToolCallLike } from './lody-agent-tool-names';
 
 /** An item of a history entry, as JSON; nothing of it is trusted. */
 export type LanShareTurnItem = { readonly [key: string]: unknown };
-
-/** Length from which earlier text in a turn reads as content, not narration. */
-const SUBSTANTIVE_TEXT_MIN_CHARS = 300;
-const STRUCTURED_TEXT_PATTERN = /(?:^|\n)[ \t]*(?:[-*+] |\d+[.)] |\||#{1,6} )/;
-
-export const isSubstantiveLanShareText = (text: string): boolean =>
-  text.trim().length >= SUBSTANTIVE_TEXT_MIN_CHARS || STRUCTURED_TEXT_PATTERN.test(text);
 
 /** The plan-approval card, which closes a segment of a turn. */
 export const isLanSharePlanExit = (item: LanShareTurnItem): boolean =>
   item.type === 'tool_call' && item.kind === 'switch_mode';
 
-/** Attachments, plans and notices trail the answer and never fold. */
+/**
+ * A plan to review or a widget, which the desktop draws as a card of its own
+ * (`isSurfaceToolCall` of `@lody/components`, here with every surface on, as a
+ * share has no device to ask): it never folds, so the answer before it stays
+ * the answer, and a share never publishes the card itself. A call that failed,
+ * and a finished one whose input history did not keep, is an ordinary step.
+ */
+const isSurfaceCard = (item: LanShareTurnItem): boolean => {
+  if (item.type !== 'tool_call' || item.status === 'failed') return false;
+  const call = item as ToolCallLike;
+  const tool = agentSurfaceToolOf(call);
+  return (
+    tool !== null &&
+    tool.kind !== 'notify' &&
+    (toolArguments(call) !== undefined || item.status !== 'completed')
+  );
+};
+
+/** Attachments, plans, notices and cards trail the answer and never fold. */
 const NEVER_FOLDED = new Set([
   'image',
   'image_group',
@@ -32,12 +47,17 @@ const NEVER_FOLDED = new Set([
 
 const isNeverFolded = (item: LanShareTurnItem | undefined): boolean =>
   item !== undefined &&
-  ((typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) || isLanSharePlanExit(item));
+  ((typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) ||
+    isLanSharePlanExit(item) ||
+    isSurfaceCard(item));
 
 /** Thinking and tool calls: a run of them is one group of steps. */
 export const isLanShareActivity = (item: LanShareTurnItem): boolean =>
   item.type === 'thought' ||
-  (item.type === 'tool_call' && !isLanSharePlanExit(item) && item.activityKind === undefined);
+  (item.type === 'tool_call' &&
+    !isLanSharePlanExit(item) &&
+    item.activityKind === undefined &&
+    !isSurfaceCard(item));
 
 const textOf = (item: LanShareTurnItem | undefined): string | null =>
   item?.type === 'text' ? (typeof item.text === 'string' ? item.text : '') : null;
@@ -51,35 +71,18 @@ function finalTextRunStart(items: readonly LanShareTurnItem[]): number {
   return index;
 }
 
-/** The closing text run, and the run before the last work too when the closing one is thin. */
-function visibleTextStart(items: readonly LanShareTurnItem[]): number {
-  const start = finalTextRunStart(items);
-  if (start >= items.length) return start;
-  const closing = items
-    .slice(start)
-    .map((item) => textOf(item) ?? '')
-    .join('\n\n');
-  if (isSubstantiveLanShareText(closing)) return start;
-  let index = start - 1;
-  while (index >= 0 && textOf(items[index]) === null) index -= 1;
-  if (index < 0) return start;
-  while (index > 0 && textOf(items[index - 1]) !== null) index -= 1;
-  return index;
-}
-
-/** The indexes of a finished segment's items that fold into its work. */
+/**
+ * The indexes of a finished segment's items that fold into its work: thinking,
+ * tool calls and every text before the closing run.
+ */
 export function lanShareWorkOf(items: readonly LanShareTurnItem[]): Set<number> {
-  const visibleStart = visibleTextStart(items);
+  const answerStart = finalTextRunStart(items);
   const work = new Set<number>();
   items.forEach((item, index) => {
-    const text = textOf(item);
-    const keepsText =
-      text !== null &&
-      visibleStart < items.length &&
-      (index >= visibleStart || isSubstantiveLanShareText(text));
+    const isAnswer = textOf(item) !== null && index >= answerStart;
     const folds =
       isLanShareActivity(item) ||
-      (items.length > 1 && index < items.length - 1 && !keepsText && !isNeverFolded(item));
+      (items.length > 1 && index < items.length - 1 && !isAnswer && !isNeverFolded(item));
     if (folds) work.add(index);
   });
   return work;
@@ -177,27 +180,25 @@ function publicItem(item: LanShareTurnItem): LanShareTurnItem | null {
 
 /**
  * The items of an assistant turn a LAN publishes, rebuilt from their public
- * fields: the text a reader sees with the work folded, and the pictures and
- * files of the answer. Thinking, tool calls, short narration, subagent tasks,
- * plans and notices stay home. A turn that shows no answer, one still running
- * or one ending in work, keeps only its substantive text, so a share never
+ * fields: of each segment that shows an answer when the turn is over, what the
+ * desktop leaves outside its work, which is the closing run of text and the
+ * pictures and files. Thinking, tool calls, every text before the closing run,
+ * subagent tasks, plans and notices stay home, and so does all of a segment
+ * that shows no answer, still running or ending in work, so a share never
  * carries the process.
  */
 export function projectLanShareTurnItems(
   items: readonly LanShareTurnItem[],
   finished: boolean
 ): LanShareTurnItem[] {
+  if (!finished) return [];
   return lanShareSegments(items.filter((item) => item.type !== 'subagent_task')).flatMap(
     (segment) => {
       const work = lanShareWorkOf(segment);
-      const answered = finished && lanShareAnswered(segment, work);
+      if (!lanShareAnswered(segment, work)) return [];
       return segment.flatMap((item, index) => {
-        const text = textOf(item);
-        const kept =
-          text === null
-            ? answered && !work.has(index)
-            : text.trim() !== '' && (answered ? !work.has(index) : isSubstantiveLanShareText(text));
-        const rebuilt = kept ? publicItem(item) : null;
+        if (work.has(index) || textOf(item)?.trim() === '') return [];
+        const rebuilt = publicItem(item);
         return rebuilt ? [rebuilt] : [];
       });
     }
@@ -248,9 +249,19 @@ export const isLanShareTurnFinished = (entry: LanShareTurnItem): boolean =>
   entry.finished === true || typeof entry.endedAt === 'number';
 
 /**
+ * Whether an assistant turn is one a LAN published: its answers only, already
+ * folded by these rules, so a reader shows it as it is. Folded again, a picture
+ * between the answers of two segments would read as the work before the last
+ * one. A turn without the mark, of a full history or of a share published
+ * before turns carried it, is folded as usual.
+ */
+export const isLanShareAnswerOnly = (entry: LanShareTurnItem): boolean => entry.answerOnly === true;
+
+/**
  * A conversation's history as a LAN publishes it, every entry rebuilt from the
  * fields a reader reads: the user's messages as they were sent, and of each
- * assistant turn what {@link projectLanShareTurnItems} keeps, with its times.
+ * assistant turn what {@link projectLanShareTurnItems} keeps, with its times
+ * and the mark of {@link isLanShareAnswerOnly}.
  * An entry an agent wrote also says which agent, model and effort.
  * Entries of other roles are dropped, and so is an assistant turn with nothing
  * left. The history itself is not changed.
@@ -279,6 +290,7 @@ export function projectLanShareHistory(history: unknown): unknown[] {
       {
         ...pick(entry, ['id', 'role', 'timestamp', 'finished', 'endedAt', 'permissionWaitMs']),
         ...publicAuthor(entry),
+        answerOnly: true,
         items: kept,
       },
     ];

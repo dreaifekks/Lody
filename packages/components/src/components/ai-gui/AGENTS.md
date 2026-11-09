@@ -35,7 +35,7 @@ Ownership: [README.md](README.md).
 - Work regions start expanded while streaming and may be folded by the reader.
   Finished turns keep the final contiguous text run before trailing attachments,
   plans, independent cards and notices visible; all earlier prose folds with thoughts and tools.
-  Keep LAN share publication independent.
+  LAN shares mirror it (`lan-share-visible.ts`); change both together.
   Apply this rule per plan segment regardless of ACP phase or provider.
   Interrupted work without a visible result stays expanded. Expanded details keep
   chronological order, with the header before the first work item.
