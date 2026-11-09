@@ -11,6 +11,7 @@ import {
   createHistoryWriter,
   resolveSessionAcpRuntimeConfig,
   resolveSessionConversationConfig,
+  type SessionHistory,
 } from '@lody/shared';
 import {
   useConversationVersion,
@@ -235,6 +236,63 @@ describe('conversation view React readers', () => {
     selected.release();
     await flush();
     expect(itemFor('a-10')?.type).toBe('placeholder');
+  });
+
+  it('hydrates only the hovered receipt round, not the receipt rounds after it', async () => {
+    // A coordinator woken by results: each Inbox batch and its reply is a round
+    // of its own, even though no user message separates them.
+    const history = buildFixtureHistory(40);
+    const receiptRounds = Array.from({ length: 5 }, (_unused, index) => [
+      {
+        id: `inbox:completion:${index}`,
+        role: 'system',
+        timestamp: history[19]!.timestamp,
+        finished: true,
+        fileDiff: [],
+        items: [
+          {
+            type: 'operation_completion_batch',
+            batchId: `batch-${index}`,
+            memberCount: 1,
+            deliveryStatus: 'settled',
+          },
+        ],
+      },
+      {
+        id: `assistant:inbox:completion:${index}`,
+        role: 'assistant',
+        timestamp: history[19]!.timestamp,
+        userTurnId: `inbox:completion:${index}`,
+        finished: true,
+        fileDiff: [],
+        items: [{ type: 'text', text: `Result ${index} noted.` }],
+      },
+    ]).flat() as unknown as SessionHistory[];
+    history.splice(20, 0, ...receiptRounds);
+    const view = await openReaderView(reimport(buildSessionDoc(history)), {
+      sessionId: FIXTURE_SESSION_ID,
+      maxHydrated: 500,
+      tailKeep: 2,
+      scheduleIdle: createManualIdle().scheduleIdle,
+      yieldToEventLoop: () => Promise.resolve(),
+    });
+    views.push(view);
+    let stream!: ReturnType<typeof useConversationStreamItems>;
+    function Probe() {
+      stream = useConversationStreamItems(view, FIXTURE_SESSION_ID);
+      return null;
+    }
+    await act(async () => root.render(<Probe />));
+    await flush();
+    expect(view.index(22)?.id).toBe('inbox:completion:1');
+    expect(view.isHydrated(22)).toBe(false);
+
+    await act(async () => stream.onOutlinePreviewRound(22));
+    await flush();
+
+    expect(view.isHydrated(22)).toBe(true);
+    expect(view.isHydrated(23)).toBe(true);
+    expect(view.isHydrated(24)).toBe(false);
   });
 
   it('loads a restored reading turn far from the tail before the first viewport report', async () => {

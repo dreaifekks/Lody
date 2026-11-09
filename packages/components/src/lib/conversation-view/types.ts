@@ -1,5 +1,6 @@
 import type { SessionHistoryMetadata, SessionSubagentRun } from '@lody/shared/session-data';
 import type { SessionHistory, SessionId, SessionTurnInputConfig } from '@lody/shared';
+import type { ReceiptRoundSource } from '../conversation-outline-receipt';
 
 /** Display-only capability, attached non-enumerably to a projected task.
  * A closed dialog retains no complete child transcript. */
@@ -22,6 +23,9 @@ export type TurnSummary = {
   textChars: number;
   toolCalls: number;
   thoughts: number;
+  /** Fork: the sessions a receipt batch reports on, so an evicted receipt
+   *  round keeps its outline title. */
+  receiptSources?: readonly ReceiptRoundSource[];
 };
 
 /**

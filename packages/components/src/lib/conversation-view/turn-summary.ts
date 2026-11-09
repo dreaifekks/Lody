@@ -1,6 +1,7 @@
 import type { MessageContent, SessionHistory } from '@lody/shared';
 import { normalizeMessageContent } from '../../components/ai-gui/message-content-guards';
 import { firstTextOf, proseLengthOf } from '../conversation-outline';
+import { receiptSourcesOf } from '../conversation-outline-receipt';
 import { isContainer, type LoroList, type LoroMap, type LoroText } from 'loro-crdt';
 import { TURN_SUMMARY_HEAD_CHARS, type TurnSummary } from './types';
 
@@ -22,11 +23,13 @@ export function summarizeTurn(entry: Pick<SessionHistory, 'items'>): TurnSummary
     if (item?.type === 'tool_call') toolCalls += 1;
     else if (item?.type === 'thought') thoughts += 1;
   }
+  const receiptSources = receiptSourcesOf(items);
   return {
     headText: firstTextOf(items) ?? '',
     textChars: proseLengthOf({ items }),
     toolCalls,
     thoughts,
+    ...(receiptSources.length ? { receiptSources } : {}),
   };
 }
 
