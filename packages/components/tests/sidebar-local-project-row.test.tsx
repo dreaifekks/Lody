@@ -13,7 +13,7 @@ import type {
   SessionStatus,
 } from '@lody/shared';
 
-import { getDefaultStore } from 'jotai';
+import { createStore, Provider } from 'jotai';
 import { setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
 import {
   experimentalFeaturesEnabledAtom,
@@ -107,6 +107,8 @@ describe('sidebar local project row', () => {
     onTogglePinned?: (machineId: MachineId, localProjectId: string, nextPinned: boolean) => void;
     showMachineName?: boolean;
     inPinnedSection?: boolean;
+    /** A store of the test's own; the default one otherwise. */
+    store?: ReturnType<typeof createStore>;
   }) {
     const item = (
       <LocalProjectItem
@@ -147,6 +149,7 @@ describe('sidebar local project row', () => {
         onRequestRemoval={() => undefined}
       />
     );
+    const scoped = options.store ? <Provider store={options.store}>{item}</Provider> : item;
     flushSync(() => {
       root?.render(
         <Tooltip.Provider>
@@ -170,10 +173,10 @@ describe('sidebar local project row', () => {
               ]}
               updatedSelectedItemId={null}
               onTogglePinnedSection={() => undefined}
-              pinnedProjectsContent={item}
+              pinnedProjectsContent={scoped}
             />
           ) : (
-            item
+            scoped
           )}
         </Tooltip.Provider>
       );
@@ -309,7 +312,7 @@ describe('sidebar local project row', () => {
   });
 
   describe('in low-stimulus mode', () => {
-    const store = getDefaultStore();
+    let store: ReturnType<typeof createStore>;
     const rowOf = (id: string) => container?.querySelector(`[data-sidebar-session-id="${id}"]`);
     const markOf = (id: string) =>
       rowOf(id)?.querySelector('[data-session-row-end-slot] [data-session-row-indicator]');
@@ -321,6 +324,7 @@ describe('sidebar local project row', () => {
         onNavigateProject: () => undefined,
         onNewChatInProject: () => undefined,
         liveSessionStatuses,
+        store,
         sessions: [
           localSession('opener', { lastMessageAt: 100, lastReadAt: 100 }),
           localSession('opened', {
@@ -332,15 +336,13 @@ describe('sidebar local project row', () => {
         ],
       });
 
+    // Each case is its own window: what one has seen stays out of the next.
     beforeEach(() => {
+      store = createStore();
       store.set(experimentalFeaturesEnabledAtom, true);
       store.set(lowStimulusExperimentEnabledAtom, true);
     });
-    afterEach(() => {
-      store.set(experimentalFeaturesEnabledAtom, false);
-      store.set(lowStimulusExperimentEnabledAtom, false);
-      localStorage.clear();
-    });
+    afterEach(() => localStorage.clear());
 
     it('keeps a hidden Session waiting for the user on the opener row', () => {
       renderFamily(
