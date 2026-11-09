@@ -311,7 +311,39 @@ describe('phased text in finished turns', () => {
   });
 });
 
-describe('finished turns with background tasks', () => {
+describe('turns with background tasks', () => {
+  it.each([
+    {
+      name: 'a streaming turn expanded by default',
+      finished: false,
+      expanded: undefined,
+      status: 'in_progress' as const,
+    },
+    {
+      name: 'an expanded finished turn with terminal tasks',
+      finished: true,
+      expanded: true,
+      status: 'completed' as const,
+    },
+    {
+      name: 'an expanded finished turn with a running task',
+      finished: true,
+      expanded: true,
+      status: 'in_progress' as const,
+    },
+  ])('emits one task panel and unique row keys for $name', ({ finished, expanded, status }) => {
+    const rows = buildRows(
+      [tool('build', 'execute'), answerText('The answer is ready.'), task('task-a', status)],
+      finished,
+      expanded
+    );
+    expect(workedHeaders(rows)).toEqual([expect.objectContaining({ expanded: true })]);
+    expect
+      .soft(rows.filter((row) => row.type === 'assistant' && row.content.kind === 'subagent_tasks'))
+      .toHaveLength(1);
+    expect.soft(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+  });
+
   it('keeps the task panel after the answer while any task is running', () => {
     const items = [
       tool('build', 'execute'),

@@ -1559,8 +1559,8 @@ export const buildChatVirtualRows = ({
         }
         appendBlockRows(assistantRows, block, blockIndex, false);
       }
-      if (isWorkedGroupExpanded && segmentSubagentTasks.length > 0) {
-        appendSubagentTasksRow(assistantRows, true);
+      if (!didInsertWorkedGroup) {
+        insertWorkedGroup();
       }
       if (
         isTurnFinished &&
