@@ -718,6 +718,7 @@ describe('the images of one turn in the viewer', () => {
 
   beforeEach(async () => {
     await initI18n('en');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__ = true;
     URL.createObjectURL = () => `blob:gallery-${(nextUrl += 1)}`;
     URL.revokeObjectURL = () => {};
@@ -743,6 +744,8 @@ describe('the images of one turn in the viewer', () => {
     }
     container?.remove();
     container = undefined;
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     delete (window as Window & { __LODY_ELECTRON__?: boolean }).__LODY_ELECTRON__;
   });
