@@ -32,7 +32,7 @@ import {
   BoardFileRowsView,
   useBoardDirectory,
 } from './board-directory';
-import type { BoardFileTarget } from '@/lib/document-link-open';
+import type { FileTarget } from '@/lib/document-link-open';
 import { BoardDocumentLinksContext, type BoardDocumentLinksValue } from './document-links';
 import { useBoardActions } from './board-lifecycle';
 import { boardStyles } from './board-view';
@@ -439,7 +439,7 @@ function BoardAutoMemory({ board }: { board: BoardMeta }) {
   const memory = useBoardDirectory(board, 'memory');
   // A link in a memory file opens the next page in place; the earlier ones are the way back.
   const [pages, setPages] = useState<
-    readonly { readonly target: BoardFileTarget; readonly modifiedAtMs?: number }[]
+    readonly { readonly target: FileTarget; readonly modifiedAtMs?: number }[]
   >([]);
   const page = pages.at(-1);
   if (page)
@@ -452,7 +452,7 @@ function BoardAutoMemory({ board }: { board: BoardMeta }) {
           pages.length > 1 ? t('common.back', 'Back') : t('boards.memory.back', 'Back to memory')
         }
         onBack={() => setPages((current) => current.slice(0, -1))}
-        onOpenBoardFile={(target) => setPages((current) => [...current, { target }])}
+        onOpen={(target) => setPages((current) => [...current, { target }])}
       />
     );
   const entries =

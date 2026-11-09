@@ -54,7 +54,7 @@ import {
   BoardDocumentLinksContext,
   type BoardDocumentLinksValue,
 } from './document-links';
-import type { BoardFileTarget } from '@/lib/document-link-open';
+import type { FileTarget } from '@/lib/document-link-open';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
 import {
@@ -234,7 +234,7 @@ function BoardThreads({
 
 type BoardFilesPage =
   | { readonly kind: 'notes' }
-  | { readonly kind: 'file'; readonly target: BoardFileTarget; readonly modifiedAtMs?: number };
+  | { readonly kind: 'file'; readonly target: FileTarget; readonly modifiedAtMs?: number };
 
 function BoardFiles({ board }: { board: BoardMeta }) {
   const { t } = useTranslation();
@@ -242,7 +242,7 @@ function BoardFiles({ board }: { board: BoardMeta }) {
   const [pages, setPages] = useState<readonly BoardFilesPage[]>([]);
   const page = pages.at(-1);
   const back = () => setPages((current) => current.slice(0, -1));
-  const openBoardFile = (target: BoardFileTarget) =>
+  const open = (target: FileTarget) =>
     setPages((current) => [...current, { kind: 'file', target }]);
   const { document, save, error } = useBoardDocument(board.id);
   const { provider, truncated } = useBoardDirectoryFileProvider(board);
@@ -256,40 +256,45 @@ function BoardFiles({ board }: { board: BoardMeta }) {
     [download, downloadLabel]
   );
   const notesName = t('boards.notes', 'Shared notes');
-  if (page?.kind === 'notes')
-    return (
-      <BoardFileEditorView name={notesName} onBack={back}>
-        <BoardDocumentLinks
-          boardId={board.id}
-          path={BOARD_NOTES_DOCUMENT_PATH}
-          onOpenBoardFile={openBoardFile}
-        >
-          {document && save ? (
-            <BoardNotesEditor notes={document.notes} onSave={save} />
-          ) : (
-            <p>
-              {error
-                ? t('boards.notesLoadFailed', 'Could not load notes.')
-                : t('boards.loading', 'Loading…')}
-            </p>
-          )}
-        </BoardDocumentLinks>
-      </BoardFileEditorView>
-    );
   if (page)
     return (
-      <div {...stylex.props(panelStyles.padded)}>
-        <BoardFilePage
-          board={board}
-          target={page.target}
-          {...(page.modifiedAtMs === undefined ? {} : { modifiedAtMs: page.modifiedAtMs })}
-          backLabel={
-            pages.length > 1 ? t('common.back', 'Back') : t('boards.files.back', 'Back to files')
-          }
-          onBack={back}
-          onOpenBoardFile={openBoardFile}
-        />
-      </div>
+      <>
+        {/* The notes stay mounted under the pages their links open: an unsaved
+            draft is still there on the way back. */}
+        {pages[0]?.kind === 'notes' ? (
+          <div hidden={page.kind !== 'notes'}>
+            <BoardFileEditorView name={notesName} onBack={back}>
+              <BoardDocumentLinks boardId={board.id} path={BOARD_NOTES_DOCUMENT_PATH} onOpen={open}>
+                {document && save ? (
+                  <BoardNotesEditor notes={document.notes} onSave={save} />
+                ) : (
+                  <p>
+                    {error
+                      ? t('boards.notesLoadFailed', 'Could not load notes.')
+                      : t('boards.loading', 'Loading…')}
+                  </p>
+                )}
+              </BoardDocumentLinks>
+            </BoardFileEditorView>
+          </div>
+        ) : null}
+        {page.kind === 'file' ? (
+          <div {...stylex.props(panelStyles.padded)}>
+            <BoardFilePage
+              board={board}
+              target={page.target}
+              {...(page.modifiedAtMs === undefined ? {} : { modifiedAtMs: page.modifiedAtMs })}
+              backLabel={
+                pages.length > 1
+                  ? t('common.back', 'Back')
+                  : t('boards.files.back', 'Back to files')
+              }
+              onBack={back}
+              onOpen={open}
+            />
+          </div>
+        ) : null}
+      </>
     );
   return (
     <BoardDirectoryTreeView

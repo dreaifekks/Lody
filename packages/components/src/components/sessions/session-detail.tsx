@@ -15,7 +15,10 @@ import {
   DocumentLinks,
   SessionDocumentScope,
   SessionFileLinkOpenContext,
+  type BoardDocumentLinksValue,
+  type SessionFileLinkOpener,
 } from '../boards/document-links';
+import { BoardSessionFilePage } from '../boards/board-session-file-page';
 import { boardFileLinkPath, type FileTarget } from '@/lib/document-link-open';
 import { resolveBoardFileLink } from '@/lib/board-directory-file-provider';
 import { BoardFileLinkPreview } from '../boards/board-directory';
@@ -1139,9 +1142,12 @@ const TerminalDockToggleButton = memo(function TerminalDockToggleButton() {
 /** Keeps per-session imperative refs and event handlers stable across parent updates. */
 function SessionChatSurface({
   registerChatRef,
+  openReplyFile,
   ...props
 }: SessionChatInterfaceProps & {
   registerChatRef: (id: string, handle: SessionChatInterfaceHandle | null) => void;
+  /** Opens file links in replies other sessions sent (`SessionReplyFileLinks`). */
+  openReplyFile?: SessionFileLinkOpener;
 }) {
   const id = props.session.id;
   const setChatRef = useCallback(
@@ -1176,7 +1182,7 @@ function SessionChatSurface({
     (...args: Parameters<NonNullable<SessionChatInterfaceProps['onNavigateSession']>>) =>
       props.onNavigateSession?.(...args)
   );
-  return (
+  const chat = (
     <SessionChatInterface
       {...props}
       ref={setChatRef}
@@ -1193,6 +1199,11 @@ function SessionChatSurface({
       onOpenAllChanges={props.onOpenAllChanges ? openAllChanges : undefined}
       onNavigateSession={props.onNavigateSession ? navigateSession : undefined}
     />
+  );
+  return (
+    <SessionFileLinkOpenContext.Provider value={openReplyFile ?? null}>
+      {chat}
+    </SessionFileLinkOpenContext.Provider>
   );
 }
 
@@ -6574,14 +6585,19 @@ const SessionDetail = ({
   if (activeSession.parentSessionId && activeSession.parentSessionId !== sessionId) {
     return null;
   }
-  // Board documents are read for this page's session (the coordinator in its panel);
-  // their links to its files open in side tabs.
-  const boardDocumentLinks = {
+  // Board documents are read for this page's session (the coordinator in its panel).
+  // Their links open in place; a page of one of its files moves to a side tab.
+  const boardDocumentLinks: BoardDocumentLinksValue = {
     owner: { ...activeFileOpenContext, session: activeSession },
-    openSessionFile: (target: FileTarget) => {
-      setBoardSettingsOpen(false);
-      openFileTargetInTab(activeFileOpenContext, target);
-    },
+    renderSessionFile: (page) => (
+      <BoardSessionFilePage
+        {...page}
+        onOpenInTab={() => {
+          setBoardSettingsOpen(false);
+          openFileTargetInTab(activeFileOpenContext, page.target);
+        }}
+      />
+    ),
   };
 
   /* The URL names a child tab whose meta has not reached this replica yet
@@ -7377,6 +7393,7 @@ const SessionDetail = ({
               >
                 <SessionChatSurface
                   registerChatRef={setChatTabRef}
+                  openReplyFile={handleOpenFileForSession}
                   claimNavigationFocus={
                     isActive && tabSession.id === sessionId ? claimNavigationFocus : undefined
                   }
@@ -8315,6 +8332,7 @@ const SessionDetail = ({
             >
               <SessionChatSurface
                 {...getSharedChatSurfaceProps(tabSession, isActive)}
+                openReplyFile={handleOpenFileForSession}
                 paintSessionMentionOverlay={false}
                 isChildTab={tabSession.id !== sessionId}
                 isExternalHistoryRefreshing={externalHistoryRefresh !== undefined}
@@ -8632,11 +8650,7 @@ const SessionDetail = ({
         layoutStorageId={activeBoard ? null : 'session-detail-panels'}
         {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
         topBar={tabBar}
-        chatSurfaces={
-          <SessionFileLinkOpenContext.Provider value={handleOpenFileForSession}>
-            {desktopChatSurfaces}
-          </SessionFileLinkOpenContext.Provider>
-        }
+        chatSurfaces={desktopChatSurfaces}
         terminalDock={
           <TerminalDockHost
             onOpenUrlInSidePanel={handleOpenTerminalUrl}

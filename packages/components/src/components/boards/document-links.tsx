@@ -11,12 +11,7 @@ import { sessionMetaAtomFamily, sessionMetaCacheAtom } from '@/atoms/doc-meta';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { useStableCallback } from '@/hooks/use-stable-callback';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
-import {
-  isBoardFileTarget,
-  resolveDocumentLink,
-  type BoardFileTarget,
-  type FileTarget,
-} from '@/lib/document-link-open';
+import { fileSourceKey, resolveDocumentLink, type FileTarget } from '@/lib/document-link-open';
 import { getIpcServices } from '@/lib/electron-ipc-client';
 import { parseMarkdownAgentFileHref } from '@/lib/markdown-agent-file-link';
 import { classifyFileLinkProbe, type FileLinkProbeResult } from '@/lib/session-file-link-fallback';
@@ -96,13 +91,15 @@ export function DocumentLinks({
       )
     );
   });
-  // Only the latest click opens, and nothing opens once the document is gone.
+  // Only the latest click opens, and nothing opens once the document has
+  // changed (a page stack's Back) or is gone.
   const latestClick = useRef(0);
+  const documentKey = `${owner.session.id}|${fileSourceKey(document.source)}:${document.path}`;
   useEffect(
     () => () => {
       latestClick.current += 1;
     },
-    []
+    [documentKey]
   );
   const follow = useStableCallback((href: string) => {
     const click = (latestClick.current += 1);
@@ -161,10 +158,12 @@ export function SessionDocumentScope({
  * How the session page opens a file link in the name of another session (a
  * reply card's target): the same opener as that conversation's own links.
  */
-export const SessionFileLinkOpenContext = createContext<
-  | ((scope: SessionFileScopeValue, path: string, options?: SessionDetailOpenFileOptions) => void)
-  | null
->(null);
+export type SessionFileLinkOpener = (
+  scope: SessionFileScopeValue,
+  path: string,
+  options?: SessionDetailOpenFileOptions
+) => void;
+export const SessionFileLinkOpenContext = createContext<SessionFileLinkOpener | null>(null);
 
 /**
  * File links in a reply another session sent: opened in that session's
@@ -208,14 +207,24 @@ export function SessionReplyFileLinks({
   );
 }
 
+/** A Board preview's page showing a session's file a link led to. */
+export type BoardSessionFilePageProps = {
+  readonly sessionId: SessionId;
+  readonly target: FileTarget;
+  readonly onBack: () => void;
+  /** A link on the page: the preview's next page. */
+  readonly onOpen: (target: FileTarget) => void;
+};
+
 /**
  * What a Board preview's links need from the session page: the session they
- * are read for (the coordinator in the Board panel) and how one of that
- * session's files opens there.
+ * are read for (the coordinator in the Board panel), and the page for one of
+ * that session's files. The session page renders it, so the file viewer stays
+ * out of the Board panel's imports.
  */
 export type BoardDocumentLinksValue = {
   readonly owner: DocumentLinkOwner;
-  readonly openSessionFile: (target: FileTarget) => void;
+  readonly renderSessionFile: (page: BoardSessionFilePageProps) => ReactNode;
 };
 export const BoardDocumentLinksContext = createContext<BoardDocumentLinksValue | null>(null);
 
@@ -223,20 +232,20 @@ export const BoardDocumentLinksContext = createContext<BoardDocumentLinksValue |
 export const BOARD_NOTES_DOCUMENT_PATH = 'notes';
 
 /**
- * Links of a Board document previewed in the Board panel or its settings: a
- * Board file opens in place (`onOpenBoardFile`), a session file through the
- * page. Without the page's opener they keep copying their path.
+ * Links of a Board document previewed in the Board panel or its settings:
+ * whatever file they lead to opens in place, as the preview's next page
+ * (`onOpen`). Without the page's links they keep copying their path.
  */
 export function BoardDocumentLinks({
   boardId,
   path,
-  onOpenBoardFile,
+  onOpen,
   children,
 }: {
   boardId: string;
   /** `<area>/<path>`, or `BOARD_NOTES_DOCUMENT_PATH`. */
   path: string;
-  onOpenBoardFile: (target: BoardFileTarget) => void;
+  onOpen: (target: FileTarget) => void;
   children: ReactNode;
 }) {
   const links = useContext(BoardDocumentLinksContext);
@@ -245,9 +254,7 @@ export function BoardDocumentLinks({
     <DocumentLinks
       document={{ source: { kind: 'board', boardId }, path }}
       owner={links.owner}
-      onOpen={(target) =>
-        isBoardFileTarget(target) ? onOpenBoardFile(target) : links.openSessionFile(target)
-      }
+      onOpen={onOpen}
     >
       {children}
     </DocumentLinks>

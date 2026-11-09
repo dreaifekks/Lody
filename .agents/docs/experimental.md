@@ -362,7 +362,9 @@ file link in a thread open in the side panel opens the article window over the p
 instead of a file tab: the file on the left, that thread's conversation on the right
 (60/40, the divider drags, nothing is remembered). Escape (after any open comment
 editor), the backdrop or the × in the thread header closes it and leaves the page as
-it was. The file header's ⋯ has "Open in side tab". The right pane is whichever
+it was. The file header's ⋯ has "Open in side tab". A file link in the article opens
+the next page in place, with Back in the file header (a Board file's link still
+closes the window and opens its tab). The right pane is whichever
 thread the Board panel has open: moving to another member through the thread
 header's breadcrumb or a session link keeps the window and the article (still read
 from its own thread); a destination outside the panel closes it. Other files, phones, the compact desktop layout and a
