@@ -162,6 +162,17 @@ before it runs. The packaging probes run before signing, so the workflow starts
 the signed application and its helper once and publishes nothing that does not
 start.
 
+The macOS package builds on a self-hosted runner, the fork owner's Mac mini
+(labels `self-hosted, macOS, ARM64, lody-mini`, a LaunchAgent under
+`~/actions-runner/lody`): hosted macOS runners kept failing to start for lack
+of capacity, and their minutes weigh heavily on the fork's allowance. A release
+waits in the queue while that machine is off. electron-builder imports the
+certificate into a keychain of its own and deletes it after signing; trusting a
+certificate of the fork's own would need sudo and stay behind on that machine,
+so the fork signs with a Developer ID certificate. Since a self-hosted runner
+of a public repository would run the code of anyone's pull request, workflows
+of outside contributors wait for the owner's approval (a repository setting).
+
 The certificate always comes from the secrets. Signing that asks Apple for one
 uses up one of the few an account may have with every build, because a runner
 keeps no key. No build is notarized: Gatekeeper stops a copy downloaded with a

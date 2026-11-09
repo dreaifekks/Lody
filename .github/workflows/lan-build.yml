@@ -193,7 +193,10 @@ jobs:
       matrix:
         include:
           - id: mac
-            os: macos-15
+            # The fork owner's Mac mini, a self-hosted runner: hosted macOS
+            # runners kept failing to start for lack of capacity. See
+            # .agents/docs/lan-releases.md#releases.
+            os: [self-hosted, macOS, ARM64, lody-mini]
             # Without Apple credentials electron-builder skips notarization.
             flags: --mac --arm64 --x64
           - id: win
@@ -261,8 +264,9 @@ jobs:
           node scripts/lan-release.mjs signing --certificate "$RUNNER_TEMP/signing.pem"
 
       # Nothing vouches for a certificate of the fork's own, so it is trusted
-      # for code signing on this throwaway runner only, which is what lets
-      # electron-builder use it. It carries no Team ID either, and under the
+      # for code signing on the runner, which is what lets electron-builder use
+      # it. That needs sudo and stays behind on the self-hosted Mac mini, which
+      # is why this fork signs with a Developer ID certificate instead. It carries no Team ID either, and under the
       # hardened runtime an application loads only what Apple signed or what
       # carries its own: `LODY_MAC_SELF_SIGNED` signs the application with the
       # exception that lets it load its own frameworks.
