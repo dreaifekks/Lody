@@ -1,7 +1,5 @@
 # Session history
 
-`CLAUDE.md` is a symlink to this file. Parent guidelines apply.
-
 - `HistoryWriter` is the only history writer. Reuse its validation, changed-field
   diff, legacy representation, stored-copy and conditional rollback rules.
   Shared business rules live in the planners, not in UI or CLI copies.
@@ -26,7 +24,7 @@
   scans directory scalars only and permission checks have no await gap.
 - Ordinary commands propagate writer errors; absence returns a boolean where the
   caller needs it. Only import and editable-tail replacement use phased results:
-  `rejected` proves no write; `indeterminate` must not be retried automatically.
+  `rejected` proves no write; `indeterminate` never be retried automatically.
   The Repo owns persistence and convergence barriers.
 - A snapshot is the HistoryWriter's detached, unforgeable stored-copy handle.
   Its existing provenance WeakMap is authoritative. Source disposal does not
@@ -36,7 +34,7 @@
   inside the write. Await conditional rollback before persisting follow-up meta;
   rollback retains later appends and refuses to overwrite concurrent edits.
 - Import inputs are explicit data. Recheck current history/cursor and bind the
-  stored baseline and cursor in the same synchronous write, without an await gap.
+  stored baseline and cursor in same synchronous write, without an await gap.
   A cursor failure after history mutation is indeterminate.
 - Canonical import hashes are versioned: v1 hashes `{role, items, plan}` verbatim;
   v2 hashes a canonical item form that excludes tool payload from identity. Cursor,
@@ -48,7 +46,7 @@
   `updateCopies`: the last copy gates guarded writes, settled copies never regress,
   and any started or settled copy vetoes a requeue. `onlyAwaitingStart` settles only
   while every copy is still pending or seen.
-  [Decision](../../../../.agents/notes/implemented/bug-fix/2026-09-27-duplicate-turn-copy-writes-and-queue-guard.md).
+
 - Legacy inline rows and unchanged unknown fields survive updates. Never rewrite
   history while opening or reading. Auto-seen is a separately attached CLI policy
   with a commit-time guard against regressing an advanced execution status.
@@ -73,7 +71,7 @@
   not generic raw or provider metadata copies. Permission enrichment preserves stored
   content except unanswered switch-mode reviews, whose supplied review content replaces
   streamed argument previews; malformed new retained values reach writer validation. CLI edit evidence
-  consumes enriched notifications with the original owning turn, not stored diff bodies.
+  consumes enriched notifications with original owning turn, not stored diff bodies.
 
 - Submissions append on the live doc as local commits; transports upload only
   local events. Never author on a fork and import the export: it misses upload,
@@ -81,7 +79,7 @@
 - Optional `inputAcceptance` separates an immutable owner-history receipt from
   execution. Preserve its source identity and expose the bound target in renderer
   adapters. Missing receipt lookup never proves non-delivery. Accepted history
-  removed from the active branch must not be resurrected by a repeated accept.
+  removed from the active branch never be resurrected by a repeated accept.
   Optional `acceptAndDispatch` requires independent `sessionInputDispatch` v1
   negotiation; it joins ordinary acceptance and owner activation without claiming
   execution. Plain acceptance and guide application retain their own boundaries.
@@ -97,10 +95,10 @@
   Reset replaces the latest window atomically; invalidated older pages load on demand,
   never through an automatic whole-history sweep.
   Independently negotiated checkpoint observation covers admission gaps and missed hints.
-  Park bounded waits outside foreground/native execution; resume the same catch-up flow.
+  Park bounded waits outside foreground/native execution; resume same catch-up flow.
 
 - Coordinator `operation-progress` uses the writer's operation-local command, never
-  `readStored`/whole-history `update`. Read each selected card at most once; unrelated
+  `readStored`/whole-history `update`. Read each selected card <= once; unrelated
   transcript bodies stay unread. Preserve duplicate/legacy cards, validate before
   mutation, and compare content independent of object key order for no-op writes.
   Keep canonical metadata when merging aliases; repair an alias-only card's id in

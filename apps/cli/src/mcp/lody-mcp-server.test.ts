@@ -1288,7 +1288,10 @@ describe('session MCP input schemas', () => {
       userId: 'user-1',
       machines: async () =>
         ['buildbox', 'mac', 'studio', 'laptop'].map((id) => ({ id, name: id }) as MachineMeta),
-      onlineMachineIds: async () => new Set(['mac', 'studio', 'laptop'] as MachineId[]),
+      machinePresence: async () => ({
+        online: new Set(['mac', 'studio', 'laptop'] as MachineId[]),
+        synced: true,
+      }),
       canAccess: async () => true,
       configs: async (machineId) => [
         {

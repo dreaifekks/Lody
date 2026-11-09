@@ -1,12 +1,13 @@
 # Product surfaces (`src/components`)
 
 Ancestor rules apply. Edit `AGENTS.md`;
+
 ## Sidebar and session rows
 
 - Sidebar rows represent Sessions, never Tasks.
 - Desktop project grouping shows only projects with session rows after pinned-tree
   separation and opener placement. Hide empty machine sections, while retaining
-  machines with populated multi-repository projects.
+  populated project groups and remote LAN projects, even before their first session.
 - Desktop Workspace/Local Project/Updated/Pinned rows support mention drag and
   Mark as unread, hidden when unread. Conversation/landing drops use
   `lib/session-mention-drag.ts`; parent tabs use HTML5 drag, children dnd-kit.

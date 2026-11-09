@@ -1,3 +1,4 @@
+import { getProjectBoundMachineId } from '@lody/shared';
 import { boardEnabledAtom, lowStimulusModeEnabledAtom } from '@/atoms/settings';
 import { isOpenerCollapsed } from '@/lib/low-stimulus';
 import { foldedFamilyActivity } from './sidebar-folded-family';
@@ -1681,6 +1682,7 @@ export function LoroAppSidebar({
   const isMobile = useIsMobile();
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
   // The LANs are settings of the local desktop; nothing else has the page.
+  const localPlatform = isLocalAppPlatform();
   const lanSettingsAvailable = isLocalAppPlatform() && isElectronRenderer();
   const { openSettings } = useOpenSettings();
 
@@ -3119,7 +3121,13 @@ export function LoroAppSidebar({
       projectGroupSessions.map((session) => session.projectGroup?.id)
     );
     const defined = workspaceProjects
-      .filter((project) => activeProjectIds.has(project.id))
+      .filter((project) => {
+        const bound = getProjectBoundMachineId(project.members);
+        return (
+          activeProjectIds.has(project.id) ||
+          (localPlatform && bound && bound !== 'conflict' && bound !== localMachineId)
+        );
+      })
       .map((project, index) => ({ project, index }))
       .sort(
         (left, right) =>
@@ -3149,7 +3157,15 @@ export function LoroAppSidebar({
       ...defined,
       ...[...removed.values()].sort((left, right) => left.name.localeCompare(right.name)),
     ];
-  }, [projectGroupOrder, projectGroupSessions, repoCollapseState, userId, workspaceProjects]);
+  }, [
+    projectGroupOrder,
+    projectGroupSessions,
+    repoCollapseState,
+    userId,
+    workspaceProjects,
+    localPlatform,
+    localMachineId,
+  ]);
   const projectGroupPlacement = useMemo(
     () =>
       placeProjectGroups({
@@ -3173,6 +3189,7 @@ export function LoroAppSidebar({
           ...section,
           projects: section.projects.filter(
             (project) =>
+              (localPlatform && section.machineId !== localMachineId) ||
               (workspaceLocalProjectSessionsByKey.get(`${section.machineId}:${project.id}`)
                 ?.length ?? 0) > 0
           ),
@@ -3181,9 +3198,16 @@ export function LoroAppSidebar({
           (section) =>
             section.projects.length > 0 ||
             (section.machineId &&
-              (projectGroupPlacement.byMachine.get(section.machineId)?.sessions.length ?? 0) > 0)
+              ((projectGroupPlacement.byMachine.get(section.machineId)?.sessions.length ?? 0) > 0 ||
+                (projectGroupPlacement.byMachine.get(section.machineId)?.states.length ?? 0) > 0))
         ),
-    [catalogLocalProjectSections, projectGroupPlacement, workspaceLocalProjectSessionsByKey]
+    [
+      catalogLocalProjectSections,
+      projectGroupPlacement,
+      workspaceLocalProjectSessionsByKey,
+      localPlatform,
+      localMachineId,
+    ]
   );
   const showGithubWorktrees =
     sessionsListLoading ||

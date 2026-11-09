@@ -2007,9 +2007,7 @@ describe('CodeCollabV2Service text RPC boundary', () => {
       expect(published.at(-1)?.fileTree).toEqual({
         'debug.log': true,
         notes: { kind: 'lazy' },
-        'notes/node_modules': { kind: 'lazy' },
-        'notes/node_modules/pkg': { kind: 'lazy' },
-        'notes/node_modules/pkg/index.js': true,
+        'notes/node_modules': { kind: 'lazy', ignored: true },
         'notes/plan.md': true,
         'tracked.txt': true,
       });

@@ -285,6 +285,7 @@ export function registerAgentRoleWriteTools(
   registerSessionTool(
     'lody_agent_role_create',
     {
+      summary: 'Create an Agent Role',
       title: 'Create an Agent Role',
       description: [
         'Create an Agent Role (shared instructions plus targets, each an Agent',
@@ -300,6 +301,7 @@ export function registerAgentRoleWriteTools(
   registerSessionTool(
     'lody_agent_role_update',
     {
+      summary: 'Change an Agent Role',
       title: 'Change an Agent Role',
       description: [
         'Change an Agent Role the user owns. Omitted fields stay; targets replaces the whole',

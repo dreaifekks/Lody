@@ -466,6 +466,17 @@ another machine wrote (a session, its agent configs and projects, a
 schedule's target) is read after a sync, and a sync that fails is reported as
 one to retry (`SYNC_UNAVAILABLE`), not as something that does not exist.
 
+Diff manifests and content blobs use the same Machine RPC direct transport. The
+`codeCollabDiffBlobs` capability selects them; older members retain the original
+diff requests. Each blob is authorized by its session manifest and verified by
+content hash. No member credential enters the renderer.
+
+Sorbet provider and credential management uses local IPC on the machine that
+owns the provider. Its remote capabilities describe the encrypted workspace
+transport, which ordinary LAN workspaces do not advertise. LAN settings show
+those remote management controls as unavailable; ordinary ACP authentication
+continues through Machine RPC with the selected method id.
+
 ## Limits
 
 - A terminal starts a login shell, and a profile that assigns PATH anew drops

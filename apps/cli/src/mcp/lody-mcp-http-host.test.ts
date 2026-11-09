@@ -466,11 +466,23 @@ describe('MCP HTTP host wire behavior', () => {
         'lody_request_review',
         'lody_show_widget',
       ]);
-      const review = tools.find((tool) => tool.name === 'lody_request_review');
-      expect(review?.description).toMatch(/END YOUR TURN/);
-      const widget = tools.find((tool) => tool.name === 'lody_show_widget');
-      expect(widget?.description).toMatch(/sendPrompt/);
-      expect(widget?.description).toMatch(/cdn\.jsdelivr\.net/);
+      for (const tool of tools) expect(tool.description).toContain('lody_help');
+      const help = async (command: string) => {
+        const result = await legacyCall(
+          {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: 'lody_help', arguments: { command } },
+          },
+          { [MCP_HTTP_AGENT_TOOLS_HEADER]: 'review,widget' }
+        );
+        return JSON.stringify(result.result?.content);
+      };
+      expect(await help('lody_request_review')).toContain('END YOUR TURN');
+      const widgetHelp = await help('lody_show_widget');
+      expect(widgetHelp).toContain('sendPrompt');
+      expect(widgetHelp).toContain('cdn.jsdelivr.net');
     });
 
     it('answers a review request at once without blocking the agent', async () => {

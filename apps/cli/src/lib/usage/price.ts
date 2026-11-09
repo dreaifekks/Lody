@@ -138,7 +138,7 @@ export const cloneUsageUpdate = (update: SessionUsageUpdate): SessionUsageUpdate
  */
 export function priceSessionUsageUpdate(
   update: SessionUsageUpdate,
-  cliType: BuiltinAgentType,
+  cliType: BuiltinAgentType | 'custom',
   onUnknownModel?: (model: string) => void
 ): SessionUsageUpdate {
   switch (cliType) {

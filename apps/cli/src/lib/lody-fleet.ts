@@ -2260,7 +2260,8 @@ export class LodyFleet {
       lan: this.isLanWorkspace(runtime.workspace.id),
       repo: manager.repo,
       // A hub that is away answers late; the list of machines does not wait for it.
-      getOnlineMachineIds: async () => await manager.getOnlineMachineIds({ timeoutMs: 2_000 }),
+      getMachinePresenceView: async () =>
+        await manager.getMachinePresenceView({ timeoutMs: 2_000 }),
       sync: manager,
     };
   }

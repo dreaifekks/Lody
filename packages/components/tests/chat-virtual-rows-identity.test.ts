@@ -135,7 +135,7 @@ describe('DSH thought visibility', () => {
     const id = 'dsh-prose';
     const tool = toolCall();
     const progress = text('I will inspect the result.');
-    const answer = text('Answer');
+    const answer = text('Answer\n- detail');
     const contents = [thought, tool, progress, nextThought, answer];
     const live = buildChatVirtualRows(fixture(id, contents));
     expect(visibleContents(live)).toEqual([thought, progress, nextThought, answer]);

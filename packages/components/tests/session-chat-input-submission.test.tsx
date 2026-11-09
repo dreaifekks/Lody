@@ -404,6 +404,14 @@ describe('SessionChatInputArea submission feedback', () => {
       workspaceId: 'workspace-upload',
       workspaceSlug: 'workspace-upload',
       sendResources: resources,
+      repo: {
+        openFlockDoc: async () => ({
+          flock: {
+            scan: () => [{ key: ['setting', 'promptSuggestions'], value: { version: 1 } }],
+            subscribe: () => () => {},
+          },
+        }),
+      },
       subscribePromptSuggestion: (
         _machineId: string,
         _sessionId: string,

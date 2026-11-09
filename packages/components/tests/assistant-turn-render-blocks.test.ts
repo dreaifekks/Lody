@@ -63,7 +63,7 @@ describe('buildAssistantTurnRenderLayout', () => {
     ]);
   });
 
-  it('folds earlier text when the agent continues working and sends a later answer', () => {
+  it('keeps the preceding answer when the final note is short', () => {
     const layout = buildAssistantTurnRenderLayout(
       'assistant-1',
       [
@@ -75,7 +75,7 @@ describe('buildAssistantTurnRenderLayout', () => {
     );
 
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-      true,
+      false,
       true,
       false,
     ]);
@@ -97,13 +97,37 @@ describe('buildAssistantTurnRenderLayout', () => {
       true
     );
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-      true,
+      false,
       true,
       false,
       false,
       false,
     ]);
   });
+
+  it.each(['x'.repeat(300), '# Earlier finding', '- Earlier finding'])(
+    'keeps substantive earlier text: %s',
+    (earlier) => {
+      const layout = buildAssistantTurnRenderLayout(
+        'substantive',
+        [
+          { type: 'text', text: earlier },
+          tool('read', 'read'),
+          { type: 'text', text: 'checking' },
+          tool('edit', 'edit'),
+          { type: 'text', text: '# Final answer' },
+        ],
+        true
+      );
+      expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+        false,
+        true,
+        true,
+        true,
+        false,
+      ]);
+    }
+  );
 
   it('treats a finished activity-only turn as work even without a final text reply', () => {
     const layout = buildAssistantTurnRenderLayout(

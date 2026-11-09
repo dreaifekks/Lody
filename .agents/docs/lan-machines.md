@@ -38,6 +38,10 @@ seconds on one kept connection, from the request to the first byte
 the hub, measured while its sidebar card is open or the LAN settings show it,
 every fifteen seconds; one that does not answer within six seconds says so.
 
+Presence keeps three states: a fresh heartbeat proves a member online even before
+its presence room joins. Only a synchronized room proves an absent member offline;
+otherwise the list reports unknown. RPC failures do not turn unknown into offline.
+
 Listing asks nothing of a machine. What a member asks of one is a
 project-control request, and these cross machines: `lan/update-machine`,
 `lan/restart-machine`, `lan/install-agent`, `lan/usage`, `lan/github`,

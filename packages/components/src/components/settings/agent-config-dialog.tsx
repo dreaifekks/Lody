@@ -1,3 +1,5 @@
+import { localMachineIdAtom } from '@/atoms/local-probe';
+import { supportsLodyAgentConnections } from './lody-agent-setting';
 import { useMachineFlockRows } from '@/hooks/use-machine-flock-rows';
 import { useMachineRpcFeatureReason } from '@/hooks/use-workspace-feature';
 import {
@@ -1581,6 +1583,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
     mode.kind === 'edit'
       ? mode.config.id
       : (draftConfigIdRef.current ??= uuidv4() as AgentConfigId);
+  const localMachineId = useAtomValue(localMachineIdAtom);
   const publishedConfig = useAtomValue(getAgentMetaByIdAtomFamily(agentConfigId));
   const setups = useAtomValue(getProviderSetupsByMachineAtomFamily(machine.id));
   const retrySetup = useSetAtom(cmdRetryProviderSetupAtom);
@@ -3236,10 +3239,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
                 key={JSON.stringify([machine.id, agentConfigId])}
                 machineId={machine.id}
                 configId={agentConfigId}
-                supported={
-                  machineSupportsProtocolCapability(machine, 'sorbetCredentials', 1) ||
-                  machineSupportsProtocolCapability(machine, 'sorbetCredentialsRemote', 1)
-                }
+                supported={supportsLodyAgentConnections(machine, localMachineId)}
                 refreshVersion={accountsRefreshVersion}
                 onProvidersChanged={async () => {
                   // Saving a Provider only matters once the probe reads it, so re-probe

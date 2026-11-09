@@ -62,7 +62,7 @@ describe('the standby of a LAN hub', () => {
       userId: 'local:home',
       lan: true,
       repo,
-      getOnlineMachineIds: async () => new Set([THIS, HOST, OTHER]),
+      getMachinePresenceView: async () => ({ online: new Set([THIS, HOST, OTHER]), synced: true }),
       sync: { markMachineFlockDocDirty: () => {} },
     };
     for (const id of [THIS, HOST, OTHER]) await register(id);

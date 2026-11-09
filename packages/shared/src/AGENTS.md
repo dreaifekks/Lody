@@ -59,3 +59,17 @@ Parent contracts apply. Before changing MCP catalog serialization, also read
   [memory contract](../../../specs/agent-role-memory.md).
 - Keep `author`, human `userId`, and recipient execution config separate.
   [Contract](../../../specs/message-author-identity.md).
+
+### Fork Role targets and scheduled MCP selection
+
+- Role targets bind ids to machine, Agent config, run config and memory.
+  Write one as v1 with an `instances` mirror preserving ids/aliases/config on old
+  forks; multiple as v2. Read legacy instances/placements intact, without writing.
+  Old clients skip v2.
+- Within one Role/machine, alias or unaliased Agent family is unique. Aliases may
+  repeat elsewhere. Multiple machines require a machine; multiple targets there
+  require an alias/id. Pins fail without fallback. Menus list and pin every target.
+  Freeze target/config/prompt/revision at acceptance; retries ignore edits.
+  [Memory](../../../specs/agent-role-memory.md).
+
+Schedules may select MCP ids for future turns; preserve explicit empty selections.

@@ -114,7 +114,7 @@ describe('what an agent service does for the members of its LANs', () => {
       userId: 'local:home',
       lan: true,
       repo,
-      getOnlineMachineIds: async () => new Set([THIS, SERVER]),
+      getMachinePresenceView: async () => ({ online: new Set([THIS, SERVER]), synced: true }),
       sync: { markMachineFlockDocDirty: () => {} },
     };
     control = new LanMachineControl({

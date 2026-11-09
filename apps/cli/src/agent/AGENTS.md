@@ -1,7 +1,5 @@
 # apps/cli/src/agent
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
-
 Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evidence.md;
 [CLI rules](../../AGENTS.md) cover adapter repositories.
 
@@ -30,7 +28,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
   LODY_AUTH_URL, LODY_AUTH_SITE_URL and LODY_SERVER_URL for cloud orchestration;
   local assembly clears them before startup. Never add CLI credentials or secrets.
 
-- Pass the same MCP config on initial and replacement DeepSeek Harness sessions.
+- Pass same MCP config on initial and replacement DeepSeek Harness sessions.
 - Resolve MCPs before initialize. Before remote baseline, complete selected rows may start
   with a warning. Missing rows retain the typed cold error, reload once before Provider
   Session establishment, then fail if still missing. Check completeness before auth
@@ -93,7 +91,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
   paths bypass it.
 - Registry/custom/Devin authentication has no terminal capability; run only agent methods.
   Reject env_var; terminal auth requires an interactive Machine RPC bridge. Keep methods
-  and elicitations on the original request, with one pending interaction and reply ids.
+  and elicitations on original request, with one pending interaction and reply ids.
   Remote authentication-input is encrypted. Bound form schemes, sizes, ids, labels,
   options and defaults within one serialized-byte budget before progress publication.
 

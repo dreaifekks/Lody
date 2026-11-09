@@ -1,4 +1,4 @@
-import type { CallToolResult, McpServer } from '@modelcontextprotocol/server';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import {
   LODY_AGENT_TOOL_NAMES,
   LODY_WIDGET_CDN_ORIGINS,
@@ -8,6 +8,7 @@ import {
   type LodyAgentToolId,
   type LodyNotifyUserInput,
 } from '@lody/shared';
+import type { LodyToolServer } from './tool-help';
 import type { createSessionToolRegistrar } from './session-tool-router';
 
 /*
@@ -52,7 +53,7 @@ const textResult = (value: unknown, isError = false): CallToolResult => ({
 });
 
 export function registerAgentSurfaceTools(
-  server: McpServer,
+  server: LodyToolServer,
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,
   options: {
     /** Tools to list; the daemon's handler table registers every one. */
@@ -66,6 +67,7 @@ export function registerAgentSurfaceTools(
     registerSessionTool(
       LODY_AGENT_TOOL_NAMES.notify,
       {
+        summary: 'Notify the user',
         title: 'Notify the user',
         description: AGENT_SURFACE_TOOL_DESCRIPTIONS.notify,
         inputSchema: LodyNotifyUserInputSchema,
@@ -80,6 +82,7 @@ export function registerAgentSurfaceTools(
     server.registerTool(
       LODY_AGENT_TOOL_NAMES.review,
       {
+        summary: 'Request a plan review',
         title: 'Request a plan review',
         description: AGENT_SURFACE_TOOL_DESCRIPTIONS.review,
         inputSchema: LodyRequestReviewInputSchema,
@@ -95,6 +98,7 @@ export function registerAgentSurfaceTools(
     server.registerTool(
       LODY_AGENT_TOOL_NAMES.widget,
       {
+        summary: 'Show a widget',
         title: 'Show a widget',
         description: AGENT_SURFACE_TOOL_DESCRIPTIONS.widget,
         inputSchema: LodyShowWidgetInputSchema,

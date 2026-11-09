@@ -99,7 +99,7 @@ describe('the machines of the LANs of a machine', () => {
     userId: workspaceId === OFFICE ? OFFICE_USER : HOME_USER,
     lan: true,
     repo: await open(workspaceId),
-    getOnlineMachineIds: async () => new Set<MachineId>(),
+    getMachinePresenceView: async () => ({ online: new Set<MachineId>(), synced: true }),
     sync: { markMachineFlockDocDirty: () => {} },
     ...overrides,
   });
@@ -190,9 +190,11 @@ describe('the machines of the LANs of a machine', () => {
 
   it('lists a member of two LANs once, this machine first, and nobody else', async () => {
     const home = await workspace(HOME, {
-      getOnlineMachineIds: async () => new Set([THIS, SERVER]),
+      getMachinePresenceView: async () => ({ online: new Set([THIS, SERVER]), synced: true }),
     });
-    const office = await workspace(OFFICE, { getOnlineMachineIds: async () => new Set([THIS]) });
+    const office = await workspace(OFFICE, {
+      getMachinePresenceView: async () => ({ online: new Set([THIS]), synced: true }),
+    });
     await register(home, THIS, {
       // A copy taken just now, at the list's clock of 500 ms after the epoch.
       lanHubRole: {
@@ -280,7 +282,7 @@ describe('the machines of the LANs of a machine', () => {
 
   it('gives a machine a short name in every LAN that has it, and takes it back', async () => {
     const home = await workspace(HOME, {
-      getOnlineMachineIds: async () => new Set([THIS, SERVER]),
+      getMachinePresenceView: async () => ({ online: new Set([THIS, SERVER]), synced: true }),
     });
     const office = await workspace(OFFICE);
     await register(home, THIS);
@@ -366,9 +368,11 @@ describe('the machines of the LANs of a machine', () => {
   });
 
   it('does not take an unknown presence for an absence', async () => {
-    const home = await workspace(HOME, { getOnlineMachineIds: async () => null });
+    const home = await workspace(HOME, {
+      getMachinePresenceView: async () => ({ online: new Set<MachineId>(), synced: false }),
+    });
     const office = await workspace(OFFICE, {
-      getOnlineMachineIds: async () => {
+      getMachinePresenceView: async () => {
         throw new Error('the hub is away');
       },
     });
@@ -377,6 +381,17 @@ describe('the machines of the LANs of a machine', () => {
 
     const { machines } = await list([home, office]);
     expect(machines.find((machine) => machine.machineId === SERVER)?.online).toBeNull();
+  });
+
+  it('keeps fresh heartbeats online before the presence room joins', async () => {
+    const home = await workspace(HOME, {
+      getMachinePresenceView: async () => ({ online: new Set([SERVER]), synced: false }),
+    });
+    await register(home, SERVER);
+    await register(home, LAPTOP);
+    const { machines } = await list([home]);
+    expect(machines.find((machine) => machine.machineId === SERVER)?.online).toBe(true);
+    expect(machines.find((machine) => machine.machineId === LAPTOP)?.online).toBeNull();
   });
 
   it('tells the members what this machine runs, once', async () => {

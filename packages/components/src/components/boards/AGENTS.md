@@ -1,6 +1,5 @@
 # Boards
 
-Parent instructions apply. `CLAUDE.md` symlinks here; edit `AGENTS.md` only.
 Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 
 - Boards use the workspace Flock catalog and its durability/upload split.
@@ -27,7 +26,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   Cards alone add a 14px Check for idle `boardThreadFamilies` on
   online machines and a read thread with `lastMessageAt`. Family wait/work, then
   thread-only unread wins; known stop/failure/cancel blocks it. Settled is not success.
-  localProject catalogs are acquired at list level, once per machine.
+  Acquire localProject catalogs once per machine at list level.
 - `BoardSidebar` selects by Session/Tab `boardId`; scalar reads, memoized rows.
 - Thread rows use sidebar actions (no pin), `SessionHeaderMenu` and shared archive
   confirmation. Board glyphs stay in headers/page tabs; Back (`boardEntrySearch`)
@@ -37,7 +36,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   ids: closing one deletes the Session.
 - `useBoardSessionNavigation` scopes cards, relations, breadcrumbs, rows and palette:
   only members open in-panel; outside, narrow and expanded targets use pages.
-  Page-bound resource links retain the original exact-tab deep-link path.
+  Page-bound resource links retain original exact-tab deep-link path.
   Coordinator children use `opensInCoordinatorPage`, never a second surface.
 - Thread rows group opened sessions and Tabs by the family's strongest state.
 - Board entries reset to half and half with `layoutResetKey` (Board id + entry),
@@ -66,9 +65,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   free. The picker merges by name, storing each machine's pair.
 - Instructions (≤16,000 code points) and the directory join each member's start
   prompt, coordinator included. Threads keep what they read; the coordinator
-  rereads the current row after Lody compacts or replaces its agent conversation.
+  rereads current row after Lody compacts or replaces its agent conversation.
 - Coordinator maintenance (`board-continuity-workflow.ts`): quiet system turns in
-  the same Session, outside the Inbox (one divider, hidden replies, no push; neither
+  same Session, outside the Inbox (one divider, hidden replies, no push; neither
   they nor their late output move `lastMessageAt`). It yields to user turns and
   results, never fakes compaction (skips agents it cannot confirm) or changes
   `coordinatorSessionId`.
@@ -80,7 +79,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   `archivedAtMs`; restoring restores every root (Session restore covers only direct
   Tabs), then the coordinator, then clears it. The coordinator (the page menu follows
   it) and the row change last: a failure leaves the Board as it was, retryable; no
-  rollback. Rename patches the current row's name.
+  rollback. Rename patches current row's name.
 - The experiment gates sidebar/panel/archived Boards; disabling it preserves data,
   ordinary sessions and membership inheritance.
 - Manual membership changes affect only the selected Session, clear its generation,

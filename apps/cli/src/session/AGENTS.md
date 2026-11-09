@@ -2,7 +2,7 @@
 
 [Docs](README.md); [worktree rules](worktree/AGENTS.md).
 
-## Authorization and identity
+## Identity
 
 - Authorize machines through injected access with the source CLI token; MCP verifies the frozen Turn requester under [MCP rules](../mcp/AGENTS.md).
 
@@ -22,7 +22,7 @@
   use the machine account as requester.
 - Encrypted requesters come from verified signers; authorize locally. Row `userId` is display only.
 
-## Turn execution
+## Execution
 
 - Gate LIST writes on user-entry sync (`turn-history-gate.ts`, 20s), never status/meta.
 - Goals obey [this contract](../../../../specs/session-goal-control.md).

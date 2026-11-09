@@ -1,3 +1,4 @@
+import type { MachinePresenceView } from '../loro/doc';
 // The machines of the LANs this machine is a member of: what they say about
 // themselves, what this machine says about itself, and the requests members
 // put to each other.
@@ -61,8 +62,8 @@ export type LanMemberWorkspace = {
   /** Whether a LAN carries the workspace. The implicit one has this machine only. */
   lan: boolean;
   repo: LoroRepo;
-  /** `null` while the hub has not said who is there. */
-  getOnlineMachineIds: () => Promise<ReadonlySet<MachineId> | null>;
+  /** Fresh heartbeats prove online; only a synced view proves absence. */
+  getMachinePresenceView: () => Promise<MachinePresenceView>;
   sync: MachineFlockSyncScheduler;
 };
 
@@ -155,7 +156,7 @@ export async function listLanMachines(options: {
   for (const workspace of options.workspaces) {
     const [ids, online] = await Promise.all([
       listMachineIds(workspace.repo),
-      workspace.getOnlineMachineIds().catch(() => null),
+      workspace.getMachinePresenceView().catch(() => null),
     ]);
     const lan = { workspaceId: workspace.workspaceId, name: workspace.name };
 
@@ -190,7 +191,7 @@ export async function listLanMachines(options: {
       // Nothing but this machine is reached through a workspace no LAN carries.
       if (!workspace.lan) continue;
 
-      const seenOnline = online ? online.has(id) : null;
+      const seenOnline = online?.online.has(id) ? true : online?.synced ? false : null;
       const known = machines.get(id);
       if (known) {
         known.lans.push(lan);
@@ -282,7 +283,7 @@ export async function readLanHubCandidates(
 ): Promise<Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }>> {
   const [ids, online] = await Promise.all([
     listMachineIds(workspace.repo),
-    workspace.getOnlineMachineIds().catch(() => null),
+    workspace.getMachinePresenceView().catch(() => null),
   ]);
   const candidates: Array<LanHubCandidate & { endpoint: LanTerminalEndpoint | null }> = [];
   for (const id of ids) {
@@ -290,7 +291,7 @@ export async function readLanHubCandidates(
     if (!meta || (meta.ownerUserId && meta.ownerUserId !== workspace.userId)) continue;
     candidates.push({
       machineId: id,
-      online: online?.has(id) ?? false,
+      online: online?.online.has(id) ?? false,
       role: parseLanHubRole(meta.lanHubRole),
       endpoint: parseLanTerminalEndpoint(meta.lanTerminal),
     });

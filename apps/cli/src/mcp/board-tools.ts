@@ -82,7 +82,7 @@ export function registerBoardTools(
     ],
   ] as const;
   for (const [name, description, inputSchema] of tools) {
-    register(name, { description, inputSchema }, async (input) => {
+    register(name, { summary: description, description, inputSchema }, async (input) => {
       try {
         const environment = getSessionCommandEnvironment();
         if (!environment) throw new Error('Board tools require the local daemon');
@@ -221,7 +221,10 @@ export function registerBoardTools(
         return {
           isError: true,
           content: [
-            { type: 'text' as const, text: error instanceof Error ? error.message : String(error) },
+            {
+              type: 'text' as const,
+              text: error instanceof Error ? error.message : String(error),
+            },
           ],
         };
       }
