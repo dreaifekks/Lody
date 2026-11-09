@@ -38,7 +38,9 @@ exporter sees a history, `projectLanShareHistory`
 of each assistant turn, what the reader shows with the work folded. The rule
 is the desktop's: a finished turn keeps its closing run of text and the
 pictures and files the desktop never folds, and every earlier text folds with
-the work, however long or structured. Every entry and item is rebuilt from the
+the work, however long or structured. A plan-review or widget card is no work
+either, so the answer before it stays the answer, but the card itself is not
+published. Every entry and item is rebuilt from the
 fields the reader reads (a text keeps its text, an assistant turn its id and
 times, never its input configuration), so nothing rides along in another
 field. An entry an agent wrote keeps who wrote it: the agent's or Role's

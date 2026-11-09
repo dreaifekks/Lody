@@ -494,6 +494,94 @@ describe('what a share publishes of a turn', () => {
     expect(shown(page)).toEqual(['Why is it stale?', 'Plan: rebuild the key.']);
   });
 
+  describe('a plan-review or widget card', () => {
+    const review = (fields: { [key: string]: Json } = {}) => ({
+      type: 'tool_call',
+      toolCallId: 'review',
+      toolName: 'mcp__lody__lody_request_review',
+      status: 'completed',
+      rawInput: { title: 'Cache plan', markdown: '# Rebuild the cache key' },
+      ...fields,
+    });
+    // Codex names the tool in its MCP envelope.
+    const widget = {
+      type: 'tool_call',
+      toolCallId: 'widget',
+      title: 'lody.lody_show_widget',
+      status: 'completed',
+      rawInput: {
+        server: 'lody',
+        tool: 'lody_show_widget',
+        arguments: { title: 'Hit rate', widget_code: '<svg id="hit-rate"/>' },
+      },
+    };
+
+    it('leaves the answer before it published, and is never published itself', () => {
+      const closing = 'The hit rate is back to 98%.';
+      const { json, page } = publish([
+        assistant('a1', [{ type: 'text', text: answer }, review()], { finished: true }),
+        assistant(
+          'a2',
+          [
+            { type: 'text', text: long },
+            command('t1', 'pnpm test'),
+            { type: 'text', text: closing },
+            widget,
+          ],
+          { finished: true }
+        ),
+      ]);
+      expect((JSON.parse(json) as Array<{ items: Json[] }>).map((entry) => entry.items)).toEqual([
+        [{ type: 'text', text: answer }],
+        [{ type: 'text', text: closing }],
+      ]);
+      expectLeftOut(json, ['Findings so far', 'Cache plan', 'Rebuild', 'hit-rate', 'lody_']);
+      expect(shown(page)).toEqual([answer, closing]);
+    });
+
+    it('closes no answer after work, and a failed call or a notification is a step', () => {
+      const { json } = publish([
+        assistant(
+          'a1',
+          [{ type: 'text', text: 'Drafting the plan.' }, command('t1', 'rg cacheKey'), review()],
+          { finished: true }
+        ),
+        assistant('a2', [{ type: 'text', text: answer }, review({ status: 'failed' })], {
+          finished: true,
+        }),
+        // A finished card whose input history did not keep has nothing to draw.
+        assistant(
+          'a3',
+          [
+            { type: 'text', text: answer },
+            {
+              type: 'tool_call',
+              toolCallId: 'old',
+              toolName: 'mcp__lody__lody_request_review',
+              status: 'completed',
+            },
+          ],
+          { finished: true }
+        ),
+        assistant(
+          'a4',
+          [
+            { type: 'text', text: answer },
+            {
+              type: 'tool_call',
+              toolCallId: 'notify',
+              toolName: 'mcp__lody__lody_notify_user',
+              status: 'completed',
+              rawInput: { body: 'Done.' },
+            },
+          ],
+          { finished: true }
+        ),
+      ]);
+      expect(JSON.parse(json)).toEqual([]);
+    });
+  });
+
   it('publishes the pictures the desktop never folds, after the answer and between steps', () => {
     const { json, page } = publish([
       assistant(

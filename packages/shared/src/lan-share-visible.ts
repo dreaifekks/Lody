@@ -1,11 +1,13 @@
 // What a reader of a LAN share sees of an assistant turn: its answer, and not
 // the work before it. The reader page folds that work by these rules, and the
 // window publishes nothing else, so the two must agree; both use this file,
-// which imports nothing (the reader bundles it by its path). The rules are the
-// desktop's (`ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts` of
+// which imports only `lody-agent-tool-names.ts`, itself importing nothing (the
+// reader bundles both by path). The rules are the desktop's
+// (`ai-gui/message-copy.ts` and `assistant-turn-render-blocks.ts` of
 // `@lody/components`): a finished turn shows its closing run of text, and every
 // earlier text folds with the work, however long it is.
 // See `.agents/docs/lan-sharing.md#shared-conversations`.
+import { agentSurfaceToolOf, toolArguments, type ToolCallLike } from './lody-agent-tool-names';
 
 /** An item of a history entry, as JSON; nothing of it is trusted. */
 export type LanShareTurnItem = { readonly [key: string]: unknown };
@@ -14,7 +16,25 @@ export type LanShareTurnItem = { readonly [key: string]: unknown };
 export const isLanSharePlanExit = (item: LanShareTurnItem): boolean =>
   item.type === 'tool_call' && item.kind === 'switch_mode';
 
-/** Attachments, plans and notices trail the answer and never fold. */
+/**
+ * A plan to review or a widget, which the desktop draws as a card of its own
+ * (`isSurfaceToolCall` of `@lody/components`, here with every surface on, as a
+ * share has no device to ask): it never folds, so the answer before it stays
+ * the answer, and a share never publishes the card itself. A call that failed,
+ * and a finished one whose input history did not keep, is an ordinary step.
+ */
+const isSurfaceCard = (item: LanShareTurnItem): boolean => {
+  if (item.type !== 'tool_call' || item.status === 'failed') return false;
+  const call = item as ToolCallLike;
+  const tool = agentSurfaceToolOf(call);
+  return (
+    tool !== null &&
+    tool.kind !== 'notify' &&
+    (toolArguments(call) !== undefined || item.status !== 'completed')
+  );
+};
+
+/** Attachments, plans, notices and cards trail the answer and never fold. */
 const NEVER_FOLDED = new Set([
   'image',
   'image_group',
@@ -27,12 +47,17 @@ const NEVER_FOLDED = new Set([
 
 const isNeverFolded = (item: LanShareTurnItem | undefined): boolean =>
   item !== undefined &&
-  ((typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) || isLanSharePlanExit(item));
+  ((typeof item.type === 'string' && NEVER_FOLDED.has(item.type)) ||
+    isLanSharePlanExit(item) ||
+    isSurfaceCard(item));
 
 /** Thinking and tool calls: a run of them is one group of steps. */
 export const isLanShareActivity = (item: LanShareTurnItem): boolean =>
   item.type === 'thought' ||
-  (item.type === 'tool_call' && !isLanSharePlanExit(item) && item.activityKind === undefined);
+  (item.type === 'tool_call' &&
+    !isLanSharePlanExit(item) &&
+    item.activityKind === undefined &&
+    !isSurfaceCard(item));
 
 const textOf = (item: LanShareTurnItem | undefined): string | null =>
   item?.type === 'text' ? (typeof item.text === 'string' ? item.text : '') : null;

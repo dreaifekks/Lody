@@ -20,7 +20,8 @@ The page a LAN hub serves to readers of a shared conversation (fork-only, see
   `@lody/components`, no Zstd (the hub refuses compressed histories). Its one
   import from another package is `packages/shared/src/lan-share-visible.ts`,
   by path: the rule of what a turn shows, which the window also publishes by.
-  That file imports nothing; keep the two on it rather than copying it.
+  That file imports only `lody-agent-tool-names.ts`, which imports nothing;
+  keep both that way, and keep the two on them rather than copying them.
 
 ## Build
 
