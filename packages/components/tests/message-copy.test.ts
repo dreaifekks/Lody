@@ -8,11 +8,6 @@ import {
 } from '../src/components/ai-gui/message-copy';
 
 const text = (value: string): MessageContent => ({ type: 'text', text: value });
-/**
- * A structured closing text. It is substantive, so the narration before its
- * work folds; a thin closing text keeps that run too (`getVisibleTextStart`).
- */
-const reply = (value: string): MessageContent => text(`${value}\n- detail`);
 
 describe('getTextContentFromMessageItems', () => {
   it('restores quote atoms across several text blocks without changing execution text', () => {

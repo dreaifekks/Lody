@@ -23,7 +23,7 @@ describe('buildAssistantTurnRenderLayout', () => {
         tool('command-1', 'execute'),
         { type: 'text', text: 'I found the relevant component.' },
         tool('edit-1', 'edit'),
-        { type: 'text', text: 'The renderer now collapses completed work:\n- thoughts\n- tools' },
+        { type: 'text', text: 'The renderer now collapses completed work.' },
       ],
       true
     );
@@ -34,6 +34,7 @@ describe('buildAssistantTurnRenderLayout', () => {
       'activity_group',
       'content',
     ]);
+    expect(layout.segments[0]?.firstWorkBlockIndex).toBe(0);
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
       true,
       true,
@@ -63,23 +64,26 @@ describe('buildAssistantTurnRenderLayout', () => {
     ]);
   });
 
-  it('keeps the preceding answer when the final note is short', () => {
-    const layout = buildAssistantTurnRenderLayout(
-      'assistant-1',
-      [
-        { type: 'text', text: 'The bug is in the parser.' },
-        tool('command-1', 'execute'),
-        { type: 'text', text: 'Confirmed by the reproduction.' },
-      ],
-      true
-    );
+  it.each(['The bug is in the parser.', 'x'.repeat(300), '# Earlier finding'])(
+    'folds earlier text before a later answer: %s',
+    (earlier) => {
+      const layout = buildAssistantTurnRenderLayout(
+        'assistant-1',
+        [
+          { type: 'text', text: earlier },
+          tool('command-1', 'execute'),
+          { type: 'text', text: 'Confirmed by the reproduction.' },
+        ],
+        true
+      );
 
-    expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-      false,
-      true,
-      false,
-    ]);
-  });
+      expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+        true,
+        true,
+        false,
+      ]);
+    }
+  );
 
   it('keeps every adjacent trailing text block regardless of phase', () => {
     const layout = buildAssistantTurnRenderLayout(
@@ -97,37 +101,13 @@ describe('buildAssistantTurnRenderLayout', () => {
       true
     );
     expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-      false,
+      true,
       true,
       false,
       false,
       false,
     ]);
   });
-
-  it.each(['x'.repeat(300), '# Earlier finding', '- Earlier finding'])(
-    'keeps substantive earlier text: %s',
-    (earlier) => {
-      const layout = buildAssistantTurnRenderLayout(
-        'substantive',
-        [
-          { type: 'text', text: earlier },
-          tool('read', 'read'),
-          { type: 'text', text: 'checking' },
-          tool('edit', 'edit'),
-          { type: 'text', text: '# Final answer' },
-        ],
-        true
-      );
-      expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-        false,
-        true,
-        true,
-        true,
-        false,
-      ]);
-    }
-  );
 
   it('treats a finished activity-only turn as work even without a final text reply', () => {
     const layout = buildAssistantTurnRenderLayout(
@@ -137,10 +117,11 @@ describe('buildAssistantTurnRenderLayout', () => {
     );
 
     expect(layout.workBlockKeys.size).toBe(1);
+    expect(layout.segments[0]?.firstWorkBlockIndex).toBe(0);
   });
 });
 
-it('keeps independent agent surfaces outside activity while every prose block stays visible', () => {
+it('keeps independent agent surfaces visible while earlier prose folds', () => {
   const items: MessageContent[] = [
     { type: 'text', text: 'Short answer.' },
     tool('run', 'execute'),
@@ -155,7 +136,7 @@ it('keeps independent agent surfaces outside activity while every prose block st
     (call) => call.toolCallId === 'review'
   );
   expect(layout.blocks.map((block) => [block.kind, layout.workBlockKeys.has(block.key)])).toEqual([
-    ['content', false],
+    ['content', true],
     ['activity_group', true],
     ['content', false],
     ['content', false],

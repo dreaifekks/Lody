@@ -233,7 +233,7 @@ describe('phased text in finished turns', () => {
     const items = [
       phased('Inspecting', 'commentary'),
       tool('read', 'read'),
-      answerText('# Unphased'),
+      answerText('Unphased'),
       phased('Checking', 'commentary'),
       phased('Done', 'final_answer'),
     ];
@@ -259,7 +259,7 @@ describe('phased text in finished turns', () => {
       'worked_group_header',
       'Inspecting',
       'activity_group_header',
-      '# Unphased',
+      'Unphased',
       'Checking',
       'Done',
     ]);
@@ -293,7 +293,7 @@ describe('phased text in finished turns', () => {
     ).toEqual(['worked_group_header', 'content:text', 'content:text']);
   });
 
-  it('keeps interrupted work open and folds it when a substantive unphased answer arrives', () => {
+  it('keeps interrupted work open and folds it when an unphased answer arrives', () => {
     const items = [phased('Inspecting', 'commentary'), tool('read', 'read')];
     expect(visibleContentKinds(buildRows(items, false), true)).toEqual([
       'worked_group_header',
@@ -304,9 +304,10 @@ describe('phased text in finished turns', () => {
       'content:text',
       'activity_group_header',
     ]);
-    expect(visibleContentKinds(buildRows([...items, answerText('# Unknown phase')], true))).toEqual(
-      ['worked_group_header', 'content:text']
-    );
+    expect(visibleContentKinds(buildRows([...items, answerText('Unknown phase')], true))).toEqual([
+      'worked_group_header',
+      'content:text',
+    ]);
   });
 });
 
@@ -358,92 +359,5 @@ describe('finished turns with background tasks', () => {
     );
 
     expect(visibleContentKinds(rows)).toEqual(['worked_group_header', 'content:text']);
-  });
-});
-
-describe('finished turn text', () => {
-  // A background task's followup lands in the same turn after the answer, so a
-  // finished turn often holds narration, an answer, more work, and a short note.
-  const answer = `Here is the answer. ${'Detail. '.repeat(40)}`;
-  const followupTurnItems: MessageContent[] = [
-    { type: 'text', text: 'Starting the review.' } as MessageContent,
-    tool('agent-1', 'other'),
-    { type: 'text', text: answer } as MessageContent,
-    tool('read-1', 'read', { locations: [{ path: 'review.md' }] }),
-    { type: 'text', text: 'The review agreed.' } as MessageContent,
-  ];
-
-  const rowsWithWorkedGroup = (expanded: boolean) =>
-    buildChatVirtualRows({
-      items: [
-        {
-          type: 'message',
-          sessionId: 'session-1' as SessionId,
-          message: assistantMessage(followupTurnItems, true),
-        },
-      ],
-      lastAssistantMessageId: 'assistant-1',
-      expansionVersion: 0,
-      selectionLayouts: new Map([
-        [
-          'assistant-1',
-          {
-            finished: true,
-            activeSearchBlockId: null,
-            expandState: {
-              expandedWorkedGroups: { 'segment:assistant-1:0': expanded },
-              expandedGroups: {},
-              expandedByIndex: {},
-              planOpen: false,
-            },
-          },
-        ],
-      ]),
-    });
-
-  const readingOrder = (rows: ReturnType<typeof buildRows>) =>
-    rows.flatMap((row) => {
-      if (row.type !== 'assistant' || row.content.kind === 'footer') return [];
-      const label =
-        row.content.kind === 'content' && row.content.block.kind === 'content'
-          ? `text:${(row.content.block.entry.content as { text?: string }).text}`
-          : row.content.kind;
-      return [row.isWorkedDetail ? `work:${label}` : label];
-    });
-
-  it('keeps the substantive answer and short followup while folding narration', () => {
-    expect(readingOrder(rowsWithWorkedGroup(false))).toEqual([
-      'worked_group_header',
-      `text:${answer}`,
-      'text:The review agreed.',
-    ]);
-  });
-
-  it('puts expanded work back around the answer in the order it happened', () => {
-    expect(readingOrder(rowsWithWorkedGroup(true))).toEqual([
-      'worked_group_header',
-      'work:text:Starting the review.',
-      'work:activity_group_header',
-      `text:${answer}`,
-      'work:activity_group_header',
-      'text:The review agreed.',
-    ]);
-  });
-
-  it('shows a short answer and the thin followup note after it, hiding only the work between', () => {
-    const rows = buildRows(
-      [
-        { type: 'text', text: '备份已完成，文件保存在 /tmp/backup.tar.gz。' } as MessageContent,
-        tool('read-1', 'read', { locations: [{ path: 'task-output.log' }] }),
-        { type: 'text', text: '后台任务也已结束。' } as MessageContent,
-      ],
-      true
-    );
-
-    expect(readingOrder(rows)).toEqual([
-      'text:备份已完成，文件保存在 /tmp/backup.tar.gz。',
-      'worked_group_header',
-      'text:后台任务也已结束。',
-    ]);
   });
 });

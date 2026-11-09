@@ -34,8 +34,8 @@ Ownership: [README.md](README.md).
 
 - Work regions start expanded while streaming and may be folded by the reader.
   Finished turns keep the final contiguous text run before trailing attachments,
-  plans and notices visible, plus earlier text of at least 300 characters or with structure. A short closing
-  note also keeps the preceding text run. Other narration folds.
+  plans and notices visible; all earlier prose folds with thoughts and tools.
+  Keep LAN share publication independent.
   Apply this rule per plan segment regardless of ACP phase or provider.
   Interrupted work without a visible result stays expanded. Expanded details keep
   chronological order, with the header before the first work item.
