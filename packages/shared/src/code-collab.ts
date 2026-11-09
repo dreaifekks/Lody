@@ -1026,7 +1026,10 @@ export function estimateCodeCollabFileIndexRowBytes(
   workspacePath: string,
   value?: CodeCollabV2FileIndexValue
 ): number {
-  return estimateCodeCollabFlockRowBytes(codeCollabFileIndexKeyForWorkspacePath(workspacePath), value);
+  return estimateCodeCollabFlockRowBytes(
+    codeCollabFileIndexKeyForWorkspacePath(workspacePath),
+    value
+  );
 }
 
 const codeCollabFileIndexRowCount = (value: CodeCollabV2FileIndexValue): number =>
@@ -1546,14 +1549,21 @@ export function buildBoundedCodeCollabFileIndexState(
       if (!priorityRank.has(directory)) priorityRank.set(directory, index);
     });
     const priorityChildren = breadthFirst
-      .filter((workspacePath) => priorityRank.has(codeCollabParentWorkspacePath(workspacePath)))
+      .filter(
+        (workspacePath) =>
+          priorityRank.has(codeCollabParentWorkspacePath(workspacePath)) &&
+          !isCodeCollabFileTreeValueIgnored(fileTree[workspacePath])
+      )
       .sort(
         (left, right) =>
           (priorityRank.get(codeCollabParentWorkspacePath(left)) ?? 0) -
             (priorityRank.get(codeCollabParentWorkspacePath(right)) ?? 0) ||
           compareCodeCollabWorkspacePathsBreadthFirst(left, right)
       );
-    for (const directory of priorityDirectories) take(directory);
+    // Expanded ignored paths use the later breadth-first pass, after changed rows.
+    for (const directory of priorityDirectories) {
+      if (!isCodeCollabFileTreeValueIgnored(fileTree[directory])) take(directory);
+    }
     for (const workspacePath of priorityChildren) take(workspacePath);
   }
   for (const workspacePath of changedPaths.sort(compareCodeCollabWorkspacePathsBreadthFirst)) {

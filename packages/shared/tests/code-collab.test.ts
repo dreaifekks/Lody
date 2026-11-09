@@ -655,6 +655,27 @@ describe('Code Collab file-index budget', () => {
     ).toBe(false);
   });
 
+  it('retains all changed rows when an expanded ignored directory exceeds the 1000-row budget', () => {
+    const tree: CodeCollabV2FileTreeState = { node_modules: { kind: 'lazy', ignored: true } };
+    for (let index = 0; index < 2000; index += 1) {
+      tree[`node_modules/package-${index}`] = { kind: 'lazy', ignored: true };
+    }
+    const changes: CodeCollabV2AllChangesState = {
+      'src/changed.ts': { diff: [2, 1] },
+      'src/nested/added.ts': { diff: [3, 0] },
+      'src/deleted.ts': { del: true, diff: [0, 4] },
+    };
+    const { fileIndex, omittedPaths } = buildBoundedCodeCollabFileIndexState(tree, changes, {
+      budget: { maxEntries: 1000, maxBytes: 1024 * 1024 },
+      priorityDirectories: ['node_modules'],
+    });
+    expect(codeCollabFileIndexToSharedState(fileIndex).allChanges).toEqual(changes);
+    expect(fileIndex.node_modules).toEqual({ kind: 'lazy', ignored: true });
+    expect(Object.keys(fileIndex).some((path) => path.startsWith('node_modules/'))).toBe(true);
+    expect(Object.keys(fileIndex).length).toBeLessThanOrEqual(1000);
+    expect(omittedPaths).toBeGreaterThan(0);
+  });
+
   it('counts generation siblings in the whole-index row budget', () => {
     const tree: CodeCollabV2FileTreeState = {};
     const changes: CodeCollabV2AllChangesState = {};
