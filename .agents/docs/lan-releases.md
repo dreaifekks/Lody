@@ -118,6 +118,17 @@ accepted gap: a desktop that skipped every newer build and updates straight to
 a reused one, or one installed afresh from a reused installer, follows
 `lan-dev` and has to be switched by hand in Settings > LAN.
 
+Two checks keep a desktop that cannot start from being published, since the
+packaging probes never enter the startup of the main process. After the bundles
+are built, `scripts/check-electron-bundle-entries.mjs` fails on an external
+`@lody/*` import of `out/main` or `out/preload` that resolves to TypeScript;
+such a package belongs in `externalizeDeps.exclude`. After the Linux package is
+built, `scripts/smoke-electron-appimage.mjs` starts it with temporary
+directories and waits for the main process to log a loaded window. It reads the
+log, not the exit status. macOS and Windows have the same bundles and no such
+start. Outside CI it needs a network namespace of its own on a machine with a
+real agent service, because the desktop reaches for the service's fixed port.
+
 `scripts/lan-release.mjs` names the build and assembles
 the release; `scripts/lan/install.sh` and `install-mac.sh` are published with
 it. A fork build may carry no publisher's signature, which neither the updater

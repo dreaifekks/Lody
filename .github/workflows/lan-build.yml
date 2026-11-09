@@ -147,6 +147,13 @@ jobs:
           LODY_LAN_COMMIT: ${{ github.sha }}
         run: pnpm --dir apps/electron run build
 
+      # Workspace packages export their TypeScript sources, which a packaged
+      # application cannot load once they stay external. A CLI-only build
+      # publishes no desktop bundle, so it does not wait on this.
+      - name: Check external workspace packages of the desktop bundles
+        if: needs.plan.outputs.build == 'full'
+        run: node scripts/check-electron-bundle-entries.mjs
+
       - name: Pack CLI
         run: pnpm --dir apps/cli pack --pack-destination "$RUNNER_TEMP/lan-cli"
 
@@ -314,6 +321,13 @@ jobs:
               console.log("helper", process.arch, "loads its bindings")
             ' "$cli"
           done
+
+      # The packaging probes run the binary as Node, which never enters the
+      # startup of the main process. A failure here fails this job, and the
+      # release job publishes nothing without every platform.
+      - name: Start the packaged application
+        if: matrix.id == 'linux'
+        run: node scripts/smoke-electron-appimage.mjs apps/electron/dist/*.AppImage
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
