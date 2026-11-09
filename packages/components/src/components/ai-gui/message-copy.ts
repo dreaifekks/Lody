@@ -29,7 +29,10 @@ export type StandaloneToolCallPredicate = (
  * now sort BELOW the plan, which puts a `file` last far more often, so the two
  * lists have to agree.
  */
-const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boolean =>
+const isNeverCollapsedAssistantItem = (
+  content: MessageContent | undefined,
+  isStandaloneToolCall?: StandaloneToolCallPredicate
+): boolean =>
   content?.type === 'image_group' ||
   content?.type === 'image' ||
   content?.type === 'file' ||
@@ -40,17 +43,21 @@ const isNeverCollapsedAssistantItem = (content: MessageContent | undefined): boo
   // answer the same way an attachment does. Left out, a turn that ends in one
   // reports no visible answer and folds its own reply into "Worked for …".
   content?.type === 'system_notice' ||
-  (content?.type === 'tool_call' && content.kind === 'switch_mode');
+  (content?.type === 'tool_call' &&
+    (content.kind === 'switch_mode' || isStandaloneToolCall?.(content) === true));
 
 /**
  * The answer is the final contiguous run of text before the never-collapsed
  * tail, not necessarily the last item. Every adjacent text block in that run
  * stays visible; a non-text item is the boundary between work and the answer.
  */
-const getFinalTextRunStart = (items: MessageContent[]): number => {
+const getFinalTextRunStart = (
+  items: MessageContent[],
+  isStandaloneToolCall?: StandaloneToolCallPredicate
+): number => {
   let index = items.length - 1;
 
-  while (index >= 0 && isNeverCollapsedAssistantItem(items[index])) {
+  while (index >= 0 && isNeverCollapsedAssistantItem(items[index], isStandaloneToolCall)) {
     index -= 1;
   }
 
@@ -70,21 +77,23 @@ export const shouldCollapseAssistantMessageItem = ({
   index,
   items,
   isTurnFinished,
+  isStandaloneToolCall,
 }: {
   content: MessageContent;
   index: number;
   items: MessageContent[];
   isTurnFinished: boolean;
+  isStandaloneToolCall?: StandaloneToolCallPredicate;
 }): boolean => {
   const itemCount = items.length;
-  const visibleTextRunStart = getFinalTextRunStart(items);
+  const visibleTextRunStart = getFinalTextRunStart(items, isStandaloneToolCall);
 
   return (
     isTurnFinished &&
     itemCount > 1 &&
     index < itemCount - 1 &&
     !(content.type === 'text' && index >= visibleTextRunStart) &&
-    !isNeverCollapsedAssistantItem(content)
+    !isNeverCollapsedAssistantItem(content, isStandaloneToolCall)
   );
 };
 

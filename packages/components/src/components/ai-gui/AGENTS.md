@@ -34,7 +34,7 @@ Ownership: [README.md](README.md).
 
 - Work regions start expanded while streaming and may be folded by the reader.
   Finished turns keep the final contiguous text run before trailing attachments,
-  plans and notices visible; all earlier prose folds with thoughts and tools.
+  plans, independent cards and notices visible; all earlier prose folds with thoughts and tools.
   Keep LAN share publication independent.
   Apply this rule per plan segment regardless of ACP phase or provider.
   Interrupted work without a visible result stays expanded. Expanded details keep

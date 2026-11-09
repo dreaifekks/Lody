@@ -148,3 +148,25 @@ it('keeps independent agent surfaces visible while earlier prose folds', () => {
     'content',
   ]);
 });
+
+it('keeps the final answer visible before a trailing independent review card', () => {
+  const items: MessageContent[] = [
+    { type: 'text', text: 'Earlier progress.' },
+    tool('read', 'read'),
+    { type: 'text', text: 'Final answer.' },
+    tool('review', 'other'),
+  ];
+  const layout = buildAssistantTurnRenderLayout(
+    'review-tail',
+    items,
+    true,
+    false,
+    (call) => call.toolCallId === 'review'
+  );
+  expect(layout.blocks.map((block) => [block.kind, layout.workBlockKeys.has(block.key)])).toEqual([
+    ['content', true],
+    ['activity_group', true],
+    ['content', false],
+    ['content', false],
+  ]);
+});

@@ -348,12 +348,12 @@ export const buildAssistantTurnRenderLayout = (
       const segmentContents = segmentEntries.map((entry) => entry.content);
       segmentEntries.forEach((entry, index) => {
         if (
-          !(entry.content.type === 'tool_call' && isStandaloneToolCall?.(entry.content)) &&
           shouldCollapseAssistantMessageItem({
             content: entry.content,
             index,
             items: segmentContents,
             isTurnFinished,
+            isStandaloneToolCall,
           })
         )
           collapsibleItemIndexes.add(entry.itemIndex);
