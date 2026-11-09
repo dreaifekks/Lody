@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  ArrowLeft,
   Crosshair,
   ExternalLink,
   MessageSquare,
@@ -379,6 +380,7 @@ export function BoardCompareView({
   read,
   comments,
   onOpenInTab,
+  onBack,
 }: {
   /**
    * Where the files come from (a thread, or a Board's area): two places can
@@ -390,6 +392,8 @@ export function BoardCompareView({
   /** The thread whose next message carries the comments; null where there is none. */
   comments: { readonly threadId: SessionId; readonly ownerThreadId: SessionId } | null;
   onOpenInTab?: () => void;
+  /** Back to the page a link here came from (the article window keeps the way back). */
+  onBack?: () => void;
 }) {
   const { t } = useTranslation();
   const loaded = useCompareFiles(read, manifestPath);
@@ -553,6 +557,19 @@ export function BoardCompareView({
       }}
     >
       <div {...stylex.props(styles.toolbar)}>
+        {onBack ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="small"
+            icon
+            aria-label={t('common.back', 'Back')}
+            title={t('common.back', 'Back')}
+            onClick={onBack}
+          >
+            <ArrowLeft aria-hidden />
+          </Button>
+        ) : null}
         <h2 {...stylex.props(styles.title)} title={manifestPath}>
           {title}
         </h2>

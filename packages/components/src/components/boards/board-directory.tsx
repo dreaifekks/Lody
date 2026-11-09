@@ -32,8 +32,15 @@ import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
 import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import {
+  splitBoardFilePath,
+  type BoardFileTarget,
+  type FileTarget,
+} from '@/lib/document-link-open';
 import { BoardCompareView, type CompareFile } from './board-compare-view';
 import { isCompareManifestPath } from './compare-manifest';
+import { BoardDocumentLinks, DocumentLinks, type DocumentLinkOwner } from './document-links';
 
 export type BoardDirectoryState =
   | { status: 'loading' }
@@ -320,13 +327,18 @@ export function BoardFileLinkPreview({
   target,
   memberSessionId,
   onClose,
+  links,
 }: {
   target: BoardFileLinkTarget;
   memberSessionId: import('@lody/shared').SessionId;
   onClose: () => void;
+  /** The file's own links: read for `owner`, opened by `onOpen` (a side tab). */
+  links?: { readonly owner: DocumentLinkOwner; readonly onOpen: (target: FileTarget) => void };
 }) {
   const { t } = useTranslation();
-  return target.board ? (
+  if (!target.board)
+    return <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>;
+  const preview = (
     <BoardFilePreview
       board={target.board}
       area={target.area}
@@ -335,8 +347,62 @@ export function BoardFileLinkPreview({
       onBack={onClose}
       backLabel={t('sessions.tabs.closeTab', 'Close tab')}
     />
+  );
+  return links ? (
+    <DocumentLinks
+      document={{
+        source: { kind: 'board', boardId: target.board.id },
+        path: `${target.area}/${target.path}`,
+      }}
+      owner={links.owner}
+      onOpen={links.onOpen}
+    >
+      {preview}
+    </DocumentLinks>
   ) : (
-    <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>
+    preview
+  );
+}
+
+/**
+ * A Board file in a preview that follows its links (the Board panel, the
+ * Board's memory): a link to a Board file opens it in place through
+ * `onOpenBoardFile`, and Back returns.
+ */
+export function BoardFilePage({
+  board,
+  target,
+  modifiedAtMs,
+  backLabel,
+  onBack,
+  onOpenBoardFile,
+}: {
+  /** The Board the preview belongs to; a link may lead to another one. */
+  board: BoardMeta;
+  target: BoardFileTarget;
+  modifiedAtMs?: number;
+  backLabel: string;
+  onBack: () => void;
+  onOpenBoardFile: (target: BoardFileTarget) => void;
+}) {
+  const { t } = useTranslation();
+  const { boards } = useWorkspaceCatalog();
+  const boardId = target.source.boardId;
+  const shown = board.id === boardId ? board : boards.find((entry) => entry.id === boardId);
+  const { area, path } = splitBoardFilePath(target.path);
+  if (!shown)
+    return <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>;
+  return (
+    <BoardDocumentLinks boardId={boardId} path={target.path} onOpenBoardFile={onOpenBoardFile}>
+      <BoardFilePreview
+        key={`${boardId}:${target.path}`}
+        board={shown}
+        area={area}
+        entry={{ path, ...(modifiedAtMs === undefined ? {} : { modifiedAtMs }) }}
+        onBack={onBack}
+        backLabel={backLabel}
+      />
+    </BoardDocumentLinks>
   );
 }
 

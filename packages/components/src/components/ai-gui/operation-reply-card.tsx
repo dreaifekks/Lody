@@ -9,6 +9,7 @@ import { Button } from '@lody/ui/button';
 import { Dialog } from '@/ui/dialog';
 import { useOperationTargetTitle } from './created-session-operation-card';
 import { MarkdownRenderer } from './markdown-renderer';
+import { SessionReplyFileLinks } from '../boards/document-links';
 
 /** One paragraph of Markdown as plain reading text (no heading, list or code marks). */
 const toPlainText = (markdown: string): string =>
@@ -149,7 +150,13 @@ export function OperationReplyCard(props: OperationReplyCardProps) {
               ) : null}
             </div>
             <div className="min-h-0 overflow-y-auto px-5 py-4 text-sm">
-              <MarkdownRenderer text={reply} />
+              <SessionReplyFileLinks
+                sessionId={sessionId}
+                text={reply}
+                onOpen={() => setOpen(false)}
+              >
+                <MarkdownRenderer text={reply} />
+              </SessionReplyFileLinks>
             </div>
           </Dialog.Content>
         </Dialog.Root>

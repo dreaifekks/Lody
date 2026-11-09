@@ -17,6 +17,9 @@ import {
   type SessionFileProvider,
 } from '../src/lib/session-file-provider';
 import { BoardFileLinkPreview, BoardFilePreview } from '../src/components/boards/board-directory';
+import { DocumentLinks, SessionFileLinkOpenContext } from '../src/components/boards/document-links';
+import { SessionAgentFileLinkMenuProvider } from '../src/components/sessions/session-agent-file-link-menu';
+import { OperationReplyCard } from '../src/components/ai-gui/operation-reply-card';
 import {
   boardDocumentFilePath,
   resolveBoardFileLink,
@@ -1249,9 +1252,11 @@ describe('Board side panel', () => {
         row,
         mark: (id: string) => row(id)?.querySelector('[data-session-row-indicator]') ?? null,
         headers: () =>
-          [...view.host.querySelectorAll('button[aria-expanded]:not([data-session-opened-by-toggle])')].map(
-            (header) => header.textContent
-          ),
+          [
+            ...view.host.querySelectorAll(
+              'button[aria-expanded]:not([data-session-opened-by-toggle])'
+            ),
+          ].map((header) => header.textContent),
       };
     }
 
@@ -1261,12 +1266,16 @@ describe('Board side panel', () => {
         expect(view.row('root')).not.toBeNull();
         expect(view.row('child')).toBeNull();
         expect(
-          view.row('root')?.querySelector('[data-session-opened-by-toggle]')?.getAttribute('aria-label')
+          view
+            .row('root')
+            ?.querySelector('[data-session-opened-by-toggle]')
+            ?.getAttribute('aria-label')
         ).toContain('2');
         expect(view.headers()).toEqual(['Idle1']);
 
         await act(async () => {
-          view.row('root')
+          view
+            .row('root')
             ?.querySelector('[data-session-opened-by-toggle]')
             ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         });
@@ -1414,9 +1423,7 @@ describe('Board side panel', () => {
     const folded = { isFolded: () => true, readThrough: receiptOnly };
     const unfolded = { isFolded: () => false, readThrough: receiptOnly };
     expect(boardActivity(board, [root, covered], new Map(), folded).hasUnreadMessages).toBe(false);
-    expect(boardActivity(board, [root, covered], new Map(), unfolded).hasUnreadMessages).toBe(
-      true
-    );
+    expect(boardActivity(board, [root, covered], new Map(), unfolded).hasUnreadMessages).toBe(true);
     expect(boardActivity(board, [root, newer], new Map(), folded).hasUnreadMessages).toBe(true);
     // The root's conversation was on screen after that newer output.
     const seenAfter = { isFolded: () => true, readThrough: () => 400 };
@@ -2974,6 +2981,264 @@ it('keeps an unavailable Board file in its preview until the catalog row arrives
       viewRoot.unmount();
     });
     ipc.remove();
+  }
+});
+
+/** A link inside rendered Markdown, by its text. */
+const linkButton = (host: HTMLElement, text: string) =>
+  [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.textContent === text
+  );
+
+it("follows a Board document's links in place, and hands the coordinator's files to the page", async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+  // The coordinator's machine has the source file the Board document names from the project root.
+  const probes: string[] = [];
+  store.set(runtimeAtom, {
+    workspaceId: 'ws',
+    workspaceSlug: 'ws',
+    requestFilePreview: async (_machineId: string, request: { path: string }) => {
+      probes.push(request.path);
+      return request.path === 'src/api.ts'
+        ? { status: 'error', code: 'too_large', path: request.path }
+        : { status: 'error', code: 'file_not_found' };
+    },
+  } as unknown as WorkspaceRuntime);
+  creation.boards = [testBoard()];
+  const ipc = installIpc({
+    'board/files-list:files': {
+      entries: [{ path: 'drafts/plan.md', sizeBytes: 22, modifiedAtMs: 1 }],
+      truncated: false,
+    },
+    'file:files/drafts/plan.md':
+      '# Plan\n\nSee [the notes](notes.md) and [the code](src/api.ts:7).',
+    'file:files/drafts/notes.md': '# Notes\n\nBack to [the plan](plan.md).',
+  });
+  const opened: unknown[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSidePanel
+        board={testBoard()}
+        documentLinks={{
+          owner: {
+            session: coordinator,
+            workspacePath: null,
+            preserveWorktreePath: false,
+            fileProvider: null,
+          },
+          openSessionFile: (target) => opened.push(target),
+        }}
+        openThreadId={null}
+        onOpenThread={() => {}}
+        onShowInPage={() => {}}
+        onOpenThreadFull={() => {}}
+        renderThread={() => null}
+        requestedThreadId={null}
+        onThreadRequestDone={() => {}}
+      />
+    </Provider>
+  );
+  try {
+    const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+      (node) => node.textContent === 'Board files'
+    ) as HTMLElement;
+    await act(async () => filesTab.click());
+    const treeRow = (name: string) =>
+      [...view.host.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')].find(
+        (row) => row.textContent === name
+      );
+    await vi.waitFor(() => expect(treeRow('drafts')).toBeDefined());
+    await act(async () => treeRow('drafts')?.click());
+    await act(async () => treeRow('plan.md')?.click());
+    await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
+    const backLabel = () =>
+      view.host.querySelector('button[aria-label^="Back"]')?.getAttribute('aria-label');
+    expect(backLabel()).toBe('Back to files');
+
+    // A link to another Board file is the next page in the panel, with the way back.
+    await act(async () => linkButton(view.host, 'the notes')!.click());
+    await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Notes'));
+    expect(backLabel()).toBe('Back');
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('button[aria-label="Back"]')!.click()
+    );
+    await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
+    expect(backLabel()).toBe('Back to files');
+
+    // The Board folder does not hold the source file; the coordinator's workspace does.
+    await act(async () => linkButton(view.host, 'the code')!.click());
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toEqual({
+      source: { kind: 'session', sessionId: 'coordinator' },
+      path: 'src/api.ts',
+      startLine: 7,
+    });
+    expect(ipc.requests).toContainEqual({
+      method: 'openMemberFile',
+      params: {
+        workspaceId: 'ws',
+        machineId: 'devnuc',
+        sessionId: 'coordinator',
+        boardId: 'bd_test',
+        path: 'files/drafts/src/api.ts',
+      },
+    });
+    expect(probes).toEqual(['src/api.ts']);
+    expect(view.host.querySelector('h1')?.textContent).toBe('Plan');
+  } finally {
+    await view.unmount();
+    ipc.remove();
+    creation.boards = [];
+  }
+});
+
+it("opens a previewed document's links beside it instead of copying them", async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  const thread = makeSession('thread', { machineId: 'remote' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(thread.id)]: thread });
+  store.set(runtimeAtom, {
+    workspaceId: 'ws',
+    workspaceSlug: 'ws',
+    requestFilePreview: async (_machineId: string, request: { path: string }) =>
+      request.path === 'README.md'
+        ? { status: 'error', code: 'too_large', path: request.path }
+        : { status: 'error', code: 'file_not_found' },
+  } as unknown as WorkspaceRuntime);
+  creation.machines.set('remote', { id: 'remote' });
+  creation.fileProviders.set(
+    'remote:thread',
+    createFakeSessionFileProvider({
+      files: [
+        { path: 'docs/guide.md', kind: 'text', sourceState: 'live-readonly' },
+        { path: 'docs/setup.md', kind: 'text', sourceState: 'live-readonly' },
+      ],
+      snapshots: {
+        'docs/guide.md': {
+          kind: 'text',
+          text: '# Guide\n\n[Setup](setup.md), [the readme](README.md) and docs/setup.md',
+        },
+      },
+    })
+  );
+  const opened: unknown[] = [];
+  const backs: number[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <SessionFileScope sessionId={thread.id}>
+        {(scope) => (
+          <DocumentLinks
+            document={{ source: { kind: 'session', sessionId: thread.id }, path: 'docs/guide.md' }}
+            owner={scope}
+            onOpen={(target) => opened.push(target)}
+          >
+            <SessionFileContentView
+              sessionId={scope.session.id}
+              session={scope.session}
+              filePath="docs/guide.md"
+              fileProvider={scope.fileProvider}
+              fileProviderPending={scope.fileProviderPending}
+              article={{
+                onOpenInTab: () => {},
+                annotationThreadId: null,
+                onBack: () => backs.push(1),
+              }}
+            />
+          </DocumentLinks>
+        )}
+      </SessionFileScope>
+    </Provider>
+  );
+  try {
+    await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Guide'));
+    // Links read as openable: no copy mark, an "open" name.
+    const setup = linkButton(view.host, 'Setup')!;
+    expect(setup.getAttribute('aria-label')).toBe('Open agent file: setup.md');
+    expect(linkButton(view.host, 'docs/setup.md')?.getAttribute('aria-label')).toBe(
+      'Open agent file: docs/setup.md'
+    );
+    // Beside the document first: its folder holds setup.md.
+    await act(async () => setup.click());
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toEqual({
+      source: { kind: 'session', sessionId: 'thread' },
+      path: 'docs/setup.md',
+    });
+    // Not in its folder: the workspace root, where the machine finds it.
+    await act(async () => linkButton(view.host, 'the readme')!.click());
+    await vi.waitFor(() => expect(opened).toHaveLength(2));
+    expect(opened[1]).toEqual({
+      source: { kind: 'session', sessionId: 'thread' },
+      path: 'README.md',
+    });
+    // The article header goes back to the page the reader came from.
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('button[aria-label="Back"]')!.click()
+    );
+    expect(backs).toEqual([1]);
+  } finally {
+    await view.unmount();
+    creation.fileProviders.clear();
+    creation.machines.delete('remote');
+  }
+});
+
+it("opens a reply card's file links in the session that replied", async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  const parent = makeSession('parent', { machineId: 'remote', title: 'Parent' });
+  const reviewer = makeSession('reviewer', { machineId: 'remote', title: 'Review' });
+  store.set(sessionMetaCacheAtom, {
+    [getSessionRoomId(parent.id)]: parent,
+    [getSessionRoomId(reviewer.id)]: reviewer,
+  });
+  creation.machines.set('remote', { id: 'remote', workspacePaths: { reviewer: '/remote/rev' } });
+  const indexed = (path: string) =>
+    createFakeSessionFileProvider({
+      files: [{ path, kind: 'text', sourceState: 'live-readonly' }],
+    });
+  creation.fileProviders.set('remote:parent', indexed('plan.md'));
+  creation.fileProviders.set('remote:reviewer', indexed('notes/review.md'));
+  const opened: { sessionId: string; workspacePath: string | null; path: string }[] = [];
+  const reply =
+    'Done.\n\nThe findings are in [the report](notes/review.md), beside [the plan](plan.md).';
+  const view = await mount(
+    <Provider store={store}>
+      <SessionAgentFileLinkMenuProvider session={parent} workspaceId="ws">
+        <SessionFileLinkOpenContext.Provider
+          value={(scope, path, options) => {
+            opened.push({ sessionId: scope.session.id, workspacePath: scope.workspacePath, path });
+            expect(options?.linkContext?.()).toEqual({ mentions: [reply], outputs: [] });
+          }}
+        >
+          <OperationReplyCard sessionId={reviewer.id} status="succeeded" reply={reply} />
+        </SessionFileLinkOpenContext.Provider>
+      </SessionAgentFileLinkMenuProvider>
+    </Provider>
+  );
+  try {
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('button[title="View full reply"]')!.click()
+    );
+    // The reply's paths are the reviewer's: the conversation showing it lends none of its files.
+    await vi.waitFor(() => expect(linkButton(document.body, 'the report')).toBeDefined());
+    expect(linkButton(document.body, 'the plan')).toBeUndefined();
+    await act(async () => linkButton(document.body, 'the report')!.click());
+    expect(opened).toEqual([
+      { sessionId: 'reviewer', workspacePath: '/remote/rev', path: 'notes/review.md' },
+    ]);
+    // The reply's dialog makes way for the file.
+    await vi.waitFor(() => expect(linkButton(document.body, 'the report')).toBeUndefined());
+  } finally {
+    await view.unmount();
+    creation.fileProviders.clear();
+    creation.machines.delete('remote');
   }
 });
 

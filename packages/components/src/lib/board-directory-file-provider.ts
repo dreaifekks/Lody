@@ -49,6 +49,8 @@ export class BoardDirectoryFileProvider extends LazyDirectoryFileProvider {
 }
 
 export type BoardFileLinkTarget = {
+  /** The Board the path names, even one the catalog does not list (yet). */
+  boardId: string;
   board: BoardMeta | undefined;
   area: BoardFileArea;
   path: string;
@@ -75,9 +77,10 @@ export function resolveBoardFileLink(
       (segments[position + 3] === 'files' || segments[position + 3] === 'memory')
   );
   if (index < 0) return null;
-  const board = boards.find((entry) => entry.id === segments[index + 2]);
+  const boardId = segments[index + 2]!;
+  const board = boards.find((entry) => entry.id === boardId);
   const area = segments[index + 3] as BoardFileArea;
-  return { board, area, path: segments.slice(index + 4).join('/'), filePath };
+  return { boardId, board, area, path: segments.slice(index + 4).join('/'), filePath };
 }
 
 /**

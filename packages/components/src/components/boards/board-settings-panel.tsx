@@ -15,7 +15,6 @@ import {
   MAX_BOARD_INSTRUCTIONS,
   normalizeBoardMeta,
   type BoardContinuitySettings,
-  type BoardFileEntry,
   type BoardMeta,
   type BoardProjectRef,
 } from '@lody/shared';
@@ -29,10 +28,12 @@ import { CompactRow, CompactSection } from '../settings/compact-layout';
 import { settingsSurface as surface } from '../settings/surface';
 import {
   BoardDirectoryNote,
-  BoardFilePreview,
+  BoardFilePage,
   BoardFileRowsView,
   useBoardDirectory,
 } from './board-directory';
+import type { BoardFileTarget } from '@/lib/document-link-open';
+import { BoardDocumentLinksContext, type BoardDocumentLinksValue } from './document-links';
 import { useBoardActions } from './board-lifecycle';
 import { boardStyles } from './board-view';
 import { BoardProjectScopePicker } from './board-project-scope-picker';
@@ -436,15 +437,22 @@ export function BoardContinuityView({
 function BoardAutoMemory({ board }: { board: BoardMeta }) {
   const { t } = useTranslation();
   const memory = useBoardDirectory(board, 'memory');
-  const [open, setOpen] = useState<BoardFileEntry | null>(null);
-  if (open)
+  // A link in a memory file opens the next page in place; the earlier ones are the way back.
+  const [pages, setPages] = useState<
+    readonly { readonly target: BoardFileTarget; readonly modifiedAtMs?: number }[]
+  >([]);
+  const page = pages.at(-1);
+  if (page)
     return (
-      <BoardFilePreview
+      <BoardFilePage
         board={board}
-        area="memory"
-        entry={open}
-        backLabel={t('boards.memory.back', 'Back to memory')}
-        onBack={() => setOpen(null)}
+        target={page.target}
+        {...(page.modifiedAtMs === undefined ? {} : { modifiedAtMs: page.modifiedAtMs })}
+        backLabel={
+          pages.length > 1 ? t('common.back', 'Back') : t('boards.memory.back', 'Back to memory')
+        }
+        onBack={() => setPages((current) => current.slice(0, -1))}
+        onOpenBoardFile={(target) => setPages((current) => [...current, { target }])}
       />
     );
   const entries =
@@ -457,7 +465,20 @@ function BoardAutoMemory({ board }: { board: BoardMeta }) {
       : [];
   return (
     <>
-      <BoardFileRowsView entries={entries} onOpen={setOpen} />
+      <BoardFileRowsView
+        entries={entries}
+        onOpen={(entry) =>
+          setPages([
+            {
+              target: {
+                source: { kind: 'board', boardId: board.id },
+                path: `memory/${entry.path}`,
+              },
+              modifiedAtMs: entry.modifiedAtMs,
+            },
+          ])
+        }
+      />
       <BoardDirectoryNote
         state={memory.state}
         empty={t('boards.memory.empty', 'No memory yet. Agents add it as they work.')}
@@ -678,6 +699,8 @@ type BoardSettingsProps = {
   board: BoardMeta;
   onClose: () => void;
   onArchived: () => void;
+  /** How links in the memory previews open; without it they copy their path. */
+  documentLinks?: BoardDocumentLinksValue;
 };
 
 /**
@@ -687,7 +710,11 @@ type BoardSettingsProps = {
  */
 export function BoardSettings(props: BoardSettingsProps) {
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
-  return <BoardSettingsContent key={`${workspaceId}:${props.board.id}`} {...props} />;
+  return (
+    <BoardDocumentLinksContext.Provider value={props.documentLinks ?? null}>
+      <BoardSettingsContent key={`${workspaceId}:${props.board.id}`} {...props} />
+    </BoardDocumentLinksContext.Provider>
+  );
 }
 
 function BoardSettingsContent({ board, onClose, onArchived }: BoardSettingsProps) {
