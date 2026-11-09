@@ -103,6 +103,8 @@ describe('General settings sections', () => {
       'Enable experimental features',
       'Low-stimulus mode',
       'Boards',
+      // Its own row: the article window serves every conversation, Boards on or off.
+      'Article window',
       'Voice',
       'Notifications from agents',
       'Plan review',

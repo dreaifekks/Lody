@@ -20,7 +20,7 @@ While it is on, its rows follow the master switch in the same section:
 | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
 | Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
 | Interactive widgets | `inlineWidgetExperimentEnabledAtom` (`lody-inline-widget-experiment-enabled`) |
-| Article window (under Boards) | `boardArticleExperimentEnabledAtom` (`lody-board-article-experiment-enabled`) |
+| Article window | `boardArticleExperimentEnabledAtom` (`lody-board-article-experiment-enabled`) |
 
 Every switch is this device's own. A feature is on where both the master switch
 and its own switch are (`*FeatureEnabledAtom`). Turning the master switch off
@@ -357,24 +357,31 @@ hides its surfaces and keeps sessions and Board data intact.
 
 ### Article window
 
-A row under Boards, shown while Boards is on. In a Board, clicking a `.md`/`.html`
-file link in a thread open in the side panel opens the article window over the page
-instead of a file tab: the file on the left, that thread's conversation on the right
-(60/40, the divider drags, nothing is remembered). Escape (after any open comment
-editor), the backdrop or the × in the thread header closes it and leaves the page as
-it was. The file header's ⋯ has "Open in side tab". A file link in the article opens
-the next page in place, with Back in the file header. The right pane is whichever
-thread the Board panel has open: moving to another member through the thread
-header's breadcrumb or a session link keeps the window and the article (still read
-from its own thread); a destination outside the panel closes it. Other files, phones, the compact desktop layout and a
-thread opened as its own page keep the file tab; turning the switch off or going
-compact closes an open window. The agent side is a convention for the Board's thread
-instructions: write `articles/<name>.md|html` and give the path in the reply. No
-tool, CLI or protocol change.
+A row of its own, Boards on or off (its key still says Board: it began as a Board
+feature, and devices that had it on keep it on). Clicking a `.md`/`.html` file link
+in a conversation opens the article window over the page instead of a file tab: the
+file on the left, that conversation on the right (60/40, the divider drags, nothing
+is remembered). That is the page's own conversation (its active tab, including the
+links of a reply card, read in the child session) or a thread open in a Board's
+side panel. Escape (after any open comment editor), the backdrop or the × in a
+thread's header closes it and leaves the page as it was. The file header's ⋯ has
+"Open in side tab"; a Markdown or HTML file tab's ⋯ has the reverse, "Open as
+article", which keeps the tab and puts the page's conversation beside the article.
+A file link in the article opens the next page in place, with Back in the file
+header. A thread on the right is whichever one the Board panel has open: moving to
+another member through the thread header's breadcrumb or a session link keeps the
+window and the article (still read from its own thread); a destination outside the
+panel closes it. Beside the page's conversation the window lasts while that tab is
+the active one: another tab, another page or a member opening in the panel closes
+it. A draft tab has no conversation, so its articles have the window to themselves.
+Other files, Side Chats, phones and the compact desktop layout keep the file tab;
+turning the switch off or going compact closes an open window. The agent side is a
+convention for the Board's thread instructions: write `articles/<name>.md|html` and
+give the path in the reply. No tool, CLI or protocol change.
 
-A Board's Markdown and HTML open in the window as well: a thread's link into the
-Board directory, and the Board panel's Files list and shared notes (these with no
-conversation beside the article). They are read like the panel's previews, from the
+A Board's Markdown and HTML open in the window as well: a conversation's link into
+the Board directory, and the Board panel's Files list and shared notes (these with
+the page's conversation beside the article, the coordinator on a Board page). They are read like the panel's previews, from the
 machine that keeps the directory through the member file channel
 (`BoardMemberFileProvider` in `lib/board-directory-file-provider.ts`: read-only, text
 past 1 MiB cut, bytes that are not UTF-8 shown as binary), so the outline, comments,
@@ -385,12 +392,15 @@ conversation beside the window, or of the page's own session when there is none.
 Board files keep the panel's preview, and so does every Board file wherever the window
 is unavailable.
 
-- One conversation: the panel's thread conversation is always portalled into a
-  relocatable host (`components/boards/relocatable-host.tsx`), so the switch never
-  changes its tree. The Board panel and the open dialog each render a slot; the
-  node sits in the dialog's while it is open (a higher priority, so a panel that
-  remounts meanwhile does not take it back), moved with `moveBefore` where the
-  browser has it. Only such a move between two places in the document keeps the
+- One conversation: a Board panel's thread is always portalled into a relocatable
+  host (`RelocatableConversation` in `components/boards/relocatable-host.tsx`); the
+  page's tabs are while the switch is on, and with it off render in their own box
+  as upstream does (flipping it remounts them once). A thread and a tab can be the
+  same session at once (a member's page with that member in the panel), so each
+  kind keeps its own hosts. The thread's or tab's place and the open dialog each
+  render a slot; the node sits in the dialog's while it is open (a higher priority,
+  so a panel that remounts meanwhile does not take it back), moved with
+  `moveBefore` where the browser has it. Only such a move between two places in the document keeps the
   conversation's scroll offset, so closing takes two commits: the dialog lets go
   of the conversation while it is still in the document, then unmounts. React never
   remounts the conversation, so its composer text, chips, scroll and

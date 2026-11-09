@@ -455,7 +455,11 @@ export const boardEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(boardExperimentEnabledAtom)
 );
 
-/** Opt-in for opening a thread's article beside its conversation (Board side panel only). */
+/**
+ * Opt-in for the article window: a conversation's Markdown or HTML opens over
+ * the page with that conversation beside it. The key predates its leaving the
+ * Boards experiment, so devices that had it on keep it on.
+ */
 export const boardArticleExperimentEnabledAtom = atomWithStorage<boolean>(
   'lody-board-article-experiment-enabled',
   false,
@@ -463,7 +467,7 @@ export const boardArticleExperimentEnabledAtom = atomWithStorage<boolean>(
   { getOnInit: true }
 );
 export const boardArticleFeatureEnabledAtom = atom(
-  (get) => get(boardEnabledAtom) && get(boardArticleExperimentEnabledAtom)
+  (get) => get(experimentalFeaturesEnabledAtom) && get(boardArticleExperimentEnabledAtom)
 );
 
 export const lodyAgentBetaEnabledAtom = atomWithStorage<boolean>(

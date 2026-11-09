@@ -50,6 +50,11 @@ replying session's own conversation would, its relative paths confirmed by that
 session's index. Only the latest click opens, and none once its document has changed
 (Back) or closed.
 
+With the experimental article window on a wide desktop, a conversation's Markdown or
+HTML link (a page tab's, a reply card's, a Board panel thread's) opens that window
+with the conversation beside it instead of a file tab; Side Chats, other files and
+narrow layouts keep the tab ([Article window](experimental.md#article-window)).
+
 - Diff page: `session-conversation-diff-panel.tsx`, data from
   `use-session-conversation-diff-data.ts`. Each file title copies the
   workspace-relative path and, when wired, opens a file-preview viewer tab

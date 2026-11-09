@@ -1,11 +1,12 @@
-# 看板：article 浮窗（左 article，右线程对话）
+# article 浮窗（左 article，右对话）
 
 Status: draft
 Translation: pending
 
 2026-10-19 用户在 Mac 测试版上试了三轮，定下了现在的形态（分支 `feat/board-article-panel-proto`）。
-功能在 Experimental features 的「Article 浮窗」开关后面，默认关闭。实现说明见
-[experimental.md](../../.agents/docs/experimental.md) 的 Article window 一节。
+2026-11-10 起浮窗不再只属于看板：任何对话里的 md / html 链接都能打开，右栏是那段对话。
+功能在 Experimental features 的「Article 浮窗」开关后面，独立一行，不依赖 Boards 开关，默认关闭。
+实现说明见 [experimental.md](../../.agents/docs/experimental.md) 的 Article window 一节。
 
 ## 场景
 
@@ -48,24 +49,33 @@ Translation: pending
 
 ### 入口和浮窗
 
-- 开关打开时，在看板侧边面板里点线程消息中的 `.md` / `.html` 链接，直接弹出浮窗，不创建
-  文件 tab，其他类型的文件照旧开 tab；链接指向看板目录里的文件也一样。手机、compact 宽度
-  和完整页线程也照旧开 tab；已经打开的浮窗在关掉开关或跨过 compact 断点时会自动关闭。
-- 看板面板 Files 列表和共享笔记里点开的 md / html 也进浮窗，这时右栏没有对话，只有
-  article；其他看板文件照旧在面板里预览。
+- 开关打开时，点对话消息里的 `.md` / `.html` 链接直接弹出浮窗，右栏是这段对话：本页的
+  对话（当前标签，包括回执卡片里完整回复的链接，按子会话的机器和目录读），或看板侧边面板里
+  的线程。不创建文件 tab，其他类型的文件照旧开 tab；链接指向看板目录里的文件也一样。
+  Side Chat、手机和 compact 宽度照旧开 tab；已经打开的浮窗在关掉开关或跨过 compact 断点时
+  会自动关闭。
+- 看板面板 Files 列表和共享笔记里点开的 md / html 也进浮窗，右栏是本页的对话（看板页上是
+  协调者）；当前标签是没发出的草稿时没有对话可放，浮窗只有 article。其他看板文件照旧在面板
+  里预览。
+- 文件 tab 的 ⋯ 菜单对 md / html 有「作为 article 打开」，和浮窗里的「在侧边 tab 打开」互为
+  反向：tab 留着，浮窗右栏是本页的对话。
 - 浮窗是 `@lody/ui` Dialog，带遮罩，四周留边距，左右默认 60/40，中间可以拖。Esc、点遮罩、
   右栏 × 都能关闭。⋯ 菜单里的「在侧边 tab 打开」是退路。
 - 浮窗记两样东西：左边的一叠页面（每页是一个文件和读它的会话，决定从哪台机器、哪个
-  工作区读），以及右栏现在显示哪个对话（跟着 Board 面板走）。面包屑、父线程、本看板成员的
-  会话链接只会切换右栏，浮窗不关，左边 article 不变；会离开 Board 面板的导航则关闭浮窗。
+  工作区读），以及右栏是谁：看板面板的线程（跟着 Board 面板走）、本页的某个对话，或没有。
+  右栏是线程时，面包屑、父线程、本看板成员的会话链接只会切换右栏，浮窗不关，左边 article
+  不变；会离开 Board 面板的导航则关闭浮窗。右栏是本页的对话时，切到别的标签、别的页面，或者
+  有成员在面板里打开，浮窗都关闭。
 - article 里的文件链接原地换页：左边换成链接指向的文件，标题栏出返回键，退回上一篇；不开
   文件 tab。读哪台机器、哪个目录由链接本身决定：相对路径先按文档所在目录，找不到再按所属
   会话的工作目录；其他绝对路径归所属会话的机器；指向看板目录的链接经看板成员接口读。
 
-### 右栏和侧边面板是同一个对话实例
+### 右栏和原来的位置是同一个对话实例
 
-- 线程对话始终用 portal 渲染进一个持久的 DOM 宿主。宿主在 Board 面板的槽位和浮窗右栏的
-  槽位之间搬节点，浮窗的槽位优先。React 不会重新挂载对话，所以输入框文字、附件 chip、
+- 线程对话始终用 portal 渲染进一个持久的 DOM 宿主；本页的对话标签在开关打开时也这样，开关
+  关着时照上游原样渲染（切换开关时对话会重新挂载一次）。宿主在原位置（Board 面板或对话
+  标签）的槽位和浮窗右栏的槽位之间搬节点，浮窗的槽位优先。同一个会话可能既是本页标签又是
+  面板线程（成员的完整页上，面板也开着它），两类各用各的宿主。React 不会重新挂载对话，所以输入框文字、附件 chip、
   `chatRefsMap[threadId]` 都留在原来那一个实例上，也没有两份订阅。
 - 不用 Dialog 里再挂一个 `SessionChatInterface`：那样两个输入框会抢同一个 ref，chip 和草稿
   得来回交接。
@@ -123,7 +133,7 @@ Translation: pending
   删掉。发送失败时批注保持未发送，下次再带；等待接受期间改过的批注不算已发送，留到下次。
 - 输入框里有未发送批注时，输入框内显示一行小号 muted 的「将附带 N 条批注」，0 条不显示。
   对话只有一个实例，所以关掉浮窗、在侧边面板里发送也照样带上、照样提示。
-- 批注归属：发送它的线程（写批注时浮窗右栏的线程）+ article（文件所在线程 + 路径；看板
+- 批注归属：发送它的对话（写批注时浮窗右栏的对话；右栏没有对话时是本页的会话）+ article（文件所在线程 + 路径；看板
   文件是协调者 + 规范路径），存在
   本机 localStorage，重启还在，换一台设备看不到（用户 2026-10-29 选的「只存本机」；写到
   文章旁边的文件需要后端加写入通道，没做）。右栏切到别的成员时，article 上只显示要随这个
@@ -166,8 +176,8 @@ Translation: pending
   方案，也可以打开「指出位置」点方案里的某处（点击不交给页面，记下元素的简短描述和坐标，
   显示为图钉）。发出去的引用是 `A · 标题 · 元素`，「A 的头部 + C 的配色」就是选一个基础，
   再在 A、C 上各写一条。agent 改写了方案文件，方案头出现「已更新」，已发批注标为改过。
-- Board Files 里点 `.compare.md` 也在浮窗里打开对比视图；旁边没有对话，批注随本页主会话
-  （看板页上是协调者）的下一条消息发出。
+- Board Files 里点 `.compare.md` 也在浮窗里打开对比视图；旁边是本页的对话（看板页上是
+  协调者），批注随它的下一条消息发出。
 
 ### 刷新：digest 轮询
 
@@ -177,11 +187,10 @@ Translation: pending
 
 ## 待定问题
 
-1. 完整页线程模式：对话是页面主区，不在 Board 面板里，同样的挂法不成立，现在照旧开 tab。
-2. 要不要加 `lody_open_article` 卡片工具（要发 dev）。
-3. 浮窗里 HTML 文章的元素批注（对比视图里的方案已经可以按位置批注）。
-5. 对比视图要不要支持 agent 声明的可调参数（ryugi 的 tweaks），以及画布式平移缩放：目前判断不需要。
-4. 普通（非看板）会话要不要也弹浮窗。
+1. 要不要加 `lody_open_article` 卡片工具（要发 dev）。
+2. 浮窗里 HTML 文章的元素批注（对比视图里的方案已经可以按位置批注）。
+3. 对比视图要不要支持 agent 声明的可调参数（ryugi 的 tweaks），以及画布式平移缩放：目前判断不需要。
+4. 右栏是本页对话时没有标题栏，只能用 Esc 或点遮罩关闭；要不要加一个关闭按钮。
 
 ## 证据
 
@@ -194,7 +203,7 @@ Translation: pending
   `boards/compare-board-frame.tsx`，Board Files 入口在 `boards/board-directory.tsx`；注入的约定是
   `apps/cli/src/session/session-execution-helpers.ts` 的 `BOARD_UI_COMPARISON_GUIDE`；
   文件链接：`lib/document-link-open.ts`（读哪里）、`boards/document-links.tsx`（探测和打开）。
-- 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、
+- 测试：`packages/components/tests/board-article-dialog.test.tsx`、`general-setting-sections.test.tsx`、`document-selection.test.tsx`、
   `use-session-file-digest-watch.test.tsx`、`session-file-content-view.test.tsx`、
   `session-chat-input-submission.test.tsx`、`document-link-open.test.ts`、`board-overview.test.tsx`。
 - 验证：2026-10-19 在 Mac 测试版上连续三轮实际操作核对，全部通过（第三轮在 `ed8ee80e2`）。

@@ -1,4 +1,6 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { PopupContainerProvider, type PopupContainer } from '@lody/ui/popup-container';
 
 /**
  * A DOM node that keeps one React subtree while it moves between places.
@@ -67,16 +69,64 @@ export function RelocatableSlot({
   priority = 0,
   held = true,
   className,
+  'aria-hidden': ariaHidden,
 }: {
   host: RelocatableHost;
   priority?: number;
   held?: boolean;
-  className?: string;
+  className?: string | undefined;
+  'aria-hidden'?: boolean | undefined;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const slot = ref.current;
     return slot && held ? host.claim(slot, priority) : undefined;
   }, [held, host, priority]);
-  return <div ref={ref} className={className} />;
+  return <div ref={ref} className={className} aria-hidden={ariaHidden} />;
+}
+
+/**
+ * A conversation the article window can borrow: it is portalled into `host`,
+ * which sits in the box rendered here until the window claims it. Its menus
+ * and popovers mount in `popupContainer`, the window's panel while it is there.
+ * Without a host it simply stays in the box.
+ */
+export function RelocatableConversation({
+  host,
+  popupContainer,
+  className,
+  'aria-hidden': ariaHidden,
+  children,
+}: {
+  host: RelocatableHost | null;
+  popupContainer: PopupContainer;
+  className?: string | undefined;
+  'aria-hidden'?: boolean | undefined;
+  children: ReactNode;
+}) {
+  if (!host)
+    return (
+      <div className={className} aria-hidden={ariaHidden}>
+        {children}
+      </div>
+    );
+  return (
+    <>
+      <RelocatableSlot host={host} className={className} aria-hidden={ariaHidden} />
+      {createPortal(
+        <PopupContainerProvider container={popupContainer}>{children}</PopupContainerProvider>,
+        host.node
+      )}
+    </>
+  );
+}
+
+/** The host `id`'s conversation keeps in `hosts`, made on first use. */
+export function relocatableHostFor<Id>(hosts: Map<Id, RelocatableHost>, id: Id): RelocatableHost {
+  let host = hosts.get(id);
+  if (!host) {
+    host = createRelocatableHost();
+    hosts.set(id, host);
+  }
+  return host;
 }

@@ -72,7 +72,8 @@ export type SessionFileMenuItemId =
   | 'copy-absolute-path'
   | 'open-in-editor'
   | 'reveal'
-  | 'download';
+  | 'download'
+  | 'open-as-article';
 
 export type SessionFileMenuItem = {
   readonly id: SessionFileMenuItemId;
