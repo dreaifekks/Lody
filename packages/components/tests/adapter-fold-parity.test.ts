@@ -47,20 +47,20 @@ const toolCall = (id: string) => ({
 });
 
 describe('assistant text folding across adapter shapes', () => {
-  it('folds earlier prose and keeps the last answer (Claude/Pi/Sorbet deltas)', () => {
+  it('keeps the preceding answer before a short closing note (Claude/Pi/Sorbet deltas)', () => {
     const items = ingest([text('The bug is in the parser.'), toolCall('call-1'), text('Done.')]);
 
-    expect(visibleTexts(items)).toEqual(['Done.']);
+    expect(visibleTexts(items)).toEqual(['The bug is in the parser.', 'Done.']);
   });
 
   it('folds explicit commentary while keeping the answer visible (Codex)', () => {
     const items = ingest([
       text('Checking the parser.', 'commentary'),
       toolCall('call-1'),
-      text('The bug is in the parser.', 'final_answer'),
+      text('# The bug is in the parser.', 'final_answer'),
     ]);
 
-    expect(visibleTexts(items)).toEqual(['The bug is in the parser.']);
+    expect(visibleTexts(items)).toEqual(['# The bug is in the parser.']);
   });
 
   it('still folds the tool work of a finished turn', () => {

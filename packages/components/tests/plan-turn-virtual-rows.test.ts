@@ -233,7 +233,7 @@ describe('phased text in finished turns', () => {
     const items = [
       phased('Inspecting', 'commentary'),
       tool('read', 'read'),
-      answerText('Unphased'),
+      answerText('# Unphased'),
       phased('Checking', 'commentary'),
       phased('Done', 'final_answer'),
     ];
@@ -259,7 +259,7 @@ describe('phased text in finished turns', () => {
       'worked_group_header',
       'Inspecting',
       'activity_group_header',
-      'Unphased',
+      '# Unphased',
       'Checking',
       'Done',
     ]);
@@ -293,7 +293,7 @@ describe('phased text in finished turns', () => {
     ).toEqual(['worked_group_header', 'content:text', 'content:text']);
   });
 
-  it('keeps interrupted work open and folds it when an unphased answer arrives', () => {
+  it('keeps interrupted work open and folds it when a substantive unphased answer arrives', () => {
     const items = [phased('Inspecting', 'commentary'), tool('read', 'read')];
     expect(visibleContentKinds(buildRows(items, false), true)).toEqual([
       'worked_group_header',
@@ -304,10 +304,9 @@ describe('phased text in finished turns', () => {
       'content:text',
       'activity_group_header',
     ]);
-    expect(visibleContentKinds(buildRows([...items, answerText('Unknown phase')], true))).toEqual([
-      'worked_group_header',
-      'content:text',
-    ]);
+    expect(visibleContentKinds(buildRows([...items, answerText('# Unknown phase')], true))).toEqual(
+      ['worked_group_header', 'content:text']
+    );
   });
 });
 
@@ -412,9 +411,8 @@ describe('finished turn text', () => {
       return [row.isWorkedDetail ? `work:${label}` : label];
     });
 
-  it('keeps all prose visible, including narration, while folding only activity', () => {
+  it('keeps the substantive answer and short followup while folding narration', () => {
     expect(readingOrder(rowsWithWorkedGroup(false))).toEqual([
-      'text:Starting the review.',
       'worked_group_header',
       `text:${answer}`,
       'text:The review agreed.',
@@ -423,8 +421,8 @@ describe('finished turn text', () => {
 
   it('puts expanded work back around the answer in the order it happened', () => {
     expect(readingOrder(rowsWithWorkedGroup(true))).toEqual([
-      'text:Starting the review.',
       'worked_group_header',
+      'work:text:Starting the review.',
       'work:activity_group_header',
       `text:${answer}`,
       'work:activity_group_header',
