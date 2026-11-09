@@ -132,7 +132,7 @@ export class LocalUsageLedger implements CloudUsagePort {
   recordSessionUsageUpdate(input: CloudUsageUpdateInput): void {
     const parsed = UsageUpdateSchema.safeParse(input.update);
     if (!parsed.success || !parsed.data.modelUsage) return;
-    if (!isBuiltinAgentType(input.cliType)) return;
+    if (input.cliType !== 'custom' && !isBuiltinAgentType(input.cliType)) return;
     const priced = priceSessionUsageUpdate(
       cloneUsageUpdate(input.update as SessionUsageUpdate),
       input.cliType

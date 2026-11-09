@@ -62,37 +62,46 @@ describe('LocalUsageLedger', () => {
     return { file, make };
   }
 
-  it('counts what each cumulative reading added, in the hour it arrived', () => {
-    const clock = { now: START };
-    const ledger = open(clock).make();
+  it.each(['claude', 'custom'] as const)(
+    'counts cumulative %s usage in the hour it arrived',
+    (cliType) => {
+      const clock = { now: START };
+      const ledger = open(clock).make();
 
-    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(100, 10, 0.5) }));
-    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(150, 30, 0.75) }));
-    // An agent that started counting again adds nothing until it passes the highest reading.
-    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(20, 5, 0.1) }));
-    clock.now += LAN_USAGE_HOUR_MS;
-    ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(170, 30, 0.8) }));
+      ledger.recordSessionUsageUpdate(
+        update({ 'claude-opus': counters(100, 10, 0.5) }, { cliType })
+      );
+      ledger.recordSessionUsageUpdate(
+        update({ 'claude-opus': counters(150, 30, 0.75) }, { cliType })
+      );
+      // An agent that started counting again adds nothing until it passes the highest reading.
+      ledger.recordSessionUsageUpdate(update({ 'claude-opus': counters(20, 5, 0.1) }, { cliType }));
+      clock.now += LAN_USAGE_HOUR_MS;
+      ledger.recordSessionUsageUpdate(
+        update({ 'claude-opus': counters(170, 30, 0.8) }, { cliType })
+      );
 
-    const hour = Math.floor(START / LAN_USAGE_HOUR_MS) * LAN_USAGE_HOUR_MS;
-    expect(ledger.reportByAgent(WORKSPACE)).toEqual([
-      expect.objectContaining({
-        startMs: hour,
-        spanMs: LAN_USAGE_HOUR_MS,
-        modelId: 'claude-opus',
-        agent: 'claude',
-        inputTokens: 150,
-        outputTokens: 30,
-        costUSD: 0.75,
-      }),
-      expect.objectContaining({
-        startMs: hour + LAN_USAGE_HOUR_MS,
-        inputTokens: 20,
-        outputTokens: 0,
-      }),
-    ]);
-    expect(ledger.report(WORKSPACE, hour + LAN_USAGE_HOUR_MS)).toHaveLength(1);
-    expect(ledger.report('lw_other')).toEqual([]);
-  });
+      const hour = Math.floor(START / LAN_USAGE_HOUR_MS) * LAN_USAGE_HOUR_MS;
+      expect(ledger.reportByAgent(WORKSPACE)).toEqual([
+        expect.objectContaining({
+          startMs: hour,
+          spanMs: LAN_USAGE_HOUR_MS,
+          modelId: 'claude-opus',
+          agent: cliType,
+          inputTokens: 150,
+          outputTokens: 30,
+          costUSD: 0.75,
+        }),
+        expect.objectContaining({
+          startMs: hour + LAN_USAGE_HOUR_MS,
+          inputTokens: 20,
+          outputTokens: 0,
+        }),
+      ]);
+      expect(ledger.report(WORKSPACE, hour + LAN_USAGE_HOUR_MS)).toHaveLength(1);
+      expect(ledger.report('lw_other')).toEqual([]);
+    }
+  );
 
   it('keeps scopes apart and prices a model whose agent reports no cost', () => {
     const ledger = open({ now: START }).make();
