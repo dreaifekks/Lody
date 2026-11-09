@@ -6747,11 +6747,5 @@
   "boards.compare.optionWidth": "页面宽度：{{width}}px",
   "boards.compare.widthOwnValue": "方案自带 · {{width}}px",
   "boards.compare.widthCustom": "自定义宽度（px）",
-  "boards.compare.syncScroll": "同步滚动",
-  "settings.beta.e2eeAccountPairing": "账号级设备配对",
-  "settings.beta.e2eeAccountPairingHelper": "用一次扫码或粘贴，把设备加入你的全部加密工作区。需要宿主支持；现有的配对方式仍然可用。",
-  "sessions.pr.sidebarOpen": "打开拉取请求",
-  "sessions.pr.sidebarOpenNumber": "打开拉取请求 #{{number}}",
-  "sessions.pr.sidebarCount": "{{count}} 个拉取请求",
-  "sessions.pr.sidebarUnknown": "拉取请求"
+  "boards.compare.syncScroll": "同步滚动"
 }

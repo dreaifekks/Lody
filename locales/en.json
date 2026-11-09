@@ -6758,11 +6758,5 @@
   "boards.compare.optionWidth": "Page width: {{width}}px",
   "boards.compare.widthOwnValue": "Own width · {{width}}px",
   "boards.compare.widthCustom": "Custom width (px)",
-  "boards.compare.syncScroll": "Scroll together",
-  "settings.beta.e2eeAccountPairing": "Account-wide device pairing",
-  "settings.beta.e2eeAccountPairingHelper": "Add a device to all your encrypted workspaces with one scanned or pasted code. Requires host support; the existing pairing stays available.",
-  "sessions.pr.sidebarOpen": "Open pull request",
-  "sessions.pr.sidebarOpenNumber": "Open pull request #{{number}}",
-  "sessions.pr.sidebarCount": "{{count}} pull requests",
-  "sessions.pr.sidebarUnknown": "Pull request"
+  "boards.compare.syncScroll": "Scroll together"
 }
