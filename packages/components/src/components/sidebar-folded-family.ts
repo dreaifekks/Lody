@@ -11,9 +11,9 @@ import {
  * What a folded family's root row draws in low-stimulus mode: the root and its
  * hidden Sessions counted as a folded group counts its rows. The root counts as
  * its own row would. A hidden Session's work is the root's to report, so it
- * draws no working mark, and its unread counts only once it stops and only past
- * how far the root is read (`hiddenSessionHasUnread`); its waiting and its
- * local sends count as they are.
+ * draws no working mark; its unread counts only past how far the root is read
+ * (`hiddenSessionHasUnread`), and its waiting and its local sends count as they
+ * are.
  */
 export function foldedFamilyActivity<
   Row extends SessionRowStatusFlags & { latestMessageAt: Date | number | string },
@@ -28,11 +28,8 @@ export function foldedFamilyActivity<
     ...child,
     isWorking: false,
     hasUnreadMessages: hiddenSessionHasUnread(
-      {
-        unread: child.hasUnreadMessages === true,
-        working: child.isWorking === true,
-        latestMessageAt: new Date(child.latestMessageAt).getTime(),
-      },
+      child.hasUnreadMessages === true,
+      new Date(child.latestMessageAt).getTime(),
       rootReadThrough
     ),
   }));

@@ -105,31 +105,19 @@ describe('toggling an opener', () => {
 });
 
 describe('hiddenSessionHasUnread', () => {
-  const member = (latestMessageAt: number, unread = true, working = false) => ({
-    unread,
-    working,
-    latestMessageAt,
-  });
-
   it('stops counting output the last read of the root already covers', () => {
-    expect(hiddenSessionHasUnread(member(100), 200)).toBe(false);
-    expect(hiddenSessionHasUnread(member(200), 200)).toBe(false);
+    expect(hiddenSessionHasUnread(true, 100, 200)).toBe(false);
+    expect(hiddenSessionHasUnread(true, 200, 200)).toBe(false);
   });
 
   it('counts output newer than that read, and any unread output of a never-read root', () => {
-    expect(hiddenSessionHasUnread(member(300), 200)).toBe(true);
-    expect(hiddenSessionHasUnread(member(300), familyReadThrough(undefined, undefined))).toBe(true);
+    expect(hiddenSessionHasUnread(true, 300, 200)).toBe(true);
+    expect(hiddenSessionHasUnread(true, 300, familyReadThrough(undefined, undefined))).toBe(true);
   });
 
   it('never makes a read or closed session unread', () => {
-    expect(hiddenSessionHasUnread(member(300, false), 200)).toBe(false);
-    expect(
-      hiddenSessionHasUnread(member(300, false), familyReadThrough(undefined, undefined))
-    ).toBe(false);
-  });
-
-  it('asks for nothing while the session is still at work', () => {
-    expect(hiddenSessionHasUnread(member(300, true, true), 200)).toBe(false);
+    expect(hiddenSessionHasUnread(false, 300, 200)).toBe(false);
+    expect(hiddenSessionHasUnread(false, 300, familyReadThrough(undefined, undefined))).toBe(false);
   });
 });
 
@@ -148,9 +136,8 @@ describe('childTabActivity', () => {
   });
 
   it('quiets a Tab an agent opened: no work, and unread only past the parent read', () => {
-    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: false, unread: false });
-    expect(childTabActivity(agentTab(), false, 400)).toEqual({ working: false, unread: false });
-    expect(childTabActivity(agentTab(), false, 200)).toEqual({ working: false, unread: true });
+    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: false, unread: true });
+    expect(childTabActivity(agentTab(), true, 400)).toEqual({ working: false, unread: false });
   });
 });
 
@@ -359,10 +346,12 @@ describe('foldedFamilyActivity', () => {
     expect(family({ ...root, isWorking: true }, [working], 200).working).toBe(1);
   });
 
-  it('counts the unread of a hidden session only once it stops', () => {
+  it('keeps the unread of a hidden session that runs again', () => {
     const child: Row = { id: 'child', latestMessageAt: 250, hasUnreadMessages: true };
-    expect(family(root, [{ ...child, isWorking: true }], 200).unread).toBe(0);
-    expect(family(root, [child], 200).unread).toBe(1);
+    expect(family(root, [{ ...child, isWorking: true }], 200)).toMatchObject({
+      working: 0,
+      unread: 1,
+    });
   });
 
   it('counts a hidden send failure and a root send in progress', () => {

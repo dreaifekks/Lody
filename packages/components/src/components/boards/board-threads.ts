@@ -160,12 +160,14 @@ function boardActivityAsPanelShows(
       countShown(session);
       continue;
     }
-    const member = {
-      unread: sessionHasUnreadMessages(session),
-      working: liveStatuses.get(session.id) != null,
-      latestMessageAt: session.lastMessageAt ?? 0,
-    };
-    if (hiddenSessionHasUnread(member, readThrough(root.id, root.lastReadAt))) {
+    const rootReadThrough = readThrough(root.id, root.lastReadAt);
+    if (
+      hiddenSessionHasUnread(
+        sessionHasUnreadMessages(session),
+        session.lastMessageAt ?? 0,
+        rootReadThrough
+      )
+    ) {
       hasUnreadMessages = true;
     }
   }

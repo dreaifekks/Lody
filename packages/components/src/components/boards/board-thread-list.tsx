@@ -97,13 +97,6 @@ function strongestBoardStatus(items: readonly Pick<BoardThreadItem, 'status'>[])
 const isBoardItemWorking = (item: Pick<BoardThreadItem, 'status'>) =>
   GROUP_BY_STATUS[item.status] === 'active';
 
-/** A hidden member as `hiddenSessionHasUnread` reads it. */
-const boardHiddenMember = (item: BoardThreadItem) => ({
-  unread: item.unread === true,
-  working: isBoardItemWorking(item),
-  latestMessageAt: item.updatedAt,
-});
-
 /**
  * Low-stimulus mode's root row of a folded family: the family's strongest state
  * and merged unread, as the one mark every other row of it would have drawn. A
@@ -125,7 +118,9 @@ export function foldedBoardThreadRoot(
     ]),
     unread:
       root.unread === true ||
-      hidden.some((item) => hiddenSessionHasUnread(boardHiddenMember(item), rootReadThrough)),
+      hidden.some((item) =>
+        hiddenSessionHasUnread(item.unread === true, item.updatedAt, rootReadThrough)
+      ),
   };
 }
 

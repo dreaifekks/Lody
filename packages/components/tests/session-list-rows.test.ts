@@ -211,6 +211,23 @@ describe('child Tab roll-up in low-stimulus mode', () => {
     expect(summarize().hasUnreadMessages).toBe(true);
   });
 
+  test('shows the output of a Tab an agent opened through its parent until the parent is read', () => {
+    // The CLI raises the parent's last message time with each message of its Tab.
+    const unreadParent = makeSession({ id: 'parent', lastMessageAt: 300, lastReadAt: 100 });
+    const runningAgain = new Map<string, SessionStatus>([
+      [agentTab.id, { type: 'running' } as SessionStatus],
+    ]);
+    const summarize = (session: SessionMeta) =>
+      getEffectiveSessionActivitySummary(
+        session,
+        buildChildSessionsByParent([session, agentTab]),
+        runningAgain,
+        session.lastReadAt
+      );
+    expect(summarize(unreadParent)).toMatchObject({ isWorking: false, hasUnreadMessages: true });
+    expect(summarize(parent)).toMatchObject({ isWorking: false, hasUnreadMessages: false });
+  });
+
   test('draws no work for a Tab an agent opened, keeps its wait, and leaves a user Tab alone', () => {
     const live = (id: string, type: SessionStatus['type']) =>
       new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);

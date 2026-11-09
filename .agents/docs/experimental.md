@@ -76,11 +76,11 @@ changes. With the mode off every list is the upstream one.
   (`components/sidebar-folded-family.ts`) through the row's ordinary
   `SessionRowStatusIndicator`: send failed, then waiting, working, sending, unread.
   The row's hover card says how many of each. A hidden Session's work is the root's
-  to report: it draws no working mark, and its unread counts only once it stops
-  (`hiddenSessionHasUnread`); its waiting and its sends count as they are. A Board
-  root draws the same (`foldedBoardThreadRoot`, `boardFamilyActivity`). The family
-  still sits in the panel group of its strongest member, so a running member keeps
-  it under Working and a failed member lifts it into "Needs you" as before.
+  to report, so it draws no working mark; its unread (narrowed as below), its waiting
+  and its sends count as they are. A Board root draws the same
+  (`foldedBoardThreadRoot`, `boardFamilyActivity`). The family still sits in the
+  panel group of its strongest member, so a running member keeps it under Working
+  and a failed member lifts it into "Needs you" as before.
 - **Reading the root clears what came before.** A hidden Session counts as unread only
   for output newer than the user's last read of the root (`hiddenSessionHasUnread`
   against `familyReadThrough`): the later of the root's `lastReadAt` and the last
@@ -97,8 +97,10 @@ changes. With the mode off every list is the upstream one.
   counts as a hidden member (`childTabActivity`): its work leaves the parent's row
   still and its unread counts only past how far the parent is read, both in the
   row's roll-up (`getEffectiveSessionActivitySummary` given the parent's
-  read-through) and on its own Tab (`useLowStimulusReadThrough`). The Tab keeps its
-  spinner and ✋. A Tab the user opened counts as before.
+  read-through) and on its own Tab (`useLowStimulusReadThrough`). Its messages also
+  raise the parent's own `lastMessageAt` (the CLI does this for every Tab), so the
+  parent's row shows them until the parent is read, whether the Tab runs or not. The
+  Tab keeps its spinner and ✋. A Tab the user opened counts as before.
 - **No done transition.** `SessionRowStatusIndicator` turns off `WorkingStatusMark`'s
   working → unread transition: a finished session shows its dot without the bounce.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
@@ -108,9 +110,10 @@ A Board's Sidebar row counts work and unread the way its panel shows the familie
 (`boardActivity` with the fold record and each root's read-through), so the two agree.
 Waiting, failures and agent notifications always pass through. Not covered: a folded
 project or machine header still counts its rows' own work and unread, their child Tabs
-included, the phone list is untouched (it folds only by the user's choice, as before,
-because its rows have no family mark), and an opened Session being viewed has no
-highlighted row while its family is folded.
+included, the new-chat page's Now tiles count each Session on its own, the phone list
+is untouched (it folds only by the user's choice, as before, because its rows have no
+family mark), and an opened Session being viewed has no highlighted row while its
+family is folded.
 
 ## Voice
 

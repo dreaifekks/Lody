@@ -1296,12 +1296,22 @@ describe('Board side panel', () => {
       }
     });
 
-    it('keeps a running member under Working without drawing its work or output on the root', async () => {
-      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 300 }));
+    it('keeps a running member under Working without drawing its work on the root', async () => {
+      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 150 }));
       try {
         expect(view.headers()).toEqual(['Working1']);
         expect(view.row('root')).not.toBeNull();
         expect(view.mark('root')).toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws output of a running member newer than the root read as a dot, not as work', async () => {
+      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 300 }));
+      try {
+        expect(view.row('root')!.querySelector('[data-session-working-indicator]')).toBeNull();
+        expect(view.row('root')!.querySelector('[data-session-unread-dot]')).not.toBeNull();
       } finally {
         await view.unmount();
       }
@@ -1372,8 +1382,12 @@ describe('Board side panel', () => {
       }
     });
 
-    it('leaves the work of hidden members out of the root state, but not their failure', () => {
+    it('leaves the work of hidden members out of the root state, but not their failure or output', () => {
       expect(foldedBoardThreadRoot(family({ status: 'running' }), 200).status).toBe('idle');
+      expect(
+        foldedBoardThreadRoot(family({ status: 'running', unread: true, updatedAt: 300 }), 200)
+          .unread
+      ).toBe(true);
       expect(
         foldedBoardThreadRoot(
           [...family({ status: 'failed' }), thread('child-2', { depth: 1, status: 'running' })],
@@ -1464,14 +1478,12 @@ describe('Board side panel', () => {
     const folded = { isFolded: () => true, readThrough: receiptOnly };
     const live = (id: string, type: SessionStatus['type']) =>
       new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);
-    // While it runs it asks for nothing, not even for its newer output.
+    // Its work draws nothing; its output newer than the root read counts, running or not.
     expect(boardActivity(board, [root, child], live('child', 'running'), folded)).toEqual({
       isWaitingPermission: false,
       isWorking: false,
-      hasUnreadMessages: false,
+      hasUnreadMessages: true,
     });
-    // Once it stops, that output counts.
-    expect(boardActivity(board, [root, child], new Map(), folded).hasUnreadMessages).toBe(true);
     // A member waiting for the user, and the root's own work, still light the row.
     expect(
       boardActivity(board, [root, child], live('child', 'requestPermission'), folded)
