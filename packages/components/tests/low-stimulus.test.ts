@@ -14,6 +14,7 @@ import {
   lowStimulusModeEnabledAtom,
 } from '../src/atoms/settings';
 import { foldedFamilyActivity } from '../src/components/sidebar-folded-family';
+import { SessionRowStatusIndicator } from '../src/components/sidebar-row-shared';
 import { useLowStimulusConversationSeen } from '../src/hooks/use-low-stimulus-conversation-seen';
 import {
   familyReadThrough,
@@ -326,5 +327,56 @@ describe('foldedFamilyActivity', () => {
       child: 'failed',
     });
     expect(activity).toMatchObject({ failed: 1, sending: 1 });
+  });
+});
+
+describe('the done transition of a status mark', () => {
+  let host: HTMLDivElement;
+  let reactRoot: Root;
+  const draw = (store: ReturnType<typeof createStore>, working: boolean) =>
+    act(() =>
+      reactRoot.render(
+        createElement(
+          Provider,
+          { store },
+          createElement(SessionRowStatusIndicator, {
+            isWorking: working,
+            hasUnreadMessages: !working,
+          })
+        )
+      )
+    );
+  /** A session finishes with output to read, as the row sees it. */
+  const finish = (lowStimulus: boolean) => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+    store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+    draw(store, true);
+    draw(store, false);
+  };
+
+  beforeEach(() => {
+    // Every animation stays unfinished, as a real one is while it plays.
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      configurable: true,
+      value: () => ({ finished: new Promise(() => {}), cancel: () => {} }),
+    });
+    host = document.createElement('div');
+    reactRoot = createRoot(host);
+  });
+  afterEach(() => {
+    act(() => reactRoot.unmount());
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it('plays when a session finishes with output to read', () => {
+    finish(false);
+    expect(host.querySelector('[data-session-done-transition]')).not.toBeNull();
+  });
+
+  it('goes straight to the dot in the mode', () => {
+    finish(true);
+    expect(host.querySelector('[data-session-done-transition]')).toBeNull();
+    expect(host.querySelector('[data-session-unread-dot]')).not.toBeNull();
   });
 });

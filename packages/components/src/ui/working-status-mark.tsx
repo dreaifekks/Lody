@@ -10,6 +10,8 @@ export type WorkingStatusMarkProps = {
   working: boolean;
   /** The session has messages the user has not read. */
   unread: boolean;
+  /** Play the working → unread transition; `false` goes straight to the dot. */
+  doneTransition?: boolean;
   /** Text colour class for the grid, transition and dot. */
   className?: string;
 };
@@ -19,7 +21,8 @@ export type WorkingStatusMarkProps = {
  *
  * - working → the {@link WorkingGrid};
  * - working → unread → the {@link WorkingGridCollapse} plays once (the tiles
- *   spin and gather, the dot pops and bounces), then the unread dot;
+ *   spin and gather, the dot pops and bounces), then the unread dot; with
+ *   `doneTransition={false}` the dot comes at once;
  * - unread → the 8px unread dot;
  * - neither → nothing.
  *
@@ -30,12 +33,17 @@ export type WorkingStatusMarkProps = {
  * render, so the transition lands in the same commit that removes the grid; keep
  * this component mounted across both states for it to see the change.
  */
-export function WorkingStatusMark({ working, unread, className }: WorkingStatusMarkProps) {
+export function WorkingStatusMark({
+  working,
+  unread,
+  doneTransition = true,
+  className,
+}: WorkingStatusMarkProps) {
   const [wasWorking, setWasWorking] = useState(working);
   const [finishing, setFinishing] = useState(false);
   if (wasWorking !== working) {
     setWasWorking(working);
-    setFinishing(wasWorking && !working && unread);
+    setFinishing(doneTransition && wasWorking && !working && unread);
   }
 
   if (working) {

@@ -90,6 +90,8 @@ changes. With the mode off every list is the upstream one.
   and each writes all of it, so a write and a stored change are merged per
   conversation at the later time, never put in place of what a window knows. While
   a root is on screen its family draws no unread; output after it left counts again.
+- **No done transition.** `SessionRowStatusIndicator` turns off `WorkingStatusMark`'s
+  working → unread transition: a finished session shows its dot without the bounce.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
