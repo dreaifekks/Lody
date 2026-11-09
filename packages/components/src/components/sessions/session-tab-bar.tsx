@@ -37,10 +37,9 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { isImeComposingKeyboardEvent } from '@/lib/ime';
 import { type DraftSessionTab, getDraftTabLabel } from '@/lib/session-draft-tabs';
-import {
-  closedSessionHasUnreadMessages,
-  sessionHasUnreadMessages,
-} from '@/lib/session-read-receipt';
+import { closedSessionHasUnreadMessages } from '@/lib/session-read-receipt';
+import { childTabActivity } from '@/lib/low-stimulus';
+import { useLowStimulusReadThrough } from '@/hooks/use-low-stimulus-conversation-seen';
 import { isArchivedOutsideWorkspace, isSessionTabClosed } from '@/lib/session-tab-url';
 import { AdaptiveTabStrip, AdaptiveTabStripItem } from './adaptive-tab-strip';
 import { SESSION_PAGE_CONTAINER_CLASS } from './session-conversation-page';
@@ -436,6 +435,7 @@ function TabContent({
   cancelRename,
   solo,
   html5MentionDrag = false,
+  parentReadThrough,
   t,
 }: {
   session: SessionMeta;
@@ -448,6 +448,8 @@ function TabContent({
   html5MentionDrag?: boolean;
   editDraft: string;
   inputRef: React.RefObject<HTMLInputElement>;
+  /** Low-stimulus mode, child tabs: how far the parent is read (`childTabActivity`). */
+  parentReadThrough?: number;
   onTabSelect: (tabId: string) => MaybePromiseVoid;
   onTabRename?: (sessionId: SessionId, title: string) => MaybePromiseVoid;
   onTabClose?: (tabId: string) => MaybePromiseVoid;
@@ -464,8 +466,9 @@ function TabContent({
      child tabs get no sidebar row of their own, so without this the finished
      answer stays invisible until the user happens to click the tab. Suppressed
      on the ACTIVE tab because that surface is the one clearing unread — the dot
-     would be a flash between the click and the read receipt landing. */
-  const isUnread = !isActive && sessionHasUnreadMessages(session);
+     would be a flash between the click and the read receipt landing. In
+     low-stimulus mode a tab an agent opened is announced by its parent. */
+  const isUnread = !isActive && childTabActivity(session, isWorking, parentReadThrough).unread;
   const label = getTabLabel(session, isParent, defaultTitle, t);
   // A lone tab has no close button: there is nothing to switch to, and closing
   // it would only swap the conversation for an empty draft.
@@ -824,6 +827,7 @@ export const SessionTabBar = memo(function SessionTabBar({
   const defaultTitle = t('sessions.untitled', 'Untitled session');
   const showSessionTabs = variant !== 'viewer';
   const workspaceArchived = parentSession.isArchived === true;
+  const parentReadThrough = useLowStimulusReadThrough(parentSession);
   const showParentTab = showSessionTabs && !isSessionTabClosed(parentSession, workspaceArchived);
   const showViewerTabs = variant !== 'session';
   // An archived workspace is review-only: no new conversation until Restore.
@@ -1080,6 +1084,7 @@ export const SessionTabBar = memo(function SessionTabBar({
                     isActive={!hasActiveViewerTab && item.data.session.id === activeTabSessionId}
                     isEditing={editingTabId === item.data.session.id}
                     isParent={false}
+                    parentReadThrough={parentReadThrough}
                     {...sharedTabProps}
                   />
                 </SortableDndWrapper>

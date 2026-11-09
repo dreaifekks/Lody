@@ -1,3 +1,6 @@
+import type { SessionMeta } from '@lody/shared';
+import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
+
 /**
  * Rules of low-stimulus mode (`lowStimulusModeEnabledAtom`): one session family,
  * one row, one mark. Display only: nothing here writes a read receipt, so turning
@@ -48,4 +51,27 @@ export type HiddenMember = {
  */
 export function hiddenSessionHasUnread(member: HiddenMember, rootReadThrough: number): boolean {
   return member.unread && !member.working && member.latestMessageAt > rootReadThrough;
+}
+
+/**
+ * What a child Tab adds to its parent's row and to its own Tab. A Tab an agent
+ * opened (`openedBySessionId`) is part of the parent's family: given how far the
+ * parent is read, it counts as a hidden member does, so its work draws nothing
+ * and its unread counts only past that read. Without it (the mode is off), and
+ * for a Tab the user opened, the Tab counts as it always did.
+ */
+export function childTabActivity(
+  child: Pick<
+    SessionMeta,
+    'openedBySessionId' | 'lastMessageAt' | 'lastReadAt' | 'isTabClosed' | 'isArchived'
+  >,
+  working: boolean,
+  parentReadThrough: number | undefined
+): { working: boolean; unread: boolean } {
+  const unread = sessionHasUnreadMessages(child);
+  if (parentReadThrough === undefined || child.openedBySessionId === undefined) {
+    return { working, unread };
+  }
+  const member = { unread, working, latestMessageAt: child.lastMessageAt ?? 0 };
+  return { working: false, unread: hiddenSessionHasUnread(member, parentReadThrough) };
 }

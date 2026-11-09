@@ -93,6 +93,12 @@ changes. With the mode off every list is the upstream one.
   and each writes all of it, so a write and a stored change are merged per
   conversation at the later time, never put in place of what a window knows. While
   a root is on screen its family draws no unread; output after it left counts again.
+- **Tabs an agent opened belong to the family.** A child Tab with `openedBySessionId`
+  counts as a hidden member (`childTabActivity`): its work leaves the parent's row
+  still and its unread counts only past how far the parent is read, both in the
+  row's roll-up (`getEffectiveSessionActivitySummary` given the parent's
+  read-through) and on its own Tab (`useLowStimulusReadThrough`). The Tab keeps its
+  spinner and ✋. A Tab the user opened counts as before.
 - **No done transition.** `SessionRowStatusIndicator` turns off `WorkingStatusMark`'s
   working → unread transition: a finished session shows its dot without the bounce.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
@@ -101,10 +107,10 @@ changes. With the mode off every list is the upstream one.
 A Board's Sidebar row counts work and unread the way its panel shows the families
 (`boardActivity` with the fold record and each root's read-through), so the two agree.
 Waiting, failures and agent notifications always pass through. Not covered: a folded
-project or machine header still counts its rows' own work and unread, the phone list
-is untouched (it folds only by the user's choice, as before, because its rows have no
-family mark), and an opened Session being viewed has no highlighted row while its
-family is folded.
+project or machine header still counts its rows' own work and unread, their child Tabs
+included, the phone list is untouched (it folds only by the user's choice, as before,
+because its rows have no family mark), and an opened Session being viewed has no
+highlighted row while its family is folded.
 
 ## Voice
 

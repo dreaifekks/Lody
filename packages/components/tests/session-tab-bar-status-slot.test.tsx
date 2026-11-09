@@ -15,6 +15,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { lodyPresenceStatesAtom } from '../src/atoms/presence';
+import {
+  experimentalFeaturesEnabledAtom,
+  lowStimulusExperimentEnabledAtom,
+} from '../src/atoms/settings';
 import { SessionTabBar } from '../src/components/sessions/session-tab-bar';
 import { Tooltip } from '@lody/ui/tooltip';
 import { FocusScope } from '../src/ui/focus-scope';
@@ -83,13 +87,17 @@ async function renderTabBar(
     activeTabSessionId = parentSession.id,
     parent = parentSession,
     presence = {},
+    lowStimulus = false,
   }: {
     activeTabSessionId?: string;
     parent?: SessionMeta;
     presence?: Record<string, 'running' | 'requestPermission'>;
+    lowStimulus?: boolean;
   } = {}
 ) {
   const store = createStore();
+  store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+  store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
   store.set(
     lodyPresenceStatesAtom,
     Object.fromEntries(
@@ -181,5 +189,42 @@ describe('SessionTabBar status slot', () => {
       '#session-tab-session-child svg.lucide-hand[aria-hidden="true"]'
     );
     expect(waitingMarker).not.toBeNull();
+  });
+
+  describe('in low-stimulus mode', () => {
+    const readParent = { ...parentSession, lastMessageAt: NOW, lastReadAt: NOW };
+    const agentTab = (overrides: Partial<SessionMeta> = {}) =>
+      child('session-child', {
+        openedBySessionId: parentSession.id,
+        lastMessageAt: NOW,
+        lastReadAt: NOW - 1_000,
+        ...overrides,
+      });
+
+    it('lets the read of the parent cover a tab an agent opened', async () => {
+      await renderTabBar([agentTab()], { parent: readParent, lowStimulus: true });
+
+      expect(unreadDot('session-child')).toBeNull();
+    });
+
+    it('marks output of that tab newer than the read of the parent', async () => {
+      await renderTabBar([agentTab({ lastMessageAt: NOW + 1_000 })], {
+        parent: readParent,
+        lowStimulus: true,
+      });
+
+      expect(unreadDot('session-child')).not.toBeNull();
+    });
+
+    it('keeps the dot of a tab the user opened, and of every tab without the mode', async () => {
+      await renderTabBar([agentTab({ openedBySessionId: undefined })], {
+        parent: readParent,
+        lowStimulus: true,
+      });
+      expect(unreadDot('session-child')).not.toBeNull();
+
+      await renderTabBar([agentTab()], { parent: readParent });
+      expect(unreadDot('session-child')).not.toBeNull();
+    });
   });
 });

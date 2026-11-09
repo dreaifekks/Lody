@@ -13,10 +13,12 @@ import {
   lowStimulusExperimentEnabledAtom,
   lowStimulusModeEnabledAtom,
 } from '../src/atoms/settings';
+import type { SessionId, SessionMeta } from '@lody/shared';
 import { foldedFamilyActivity } from '../src/components/sidebar-folded-family';
 import { SessionRowStatusIndicator } from '../src/components/sidebar-row-shared';
 import { useLowStimulusConversationSeen } from '../src/hooks/use-low-stimulus-conversation-seen';
 import {
+  childTabActivity,
   familyReadThrough,
   hiddenSessionHasUnread,
   isOpenerCollapsed,
@@ -128,6 +130,27 @@ describe('hiddenSessionHasUnread', () => {
 
   it('asks for nothing while the session is still at work', () => {
     expect(hiddenSessionHasUnread(member(300, true, true), 200)).toBe(false);
+  });
+});
+
+describe('childTabActivity', () => {
+  const tab = (overrides: Partial<SessionMeta> = {}) =>
+    ({ lastMessageAt: 300, lastReadAt: 100, ...overrides }) as SessionMeta;
+  const agentTab = (overrides: Partial<SessionMeta> = {}) =>
+    tab({ openedBySessionId: 'parent' as SessionId, ...overrides });
+
+  it('counts every Tab as it always did without the mode', () => {
+    expect(childTabActivity(agentTab(), true, undefined)).toEqual({ working: true, unread: true });
+  });
+
+  it('counts a Tab the user opened as it always did in the mode', () => {
+    expect(childTabActivity(tab(), true, 400)).toEqual({ working: true, unread: true });
+  });
+
+  it('quiets a Tab an agent opened: no work, and unread only past the parent read', () => {
+    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: false, unread: false });
+    expect(childTabActivity(agentTab(), false, 400)).toEqual({ working: false, unread: false });
+    expect(childTabActivity(agentTab(), false, 200)).toEqual({ working: false, unread: true });
   });
 });
 
