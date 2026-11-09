@@ -582,6 +582,39 @@ describe('what a share publishes of a turn', () => {
     });
   });
 
+  it('shows a published turn as published, a picture between the answers of two segments too', () => {
+    const plan = '## Plan\n\nRebuild the cache key.';
+    const { json, page } = publish([
+      assistant(
+        'a1',
+        [
+          { type: 'text', text: plan },
+          { type: 'image', imageId: 'a1', fileName: 'cache.png' },
+          { type: 'tool_call', toolCallId: 'p', kind: 'switch_mode', title: 'Exited Plan Mode' },
+          command('t1', 'pnpm test'),
+          { type: 'text', text: 'Done.' },
+        ],
+        { finished: true, endedAt: Date.parse('2026-11-10T08:01:00.000Z') }
+      ),
+    ]);
+    expectLeftOut(json, ['Exited', 'switch_mode', 'pnpm']);
+    expect(page.querySelector('.worked')).toBeNull();
+    const message = page.querySelector('.message')!;
+    expect(
+      [...message.children].map((node) => [node.className, (node as HTMLElement).hidden])
+    ).toEqual([
+      ['md', false],
+      ['images', false],
+      ['md', false],
+    ]);
+    expect(
+      [...message.querySelectorAll('.md')].map((node) =>
+        node.textContent?.replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual(['Plan Rebuild the cache key.', 'Done.']);
+    expect(message.querySelector('img')?.alt).toBe('cache.png');
+  });
+
   it('publishes the pictures the desktop never folds, after the answer and between steps', () => {
     const { json, page } = publish([
       assistant(

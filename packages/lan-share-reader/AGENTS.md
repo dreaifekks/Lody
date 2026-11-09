@@ -11,6 +11,8 @@ The page a LAN hub serves to readers of a shared conversation (fork-only, see
   one stylesheet and Lody's icon, no inline code, nothing loaded from elsewhere.
 - Thinking is never shown to a reader, as on the desktop's share page; it only
   counts toward a turn's work.
+- A turn marked `answerOnly` (`isLanShareAnswerOnly`) was folded when it was
+  published and holds its answers only: show it as it is, never fold it again.
 - Conversation content reaches the DOM as text, except Markdown rendered by
   micromark with its defaults: raw HTML stays escaped and unsafe link targets
   are dropped. Never enable `allowDangerousHtml` or `allowDangerousProtocol`.

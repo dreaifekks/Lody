@@ -249,9 +249,19 @@ export const isLanShareTurnFinished = (entry: LanShareTurnItem): boolean =>
   entry.finished === true || typeof entry.endedAt === 'number';
 
 /**
+ * Whether an assistant turn is one a LAN published: its answers only, already
+ * folded by these rules, so a reader shows it as it is. Folded again, a picture
+ * between the answers of two segments would read as the work before the last
+ * one. A turn without the mark, of a full history or of a share published
+ * before turns carried it, is folded as usual.
+ */
+export const isLanShareAnswerOnly = (entry: LanShareTurnItem): boolean => entry.answerOnly === true;
+
+/**
  * A conversation's history as a LAN publishes it, every entry rebuilt from the
  * fields a reader reads: the user's messages as they were sent, and of each
- * assistant turn what {@link projectLanShareTurnItems} keeps, with its times.
+ * assistant turn what {@link projectLanShareTurnItems} keeps, with its times
+ * and the mark of {@link isLanShareAnswerOnly}.
  * An entry an agent wrote also says which agent, model and effort.
  * Entries of other roles are dropped, and so is an assistant turn with nothing
  * left. The history itself is not changed.
@@ -280,6 +290,7 @@ export function projectLanShareHistory(history: unknown): unknown[] {
       {
         ...pick(entry, ['id', 'role', 'timestamp', 'finished', 'endedAt', 'permissionWaitMs']),
         ...publicAuthor(entry),
+        answerOnly: true,
         items: kept,
       },
     ];

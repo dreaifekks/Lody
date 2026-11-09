@@ -51,13 +51,17 @@ names the desktop shows), before what its author was configured with. Thinking,
 tool calls with their commands and diffs, every text before the closing run,
 subagent tasks, plans and notices never leave the window, nor does anything of
 a turn that shows no answer (still running, or ending in work); a turn left
-empty is dropped. The reader folds by the same file, so a published turn shows
-what it would have shown folded, and no row to open. A share keeps what it was
-published with until it is updated: one published before this projection
-carries its full history, which the reader folds, and one published under the
-earlier rule still shows the long or structured earlier text it kept, since
-without the steps between them the reader takes that text for part of the
-closing run. The shell writes the frozen package to a
+empty is dropped. Each assistant turn it keeps is marked `answerOnly`, and the
+reader shows a marked turn as it is, with no row to open: folded again, a
+picture between the answers of two segments (around a plan's approval) would
+read as the work before the last answer. A turn without the mark is folded by
+the same file. A share keeps what it was published with until it is updated:
+one published before this projection carries its full history, which the
+reader folds; one published by an earlier projection carries no mark, so the
+reader folds it again, which hides only text a picture separates from the
+closing text, under "Worked for …", and still shows the long or structured
+earlier text the first rule kept, since without the steps between them that
+text reads as part of the closing run. The shell writes the frozen package to a
 temporary directory and hands it to the agent service of its own machine
 (`lan/share-publish`), as it hands over the files of a message; the agent
 service uploads it to the hub of the workspace's LAN with the credential and
