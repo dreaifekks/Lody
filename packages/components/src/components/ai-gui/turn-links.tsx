@@ -60,6 +60,20 @@ export function useSessionLinkAction(target: SessionLink): (() => void) | null {
 
 const NO_RETURNS: readonly ReadingPosition[] = [];
 
+const RECEIPT_REPLY = /^assistant:(inbox:.+)$/u;
+
+/**
+ * The row a jump puts at the top. A receipt's reply (`assistant:inbox:…`, what
+ * a receipt batch links to) lands with its receipt card above it, where the
+ * outline lands that round: the reply's first line clears the top fade and the
+ * rail marks the round. Without the card's row, the reply itself.
+ */
+function landingRow(rows: readonly { readonly turnId: string }[], turnId: string, row: number) {
+  const card = RECEIPT_REPLY.exec(turnId)?.[1];
+  const cardRow = card ? rows.findIndex((candidate) => candidate.turnId === card) : -1;
+  return cardRow === -1 ? row : cardRow;
+}
+
 type Returns = { readonly sessionId: string; readonly stack: readonly ReadingPosition[] };
 
 /** The view's half: jumps, the flash and the way back. */
@@ -104,7 +118,7 @@ export function useTurnLinkNavigation({
     }
     const position = listRef.current?.readingPosition();
     if (fromHere && position) setReturns({ sessionId, stack: [...stack, position] });
-    scrollRowToTop(row, true);
+    scrollRowToTop(landingRow(rows, turnId, row), true);
     setHighlight({ sessionId, turnId, startedAt: performance.now() });
   });
 

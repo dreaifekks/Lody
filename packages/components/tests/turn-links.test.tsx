@@ -28,9 +28,18 @@ import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
 import { initI18n } from '../src/i18n';
 
 /** Rows as the view lists them: an assistant turn may take several. */
-const ROWS = ['u1', 'assistant:u1', 'u2', 'assistant:u2', 'assistant:u2', 'u3', 'assistant:u3'].map(
-  (turnId) => ({ turnId })
-);
+const ROWS = [
+  'u1',
+  'assistant:u1',
+  'u2',
+  'assistant:u2',
+  'assistant:u2',
+  'inbox:completion:7',
+  'assistant:inbox:completion:7',
+  'assistant:inbox:completion:8',
+  'u3',
+  'assistant:u3',
+].map((turnId) => ({ turnId }));
 
 const readAt = (turnId: string): ReadingPosition => ({
   kind: 'read',
@@ -195,6 +204,23 @@ describe('turn links', () => {
     expect(flashedRows()).toEqual(['assistant:u2', 'assistant:u2']);
     expect(openedLinks).toEqual([]);
     expect(latestButton()).toBe('back');
+  });
+
+  it("land a receipt's reply under its receipt card, or on the reply when the card has no row", () => {
+    const reader = createReader();
+    const links = [
+      link(S1, 'assistant:inbox:completion:7'),
+      link(S1, 'assistant:inbox:completion:8'),
+    ];
+    render({ sessionId: S1, reader, links });
+
+    clickLink(S1, 'assistant:inbox:completion:7');
+    expect(reader.readsAt()).toBe('inbox:completion:7');
+    expect(flashedRows()).toEqual(['assistant:inbox:completion:7']);
+
+    // Board coordinators hide a batch row whose results its creation cards show.
+    clickLink(S1, 'assistant:inbox:completion:8');
+    expect(reader.readsAt()).toBe('assistant:inbox:completion:8');
   });
 
   it('unwind jumps newest first, then go to the latest', () => {
