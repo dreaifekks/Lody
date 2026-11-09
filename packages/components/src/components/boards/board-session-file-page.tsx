@@ -4,7 +4,7 @@ import { SessionDocumentScope, type BoardSessionFilePageProps } from './document
 /**
  * A session's file a Board preview's link led to, read in that session's
  * machine and workspace like its side tab, where its menu moves it
- * (`onOpenInTab`).
+ * (`onOpenInTab`). Out of sight (`active` false) it pauses, as a hidden tab does.
  */
 export function BoardSessionFilePage({
   sessionId,
@@ -12,7 +12,8 @@ export function BoardSessionFilePage({
   onBack,
   onOpen,
   onOpenInTab,
-}: BoardSessionFilePageProps & { onOpenInTab: () => void }) {
+  active,
+}: BoardSessionFilePageProps & { onOpenInTab: () => void; active: boolean }) {
   return (
     <SessionDocumentScope
       sessionId={sessionId}
@@ -31,7 +32,7 @@ export function BoardSessionFilePage({
           fileProviderPending={scope.fileProviderPending}
           fileProviderMessage={scope.fileProviderMessage}
           {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
-          active
+          active={active}
           article={{ onOpenInTab, annotationThreadId: null, onBack }}
         />
       )}

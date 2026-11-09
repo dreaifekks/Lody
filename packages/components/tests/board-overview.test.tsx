@@ -3043,7 +3043,7 @@ it("follows a Board document's links in place, a session's file as well", async 
             fileProvider: null,
           },
           renderSessionFile: (page) => (
-            <BoardSessionFilePage {...page} onOpenInTab={() => opened.push(page.target)} />
+            <BoardSessionFilePage {...page} active onOpenInTab={() => opened.push(page.target)} />
           ),
         }}
         openThreadId={null}

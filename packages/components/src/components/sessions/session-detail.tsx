@@ -6586,19 +6586,22 @@ const SessionDetail = ({
     return null;
   }
   // Board documents are read for this page's session (the coordinator in its panel).
-  // Their links open in place; a page of one of its files moves to a side tab.
-  const boardDocumentLinks: BoardDocumentLinksValue = {
-    owner: { ...activeFileOpenContext, session: activeSession },
+  // Their links open in place; a page of one of its files moves to a side tab, and
+  // rests while its surface is out of sight.
+  const boardDocumentOwner = { ...activeFileOpenContext, session: activeSession };
+  const boardDocumentLinksFor = (onScreen: boolean): BoardDocumentLinksValue => ({
+    owner: boardDocumentOwner,
     renderSessionFile: (page) => (
       <BoardSessionFilePage
         {...page}
+        active={onScreen}
         onOpenInTab={() => {
           setBoardSettingsOpen(false);
           openFileTargetInTab(activeFileOpenContext, page.target);
         }}
       />
     ),
-  };
+  });
 
   /* The URL names a child tab whose meta has not reached this replica yet
      (a just-promoted draft, or a tab still syncing from another device).
@@ -6830,7 +6833,7 @@ const SessionDetail = ({
             memberSessionId={activeSession.id}
             onClose={() => handleCloseViewerTab(tab.id)}
             links={{
-              owner: boardDocumentLinks.owner,
+              owner: boardDocumentOwner,
               onOpen: (target) => openFileTargetInTab(activeFileOpenContext, target),
             }}
           />
@@ -6914,7 +6917,7 @@ const SessionDetail = ({
   const boardPanel = activeBoard ? (
     <BoardSidePanel
       board={activeBoard}
-      documentLinks={boardDocumentLinks}
+      documentLinks={boardDocumentLinksFor(isMobile ? mobileBoardOpen : boardPanelOnScreen)}
       openThreadId={isMobile ? null : boardThreadId}
       onOpenThread={(thread) => {
         if (thread) handleNavigateSession({ sessionId: thread.id });
@@ -7013,7 +7016,7 @@ const SessionDetail = ({
     activeBoard && boardSettingsOpen ? (
       <BoardSettings
         board={activeBoard}
-        documentLinks={boardDocumentLinks}
+        documentLinks={boardDocumentLinksFor(true)}
         onClose={() => setBoardSettingsOpen(false)}
         onArchived={navigateToChat}
       />
