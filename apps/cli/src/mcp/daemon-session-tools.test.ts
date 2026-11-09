@@ -885,7 +885,7 @@ describe('daemon-hosted Session tools in the cloud composition', () => {
 
   async function createRemoteSession() {
     const otherMachineId = 'synthetic-other-machine' as MachineId;
-    await manager.registerMachine(otherMachineId, {
+    await manager.repo.upsertDocMeta(getMachineRoomId(otherMachineId), {
       id: otherMachineId,
       name: 'Other',
       ownerUserId,
@@ -894,6 +894,75 @@ describe('daemon-hosted Session tools in the cloud composition', () => {
     await manager.repo.flush();
     return remoteSessionId;
   }
+
+  it('returns retryable MACHINE_OFFLINE through the LAN daemon MCP chat precheck', async () => {
+    const remoteSessionId = await createRemoteSession();
+    const caller = await manager.getOrCreateSessionDoc(sessionId);
+    const backend = await createSessionBackend(caller, await caller.getMetaState());
+    await backend.appendHistoryTurn({
+      id: 'synthetic-turn',
+      role: 'user',
+      status: 'seen',
+      timestamp: '2026-11-09T00:00:00.000Z',
+      items: [{ type: 'text', text: 'Delegate synthetic work.' }],
+      fileDiff: [],
+    } as never);
+    const environment = createEnvironment();
+    vi.spyOn(manager, 'syncMetaOrThrow').mockResolvedValue();
+    environment.host.remote = {
+      isOnline: async () => false,
+      withClient: async () => {
+        throw new Error('Offline target must not receive an RPC');
+      },
+    };
+    const result = await runWithSessionCommandEnvironment(environment, () =>
+      executeDaemonSessionTool(context(), 'lody_session_chat', {
+        operationId: 'lan-offline-chat',
+        sessionId: remoteSessionId,
+        prompt: 'Continue synthetic work.',
+        mcpServerIds: [],
+      })
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]?.text ?? '{}')).toMatchObject({
+      ok: false,
+      error: { code: 'MACHINE_OFFLINE', retryable: true },
+    });
+  });
+
+  it.each(['failure', 'null'] as const)(
+    'keeps an online LAN target online when live-status RPC returns %s',
+    async (outcome) => {
+      const remoteSessionId = await createRemoteSession();
+      const environment = createEnvironment();
+      const remoteMachineId = 'synthetic-other-machine' as MachineId;
+      environment.host.remote = {
+        isOnline: async () => true,
+        withClient: async (_machineId, run) =>
+          run({
+            requestSessionLiveStatus: async () => {
+              if (outcome === 'failure') throw new Error('Synthetic RPC failure');
+              return null;
+            },
+          } as never),
+      };
+      await runWithSessionCommandEnvironment(environment, async () => {
+        const args = { auth: environment.auth, workspaceId, machineId: remoteMachineId, manager };
+        await expect(sessionCommands.ensureTargetMachineNotOffline(args)).resolves.toBe('online');
+        await expect(
+          sessionCommands.readSessionLiveStatus({ ...args, sessionId: remoteSessionId })
+        ).resolves.toMatchObject({ machineOnline: true, liveStatus: { state: 'unavailable' } });
+        const batch = await sessionCommands.readSessionLiveStatusesMany({
+          ...args,
+          sessions: [{ id: remoteSessionId, machineId: remoteMachineId }],
+        });
+        expect(batch.get(remoteSessionId)).toMatchObject({
+          machinePresence: 'online',
+          fresh: false,
+        });
+      });
+    }
+  );
 
   /** A joined Streams room whose first sync completes only when the test says so. */
   function stubRemoteRoom(remoteSessionId: SessionId) {

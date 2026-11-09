@@ -2567,10 +2567,9 @@ export async function ensureTargetMachineNotOffline(args: {
     const remote = environment.host.remote;
     if (!remote) throw new Error('Target machine is unavailable in this workspace');
     // A hub that cannot say leaves it to the session document, which waits for the machine.
-    if ((await remote.isOnline(args.machineId)) === false) {
-      throw new Error(`Machine ${args.machineId} is offline`);
-    }
-    return 'unknown';
+    const online = await remote.isOnline(args.machineId);
+    if (online === false) throw new MachineOfflineError({ machineId: args.machineId });
+    return online === true ? 'online' : 'unknown';
   }
   if (args.machineId === args.auth.machineId) {
     await ensureLocalRuntimeAvailable(args.machineId, args.workspaceId);
@@ -4701,7 +4700,7 @@ export function deriveSessionLiveStatus(machineStatus: {
   };
 }
 
-async function readSessionLiveStatus(args: {
+export async function readSessionLiveStatus(args: {
   auth: AuthContext;
   workspaceId: WorkspaceId;
   machineId: MachineId;
