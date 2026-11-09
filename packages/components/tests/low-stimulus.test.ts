@@ -103,19 +103,31 @@ describe('toggling an opener', () => {
 });
 
 describe('hiddenSessionHasUnread', () => {
+  const member = (latestMessageAt: number, unread = true, working = false) => ({
+    unread,
+    working,
+    latestMessageAt,
+  });
+
   it('stops counting output the last read of the root already covers', () => {
-    expect(hiddenSessionHasUnread(true, 100, 200)).toBe(false);
-    expect(hiddenSessionHasUnread(true, 200, 200)).toBe(false);
+    expect(hiddenSessionHasUnread(member(100), 200)).toBe(false);
+    expect(hiddenSessionHasUnread(member(200), 200)).toBe(false);
   });
 
   it('counts output newer than that read, and any unread output of a never-read root', () => {
-    expect(hiddenSessionHasUnread(true, 300, 200)).toBe(true);
-    expect(hiddenSessionHasUnread(true, 300, familyReadThrough(undefined, undefined))).toBe(true);
+    expect(hiddenSessionHasUnread(member(300), 200)).toBe(true);
+    expect(hiddenSessionHasUnread(member(300), familyReadThrough(undefined, undefined))).toBe(true);
   });
 
   it('never makes a read or closed session unread', () => {
-    expect(hiddenSessionHasUnread(false, 300, 200)).toBe(false);
-    expect(hiddenSessionHasUnread(false, 300, familyReadThrough(undefined, undefined))).toBe(false);
+    expect(hiddenSessionHasUnread(member(300, false), 200)).toBe(false);
+    expect(
+      hiddenSessionHasUnread(member(300, false), familyReadThrough(undefined, undefined))
+    ).toBe(false);
+  });
+
+  it('asks for nothing while the session is still at work', () => {
+    expect(hiddenSessionHasUnread(member(300, true, true), 200)).toBe(false);
   });
 });
 
@@ -309,16 +321,25 @@ describe('foldedFamilyActivity', () => {
     expect(family({ ...root, hasUnreadMessages: true }, [], 50).unread).toBe(1);
   });
 
-  it('counts waiting and working of hidden sessions however old their output is', () => {
+  it('counts a hidden session waiting for the user however old its output is', () => {
     const activity = family(
       root,
-      [
-        { id: 'waiting', latestMessageAt: 1, isWaitingPermission: true, isWorking: true },
-        { id: 'working', latestMessageAt: 1, isWorking: true },
-      ],
+      [{ id: 'waiting', latestMessageAt: 1, isWaitingPermission: true, isWorking: true }],
       200
     );
-    expect(activity).toMatchObject({ waiting: 1, working: 1, unread: 0 });
+    expect(activity).toMatchObject({ waiting: 1, working: 0, unread: 0 });
+  });
+
+  it('draws no work for a hidden session at work, only for the root itself', () => {
+    const working: Row = { id: 'working', latestMessageAt: 1, isWorking: true };
+    expect(family(root, [working], 200).working).toBe(0);
+    expect(family({ ...root, isWorking: true }, [working], 200).working).toBe(1);
+  });
+
+  it('counts the unread of a hidden session only once it stops', () => {
+    const child: Row = { id: 'child', latestMessageAt: 250, hasUnreadMessages: true };
+    expect(family(root, [{ ...child, isWorking: true }], 200).unread).toBe(0);
+    expect(family(root, [child], 200).unread).toBe(1);
   });
 
   it('counts a hidden send failure and a root send in progress', () => {

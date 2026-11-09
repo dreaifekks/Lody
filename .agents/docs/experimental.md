@@ -75,9 +75,12 @@ changes. With the mode off every list is the upstream one.
 - **One mark per family.** A folded root draws `foldedFamilyActivity`
   (`components/sidebar-folded-family.ts`) through the row's ordinary
   `SessionRowStatusIndicator`: send failed, then waiting, working, sending, unread.
-  The row's hover card says how many of each. A Board root draws the family's
-  strongest live status and merged unread the same way; a failed member lifts the
-  family into "Needs you" as before.
+  The row's hover card says how many of each. A hidden Session's work is the root's
+  to report: it draws no working mark, and its unread counts only once it stops
+  (`hiddenSessionHasUnread`); its waiting and its sends count as they are. A Board
+  root draws the same (`foldedBoardThreadRoot`, `boardFamilyActivity`). The family
+  still sits in the panel group of its strongest member, so a running member keeps
+  it under Working and a failed member lifts it into "Needs you" as before.
 - **Reading the root clears what came before.** A hidden Session counts as unread only
   for output newer than the user's last read of the root (`hiddenSessionHasUnread`
   against `familyReadThrough`): the later of the root's `lastReadAt` and the last
@@ -95,10 +98,10 @@ changes. With the mode off every list is the upstream one.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
-A Board's Sidebar row counts unread the way its panel shows the families
-(`boardActivity` with the fold record and each root's read-through), so the two
-agree. Waiting, failures and agent notifications always pass through. Not covered:
-a folded project or machine header still counts its rows' own unread, the phone list
+A Board's Sidebar row counts work and unread the way its panel shows the families
+(`boardActivity` with the fold record and each root's read-through), so the two agree.
+Waiting, failures and agent notifications always pass through. Not covered: a folded
+project or machine header still counts its rows' own work and unread, the phone list
 is untouched (it folds only by the user's choice, as before, because its rows have no
 family mark), and an opened Session being viewed has no highlighted row while its
 family is folded.

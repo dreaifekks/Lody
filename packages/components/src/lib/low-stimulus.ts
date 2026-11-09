@@ -29,16 +29,23 @@ export function familyReadThrough(
   return Math.max(rootLastReadAt ?? -Infinity, rootSeenAt ?? -Infinity);
 }
 
+/** A hidden family member's own state, as the rules below read it. */
+export type HiddenMember = {
+  /** Its own unread output, by its own read receipt. */
+  unread: boolean;
+  /** Its agent is at work. */
+  working: boolean;
+  /** Its last message, in ms. */
+  latestMessageAt: number;
+};
+
 /**
- * Whether a hidden family member still asks to be read: its own unread state,
- * further limited to output newer than the user's last read of the root
- * (`familyReadThrough`). A thread reports its children's conclusions, so reading
- * it covers what came before.
+ * Whether a hidden family member still asks to be read. A thread reports its
+ * children's work, so the member is the root's to announce: while it works it
+ * asks for nothing, and once it stops only output newer than the user's last
+ * read of the root counts (`familyReadThrough`). Waiting and failed sends are
+ * not unread; callers count them for every member.
  */
-export function hiddenSessionHasUnread(
-  hasUnread: boolean,
-  latestMessageAtMs: number,
-  rootReadThrough: number
-): boolean {
-  return hasUnread && latestMessageAtMs > rootReadThrough;
+export function hiddenSessionHasUnread(member: HiddenMember, rootReadThrough: number): boolean {
+  return member.unread && !member.working && member.latestMessageAt > rootReadThrough;
 }
