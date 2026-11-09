@@ -166,6 +166,34 @@ describe('MCP HTTP host wire behavior', () => {
     });
   };
 
+  it.each(['lody_session_create', 'lody_session_create_many'])(
+    'serves complete directory and Tab guidance through lody_help for %s',
+    async (command) => {
+      const response = await callTool('2025-06-18', 'help-reader', 'lody_help', { command });
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      const help = JSON.parse(payload.result.content[0].text) as {
+        description: string;
+        inputSchema: unknown;
+      };
+      for (const rule of [
+        'workContext omitted: non-Role independent = chat',
+        'shared Tab only if parent selector also omitted; false yields chat',
+        'Tabs require same machine, forbid workContext and nesting',
+        'New worktrees do not copy uncommitted files',
+        'branch = preferred base, not new branch name',
+        'History is never copied, even for Tabs',
+        'agentRoleInstanceId',
+        'Omitted MCPs inherit the invoking turn selection',
+      ])
+        expect(help.description).toContain(rule);
+      expect(help.description).not.toContain('overrides manual machineId');
+      expect(JSON.stringify(help.inputSchema)).toContain(
+        'Do not omit: some Role creates otherwise default to a Tab'
+      );
+    }
+  );
+
   it.each(['2025-06-18', '2026-07-28'])(
     'isolates concurrent contexts and survives an aborted %s request',
     async (version) => {

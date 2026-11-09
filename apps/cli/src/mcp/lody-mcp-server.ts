@@ -361,7 +361,7 @@ const FeedbackToolInputSchema = z
   .strict();
 
 const SESSION_CREATE_PLACEMENT_DESCRIPTION =
-  'false: sidebar conversation. true: shared-directory Tab. See directory/default rules above.';
+  'false: sidebar conversation. true: shared-directory Tab. Do not omit: some Role creates otherwise default to a Tab. See directory/default rules above.';
 
 const SESSION_CREATE_WORK_CONTEXT_DESCRIPTION =
   'Independent directory on target machine; choices/omission rules above. Forbidden for Tabs.';
@@ -371,7 +371,7 @@ const SESSION_CREATE_EFFECTS_GUIDANCE = [
   'useCurrentSessionAsParent: explicitly false for sidebar conversations (recommended); true only for user-requested Tabs sharing actual directory/worktree + uncommitted files. Tabs require same machine, forbid workContext and nesting.',
   'Independent workContext (target machine):\n- chat: separate directory, no project.\n- local + projectId, worktree:false/omitted: original directory, shared files/uncommitted changes if caller already there; does not select caller session worktree. branch omitted keeps checkout; explicit branch can switch it.\n- local + worktree:true: new isolated worktree; base = branch, else original current branch/default fallback.\n- github + repo: separate worktree; branch = preferred base, not new branch name. Omitted prefers main/default fallback; unavailable explicit bases can also fall back: verify exact-version tasks.\nNew worktrees do not copy uncommitted files. Same-machine/project non-worktree callers need no Tab to share their original directory.',
   'workContext omitted: non-Role independent = chat. Role + GitHub caller = caller repo/project base. Role + same-machine Local Project = shared Tab only if parent selector also omitted; false yields chat. Role + remote Local Project = workspace-enabled linked GitHub repo (main/default base), else chat; no local branch/file transfer.',
-  'Non-Role: default caller machine/config if applicable, else unique matching/sole target config; ambiguity needs agentConfigId. Omitted compatible mode/model/options inherit matching-provider caller history, else provider defaults. Role: overrides manual machineId/agentConfigId/all run selectors with frozen target/prompt/config; multiple machines need agentRoleMachineId. workContext/mcpServerIds still apply. Omitted MCPs = target-project/workspace defaults, not caller selection; [] = none. Permissions grant access, not directory/file transfer; stay within user authorization.',
+  'Non-Role: default caller machine/config if applicable, else unique matching/sole target config; ambiguity needs agentConfigId. Omitted compatible mode/model/options inherit matching-provider caller history, else provider defaults. Omitted MCPs inherit the invoking turn selection when available, else target-project/workspace defaults; [] = none. Permissions grant access, not directory/file transfer; stay within user authorization.',
   'History is never copied, even for Tabs. prompt must carry task/context/constraints/code version/completion criteria. Agent-origin input names source Session for authorized lody_session_history reads. Single attachments transfer selected caller-workspace files, not mount/sync.',
 ].join('\n\n');
 
@@ -5526,6 +5526,9 @@ export function buildSessionToolServer(
       title: 'Create a Lody session',
       description:
         'Start durable asynchronous work that creates a Lody session. Default to useCurrentSessionAsParent=false; true is only for a user-requested Tab. Retry failures with the same operationId. Supply operationId; results are queued and batched after a normal turn release or with the next user input, so do not poll operation_get. To use an Agent Role, pass agentRoleId. Each Role target runs one Agent config with its own model, reasoning and permission mode on one machine; a machine may hold several targets. Pass agentRoleInstanceId to run one instance (a machineId beside it must be its machine). Without a pinned target, pass agentRoleMachineId or machineId for a Role on several machines. Multiple targets on that machine require agentRoleInstanceId. Work context must agree; nothing chooses by availability, ordering or caller machine. A pinned instance or machine that cannot run fails the create with the usable instances listed, never a silent switch; the agentRole field of the reply names the instance, machine and rule. Manual agent config and run-config fields are ignored for a Role. To recover an already accepted create without resending its prompt, send only operationId with resume=true. useCurrentSessionAsParent=true and workContext are mutually exclusive schema branches. Machine/config ids and runConfig values for non-Role creates come from lody_session_create_options. The wait field is temporary legacy compatibility only.' +
+        '\n\n' +
+        SESSION_CREATE_EFFECTS_GUIDANCE +
+        '\n\n' +
         SESSION_COLLABORATION_GUIDANCE +
         MACHINE_CATALOG_RETRY_GUIDANCE,
       inputSchema: SessionCreateToolInputSchema,
@@ -5725,6 +5728,9 @@ export function buildSessionToolServer(
       title: 'Create multiple Lody sessions',
       description:
         'Start one durable batch Operation for 1-20 Session creates. Default to defaults.useCurrentSessionAsParent=false; true is only for a user-requested Tab. defaults and items shallow-merge; nested objects replace wholesale. Each item may use an agentRoleId (and agentRoleInstanceId) from the workspace catalog; its instance is chosen as in lody_session_create, and manual agent config and run-config fields are ignored. The agentRoles field of the reply lists the chosen instance of each Role item. Non-Role items accept modeId, configOptionValues, modelId, reasoningEffort, fastMode, and planMode using target advertised capabilities from lody_session_create_options. Explicit permissions may be broader than the parent; choose only within the user authorization granted to the caller. Ordered item failures are isolated. Results are queued and batched after a normal turn release or with the next user input, so do not poll operation_get in a loop.' +
+        '\n\n' +
+        SESSION_CREATE_EFFECTS_GUIDANCE +
+        '\n\n' +
         SESSION_COLLABORATION_GUIDANCE +
         MACHINE_CATALOG_RETRY_GUIDANCE,
       inputSchema: SessionCreateManyToolInputSchema,
