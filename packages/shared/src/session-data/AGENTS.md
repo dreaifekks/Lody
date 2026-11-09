@@ -24,7 +24,7 @@
   scans directory scalars only and permission checks have no await gap.
 - Ordinary commands propagate writer errors; absence returns a boolean where the
   caller needs it. Only import and editable-tail replacement use phased results:
-  `rejected` proves no write; `indeterminate` never be retried automatically.
+  `rejected` proves no write; `indeterminate` must not be retried automatically.
   The Repo owns persistence and convergence barriers.
 - A snapshot is the HistoryWriter's detached, unforgeable stored-copy handle.
   Its existing provenance WeakMap is authoritative. Source disposal does not
@@ -79,7 +79,7 @@
 - Optional `inputAcceptance` separates an immutable owner-history receipt from
   execution. Preserve its source identity and expose the bound target in renderer
   adapters. Missing receipt lookup never proves non-delivery. Accepted history
-  removed from the active branch never be resurrected by a repeated accept.
+  removed from the active branch must not be resurrected by a repeated accept.
   Optional `acceptAndDispatch` requires independent `sessionInputDispatch` v1
   negotiation; it joins ordinary acceptance and owner activation without claiming
   execution. Plain acceptance and guide application retain their own boundaries.

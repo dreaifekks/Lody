@@ -34,7 +34,7 @@ File-by-file responsibilities: [README.md](README.md).
   compact aggregate add/del `diffStats`; file/diff watcher refreshes stay Flock-only, and PR
   sessions retain committed compare totals. The injected `observeWorkspaceGit` observer
   runs only on activation/explicit root refresh, never file watcher or terminal diff refresh;
-  it never gate file snapshots.
+  it must not gate file snapshots.
 - The whole published file index stays within `CODE_COLLAB_FILE_INDEX_LIMITS`
   (1,000 rows, 100 KiB of estimated Flock JSON), applied after the tree and All
   Changes are merged, never per input. Over-budget paths stay unloaded behind lazy
@@ -96,7 +96,7 @@ File-by-file responsibilities: [README.md](README.md).
   `save-text` uses `serializeByAbsolutePath` for an atomic read-check-write per file;
   different files stay parallel. Pure reads (open/refresh/diff) stay lock-free.
 
-- Root-scoped file state shares the owner publication and physical-file save chains. Watch subscriptions include root identity; wire keys is decoded before filesystem access.
+- Root-scoped file state shares the owner publication and physical-file save chains. Watch subscriptions include root identity; wire keys must be decoded before filesystem access.
 
 - Diff blob handlers are capability-gated reads. They do not start watches, initialize
   a snapshot database or migrate it. Encrypted calls retain writer authority and

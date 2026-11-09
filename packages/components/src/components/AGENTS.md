@@ -1,6 +1,6 @@
 # Product surfaces (`src/components`)
 
-Ancestor rules apply. Edit `AGENTS.md`;
+Ancestor rules apply. Edit `AGENTS.md`.
 
 ## Sidebar and session rows
 

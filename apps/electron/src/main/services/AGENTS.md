@@ -78,10 +78,10 @@ custody or clears pending writes. CLI/shell owners must confirm release before m
 
 LoginShellCache Layer owns shell environment; `getUserShellEnvCachedLegacy` is
 launcher-only. After unload approval, quit awaits application disposal and CLI exit.
-Retain failed process owners for recovery; never replace them with null or bind
-successors before release. After failed quit, retry owners once before rebuilding
-shell/relays and reopening a window; unresolved owners use the localized quit/retry
-dialog. Read the
+Retain failed process owners; never null them or bind successors before release.
+Retry failed quit owners once before shell/relay rebuild and window reopening.
+Unresolved owners use the localized quit/retry dialog. Read the
+[decision](../../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
 
 ## E2EE runtime
 

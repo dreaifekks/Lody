@@ -1,6 +1,6 @@
 # packages/loro-streams-rpc
 
-Edit `AGENTS.md`;
+Edit `AGENTS.md`.
 Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.md).
 
 ## Invariants
@@ -79,7 +79,7 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
   one cancel request. A pending request must return at its response deadline even if the original
   append POST is still half-open; if that append later succeeds, append the cancel then. The server
   must abort that request's work and suppress all later
-  progress/final envelopes; a cancel for one shared CLI probe consumer never abort other
+  progress/final envelopes; a cancel for one shared CLI probe consumer must not abort other
   consumers of same launch/config work.
 - `machine/acp-authenticate` similarly may append
   `machine/acp-authentication-progress` envelopes before its final response. Progress never settles the pending authentication request. Browser-returned

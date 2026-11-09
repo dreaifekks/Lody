@@ -1,6 +1,7 @@
 # apps/electron/src
 
-Edit `AGENTS.md`; apply; the latter owns build, packaging, native dependencies and OSS composition.
+Root and [Electron rules](../AGENTS.md) apply; edit `AGENTS.md` only.
+The latter own build, packaging, native dependencies and OSS composition.
 
 ## Module boundaries
 
@@ -23,15 +24,14 @@ Edit `AGENTS.md`; apply; the latter owns build, packaging, native dependencies a
 - Electron main and preload code never import runtime values from the
   `@lody/shared` root barrel. Use a narrow subpath so Node bundles do not pull in
   renderer modules or `loro-crdt` WASM.
-- Derive invoke signatures from `IpcService` and the sole constructor list in
-  `register-services.ts`. Every public instance method is renderer-facing and needs
-  `@IpcMethod()`. Do not duplicate invoke contracts or per-method preload lists.
-  Components may import inferred service types only with erased `import type`, never
-  a runtime dependency. Keep push/send maps in `@lody/shared/electron-ipc`. Preload
-  exposes only `{ invoke, on, send }`, gates invoke by service groups in
-  `preload/ipc-invoke-policy.ts`, and retains push/send allowlists. The `e2ee` group uses an explicit method list covering every
-  `E2eeIpc` method, checked by `e2ee-account-runtime.test.mjs`. Do not add
-  `window.api`; validate foreign input at the IPC class boundary.
+- `IpcService` and the sole constructor list in `register-services.ts` own invoke
+  signatures. Every public instance method is renderer-facing and requires
+  `@IpcMethod()`. Never duplicate invoke contracts or preload method lists, except
+  the explicit list of every `E2eeIpc` method checked by `e2ee-account-runtime.test.mjs`.
+  Components import service types only via erased `import type`, never at runtime.
+  Keep push/send maps in `@lody/shared/electron-ipc`. Preload exposes only
+  `{ invoke, on, send }`, gates groups via `preload/ipc-invoke-policy.ts`, and keeps
+  push/send allowlists. Never add `window.api`; validate foreign input at the IPC boundary.
 - The E2E client-loss probe (`e2ee.inspectClientLoss` and `e2ee.clientLossEffects`) is the
   only channel pair outside the service classes. Main registers it, and preload admits it,
   only for unpackaged `LODY_E2E=1` windows through the main-supplied argument. It stays
