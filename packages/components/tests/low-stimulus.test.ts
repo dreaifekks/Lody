@@ -136,6 +136,17 @@ describe('reading a folded family through its root', () => {
       [{ id: 'child', latestMessageAt, hasUnreadMessages: true }],
       store.get(familyReadThroughAtom)('root', 100)
     ).unread;
+  /** Another window's write, as this window hears of it. */
+  const hearStored = (seenAt: Record<string, number>) =>
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'lody-low-stimulus-seen-at',
+        newValue: JSON.stringify(seenAt),
+        storageArea: localStorage,
+      })
+    );
+
+  beforeEach(() => localStorage.clear());
 
   it('keeps newer hidden output until the root conversation has been on screen', () => {
     const store = createStore();
@@ -188,6 +199,32 @@ describe('reading a folded family through its root', () => {
     expect(readThrough('session-2', undefined)).toBe(2);
     expect(readThrough('session-201', undefined)).toBe(201);
   });
+
+  it('keeps what another window saw when this one writes without having heard of it', () => {
+    const first = createStore();
+    first.set(setConversationOnScreenAtom, 'root', true, 200);
+    first.set(setConversationOnScreenAtom, 'root', false, 210);
+    // No storage event reached the second window before it wrote.
+    createStore().set(setConversationOnScreenAtom, 'other', true, 230);
+    const restarted = createStore();
+    const unsubscribe = restarted.sub(familyReadThroughAtom, () => {});
+    expect(restarted.get(familyReadThroughAtom)('root', 100)).toBe(210);
+    expect(restarted.get(familyReadThroughAtom)('other', 100)).toBe(230);
+    unsubscribe();
+  });
+
+  it('adds what another window stored to its own instead of replacing it', () => {
+    const store = createStore();
+    const unsubscribe = store.sub(familyReadThroughAtom, () => {});
+    store.set(setConversationOnScreenAtom, 'root', true, 200);
+    store.set(setConversationOnScreenAtom, 'root', false, 210);
+    // That window wrote before it heard of this one's root, and saw an older moment of it.
+    hearStored({ other: 230 });
+    hearStored({ root: 205 });
+    expect(hiddenUnread(store, 208)).toBe(0);
+    expect(store.get(familyReadThroughAtom)('other', 100)).toBe(230);
+    unsubscribe();
+  });
 });
 
 describe('useLowStimulusConversationSeen', () => {
@@ -211,6 +248,7 @@ describe('useLowStimulusConversationSeen', () => {
   };
 
   beforeEach(() => {
+    localStorage.clear();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(1_000);
     host = document.createElement('div');

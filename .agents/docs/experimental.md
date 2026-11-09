@@ -86,8 +86,10 @@ changes. With the mode off every list is the upstream one.
   nothing since would cover nothing its family did after. A conversation surface
   reports both ends of being on screen through `useLowStimulusConversationSeen`,
   under the visibility its read receipt requires; `atoms/low-stimulus-seen.ts` keeps
-  the newest 200 in this device's `localStorage`. While a root is on screen its
-  family draws no unread; output after it left counts again.
+  the newest 200 in this device's `localStorage`. Its windows share that one table
+  and each writes all of it, so a write and a stored change are merged per
+  conversation at the later time, never put in place of what a window knows. While
+  a root is on screen its family draws no unread; output after it left counts again.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
