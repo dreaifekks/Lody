@@ -2229,6 +2229,7 @@ export const SessionChatStreamView = forwardRef<
       scrollRowToTop,
       scrollToBottom,
       revealed: initialScrollRestored,
+      isVisible,
       isSticky,
       latestSendId: localUserMessages?.at(-1)?.id,
     });

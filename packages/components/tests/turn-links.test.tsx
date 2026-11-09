@@ -18,10 +18,10 @@ import { SessionLinkProvider } from '../src/components/ai-gui/session-link-conte
 import {
   TurnLinkHighlight,
   TurnLinkProvider,
-  pendingTurnLinkAtom,
   useSessionLinkAction,
   useTurnLinkNavigation,
 } from '../src/components/ai-gui/turn-links';
+import { pendingTurnLinkAtom } from '../src/lib/pending-turn-link';
 import type { ConversationListHandle } from '../src/components/ai-gui/conversation-list/types';
 import type { ReadingPosition } from '../src/lib/conversation-scroll/types';
 import { SESSION_DEEP_LINK_EVENT } from '../src/lib/session-deep-link';
@@ -84,6 +84,7 @@ type ConversationProps = {
   reader: Reader;
   links: readonly SessionLink[];
   revealed?: boolean;
+  isVisible?: boolean;
   isSticky?: boolean;
   latestSendId?: string;
 };
@@ -93,6 +94,7 @@ function Conversation({
   reader,
   links,
   revealed = true,
+  isVisible = true,
   isSticky = false,
   latestSendId,
 }: ConversationProps) {
@@ -103,6 +105,7 @@ function Conversation({
     scrollRowToTop: reader.scrollRowToTop,
     scrollToBottom: reader.scrollToBottom,
     revealed,
+    isVisible,
     isSticky,
     latestSendId,
   });
@@ -227,6 +230,7 @@ describe('turn links', () => {
     ['reaching the end', { isSticky: true }],
     ['sending a message', { latestSendId: 'local-1' }],
     ['switching conversations', { sessionId: S2 }],
+    ['leaving for another tab that keeps this one mounted', { isVisible: false }],
   ])('forget the way back on %s', (_, change) => {
     const reader = createReader();
     const props = { sessionId: S1, reader, links: [link(S1, 'u1')] };
@@ -270,6 +274,18 @@ describe('turn links', () => {
     // Nothing to go back to in this conversation; the jump came from another.
     expect(latestButton()).toBe('latest');
     expect(store.get(pendingTurnLinkAtom)).toBeNull();
+  });
+
+  it('leave a pending turn to the destination while a kept-mounted copy of it is hidden', () => {
+    const reader = createReader();
+    store.set(pendingTurnLinkAtom, { sessionId: S2, turnId: 'u3' });
+
+    render({ sessionId: S2, reader, links: [], isVisible: false });
+    expect(reader.readsAt()).toBe('latest');
+    expect(store.get(pendingTurnLinkAtom)).not.toBeNull();
+
+    render({ sessionId: S2, reader, links: [], isVisible: true });
+    expect(reader.readsAt()).toBe('u3');
   });
 
   it('drop a pending turn when a later link opens a conversation without one', () => {

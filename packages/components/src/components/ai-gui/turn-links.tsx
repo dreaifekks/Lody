@@ -7,12 +7,12 @@
  * a link into another conversation opens it first and scrolls once it shows.
  * Before each jump inside a conversation the reading position is kept, and the
  * scroll-to-latest button unwinds those jumps, newest first, before it goes to
- * the end. Reaching the end, sending and switching conversations forget them.
+ * the end. Reaching the end, sending and leaving the conversation forget them.
  * `view.tsx` only wires this in.
  */
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { atom, useAtomValue, useStore } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
 import * as stylex from '@stylexjs/stylex';
 import { useTranslation } from 'react-i18next';
 import { colors } from '@lody/ui/tokens/colors.stylex';
@@ -20,14 +20,10 @@ import type { SessionId } from '@lody/shared';
 import type { SessionLink } from '@lody/shared/session-link';
 import { useStableCallback } from '@/hooks/use-stable-callback';
 import type { ReadingPosition } from '@/lib/conversation-scroll/types';
+import { pendingTurnLinkAtom, type TurnLinkTarget } from '@/lib/pending-turn-link';
 import { toast } from '@/lib/toast';
 import type { ConversationListHandle } from './conversation-list/types';
 import { useSessionLinkNavigator } from './session-link-context';
-
-type TurnTarget = { readonly sessionId: string; readonly turnId: string };
-
-/** A turn link that opened another conversation; that conversation takes it once shown. */
-export const pendingTurnLinkAtom = atom<TurnTarget | null>(null);
 
 type TurnLinkScope = { readonly sessionId: string; readonly open: (turnId: string) => void };
 const TurnLinkScopeContext = createContext<TurnLinkScope | null>(null);
@@ -74,6 +70,7 @@ export function useTurnLinkNavigation({
   scrollRowToTop,
   scrollToBottom,
   revealed,
+  isVisible,
   isSticky,
   latestSendId,
 }: {
@@ -85,6 +82,8 @@ export function useTurnLinkNavigation({
   scrollToBottom: () => void;
   /** The list has restored its first position; a jump before that is overwritten. */
   revealed: boolean;
+  /** Hosts keep a conversation mounted behind another tab; hidden, it is left. */
+  isVisible: boolean;
   isSticky: boolean;
   /** The newest message this reader is sending. */
   latestSendId: string | undefined;
@@ -93,7 +92,7 @@ export function useTurnLinkNavigation({
   const store = useStore();
   // Keyed by conversation, so a switch starts with nothing to go back to.
   const [returns, setReturns] = useState<Returns>(() => ({ sessionId, stack: NO_RETURNS }));
-  const [highlight, setHighlight] = useState<(TurnTarget & { startedAt: number }) | null>(null);
+  const [highlight, setHighlight] = useState<(TurnLinkTarget & { startedAt: number }) | null>(null);
   const stack = returns.sessionId === sessionId ? returns.stack : NO_RETURNS;
 
   const open = useStableCallback((turnId: string, fromHere: boolean) => {
@@ -115,20 +114,21 @@ export function useTurnLinkNavigation({
     )
   );
   // Following the end again (scrolled there, or a sent message took it) ends
-  // the excursion; so does a send that leaves the reader where they are.
+  // the excursion, as does leaving for another tab; so does a send that
+  // leaves the reader where they are.
   useEffect(() => {
-    if (isSticky) forget();
-  }, [forget, isSticky]);
+    if (isSticky || !isVisible) forget();
+  }, [forget, isSticky, isVisible]);
   useEffect(() => {
     if (latestSendId !== undefined) forget();
   }, [forget, latestSendId]);
 
   const pending = useAtomValue(pendingTurnLinkAtom);
   useEffect(() => {
-    if (!revealed || pending?.sessionId !== sessionId) return;
+    if (!revealed || !isVisible || pending?.sessionId !== sessionId) return;
     store.set(pendingTurnLinkAtom, null);
     open(pending.turnId, false);
-  }, [open, pending, revealed, sessionId, store]);
+  }, [isVisible, open, pending, revealed, sessionId, store]);
 
   const goBackOrToLatest = useStableCallback(() => {
     const position = stack.at(-1);
