@@ -23,9 +23,8 @@ import {
 } from './cli-native-deps.mjs'
 import { probeRoostRuntime } from './roost-runtime-probe.mjs'
 
-const publishedSource = path.resolve(
-  import.meta.dirname,
-  '../../cli/node_modules/@loro-dev/roost-node'
+const publishedSource = await realpath(
+  path.resolve(import.meta.dirname, '../../cli/node_modules/@loro-dev/roost-node')
 )
 
 async function postinstallFixture(directory, { installerExit = 0, sparkleExit = 0 } = {}) {
