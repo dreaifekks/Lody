@@ -3014,6 +3014,8 @@
   "sessions.route.loadingDescription": "Preparing conversation history.",
   "sessions.route.loadingTitle": "Loading session",
   "sessions.scrollToLatest": "Scroll to latest message",
+  "sessions.turnLink.back": "Back to where you were",
+  "sessions.turnLink.missing": "That turn is no longer in this conversation.",
   "sessions.searchNoResults": "0 / 0",
   "sessions.searchResultPosition": "{{current}} / {{total}}",
   "sessions.selectIde": "Select IDE",

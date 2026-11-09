@@ -61,6 +61,30 @@ describe('session resource links', () => {
     }
   );
 
+  it('carries a turn of the conversation, colons and all, and tools ignore it', () => {
+    const turnId = 'assistant:inbox:completion:12';
+    const link = buildSessionLink({ sessionId: 'Ab_c', turnId });
+    expect(link).toBe('lody://session/Ab_c?turn=assistant:inbox:completion:12');
+    expect(parseSessionLink(link)).toEqual({ sessionId: 'Ab_c', turnId });
+    expect(parseSessionLink(`lody://session/Ab_c?workspace=ws_1&turn=${turnId}`)).toEqual({
+      sessionId: 'Ab_c',
+      workspaceId: 'ws_1',
+      turnId,
+    });
+    expect(resolveSessionLinkId(link, 'ws_1')).toBe('Ab_c');
+    expect(normalizeSessionLinksForExport(`See [the review](${link}).`, 'ws_1')).toBe(
+      `See [the review](lody://session/Ab_c?workspace=ws_1&turn=${turnId}).`
+    );
+    for (const rejected of [
+      'lody://session/Ab_c?turn=assistant%3Ainbox',
+      'lody://session/Ab_c?turn=a&turn=b',
+      'lody://session/Ab_c?turn=a/b',
+      'lody://session/Ab_c?turn=',
+    ])
+      expect(parseSessionLink(rejected)).toBeNull();
+    expect(() => buildSessionLink({ sessionId: 'Ab_c', turnId: 'a b' })).toThrow();
+  });
+
   it('retains legacy references and enforces the MCP workspace boundary', () => {
     expect(parseSessionLink('session://Ab_c/')).toEqual({ sessionId: 'Ab_c' });
     expect(resolveSessionLinkId('session://Ab_c', 'ws_1')).toBe('Ab_c');

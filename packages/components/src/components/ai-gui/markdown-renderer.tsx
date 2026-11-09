@@ -25,7 +25,6 @@ import {
   Suspense,
 } from 'react';
 import { createPortal } from 'react-dom';
-import type { SessionId } from '@lody/shared';
 import { useAtomValue } from 'jotai';
 import type { StreamdownProps } from '@lobehub/streamdown';
 import Markdown, {
@@ -41,7 +40,7 @@ import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from 'r
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import remarkMath from 'remark-math';
-import { Check, Copy, MessagesSquare } from 'lucide-react';
+import { Check, Copy, MessageSquareText, MessagesSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { DEFAULT_CONVERSATION_FONT_SIZE, inlineMathEnabledAtom } from '@/atoms/settings';
 import { MonochromeFileIcon } from '@/components/icons/file-icons';
@@ -62,7 +61,8 @@ import {
 } from '@/lib/markdown-single-dollar-math';
 import { cn } from '@/lib/utils';
 import { usePrLinkInterceptor } from './pr-link-context';
-import { parseSessionLinkHref, useSessionLinkNavigator } from './session-link-context';
+import { parseSessionLinkHref } from './session-link-context';
+import { useSessionLinkAction } from './turn-links';
 import {
   parseSessionLink,
   SESSION_LINK_SCHEMES,
@@ -450,20 +450,22 @@ function MarkdownSessionLink({
   children: ReactNode;
   inert: boolean;
 }) {
-  const navigate = useSessionLinkNavigator();
+  const open = useSessionLinkAction(target);
   const sessionId = target.sessionId;
   // Composer mentions label the link `@Title`; the glyph already says "session".
   // A bare URI in prose has only itself for a label, which is a line of noise
   // in a chip; the short id is how a session is named elsewhere in the UI.
   const label = markdownLinkText(children).trim().replace(/^@/u, '');
   const title = (parseSessionLink(label) ? sessionId.slice(0, 8) : label) || sessionId;
+  // Fork: one bubble for a turn (`?turn=`), two for a whole conversation.
+  const Glyph = target.turnId ? MessageSquareText : MessagesSquare;
   const body = (
     <>
-      <MessagesSquare className="h-[0.95em] w-[0.95em] shrink-0 self-center" aria-hidden="true" />
+      <Glyph className="h-[0.95em] w-[0.95em] shrink-0 self-center" aria-hidden="true" />
       <span className="min-w-0 truncate">{title}</span>
     </>
   );
-  if (!navigate || inert) {
+  if (!open || inert) {
     return (
       <span data-session-link={sessionId} title={title} className={SESSION_LINK_CHIP_CLASS_NAME}>
         {body}
@@ -476,13 +478,7 @@ function MarkdownSessionLink({
       data-session-link={sessionId}
       title={title}
       className={cn(SESSION_LINK_CHIP_CLASS_NAME, 'cursor-pointer')}
-      onClick={() =>
-        navigate({
-          ...target,
-          sessionId: sessionId as SessionId,
-          tabSessionId: target.tabSessionId as SessionId | undefined,
-        })
-      }
+      onClick={open}
     >
       {body}
     </button>

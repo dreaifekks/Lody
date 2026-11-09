@@ -520,6 +520,137 @@ describe('commands', () => {
     expectHealthy(sim);
   });
 
+  describe('restoring a reading position (turn-link back)', () => {
+    /** A reader resting mid-conversation, as a turn link finds them. */
+    const reader = () => {
+      const rows = turnRows(
+        200,
+        (i) => 80 + (i % 4) * 30,
+        (i) => 80 + (i % 4) * 30
+      );
+      const sim = new ScrollSim(rows, V);
+      sim.render();
+      sim.settle();
+      sim.task(() => sim.controller.release('wheel-up'));
+      sim.nativeScroll(9_037);
+      sim.settle();
+      const saved = sim.controller.savedIntent();
+      if (saved.kind !== 'read' || saved.anchor.kind !== 'turn') throw new Error('not reading');
+      const line = sim.screenTop(saved.anchor.rowKey);
+      expect(line).not.toBeNull();
+      return { sim, saved, key: saved.anchor.rowKey, line };
+    };
+
+    it('returns to the saved reading line after rows above it grew and hydrated', () => {
+      const { sim, saved, key, line } = reader();
+      sim.task(() => sim.controller.jumpToIndex(170));
+      sim.settle();
+      expect(sim.screenTop('t170')).toBe(0);
+      // While the reader is away, turns above the saved line change size and
+      // one hydrates into several rows.
+      sim.render(
+        expand(
+          sim.rows.map((row, i) => (i > 20 && i < 40 ? { ...row, height: row.height + 45 } : row)),
+          't50',
+          3,
+          90
+        )
+      );
+      sim.settle();
+
+      sim.task(() => sim.controller.restoreReadingPosition(saved));
+      sim.settle();
+      expect(sim.screenTop(key)).toBe(line);
+      expect(sim.controller.mode).toBe('read');
+      expectHealthy(sim);
+    });
+
+    it('glides back and settles on the same line', () => {
+      const { sim, saved, key, line } = reader();
+      sim.reducedMotion = false;
+      sim.task(() => sim.controller.jumpToIndex(20));
+      sim.settle();
+      const away = sim.readScrollTop();
+      sim.task(() => sim.controller.restoreReadingPosition(saved, true));
+      sim.frame();
+      sim.frame();
+      // Mid-glide the reader is between the two places, never on a blank viewport.
+      expect(sim.readScrollTop()).not.toBe(away);
+      expect(sim.screenTop(key)).not.toBe(line);
+      expect(sim.covered()).toBe(true);
+      sim.settle();
+      // A glide ends on fractional offsets; the engine leaves sub-half-pixel gaps alone.
+      expect(Math.abs(sim.screenTop(key)! - line!)).toBeLessThan(0.5);
+      expectHealthy(sim);
+    });
+
+    it('returns a reader who was following to the bottom, following again', () => {
+      const sim = new ScrollSim(
+        turnRows(120, () => 100),
+        V
+      );
+      sim.render();
+      sim.settle();
+      const saved = sim.controller.savedIntent();
+      expect(saved.kind).toBe('follow');
+      sim.task(() => sim.controller.jumpToIndex(30));
+      sim.settle();
+      expect(sim.controller.mode).toBe('read');
+      sim.task(() => sim.controller.restoreReadingPosition(saved, true));
+      sim.settle();
+      expect(sim.controller.mode).toBe('follow');
+      expectHealthy(sim);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6])(
+      'returns to the saved line through a seeded mix of jumps, scrolling and layout changes (seed %i)',
+      (seed) => {
+        let state = seed * 0x9e3779b1;
+        const random = () => {
+          // mulberry32: deterministic per seed.
+          state = (state + 0x6d2b79f5) | 0;
+          let t = Math.imul(state ^ (state >>> 15), 1 | state);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+        };
+        const { sim, saved, key, line } = reader();
+        sim.reducedMotion = false;
+        const anchorIndex = sim.rows.findIndex((row) => row.key === key);
+        for (let step = 0; step < 12; step += 1) {
+          const roll = random();
+          if (roll < 0.3) {
+            sim.task(() => sim.controller.jumpToIndex(Math.floor(random() * sim.rows.length)));
+          } else if (roll < 0.5) {
+            sim.task(() => sim.controller.release('wheel-up'));
+            sim.nativeScroll(Math.floor(random() * sim.maxTop()));
+          } else if (roll < 0.8) {
+            // Rows above the saved line change size (never the saved row itself).
+            const index = Math.floor(random() * anchorIndex);
+            sim.render(
+              sim.rows.map((row, i) =>
+                i === index ? { ...row, height: 40 + Math.floor(random() * 300) } : row
+              )
+            );
+          } else {
+            const below =
+              anchorIndex + 1 + Math.floor(random() * (sim.rows.length - anchorIndex - 1));
+            const target = sim.rows[below];
+            if (target && !target.key.includes('.')) {
+              sim.render(expand(sim.rows, target.key, 2, 70 + Math.floor(random() * 90)));
+            }
+          }
+          sim.settle();
+          expect(sim.covered()).toBe(true);
+        }
+        sim.task(() => sim.controller.restoreReadingPosition(saved, random() < 0.5));
+        sim.settle();
+        // A glide ends on fractional offsets; the engine leaves sub-half-pixel gaps alone.
+        expect(Math.abs(sim.screenTop(key)! - line!)).toBeLessThan(0.5);
+        expectHealthy(sim);
+      }
+    );
+  });
+
   it('holds a sent message below 100px of context with reply room, then follows once the reply fills it', () => {
     let rows = turnRows(30, () => 100);
     const sim = new ScrollSim(rows, V);

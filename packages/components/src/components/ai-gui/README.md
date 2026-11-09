@@ -94,6 +94,14 @@ the reasoning behind those rules.
   shared `session-link-export`, preserving code examples and stored history.
   Only a known source workspace supplies a missing ID; anonymous readers do not
   borrow the viewer's workspace.
+- Fork: `?turn=<turnId>` on such a link names one turn (`turn-links.tsx`). In the
+  conversation on screen it jumps there like the outline and flashes the turn's
+  rows; into another conversation it opens it first and jumps once its position is
+  restored. Each in-conversation jump keeps the reading position, and the
+  scroll-to-latest button unwinds them newest first before following the end
+  again; following the end, sending and switching conversations forget them. A
+  turn that is gone is not scrolled to and a toast says so. Builds without this
+  parse the link as an ordinary one, so readers see only its text.
 - Conversation file links use `agent-file-link-context.ts`: absolute paths render
   immediately, while relative candidates keep their original text/code until the
   owning Session's file index confirms an exact path. The conversation boundary

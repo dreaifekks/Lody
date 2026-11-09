@@ -7,6 +7,7 @@ import {
   type Intent,
   type MovementClass,
   type ReadingAnchor,
+  type ReadingPosition,
   type ScrollSnapshot,
   type StickyMode,
 } from './types';
@@ -572,6 +573,29 @@ export class ScrollController {
     this.run('jump', true);
   }
 
+  /**
+   * Fork: go back to a reading position taken from `savedIntent()` before a
+   * turn-link jump. The anchor resolves through `anchor.ts`, so rows that grew,
+   * hydrated or regrouped since then do not move the destination.
+   */
+  restoreReadingPosition(position: ReadingPosition, smooth = false): void {
+    if (this.disposed) return;
+    if (position.kind === 'follow') {
+      this.scrollToBottom();
+      return;
+    }
+    this.resetReaderInput();
+    this.cancelGlide();
+    this.setIntent(position);
+    const resolved = resolveAnchor(this.rows, position.anchor, this.geometry);
+    const row = resolved ? this.rows[resolved.index] : undefined;
+    if (smooth && resolved && row && !this.host.prefersReducedMotion()) {
+      this.startGlide(row.key, position.screenY - resolved.offsetPx, position);
+      return;
+    }
+    this.run('restore', true);
+  }
+
   /** Hold a just-sent row below the previous message's tail, with reply room. */
   anchorToRow(index: number): void {
     if (this.disposed) return;
@@ -683,7 +707,7 @@ export class ScrollController {
   }
 
   /** The intent to persist: a sent message is saved as following, as today. */
-  savedIntent(): Extract<Intent, { kind: 'follow' | 'read' }> {
+  savedIntent(): ReadingPosition {
     return this.intent.kind === 'read' ? this.intent : { kind: 'follow' };
   }
 

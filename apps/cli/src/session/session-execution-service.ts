@@ -5511,7 +5511,13 @@ export class SessionExecutionService {
                 );
                 promptBlocks = [
                   ...promptBlocks,
-                  { type: 'text', text: batchPreview(inboxBatch, members) },
+                  {
+                    type: 'text',
+                    text: batchPreview(inboxBatch, members, {
+                      sessionId: inboxBatch.sessionId,
+                      turnId: runtime.turnId,
+                    }),
+                  },
                 ];
               }
               runtime.inboxOwner?.register(sessionExecutionResource(activeSession));

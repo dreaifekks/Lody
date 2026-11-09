@@ -59,6 +59,9 @@ export type Intent =
 
 export type StickyMode = 'follow' | 'read' | 'sent';
 
+/** Where a reader is, as saved and restored: a sent message is saved as following. */
+export type ReadingPosition = Extract<Intent, { kind: 'follow' | 'read' }>;
+
 /** One cycle's committed view of the scroller (I2). */
 export interface ScrollSnapshot {
   sourceGeneration: number;

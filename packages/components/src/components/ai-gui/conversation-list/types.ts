@@ -1,6 +1,6 @@
 import type { ComponentType, CSSProperties, ReactElement, ReactNode, Ref, RefObject } from 'react';
 import type { SessionId } from '@lody/shared';
-import type { EngineRow } from '@/lib/conversation-scroll/types';
+import type { EngineRow, ReadingPosition } from '@/lib/conversation-scroll/types';
 
 /** Props the list passes to the component that wraps each row. */
 export interface ConversationRowComponentProps {
@@ -39,6 +39,10 @@ export interface ConversationListHandle {
   anchorToRow(index: number): void;
   /** The held row's index after rows above it changed; negative when it is gone. */
   retargetAnchor(index: number): void;
+  /** Fork: where the reader is, to come back to after a turn-link jump. */
+  readingPosition(): ReadingPosition;
+  /** Fork: go back to a position from `readingPosition()`. */
+  restoreReadingPosition(position: ReadingPosition, options: { smooth: boolean }): void;
 }
 
 export interface ConversationScrollerState {
