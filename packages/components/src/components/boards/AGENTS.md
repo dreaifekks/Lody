@@ -42,8 +42,8 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   without remounting or persisting the split.
 - The Files tab is the session file tree (`FileTreeProviderView`) over
   `BoardDirectoryFileProvider`, with shared notes above it. Markdown/HTML open in
-  the article window if available; other tree opens stay in Files, conversation
-  links in viewer tabs carrying `BoardFilePreview`. Current-workspace Board paths
+  the article window if available; other files stay in Files, or open from
+  conversations in `BoardFilePreview` viewer tabs. Current-workspace Board paths
   use member resources, never the session provider.
 - `BoardSidePanel`/`BoardSettings` key state by workspace and Board id. Settings
   open from the conversation header gear, never the panel.
