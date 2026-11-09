@@ -3,7 +3,15 @@ import * as stylex from '@stylexjs/stylex';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { Download } from 'lucide-react';
 import { atom, useAtomValue } from 'jotai';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   getMachineFlockLocalProjects,
@@ -55,6 +63,7 @@ import {
   type BoardDocumentLinksValue,
 } from './document-links';
 import type { FileTarget } from '@/lib/document-link-open';
+import { isBoardArticlePath } from './board-article-dialog';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
 import {
@@ -242,8 +251,12 @@ function BoardFiles({ board }: { board: BoardMeta }) {
   const [pages, setPages] = useState<readonly BoardFilesPage[]>([]);
   const page = pages.at(-1);
   const back = () => setPages((current) => current.slice(0, -1));
+  // Markdown and HTML read in the article window where the page has one.
+  const openArticle = useContext(BoardDocumentLinksContext)?.openArticle;
   const open = (target: FileTarget) =>
-    setPages((current) => [...current, { kind: 'file', target }]);
+    openArticle && isBoardArticlePath(target.path)
+      ? openArticle(target)
+      : setPages((current) => [...current, { kind: 'file', target }]);
   const { document, save, error } = useBoardDocument(board.id);
   const { provider, truncated } = useBoardDirectoryFileProvider(board);
   const download = useBoardFileDownload(board, 'files');
@@ -304,14 +317,13 @@ function BoardFiles({ board }: { board: BoardMeta }) {
       truncated={truncated}
       onOpenFile={(filePath) => {
         const entry = provider?.entry(filePath);
-        if (entry)
-          setPages([
-            {
-              kind: 'file',
-              target: { source: { kind: 'board', boardId: board.id }, path: `files/${entry.path}` },
-              modifiedAtMs: entry.modifiedAtMs,
-            },
-          ]);
+        if (!entry) return;
+        const target = {
+          source: { kind: 'board', boardId: board.id },
+          path: `files/${entry.path}`,
+        } as const;
+        if (openArticle && isBoardArticlePath(entry.path)) openArticle(target);
+        else setPages([{ kind: 'file', target, modifiedAtMs: entry.modifiedAtMs }]);
       }}
       viewStateKey={`board-files:${board.id}`}
       {...(menuItems ? { menuItems } : {})}

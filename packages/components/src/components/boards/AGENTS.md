@@ -32,8 +32,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   confirmation. Board glyphs stay in headers/page tabs; Back (`boardEntrySearch`)
   never shows on coordinators. Full-page parent links use palette labels and `boardMemberEntrySearch`.
 - Panel threads use `SessionChatInterface`; workspace and file viewers belong to
-  the thread. Board files keep their authorized preview. Never use `side-session:`
-  ids: closing one deletes the Session.
+  the thread. Never use `side-session:` ids: closing one deletes the Session.
 - `useBoardSessionNavigation` scopes cards, relations, breadcrumbs, rows and palette:
   only members open in-panel; outside, narrow and expanded targets use pages.
   Page-bound resource links retain original exact-tab deep-link path.
@@ -42,9 +41,10 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
 - Board entries reset to half and half with `layoutResetKey` (Board id + entry),
   without remounting or persisting the split.
 - The Files tab is the session file tree (`FileTreeProviderView`) over
-  `BoardDirectoryFileProvider`, with shared notes above it. Tree opens stay inside
-  Files; conversation links use closeable viewer tabs carrying `BoardFilePreview`.
-  Current-workspace Board paths use member resources, never the session provider.
+  `BoardDirectoryFileProvider`, with shared notes above it. Markdown/HTML open in
+  the article window if available; other tree opens stay in Files, conversation
+  links in viewer tabs carrying `BoardFilePreview`. Current-workspace Board paths
+  use member resources, never the session provider.
 - `BoardSidePanel`/`BoardSettings` key state by workspace and Board id. Settings
   open from the conversation header gear, never the panel.
 - The Board directory `<data dir>/boards/<ws>/<board>/{files,memory}/` lives on
