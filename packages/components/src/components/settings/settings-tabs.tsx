@@ -2,6 +2,8 @@ import type { LucideIcon } from 'lucide-react';
 import type { PlatformCapability } from '@lody/platform';
 import { isLocalAppPlatform, useAppCapabilityCheck } from '../../lib/app-platform';
 import { isElectronRenderer } from '../../lib/electron';
+import { useAtomValue } from 'jotai';
+import { lodyAgentFeatureEnabledAtom } from '../../atoms/settings';
 import {
   Brain,
   Bot,
@@ -19,6 +21,7 @@ import {
   FileText,
   SlidersHorizontal,
   Share2,
+  Sparkles,
   UserRound,
   UserRoundCog,
 } from 'lucide-react';
@@ -35,6 +38,7 @@ export type SettingsTabId =
   | 'people'
   | 'machines'
   | 'agents'
+  | 'lody-agent'
   | 'memory'
   | 'agent-roles'
   | 'prompt-shortcuts'
@@ -56,6 +60,7 @@ export type SettingsPath =
   | '/$workspaceName/settings/people'
   | '/$workspaceName/settings/machines'
   | '/$workspaceName/settings/agents'
+  | '/$workspaceName/settings/lody-agent'
   | '/$workspaceName/settings/memory'
   | '/$workspaceName/settings/agent-roles'
   | '/$workspaceName/settings/prompt-shortcuts'
@@ -88,6 +93,8 @@ export type SettingsTabConfig = {
    * account grants, and this is what the absence of one makes possible.
    */
   localDesktopOnly?: boolean;
+  /** Shown only while Developer mode and the Lody Agent beta are both on. */
+  lodyAgent?: boolean;
   path: SettingsPath;
 };
 
@@ -153,6 +160,15 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     descriptionKey: 'settings.categories.agents.description',
     icon: Bot,
     path: '/$workspaceName/settings/agents',
+  },
+  {
+    id: 'lody-agent',
+    section: 'workspace',
+    labelKey: 'settings.tabs.lodyAgent',
+    descriptionKey: 'settings.categories.lodyAgent.description',
+    icon: Sparkles,
+    lodyAgent: true,
+    path: '/$workspaceName/settings/lody-agent',
   },
   {
     // Beside Agents on purpose: a provider says how an agent starts, a Role
@@ -256,6 +272,7 @@ export function useVisibleSettingsTabs(options?: {
   includeMultiMemberOnly?: boolean;
 }): SettingsTabConfig[] {
   const hasCapability = useAppCapabilityCheck();
+  const lodyAgentEnabled = useAtomValue(lodyAgentFeatureEnabledAtom);
   const includeMultiMemberOnly = options?.includeMultiMemberOnly ?? true;
   const localDesktop = isLocalAppPlatform() && isElectronRenderer();
   return SETTINGS_TAB_CONFIGS.filter(
@@ -265,7 +282,8 @@ export function useVisibleSettingsTabs(options?: {
           ? hasCapability(tab.capability)
           : tab.capability.some(hasCapability))) &&
       (!tab.multiMemberOnly || includeMultiMemberOnly) &&
-      (!tab.localDesktopOnly || localDesktop)
+      (!tab.localDesktopOnly || localDesktop) &&
+      (!tab.lodyAgent || lodyAgentEnabled)
   );
 }
 
@@ -284,6 +302,7 @@ export function getActiveSettingsTabId(pathname: string): SettingsTabId | null {
     ['/settings/devices', 'machines'],
     ['/settings/agents', 'agents'],
     ['/settings/agent-config', 'agents'],
+    ['/settings/lody-agent', 'lody-agent'],
     ['/settings/memory', 'memory'],
     ['/settings/agent-roles', 'agent-roles'],
     ['/settings/prompt-shortcuts', 'prompt-shortcuts'],

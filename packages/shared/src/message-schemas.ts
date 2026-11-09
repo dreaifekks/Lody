@@ -66,7 +66,6 @@ import {
   ACP_AUTH_FORM_FIELD_MAX_COUNT,
   ACP_AUTH_ID_MAX_LENGTH,
   ACP_AUTH_LABEL_MAX_LENGTH,
-  ACP_AUTH_METHOD_MAX_COUNT,
   ACP_AUTH_SELECT_OPTION_MAX_COUNT,
   ACP_AUTH_TEXT_MAX_LENGTH,
   ACP_AUTHORIZATION_URL_MAX_LENGTH,
@@ -1374,10 +1373,7 @@ const AcpCapabilityCacheEntrySchema = z
           .strict()
       )
       .optional(),
-    authMethods: z
-      .array(MachineAcpAuthMethodSummarySchema)
-      .max(ACP_AUTH_METHOD_MAX_COUNT)
-      .optional(),
+    authMethods: z.array(MachineAcpAuthMethodSummarySchema).optional(),
     sessionFork: z.boolean().optional(),
     acknowledgedSteer: z.boolean().optional(),
     sessionTitle: z.boolean().optional(),
@@ -1537,10 +1533,7 @@ export const MachineAcpCapabilitiesRefreshResponseSchema = z
       )
       .optional(),
     authRequired: z.boolean().optional(),
-    authMethods: z
-      .array(MachineAcpAuthMethodSummarySchema)
-      .max(ACP_AUTH_METHOD_MAX_COUNT)
-      .optional(),
+    authMethods: z.array(MachineAcpAuthMethodSummarySchema).optional(),
     error: SharedOptionalStringSchema,
   })
   .strict();
@@ -1593,10 +1586,7 @@ export const MachineAcpAuthenticateResponseSchema = z
     ]),
     capabilitiesRefreshed: z.boolean().optional(),
     authRequired: z.boolean().optional(),
-    authMethods: z
-      .array(MachineAcpAuthMethodSummarySchema)
-      .max(ACP_AUTH_METHOD_MAX_COUNT)
-      .optional(),
+    authMethods: z.array(MachineAcpAuthMethodSummarySchema).optional(),
     error: SharedOptionalStringSchema,
   })
   .strict();
@@ -1618,10 +1608,7 @@ export const MachineAcpAuthenticationProgressMessageSchema = z
       'cancelled',
       'error',
     ]),
-    authMethods: z
-      .array(MachineAcpAuthMethodSummarySchema)
-      .max(ACP_AUTH_METHOD_MAX_COUNT)
-      .optional(),
+    authMethods: z.array(MachineAcpAuthMethodSummarySchema).optional(),
     interactionId: z.string().trim().min(1).max(ACP_AUTH_ID_MAX_LENGTH).optional(),
     message: z.string().max(ACP_AUTH_TEXT_MAX_LENGTH).optional(),
     form: MachineAcpAuthenticationFormSchema.optional(),
@@ -4195,6 +4182,8 @@ export const ChatFailedMetaSchema = z.object({
   reason: ChatFailedReasonSchema,
   code: ChatFailedCodeSchema.optional(),
   message: SharedOptionalStringSchema,
+  resetAt: SharedOptionalStringSchema,
+  resetAtEpochSeconds: z.number().int().positive().optional(),
 });
 
 /**
@@ -4202,18 +4191,37 @@ export const ChatFailedMetaSchema = z.object({
  * written by older or newer clients still yield their reason and message.
  */
 export function readChatFailureNotice(
-  entries: ReadonlyArray<{ role?: string; items?: ReadonlyArray<unknown> }>
-): { reason?: string; message?: string } | undefined {
+  entries: ReadonlyArray<{ role?: string; timestamp?: string; items?: ReadonlyArray<unknown> }>
+): { reason?: string; message?: string; at?: string; resetAt?: string } | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry?.role !== 'system' || !Array.isArray(entry.items)) continue;
     for (const item of entry.items as Array<{ type?: unknown; name?: unknown; meta?: unknown }>) {
       if (item?.type !== 'system_notice' || item.name !== 'chat_failed') continue;
-      const meta = (item.meta ?? {}) as { reason?: unknown; message?: unknown };
+      const meta = (item.meta ?? {}) as {
+        reason?: unknown;
+        message?: unknown;
+        resetAt?: unknown;
+        resetAtEpochSeconds?: unknown;
+      };
       const message = typeof meta.message === 'string' ? meta.message.trim() : '';
+      const explicitReset = typeof meta.resetAt === 'string' ? meta.resetAt.trim() : '';
+      const resetAtEpochSeconds =
+        typeof meta.resetAtEpochSeconds === 'number' &&
+        Number.isFinite(meta.resetAtEpochSeconds) &&
+        meta.resetAtEpochSeconds > 0
+          ? meta.resetAtEpochSeconds
+          : undefined;
+      const resetAt =
+        explicitReset ||
+        (resetAtEpochSeconds !== undefined
+          ? new Date(resetAtEpochSeconds * 1000).toISOString()
+          : '');
       return {
         ...(typeof meta.reason === 'string' ? { reason: meta.reason } : {}),
         ...(message ? { message } : {}),
+        ...(typeof entry.timestamp === 'string' ? { at: entry.timestamp } : {}),
+        ...(resetAt ? { resetAt } : {}),
       };
     }
   }
@@ -4266,6 +4274,7 @@ export const NonSystemNoticeMessageContentSchema = z.discriminatedUnion('type', 
   z.object({
     type: z.literal('text'),
     text: SharedStringSchema,
+    messagePhase: z.enum(['commentary', 'final_answer']).optional(),
     spans: z.array(MessageTextSpanSchema).optional(),
   }),
   SubagentTaskPayloadSchema.extend({
@@ -4281,6 +4290,7 @@ export const NonSystemNoticeMessageContentSchema = z.discriminatedUnion('type', 
               ...SubagentItemIdentityShape,
               type: z.literal('text'),
               text: SharedStringSchema,
+              messagePhase: z.enum(['commentary', 'final_answer']).optional(),
               spans: z.array(MessageTextSpanSchema).optional(),
             }),
             z.object({

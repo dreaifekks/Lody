@@ -251,7 +251,10 @@ const boundCompletionFreeText = (
   const boundError = (error: LodyError): LodyError => {
     const bounded = truncateUtf8(error.message, maxBytesPerText);
     omittedBytes += bounded.omittedBytes;
-    return { ...error, message: bounded.value };
+    if (error.detail === undefined) return { ...error, message: bounded.value };
+    const boundedDetail = truncateUtf8(error.detail, maxBytesPerText);
+    omittedBytes += boundedDetail.omittedBytes;
+    return { ...error, message: bounded.value, detail: boundedDetail.value };
   };
   const boundResult = (result: LodyOperationResult) => ({
     ...result,

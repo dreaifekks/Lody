@@ -1,5 +1,9 @@
 import { findLiveActivityPermissionAlertCandidate } from '@lody/shared';
 import { SESSION_IMAGE_ALLOWED_MIME_TYPES, SESSION_IMAGE_MAX_SIZE_BYTES } from '@lody/shared';
+import type {
+  SorbetCustomProvider,
+  SorbetCustomProviderInput,
+} from '@lody/shared/local-machine-rpc';
 import { AndroidEmulatorService } from '@/android-emulator/service';
 import { readLatestUserId, summarizeHistoryQuery } from '@lody/shared/session-data';
 import {
@@ -130,6 +134,7 @@ import {
   type ChatFailedReason,
   type ProjectRef,
   type SessionPreparationCancelSpec,
+  getProjectRefBranch,
   resolveBaseBranchPreference,
   MachineStatusRequestValidated,
   MachinePingRequestValidated,
@@ -148,6 +153,11 @@ import {
   type LocalProjectControlErrorCode,
   type LocalProjectControlRequest,
   type LocalProjectControlResponse,
+  E2EE_ACP_INTERACTION_PROTOCOL_VERSION,
+  SORBET_CREDENTIALS_PROTOCOL_VERSION,
+  SORBET_CREDENTIALS_REMOTE_PROTOCOL_VERSION,
+  SORBET_PROVIDERS_PROTOCOL_VERSION,
+  SORBET_PROVIDERS_REMOTE_PROTOCOL_VERSION,
   type LocalMachineRpcRequestValidated,
   type LocalMachineRpcResponse,
   type LocalMachineRpcResult,
@@ -669,6 +679,27 @@ function formatLiveActivityUpdatedAt(value: number, nowMs: number): string {
 }
 
 export interface MessageHandlerConfig {
+  sorbetCredentials?: {
+    list: (
+      configId: AgentConfigId,
+      signal?: AbortSignal
+    ) => Promise<Array<{ providerId: string; type: string }>>;
+    logout: (configId: AgentConfigId, providerId: string, signal?: AbortSignal) => Promise<void>;
+    listProviders: (
+      configId: AgentConfigId,
+      signal?: AbortSignal
+    ) => Promise<SorbetCustomProvider[]>;
+    createProvider: (
+      configId: AgentConfigId,
+      provider: SorbetCustomProviderInput,
+      signal?: AbortSignal
+    ) => Promise<SorbetCustomProvider>;
+    deleteProvider: (
+      configId: AgentConfigId,
+      providerId: string,
+      signal?: AbortSignal
+    ) => Promise<void>;
+  };
   remoteAutomation?: {
     handshake: () => Promise<import('@lody/shared/automations').RemoteAutomationHandshake>;
     control: (input: {
@@ -819,6 +850,11 @@ function isImageGenerationTerminalStatus(status: string): boolean {
 export class MessageHandler {
   private sessionManager: SessionManager;
   private logger: Logger;
+  private acpInteractionOwner?: Promise<
+    ReturnType<typeof import('./e2ee/acp-interaction-owner').createAcpInteractionOwner>
+  >;
+  private acpInteractionStopping = false;
+
   private machineId: MachineId;
   private voiceHostInstance: VoiceHost | null = null;
   private token: string;
@@ -943,6 +979,7 @@ export class MessageHandler {
   private executionService: SessionExecutionService;
   /** Encrypted workspaces only: claims, derivation origins and agent-control grants. */
   private readonly encryptedExecution?: EncryptedAgentExecution;
+  private readonly sorbetCredentials?: MessageHandlerConfig['sorbetCredentials'];
   private providerSetupManager: ProviderSetupManager;
   private previewService: PreviewService;
   private iosSimulatorService: IosSimulatorService;
@@ -997,6 +1034,8 @@ export class MessageHandler {
   private filePreviewService: FilePreviewService;
   private encryptedFileReader?: FilePreviewService;
   private encryptedCodeCollabReader?: CodeCollabV2Service;
+  private diffBlobReader!: CodeCollabV2Service;
+  private diffBlobStoreReader?: CodeCollabV2DiffStore;
 
   /**
    * Get a logger with session context. Caches loggers per session for efficiency.
@@ -1017,7 +1056,17 @@ export class MessageHandler {
     this.store.get(sessionId).lastActivityMs = Date.now();
   }
 
-  private readonly preferredBaseBranch = (process.env.LODY_BASE_BRANCH || 'main').trim() || 'main';
+  /** Operator override only; Git diff bases otherwise use the repository default. */
+  private readonly configuredBaseBranch = process.env.LODY_BASE_BRANCH?.trim() || undefined;
+
+  private readonly preferredBaseBranch = this.configuredBaseBranch ?? 'main';
+
+  /** Unlike `resolveGitHubProjectBranch`, never assumes `main` for a missing base. */
+  private resolveDiffBaseBranch(meta: SessionMeta | undefined): string | undefined {
+    return (
+      meta?.baseBranch?.trim() || getProjectRefBranch(meta?.project) || this.configuredBaseBranch
+    );
+  }
 
   private resolveGitHubProjectBranch(
     meta: SessionMeta | undefined,
@@ -1314,10 +1363,13 @@ export class MessageHandler {
       const backend = await this.getSessionBackend(sessionDoc);
       const meta = await backend.getMetaState();
       if (!meta) return;
-      if (meta.cliType !== 'builtin' || !isBuiltinAgentType(meta.agentType)) {
-        return;
-      }
-      const cliType = meta.agentType;
+      const cliType =
+        meta.cliType === 'custom'
+          ? 'custom'
+          : meta.cliType === 'builtin' && isBuiltinAgentType(meta.agentType)
+            ? meta.agentType
+            : null;
+      if (!cliType) return;
       const latestAssistant = await backend.readLatestTurn('assistant');
 
       let userId = latestAssistant?.userId;
@@ -2792,7 +2844,7 @@ export class MessageHandler {
 
     let access: Awaited<ReturnType<CloudPort['access']['verifyMachineAccess']>>;
     try {
-      access = await this.cloudPort.access.verifyMachineAccess({
+      access = await this.verifyRequesterMachineAccess({
         workspaceId: this.workspaceId,
         machineId: this.machineId,
         requesterUserId: args.requestedByUserId,
@@ -2839,6 +2891,32 @@ export class MessageHandler {
     }
   }
 
+  /** Encrypted machine access is decided here, from the verified ledger and sharing policy. */
+  private async verifyRequesterMachineAccess(
+    input: Parameters<CloudPort['access']['verifyMachineAccess']>[0]
+  ): ReturnType<CloudPort['access']['verifyMachineAccess']> {
+    const gate = this.encryptedExecution;
+    if (!gate) return await this.cloudPort.access.verifyMachineAccess(input);
+    return await Effect.runPromise(
+      gate.verifyRequesterAccess(input.requesterUserId, input.localProjectId)
+    );
+  }
+
+  /** See `DaemonWorkspace.checkEncryptedMachineAccess`. */
+  private async checkEncryptedMachineAccess(target: {
+    machineId: string;
+    requesterUserId: string;
+    localProjectId?: string;
+  }) {
+    const gate = this.encryptedExecution;
+    if (!gate) throw new Error('e2ee_access_unavailable');
+    return await Effect.runPromise(
+      target.machineId === this.machineId
+        ? gate.verifyRequesterAccess(target.requesterUserId, target.localProjectId)
+        : gate.verifyMachineTarget(target.requesterUserId, target.machineId)
+    );
+  }
+
   private async verifyMachineAccess(args: {
     requesterUserId: string;
     sessionId: SessionId;
@@ -2855,7 +2933,7 @@ export class MessageHandler {
       return { outcome: 'allowed' };
     }
     try {
-      const access = await this.cloudPort.access.verifyMachineAccess({
+      const access = await this.verifyRequesterMachineAccess({
         workspaceId: this.workspaceId,
         machineId: this.machineId,
         requesterUserId: args.requesterUserId,
@@ -3180,6 +3258,7 @@ export class MessageHandler {
     config: MessageHandlerConfig
   ) {
     this.sessionManager = sessionManager;
+    this.sorbetCredentials = config.sorbetCredentials;
     this.encryptedAttachments = config.encryptedWorkspace === true;
     // Create a child logger with workspace context for file logging
     this.logger = logger.child({
@@ -3251,6 +3330,8 @@ export class MessageHandler {
           fileIndex: state.fileIndex,
           updatedAtMs: state.updatedAtMs,
           reconcileRemote: state.reconcileRemote,
+          resetDiffGenerations: state.resetDiffGenerations,
+          bumpDiffPaths: state.bumpDiffPaths,
         });
         state.signal?.throwIfAborted();
         if (state.persistAllChangesDiffStats && state.allChangesDiffStats) {
@@ -3323,11 +3404,14 @@ export class MessageHandler {
       // boundary protects nothing there. Hosted requests keep it.
       ...(this.cloudPort.kind === 'local' ? { pathPolicy: { allowArbitraryPaths: true } } : {}),
     });
+    this.diffBlobStoreReader = new CodeCollabV2DiffStore(this.workspaceId, { readOnly: true });
+    this.diffBlobReader = new CodeCollabV2Service({
+      diffStore: this.diffBlobStoreReader,
+      readOnly: true,
+      resolveWorkspace: this.resolveEncryptedCodeCollabV2Workspace,
+    });
     if (config.encryptedWorkspace) {
-      this.encryptedCodeCollabReader = new CodeCollabV2Service({
-        readOnly: true,
-        resolveWorkspace: this.resolveEncryptedCodeCollabV2Workspace,
-      });
+      this.encryptedCodeCollabReader = this.diffBlobReader;
       this.encryptedFileReader = new FilePreviewService({
         allowGitDiscovery: false,
         canDownloadLargeFiles,
@@ -3350,7 +3434,7 @@ export class MessageHandler {
       logger: this.logger,
       workspaceDocument: this.workspaceDocument,
       workspaceId: this.workspaceId,
-      preferredBaseBranch: this.preferredBaseBranch,
+      preferredBaseBranch: this.configuredBaseBranch,
       prAssociation: this.cloudPort.prAssociation,
     });
     this.encryptedExecution = config.encryptedWorkspace ? config.encryptedExecution : undefined;
@@ -3627,7 +3711,7 @@ export class MessageHandler {
           isLoroRepoDocDeleted(record) ||
           record.meta.isArchived ||
           record.meta.machineId !== this.machineId ||
-          record.meta.userId !== request.requestedByUserId
+          (!this.encryptedExecution && record.meta.userId !== request.requestedByUserId)
         ) {
           throw new Error('Simulator session access denied.');
         }
@@ -3645,7 +3729,7 @@ export class MessageHandler {
           parent.meta.isArchived ||
           parent.meta.parentSessionId ||
           parent.meta.machineId !== this.machineId ||
-          parent.meta.userId !== request.requestedByUserId
+          (!this.encryptedExecution && parent.meta.userId !== request.requestedByUserId)
         ) {
           throw new Error('Simulator parent session access denied.');
         }
@@ -3939,6 +4023,10 @@ export class MessageHandler {
         openCodeCollabText: async (request) => await codeReader.openText(request),
         refreshCodeCollabText: async (request) => await codeReader.refreshText(request),
         saveCodeCollabText: async (request) => await this.codeCollabV2Service.saveText(request),
+        openCodeCollabDiffManifest: async (request, context) =>
+          await this.diffBlobReader.openDiffManifest(request, context),
+        readCodeCollabBlob: async (request, context) =>
+          await this.diffBlobReader.readBlob(request, context),
         openCodeCollabCurrentDiff: async (request) =>
           await this.codeCollabV2Service.openCurrentDiff(request),
         openCodeCollabAllChangesDiff: async (request) =>
@@ -4010,7 +4098,7 @@ export class MessageHandler {
           });
         },
         probeLocalProjectMember: async ({ localProjectId, requestedByUserId }) => {
-          const access = await this.cloudPort.access.verifyMachineAccess({
+          const access = await this.verifyRequesterMachineAccess({
             workspaceId: this.workspaceId,
             machineId: this.machineId,
             requesterUserId: requestedByUserId,
@@ -4057,6 +4145,16 @@ export class MessageHandler {
       executionService: this.executionService,
       accessPolicy: makeSessionAccessPolicy(this.localWorkspaceCatalog),
       canUseMachine: async (args) => await this.verifyMachineAccess(args),
+      ...(this.encryptedExecution
+        ? {
+            resolveEncryptedRequester: async (intent: {
+              workspaceId: string;
+              sessionId: string;
+              userTurnId: string;
+              inputConfig?: unknown;
+            }) => await Effect.runPromise(this.encryptedExecution!.resolveRequester(intent)),
+          }
+        : {}),
       // P5/D11 snapshot bookkeeping for the watcher's background owner
       // recheck. Only confirmed online verdicts reach this: an allow refreshes
       // the optimistic-allow snapshot (the sole writer of `verifiedAt`), a
@@ -6708,7 +6806,24 @@ export class MessageHandler {
 
   /** What this daemon answers, which is more than what its build could. */
   private describeProtocolCapabilities(): MachineProtocolCapabilities {
-    const capabilities: MachineProtocolCapabilities = getHostMachineProtocolCapabilities();
+    const capabilities: MachineProtocolCapabilities = {
+      ...getHostMachineProtocolCapabilities(),
+      ...(this.encryptedAttachments
+        ? { e2eeAcpInteraction: E2EE_ACP_INTERACTION_PROTOCOL_VERSION }
+        : {}),
+      ...(this.sorbetCredentials
+        ? {
+            sorbetCredentials: SORBET_CREDENTIALS_PROTOCOL_VERSION,
+            sorbetProviders: SORBET_PROVIDERS_PROTOCOL_VERSION,
+            ...(this.encryptedAttachments
+              ? {
+                  sorbetCredentialsRemote: SORBET_CREDENTIALS_REMOTE_PROTOCOL_VERSION,
+                  sorbetProvidersRemote: SORBET_PROVIDERS_REMOTE_PROTOCOL_VERSION,
+                }
+              : {}),
+          }
+        : {}),
+    };
     if (this.cloudPort.remoteAutomation && !this.lanWorkspace)
       capabilities.remoteAutomationControl = 1;
     capabilities[MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice] = REALTIME_VOICE_PROTOCOL_VERSION;
@@ -7284,13 +7399,14 @@ export class MessageHandler {
                 : 'permission_denied',
             message: 'Session file root is unavailable.',
           };
+        const allChangesBaseBranch = this.resolveDiffBaseBranch(ownerMeta);
         return {
           ok: true,
           ownerSessionId,
           workspaceRoot: selected.absolutePath,
           fileRoots,
           projectRun: rootId === 'main' ? ownerMeta?.projectRun : undefined,
-          allChangesBaseBranch: this.resolveGitHubProjectBranch(ownerMeta),
+          ...(allChangesBaseBranch === undefined ? {} : { allChangesBaseBranch }),
         };
       }
       if (resolved.error === 'session_not_found') {
@@ -7507,6 +7623,7 @@ export class MessageHandler {
             ? {
                 classifyEncryptedDerivation: (origin, target) =>
                   this.classifyEncryptedDerivation(origin, target),
+                checkEncryptedMachineAccess: (target) => this.checkEncryptedMachineAccess(target),
               }
             : {}),
         },
@@ -7532,7 +7649,7 @@ export class MessageHandler {
             const activity = await this.readSessionLiveActivity(sessionId);
             return {
               sessionId,
-              machineOnline: true,
+              machinePresence: 'online',
               fresh: true,
               state: live.state,
               observedAt: getServerNow(),
@@ -7604,10 +7721,10 @@ export class MessageHandler {
             ? {
                 remote: {
                   isOnline: async (machineId: MachineId) => {
-                    const online = await this.workspaceDocument
-                      .getOnlineMachineIds({ timeoutMs: 2_000 })
-                      .catch(() => null);
-                    return online ? online.has(machineId) : null;
+                    const presence = await this.workspaceDocument.getMachinePresenceView({
+                      timeoutMs: 2_000,
+                    });
+                    return presence.online.has(machineId) ? true : presence.synced ? false : null;
                   },
                   withClient: async <R>(
                     machineId: MachineId,
@@ -7720,11 +7837,134 @@ export class MessageHandler {
     return await this.withDaemonCommandScope(run);
   }
 
+  async handleEncryptedAcpInteraction(
+    request: Extract<LocalMachineRpcRequestValidated, { method: 'machine/acp-interaction' }>,
+    context: import('./e2ee/feature-rpc').EncryptedFeatureContext
+  ): Promise<LocalMachineRpcResponse> {
+    if (
+      !this.encryptedAttachments ||
+      request.workspaceId !== this.workspaceId ||
+      request.machineId !== this.machineId ||
+      this.acpInteractionStopping ||
+      context.signal.aborted ||
+      !context.authority ||
+      context.authority.signal.aborted ||
+      !context.authority.isCurrent()
+    )
+      throw new Error('e2ee_feature_unavailable');
+    if (!this.acpInteractionOwner) {
+      this.acpInteractionOwner = Promise.all([
+        import('./e2ee/acp-interaction-owner'),
+        import('@lody/loro-streams-rpc'),
+        import('@lody/shared'),
+      ]).then(
+        ([{ createAcpInteractionOwner }, { createRpcSecretRecipient, encryptRpcSecret }, shared]) =>
+          createAcpInteractionOwner({
+            workspaceId: this.workspaceId,
+            machineId: this.machineId,
+            createRecipient: createRpcSecretRecipient,
+            encrypt: encryptRpcSecret,
+            start: ({ requestId, configId, kind, force, methodId, signal, onProgress }) => {
+              const common = { machineId: this.machineId, workspaceId: this.workspaceId };
+              if (kind === 'probe') {
+                return {
+                  result: this.executionService.refreshMachineAcpCapabilities(
+                    {
+                      ...common,
+                      type: 'machine/acp-capabilities-refresh',
+                      configId: configId as AgentConfigId,
+                      force,
+                    },
+                    { signal, onAcpBinaryProgress: onProgress }
+                  ),
+                  cancel: () => {},
+                };
+              }
+              return {
+                result: this.authenticateMachineAcpAndResumeSetup(
+                  {
+                    ...common,
+                    type: 'machine/acp-authenticate',
+                    action: 'start',
+                    requestId,
+                    configId: configId as AgentConfigId,
+                    methodId,
+                  },
+                  { onProgress, signal }
+                ),
+                cancel: async () => {
+                  await this.executionService.authenticateMachineAcp({
+                    ...common,
+                    type: 'machine/acp-authenticate',
+                    action: 'cancel',
+                    requestId,
+                    authenticationRequestId: requestId,
+                  });
+                },
+              };
+            },
+            submit: async ({ requestId, interactionId, input }) => {
+              let decoded: unknown;
+              try {
+                decoded = JSON.parse(input) as unknown;
+              } catch {
+                throw new Error('e2ee_acp_invalid_input');
+              }
+              if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded))
+                throw new Error('e2ee_acp_invalid_input');
+              const keys = Object.keys(decoded);
+              if (
+                !('action' in decoded) ||
+                (decoded.action === 'submit-code'
+                  ? keys.some((key) => key !== 'action' && key !== 'authorizationCode')
+                  : decoded.action === 'submit-input'
+                    ? keys.some((key) => key !== 'action' && key !== 'authenticationInput')
+                    : true)
+              )
+                throw new Error('e2ee_acp_invalid_input');
+              const message = shared.MachineAcpAuthenticateRequestSchema.safeParse({
+                ...decoded,
+                type: 'machine/acp-authenticate',
+                machineId: this.machineId,
+                workspaceId: this.workspaceId,
+                requestId,
+                authenticationRequestId: requestId,
+                ...('action' in decoded && decoded.action === 'submit-input'
+                  ? { interactionId }
+                  : {}),
+              });
+              if (
+                !message.success ||
+                (message.data.action !== 'submit-input' && message.data.action !== 'submit-code')
+              )
+                throw new Error('e2ee_acp_invalid_input');
+              const result = await this.executionService.authenticateMachineAcp({
+                ...message.data,
+                machineId: this.machineId,
+                workspaceId: this.workspaceId,
+              });
+              if (!result.success || result.disposition === 'not-running')
+                throw new Error('e2ee_acp_input_rejected');
+            },
+          })
+      );
+    }
+    const owner = await this.acpInteractionOwner;
+    if (this.acpInteractionStopping || context.signal.aborted)
+      throw new Error('e2ee_feature_unavailable');
+    try {
+      return { ok: true, result: await owner.handle(request.params, context) };
+    } catch {
+      return { ok: false, error: 'Encrypted ACP interaction failed.' };
+    }
+  }
+
   async handleLocalMachineRpc(
-    request: LocalMachineRpcRequestValidated
+    request: LocalMachineRpcRequestValidated,
+    signal?: AbortSignal
   ): Promise<LocalMachineRpcResponse> {
     try {
-      const result = await this.dispatchLocalMachineRpc(request);
+      const result = await this.dispatchLocalMachineRpc(request, signal);
       return { ok: true, result };
     } catch (error) {
       if (isCodeCollabV2ServiceErrorForLocalRpc(error)) {
@@ -7781,8 +8021,22 @@ export class MessageHandler {
     };
   }
 
+  /** Encrypted: act as the turn's verified principal; a shared member controls only
+   * within that member's own rights for the turn's projects. */
+  private async agentDeviceControlAllowed(sessionId: SessionId): Promise<boolean> {
+    const gate = this.encryptedExecution;
+    if (!gate) return true;
+    const control = this.executionService.getEncryptedControlPrincipal(sessionId);
+    if (control?.kind === 'owner') return true;
+    if (control?.kind !== 'member') return false;
+    return await Effect.runPromise(
+      gate.authorizeAgentControl(control.requesterDevice, control.localProjectIds)
+    ).catch(() => false);
+  }
+
   private async dispatchLocalMachineRpc(
-    request: LocalMachineRpcRequestValidated
+    request: LocalMachineRpcRequestValidated,
+    signal?: AbortSignal
   ): Promise<LocalMachineRpcResult> {
     const assertOwner = async (sessionId: SessionId): Promise<void> => {
       if (!request.ownerSessionId) {
@@ -7799,6 +8053,8 @@ export class MessageHandler {
     };
 
     switch (request.method) {
+      case 'machine/acp-interaction':
+        throw new Error('e2ee_feature_unavailable');
       case 'machine/status':
         return this.executionService.getMachineStatus({
           type: 'machine/status',
@@ -7837,6 +8093,62 @@ export class MessageHandler {
         )
           throw new Error('Project group probe scope mismatch');
         return this.probeProjectLocalMember(request.params.localProjectId as LocalProjectId);
+      }
+      case 'sorbet/credentials-list':
+      case 'sorbet/credentials-logout':
+      case 'sorbet/providers-list':
+      case 'sorbet/providers-create':
+      case 'sorbet/providers-delete': {
+        if (
+          request.workspaceId !== this.workspaceId ||
+          request.machineId !== this.machineId ||
+          request.ownerSessionId
+        )
+          throw new Error('Sorbet credentials scope mismatch');
+        const configId = request.params.configId as AgentConfigId;
+        const config = await this.workspaceDocument.getAgentConfigById(configId, this.machineId);
+        if (
+          !config ||
+          config.machineId !== this.machineId ||
+          config.cliType !== 'builtin' ||
+          config.agentType !== 'sorbet'
+        )
+          throw new Error('Sorbet credentials configuration unavailable');
+        if (!this.sorbetCredentials) throw new Error('Sorbet credentials unsupported');
+        try {
+          const { SorbetCredentialsResultSchema, SorbetProvidersResultSchema } =
+            await import('@lody/shared/local-machine-rpc');
+          if (request.method === 'sorbet/credentials-list') {
+            return SorbetCredentialsResultSchema.parse({
+              type: 'sorbet/credentials-list',
+              credentials: await this.sorbetCredentials.list(configId, signal),
+            });
+          }
+          if (request.method === 'sorbet/credentials-logout') {
+            await this.sorbetCredentials.logout(configId, request.params.providerId, signal);
+            return { type: 'sorbet/credentials-logout' };
+          }
+          if (request.method === 'sorbet/providers-list') {
+            return SorbetProvidersResultSchema.parse({
+              type: 'sorbet/providers-list',
+              providers: await this.sorbetCredentials.listProviders(configId, signal),
+            });
+          }
+          if (request.method === 'sorbet/providers-create') {
+            return SorbetProvidersResultSchema.parse({
+              type: 'sorbet/providers-create',
+              provider: await this.sorbetCredentials.createProvider(
+                configId,
+                request.params.provider,
+                signal
+              ),
+            });
+          }
+          await this.sorbetCredentials.deleteProvider(configId, request.params.providerId, signal);
+          return { type: 'sorbet/providers-delete' };
+        } catch {
+          throw new Error('Sorbet provider operation failed');
+        }
       }
       case 'mcp/list-tools':
       case 'mcp/authentication': {
@@ -7930,6 +8242,12 @@ export class MessageHandler {
       case 'code-collab/save-text':
         await assertOwner(request.params.sessionId as SessionId);
         return await this.codeCollabV2Service.saveText(request.params);
+      case 'code-collab/open-diff-manifest':
+        await assertOwner(request.params.sessionId as SessionId);
+        return await this.diffBlobReader.openDiffManifest(request.params);
+      case 'code-collab/read-blob':
+        await assertOwner(request.params.sessionId as SessionId);
+        return await this.diffBlobReader.readBlob(request.params);
       case 'code-collab/open-current-diff':
         await assertOwner(request.params.sessionId as SessionId);
         return await this.codeCollabV2Service.openCurrentDiff(request.params);
@@ -8038,22 +8356,7 @@ export class MessageHandler {
       case 'ios-simulator/agent-control': {
         const sessionId = request.params.sessionId as SessionId;
         const invocation = this.executionService.getActiveInvocationContext(sessionId);
-        // Encrypted: act as the turn's verified principal; a shared member controls
-        // only within that member's own rights for the turn's projects.
-        const control = this.encryptedExecution
-          ? this.executionService.getEncryptedControlPrincipal(sessionId)
-          : ({ kind: 'owner' } as const);
-        const controlAllowed =
-          control?.kind === 'owner' ||
-          (control?.kind === 'member' &&
-            this.encryptedExecution !== undefined &&
-            (await Effect.runPromise(
-              this.encryptedExecution.authorizeAgentControl(
-                control.requesterDevice,
-                control.localProjectIds
-              )
-            ).catch(() => false)));
-        if (!invocation?.requesterUserId || !controlAllowed) {
+        if (!invocation?.requesterUserId || !(await this.agentDeviceControlAllowed(sessionId))) {
           return {
             type: 'ios-simulator/control_response' as const,
             sessionId,
@@ -8072,7 +8375,7 @@ export class MessageHandler {
       case 'android-emulator/agent-control': {
         const sessionId = request.params.sessionId as SessionId;
         const invocation = this.executionService.getActiveInvocationContext(sessionId);
-        if (!invocation?.requesterUserId) {
+        if (!invocation?.requesterUserId || !(await this.agentDeviceControlAllowed(sessionId))) {
           return {
             type: 'android-emulator/control_response' as const,
             sessionId,
@@ -10122,6 +10425,7 @@ export class MessageHandler {
   ): Promise<MachineAcpAuthenticateResponse> {
     const response = await this.executionService.authenticateMachineAcp(message, options);
     if (
+      !options.signal?.aborted &&
       message.action === 'start' &&
       response.success &&
       response.disposition === 'authenticated'
@@ -11177,12 +11481,16 @@ export class MessageHandler {
       this.workspaceId,
       this.machineId
     );
-    return Object.fromEntries(
-      Object.entries(projects).map(([localProjectId, project]) => [
-        localProjectId as LocalProjectId,
-        project.rootPath,
-      ])
-    ) as Record<LocalProjectId, string>;
+    const rootPaths: Record<string, string> = {};
+    for (const [localProjectId, project] of Object.entries(projects)) {
+      // Legacy machine meta is not validated on read, so a row can omit rootPath.
+      const rootPath = (project as { rootPath?: unknown } | undefined)?.rootPath;
+      if (typeof rootPath !== 'string') continue;
+      const trimmed = rootPath.trim();
+      if (!trimmed) continue;
+      rootPaths[localProjectId] = trimmed;
+    }
+    return rootPaths as Record<LocalProjectId, string>;
   }
 
   private async upsertLocalProjectMetaInCurrentWorkspace(entry: {
@@ -11233,7 +11541,7 @@ export class MessageHandler {
   }): Promise<
     { ok: true; rootPath: string } | { ok: false; response: LocalProjectControlResponse }
   > {
-    const access = await this.cloudPort.access.verifyMachineAccess({
+    const access = await this.verifyRequesterMachineAccess({
       workspaceId: this.workspaceId,
       machineId: this.machineId,
       requesterUserId: args.requesterUserId,
@@ -11406,7 +11714,7 @@ export class MessageHandler {
     const { requesterUserId } = precheck;
 
     try {
-      const access = await this.cloudPort.access.verifyMachineAccess({
+      const access = await this.verifyRequesterMachineAccess({
         workspaceId: this.workspaceId,
         machineId: this.machineId,
         requesterUserId,
@@ -11600,6 +11908,8 @@ export class MessageHandler {
    * Flush pending ACP updates and tear down session resources.
    */
   async prepareForShutdown(): Promise<void> {
+    this.acpInteractionStopping = true;
+    await (await this.acpInteractionOwner)?.close();
     this.sessionDispatchWatcher.stop();
     this.executionService.stopCompletionPublication();
     void this.operationCoordinator
@@ -11609,6 +11919,8 @@ export class MessageHandler {
   }
 
   async cleanup(): Promise<void> {
+    this.acpInteractionStopping = true;
+    await (await this.acpInteractionOwner)?.close();
     this.executionService.stopCompletionPublication();
     const inboxShutdown = this.operationCoordinator.recoverStop();
     void inboxShutdown.catch((cause) =>
@@ -11644,7 +11956,7 @@ export class MessageHandler {
     this.machineRpcServer?.stop();
     this.encryptedQueryServer?.stop();
     this.sessionDispatchWatcher.stop();
-    this.encryptedCodeCollabReader?.dispose();
+    this.diffBlobReader?.dispose();
     this.codeCollabV2Service.dispose();
     for (const handle of this.sessionLifecycleWatchHandles) handle.unsubscribe();
     this.sessionLifecycleWatchHandles = [];
@@ -11685,9 +11997,22 @@ export class MessageHandler {
       .filter((p): p is Promise<void> => p !== null);
     await Promise.all(inFlightPromises);
     await this.drainCodeCollabTurnPersistenceForCleanup();
-    await this.codeCollabV2DiffStore.close();
-    await this.previewService.closeAllActiveTunnelsForCleanup('Message handler cleanup');
-    await this.sessionManager.cleanUp();
+    const cleanupErrors: unknown[] = [];
+    for (const close of [
+      async () => await this.diffBlobStoreReader?.close(),
+      async () => await this.codeCollabV2DiffStore.close(),
+      async () =>
+        await this.previewService.closeAllActiveTunnelsForCleanup('Message handler cleanup'),
+      async () => await this.sessionManager.cleanUp(),
+    ]) {
+      try {
+        await close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length)
+      throw new AggregateError(cleanupErrors, 'Message handler cleanup failed.');
   }
 
   private async waitForInterruptedTurnsToSettle(

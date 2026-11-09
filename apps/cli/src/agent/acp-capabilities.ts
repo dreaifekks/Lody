@@ -110,6 +110,7 @@ export async function fetchAcpCapabilities(
         logger,
         terminalManager: noopTerminalManager,
         terminalEnabled: false,
+        discoverAuthenticationMethods: cliType === 'builtin' && agentType === 'sorbet',
         onUpdateMessage: () => {},
         onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
       });

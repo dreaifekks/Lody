@@ -45,6 +45,8 @@ generation and cancellation to its source request. Expire unclaimed views; destr
 source close. Claim adopts identity/reload target without remounting. Activate renderer
 effects only after native show.
 The [window Spec](../../../../specs/desktop-windows.md) owns the behavior contract.
+Background ownership uses Web Locks rather than leader-election IPC:
+[decision](../../../../.agents/notes/implemented/feature/2026-09-10-desktop-windows.md).
 
 ## Startup theme
 
@@ -103,18 +105,10 @@ release cold temporary hosts before replying. `status` requires a window reader.
 I/O. Unknown outcomes never replace them; verify competing ledger bytes or terminal
 server reservation before retirement. New accounts replay genuine history from their
 retained genesis; server labels cannot establish native identity. [Decision](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md).
-Approval never awaits a key round: `E2eeIpc` owns later delivery and retries it from
-due polls ([delivery](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md#key-delivery-after-admission)).
+Approval, including account pairing, never awaits a key round: `E2eeIpc` owns later delivery and retries it from
+a bounded main-owned due timer and due polls ([delivery](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md#key-delivery-after-admission)).
 
-Removal erases `member_joins`/`personal_join_histories`. All three join installs
-clear removal only after verifying a different retained signing key. Only parsed
-HTTP 560 `e2ee_member_removed`/`e2ee_device_revoked` from credential-bound endpoints
-produce `E2eeMemberRemovedError`/`E2eeDeviceRevokedError`. JWT/transport/parsing or
-unrelated endpoint failures never authorize cleanup, regardless of matching codes.
-Project typed results and causes to exact codes with `accessLoss`. Revocation uses
-device-bound removal receipts/cleanup, records its reason and stays terminal until
-re-pairing replaces the key. Failed local operations, including dispatch, confirm loss
-with this device credential. Dispatch requires its calling reader. Unless another
-reader owns them, drain temporary status hosts outside the account lock on every
-exit, including failed identity rechecks.
-[Decision](../../../../.agents/notes/implemented/architecture/2026-10-30-e2ee-desktop-device-revocation.md).
+Removal erases `member_joins` and `personal_join_histories`. All three join installs
+clear the removed marker only after verifying a different retained signing key.
+Access-loss classification, refusal codes and dispatch confirmation follow the
+[IPC rules](ipc/AGENTS.md#e2ee-access-loss).

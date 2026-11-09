@@ -6,6 +6,67 @@ import {
 } from '../src/local-machine-rpc';
 
 describe('local Machine RPC', () => {
+  it('bounds Sorbet credential identifiers and excludes unexpected fields', () => {
+    const request = {
+      machineId: 'm',
+      workspaceId: 'w',
+      method: 'sorbet/credentials-logout',
+      params: { configId: 'config', providerId: 'openai' },
+    };
+    expect(LocalMachineRpcRequestSchema.safeParse(request).success).toBe(true);
+    for (const providerId of ['', 'a'.repeat(1025)]) {
+      expect(
+        LocalMachineRpcRequestSchema.safeParse({
+          ...request,
+          params: { ...request.params, providerId },
+        }).success
+      ).toBe(false);
+    }
+    for (const providerId of ['提供商 / 帐号', '../provider', 'a'.repeat(1024)]) {
+      expect(
+        LocalMachineRpcRequestSchema.safeParse({
+          ...request,
+          params: { ...request.params, providerId },
+        }).success
+      ).toBe(true);
+      expect(
+        LocalMachineRpcResponseSchema.safeParse({
+          ok: true,
+          result: { type: 'sorbet/credentials-list', credentials: [{ providerId, type: 'oauth' }] },
+        }).success
+      ).toBe(true);
+    }
+    expect(
+      LocalMachineRpcResponseSchema.safeParse({
+        ok: true,
+        result: {
+          type: 'sorbet/credentials-list',
+          credentials: [{ providerId: 'openai', type: 'oauth', token: 'secret' }],
+        },
+      }).success
+    ).toBe(false);
+  });
+  it('accepts custom endpoints that discover models from the server', () => {
+    const provider = {
+      name: 'Gateway',
+      protocol: 'openai-completions',
+      baseUrl: 'https://example.test/v1',
+      models: [],
+    };
+    const request = {
+      machineId: 'm',
+      workspaceId: 'w',
+      method: 'sorbet/providers-create',
+      params: { configId: 'config', provider },
+    };
+    expect(LocalMachineRpcRequestSchema.parse(request)).toEqual(request);
+    const response = {
+      ok: true,
+      result: { type: 'sorbet/providers-create', provider: { ...provider, id: 'endpoint' } },
+    };
+    expect(LocalMachineRpcResponseSchema.parse(response)).toEqual(response);
+  });
+
   it('retains selected roots across file RPC parsing and defaults legacy requests to main at dispatch', () => {
     for (const [method, params] of [
       ['code-collab/get-file-index', { sessionId: 's' }],

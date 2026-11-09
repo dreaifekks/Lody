@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { E2eeWorkspaceRuntime } from '@lody/platform';
 import { LoroDoc } from 'loro-crdt';
-import { createDesktopE2eeContent } from '../src/providers/desktop-e2ee-content';
+import {
+  createDesktopE2eeContent,
+  KEY_PENDING_WAIT_MS,
+} from '../src/providers/desktop-e2ee-content';
 
 const context = {
   protocol: 'loro-streams-crdt-payload-protection',
@@ -167,6 +170,83 @@ describe('desktop E2EE content epoch safety', () => {
       await secondProvider.close();
       await second.close();
       vi.unstubAllGlobals();
+    }
+  });
+  it('closes with a host token call still queued, so the workspace reopens and ignores the late result', async () => {
+    // Electron IPC cannot cancel a host contentStreamsToken call; on a restarted
+    // member device it can queue behind other account work for longer than the
+    // token kernel's release bound. Switching away must still close the token
+    // provider, and the abandoned host answer must never reach the next runtime.
+    type Token = Awaited<ReturnType<E2eeWorkspaceRuntime['contentStreamsToken']>>;
+    let releaseQueued!: (token: Token) => void;
+    const queued = new Promise<Token>((resolve) => (releaseQueued = resolve));
+    let calls = 0;
+    const runtime = {
+      contentStreamsToken: () =>
+        ++calls === 1
+          ? queued
+          : Promise.resolve({
+              token: 'successor-token',
+              bucketId: 'encrypted-content',
+              gatewayBaseUrl: 'https://streams.example.com',
+              expiresIn: 480,
+              expiresAt: 1_900_000_000_000,
+            }),
+    } as unknown as E2eeWorkspaceRuntime;
+    const open = () =>
+      createDesktopE2eeContent({
+        runtime,
+        workspaceId: 'queued-token-workspace',
+        genesisHash: '11'.repeat(32),
+        epoch: 0,
+        authToken: () => 'account-token',
+      });
+    const first = open();
+    const firstProvider = first.e2ee.createTokenProvider(new AbortController().signal);
+    const pending = firstProvider.getToken();
+    const pendingOutcome = pending.then(
+      () => 'resolved',
+      () => 'rejected'
+    );
+    await vi.waitFor(() => expect(calls).toBe(1));
+    let closed: 'ok' | 'failed' | undefined;
+    vi.useFakeTimers();
+    try {
+      const closing = firstProvider.close().then(
+        () => (closed = 'ok'),
+        () => (closed = 'failed')
+      );
+      // Strictly inside the 5s release bound: close must already be confirmed.
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(closed).toBe('ok');
+      await closing;
+    } finally {
+      // Let a bug-path release bound expire before restoring real timers.
+      await vi.advanceTimersByTimeAsync(20_000);
+      vi.useRealTimers();
+    }
+    expect(await pendingOutcome).toBe('rejected');
+    await first.close();
+
+    const second = open();
+    const secondProvider = second.e2ee.createTokenProvider(new AbortController().signal);
+    try {
+      expect(await secondProvider.getToken()).toBe('successor-token');
+      // The abandoned host call answers late with another bucket.
+      releaseQueued({
+        token: 'stale-token',
+        bucketId: 'stale-bucket',
+        gatewayBaseUrl: 'https://streams.example.com',
+        expiresIn: 480,
+        expiresAt: 1_900_000_000_000,
+      });
+      await queued;
+      await Promise.resolve();
+      expect(second.e2ee.bucketId()).toBe('encrypted-content');
+      expect(await secondProvider.getToken()).toBe('successor-token');
+    } finally {
+      await secondProvider.close();
+      await second.close();
     }
   });
   it('replaces a gateway-rejected cached token through the native token capability', async () => {
@@ -431,6 +511,146 @@ it.each([
     }
   }
 );
+
+describe('reading an epoch whose key this device has not received yet', () => {
+  const pendingKey = () => new Error('e2ee_key-pending');
+  const setup = (runtime: Partial<E2eeWorkspaceRuntime>, onMemberRemoved = vi.fn()) => {
+    const access = createDesktopE2eeContent({
+      runtime: runtime as E2eeWorkspaceRuntime,
+      workspaceId: 'rotated',
+      genesisHash: '11'.repeat(32),
+      epoch: 2,
+      authToken: () => null,
+      onMemberRemoved,
+    });
+    if (access.content.mode !== 'protected') throw new Error('expected protected content');
+    const room = access.content.resolve({ kind: 'doc', docId: 'session' });
+    if (room.mode !== 'protected') throw new Error('expected protected room');
+    const open = () =>
+      room.config.provider.open({
+        sealed: Uint8Array.of(3),
+        header: Uint8Array.of(3),
+        context,
+        additionalData: Uint8Array.of(3),
+      });
+    return { access, open };
+  };
+
+  it('receives the key once for every waiting read, then retries each read once', async () => {
+    const installed = Promise.withResolvers<void>();
+    let keyInstalled = false;
+    const opens: boolean[] = [];
+    const refresh = vi.fn(async () => {
+      await installed.promise;
+      keyInstalled = true;
+      return { epoch: 3, rotationRequired: false, hasCurrentKey: true };
+    });
+    const { access, open } = setup({
+      openContent: async () => {
+        opens.push(keyInstalled);
+        if (!keyInstalled) throw pendingKey();
+        return Uint8Array.of(42);
+      },
+      refresh,
+    } as unknown as Partial<E2eeWorkspaceRuntime>);
+    try {
+      const first = open(),
+        second = open();
+      await vi.waitFor(() => expect(opens).toEqual([false, false]));
+      installed.resolve();
+      expect(await first).toEqual(Uint8Array.of(42));
+      expect(await second).toEqual(Uint8Array.of(42));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(opens).toEqual([false, false, true, true]);
+    } finally {
+      await access.close();
+    }
+  });
+
+  it('fails after the bounded wait, or after one retry, without reading again', async () => {
+    vi.useFakeTimers();
+    try {
+      let opens = 0;
+      const { access, open } = setup({
+        openContent: async () => {
+          opens++;
+          throw pendingKey();
+        },
+        refresh: () => new Promise(() => {}),
+      } as unknown as Partial<E2eeWorkspaceRuntime>);
+      const read = open();
+      const failure = expect(read).rejects.toThrow('e2ee_key_pending_timeout');
+      await vi.advanceTimersByTimeAsync(KEY_PENDING_WAIT_MS);
+      await failure;
+      expect(opens).toBe(1);
+      await access.close();
+
+      // The round finished but the key is still missing: one retry, then the failure.
+      let retried = 0;
+      const again = setup({
+        openContent: async () => {
+          retried++;
+          throw pendingKey();
+        },
+        refresh: async () => ({ epoch: 3, rotationRequired: false, hasCurrentKey: false }),
+      } as unknown as Partial<E2eeWorkspaceRuntime>);
+      await expect(again.open()).rejects.toThrow('e2ee_key-pending');
+      expect(retried).toBe(2);
+      await again.access.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops waiting on close and on access loss, and never waits for other failures', async () => {
+    let opens = 0;
+    const closing = setup({
+      openContent: async () => {
+        opens++;
+        throw pendingKey();
+      },
+      refresh: () => new Promise(() => {}),
+    } as unknown as Partial<E2eeWorkspaceRuntime>);
+    const read = closing.open();
+    const closed = expect(read).rejects.toThrow('e2ee_closed');
+    await vi.waitFor(() => expect(opens).toBe(1));
+    await closing.access.close();
+    await closed;
+    expect(opens).toBe(1);
+
+    const onMemberRemoved = vi.fn();
+    const revoked = Object.assign(new Error('e2ee_device_revoked'), {
+      accessLoss: 'device_revoked',
+    });
+    const losing = setup(
+      {
+        openContent: async () => {
+          throw pendingKey();
+        },
+        refresh: async () => {
+          throw revoked;
+        },
+      } as unknown as Partial<E2eeWorkspaceRuntime>,
+      onMemberRemoved
+    );
+    await expect(losing.open()).rejects.toBe(revoked);
+    expect(onMemberRemoved).toHaveBeenCalledTimes(1);
+    await losing.access.close();
+
+    for (const terminal of ['e2ee_invalid-ledger', 'e2ee_device_revoked', 'e2ee_closed']) {
+      const refresh = vi.fn();
+      const other = setup({
+        openContent: async () => {
+          throw new Error(terminal);
+        },
+        refresh,
+      } as unknown as Partial<E2eeWorkspaceRuntime>);
+      await expect(other.open()).rejects.toThrow(terminal);
+      expect(refresh).not.toHaveBeenCalled();
+      await other.access.close();
+    }
+  });
+});
 
 describe('shared portable content lifetime', () => {
   it.each(['attachment', 'dispatch'] as const)(

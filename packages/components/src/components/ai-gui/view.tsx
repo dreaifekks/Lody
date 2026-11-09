@@ -468,6 +468,7 @@ type AssistantVirtualContent =
       kind: 'worked_group_header';
       segmentKey: string;
       expanded: boolean;
+      isLive: boolean;
       durationMs: number | null;
     }
   | { kind: 'content'; block: Extract<AssistantTurnRenderBlock, { kind: 'content' }> }
@@ -1479,9 +1480,8 @@ export const buildChatVirtualRows = ({
 
       const hasVisibleFinalContent = segmentHasVisibleFinalContent(blocks, segment);
       const shouldUseWorkedGroup =
-        isTurnFinished &&
-        (segment.workBlockKeys.size > 0 || segmentSubagentTasks.length > 0) &&
-        hasVisibleFinalContent;
+        (segment.workBlockKeys.size > 0 || (isTurnFinished && segmentSubagentTasks.length > 0)) &&
+        (!isTurnFinished || hasVisibleFinalContent);
 
       const workedSearchEntries: { itemIndex: number }[] = [];
       for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
@@ -1507,8 +1507,9 @@ export const buildChatVirtualRows = ({
       );
       const isWorkedGroupExpanded =
         shouldUseWorkedGroup &&
-        (isWorkedSearchExpanded || cachedState.expandedWorkedGroups[segment.key] === true);
-      anySegmentUsesWorkedGroup ||= shouldUseWorkedGroup;
+        (isWorkedSearchExpanded ||
+          (cachedState.expandedWorkedGroups[segment.key] ?? !isTurnFinished));
+      anySegmentUsesWorkedGroup ||= shouldUseWorkedGroup && isTurnFinished;
 
       if (!shouldUseWorkedGroup) {
         for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
@@ -1521,9 +1522,8 @@ export const buildChatVirtualRows = ({
         continue;
       }
 
-      // Collapsed is the default state, and a collapsed group renders no detail
-      // rows at all. Expanded details stay where they happened: hoisting them to
-      // the header would reorder them past the prose between two steps.
+      // A collapsed group renders no detail rows. Expanded details stay where
+      // they happened, including around visible text between work steps.
       const insertWorkedGroup = () => {
         assistantRows.push({
           type: 'assistant',
@@ -1534,6 +1534,7 @@ export const buildChatVirtualRows = ({
             kind: 'worked_group_header',
             segmentKey: segment.key,
             expanded: isWorkedGroupExpanded,
+            isLive: !isTurnFinished,
             // The turn's duration covers ALL its segments, so only the last one
             // may claim it; earlier regions fall back to "Finished working".
             durationMs: isLastSegment ? resolveSessionHistoryDurationMs(message) : null,
@@ -1561,10 +1562,15 @@ export const buildChatVirtualRows = ({
       if (isWorkedGroupExpanded && segmentSubagentTasks.length > 0) {
         appendSubagentTasksRow(assistantRows, true);
       }
-      if (isWorkedGroupExpanded && segmentSubagentTasks.length > 0 && !hasRunningSubagentTasks) {
+      if (
+        isTurnFinished &&
+        isWorkedGroupExpanded &&
+        segmentSubagentTasks.length > 0 &&
+        !hasRunningSubagentTasks
+      ) {
         appendSubagentTasksRow(assistantRows, true);
       }
-      if (hasRunningSubagentTasks) {
+      if ((!isTurnFinished && segmentSubagentTasks.length > 0) || hasRunningSubagentTasks) {
         appendSubagentTasksRow(assistantRows, false);
       }
     }
@@ -5148,11 +5154,13 @@ const WorkedGroupHeader = ({
   id,
   durationMs,
   expanded,
+  isLive,
   onExpandedChange,
 }: {
   id: string;
   durationMs: number | null;
   expanded: boolean;
+  isLive: boolean;
   onExpandedChange: (expanded: boolean) => void;
 }) => {
   const { t } = useTranslation();
@@ -5168,12 +5176,14 @@ const WorkedGroupHeader = ({
     effectiveDurationMs === null
       ? ''
       : formatDurationCompact(effectiveDurationMs, durationUnitLabels);
-  const label = durationLabel
-    ? t('sessions.workedFor', {
-        duration: durationLabel,
-        defaultValue: 'Worked for {{duration}}',
-      })
-    : t('sessions.finishedWorking', 'Finished working');
+  const label = isLive
+    ? t('sessions.working', 'Working')
+    : durationLabel
+      ? t('sessions.workedFor', {
+          duration: durationLabel,
+          defaultValue: 'Worked for {{duration}}',
+        })
+      : t('sessions.finishedWorking', 'Finished working');
 
   return (
     <ProcessDisclosureButton
@@ -5968,6 +5978,7 @@ const areAssistantVirtualContentsEqual = (
         b.kind === 'worked_group_header' &&
         a.segmentKey === b.segmentKey &&
         a.expanded === b.expanded &&
+        a.isLive === b.isLive &&
         a.durationMs === b.durationMs
       );
     case 'content':
@@ -6092,6 +6103,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
             id={`${message.id}:${content.segmentKey}:worked`}
             durationMs={content.durationMs}
             expanded={content.expanded}
+            isLive={content.isLive}
             onExpandedChange={(expanded) =>
               onWorkedGroupExpandedChange(message.id, content.segmentKey, expanded)
             }

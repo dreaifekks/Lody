@@ -101,10 +101,15 @@ lock tasks or reject sends as duplicates.
   original message. Lody appends the original text with its recorded author,
   checked against history. An unresolvable citation is delivered marked as an
   unverified relay rather than rejected. No delegation token exists.
-- **Failure causes.** A failed target keeps its top-level code and adds a typed
-  cause: quota exhausted with its reset time from the existing capacity
-  observation, Machine offline, user stopped, or agent error with the original
-  message. An unclassifiable failure is an agent error, never a guessed cause.
+- **Failure causes.** A failed target keeps its top-level code and adds a
+  normalized `reason` (`usage_limit`, `context_overflow`, `model_error`,
+  `permission_denied`, `cancelled`, `agent_crash`, or `unknown`), a redacted and
+  bounded `detail`, and the failed assistant Turn when recorded. `usage_limit`
+  carries `resetAt` when the notice names one, and `retryable` follows the
+  reason. An unclassifiable failure is `unknown`, never a guessed cause.
+  `lody_session_status_many` exposes the latest failure as `lastTurnFailure`
+  (`reason`, `detail`, `at`, `resetAt`), and failed `lody_session_history`
+  entries carry `isError` and `errorReason`.
 - **Result timing.** Completion results carry when the input was sent and how
   many later inputs the target received meanwhile. Lody does not mark results
   as superseded; the coordinating Agent judges staleness.
@@ -119,8 +124,12 @@ lock tasks or reject sends as duplicates.
 - **Queued inputs.** A requester may list, withdraw or replace its own queued
   inputs that have not started. A started input returns `ALREADY_STARTED` and is
   never cancelled by this path.
-- **Machine resources.** `lody_machine_list` reports agent quota with reset times
-  and disk usage. Lody does not manage or report agent-held locks.
+- **Machine resources.** `lody_machine_list` reports agent quota with reset
+  times and disk usage. `lody_agent_config_list` and
+  `lody_session_create_options` report an exhausted scoped quota as
+  `quota_exhausted` with `availableAt`, so a coordinator stops dispatching to
+  that config until the window resets. Lody does not manage or report agent-held
+  locks.
 
 These additions avoid errors by design rather than adding gates. Uncertain
 observations degrade to `unknown` or an informational field; only an impossible
@@ -333,9 +342,21 @@ Steer handoff completion follows applied records in the Session's
 `steerOperationLedger` (`findSteerSuccessor` in `coordinator-model.ts`), covered by
 the `steer handoff` cases in `operation-coordinator.test.ts`. Delivery receipts are
 mapped by `deliveryFromSteerResponse` in `apps/cli/src/commands/session.ts` and
-covered by `session-default-fallback.test.ts`. The Coordinating many Sessions
-section is intended behavior not yet implemented; status still exposes only
-`idle`/`busy`.
+covered by `session-default-fallback.test.ts`.
+
+The Coordinating many Sessions tools live in `apps/cli/src/mcp/lody-mcp-server.ts`
+(pull request filter, short ids, history paging, quotes, `lody_session_queue`),
+with live activity, sender headers and queued-input withdrawal answered by the
+owning Machine in `apps/cli/src/lib/message-handler.ts` behind the
+`sessionLiveActivity`, `machineDiskStatus` and `sessionInputWithdraw` protocol
+capabilities; older Machines degrade to `unknown` or an error outcome. Quota and
+disk come from `apps/cli/src/lib/resource-discovery.ts`. Two items remain
+unimplemented because they would add fields to strictly validated synced results
+that older clients reject: the count of later inputs in completion results, and a
+typed failure cause with a structured reset time. Failures currently carry the
+agent's failure reason and original message as text. Withdrawal of a started
+input reports the `already_started` outcome rather than an error code. No
+mixed-version multi-Machine run has been performed.
 
 This draft records the requested limit of 16. Runtime and deployed-client
 acceptance remain to be verified after dependencies are installed.

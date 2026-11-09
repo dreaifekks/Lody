@@ -98,7 +98,7 @@ Parent rules apply; see [README](README.md).
   authorization. Daemon reads use its replica without starting Streams sync; unresolved
   selection returns retryable SYNC_UNAVAILABLE. See [freshness](README.md#machine-catalog-retry-guidance).
 
-- Machine presence is online/offline/unknown. `getOnlineMachineIds() === null` means
+- Machine presence is online/offline/unknown. absence from an unsynced `classifyMachinePresence` view means
   unknown; block dispatch/report `MACHINE_OFFLINE` only for definite offline, never on
   an RPC timeout. Unknown proceeds under its own deadline. Expose three-state liveness,
   never a boolean.

@@ -60,7 +60,7 @@ relaunches nor resets. Relaunch stops embedded CLI and is not default recovery.
 
 Bound each quit renderer close and main resource drain to fifteen seconds. Keep
 unconfirmed work with its original owner until exit; log phases without credentials
-or causes. Allow a presence-only warning marker at most one second to persist, then
+or causes. Allow a presence-only warning marker <= one second to persist, then
 exit nonzero without terminal reporting UI. Next launch shows a nonmodal native
 notification; failed delivery retains its marker. A waiter deadline never replaces
 custody or clears pending writes. CLI/shell owners must confirm release before main exits.
@@ -82,7 +82,6 @@ Retain failed process owners for recovery; never replace them with null or bind
 successors before release. After failed quit, retry owners once before rebuilding
 shell/relays and reopening a window; unresolved owners use the localized quit/retry
 dialog. Read the
-[decision](../../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
 
 ## E2EE runtime
 
@@ -100,6 +99,7 @@ close keeps its fence and reports restart-required. Use fixed cloud refs with au
 bound identity and abort; fence late disposed calls. Preserve uncertain bytes and
 keep raw/SDK causes in main. Verified reads override lost ACKs; cleanup retains
 admission. Treat `e2ee_staging_invalid` and `e2ee_staging_corrupt` as terminal.
+Opens join a still-closing workspace drain once outside the lock.
 
 Consent pins exact verified proofs, session, record, requestId, keys, credentials and
 pins. Missing credentials block approval; never export them. Failed begin remains

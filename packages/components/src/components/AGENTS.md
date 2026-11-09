@@ -1,10 +1,12 @@
 # Product surfaces (`src/components`)
 
-Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
-
+Ancestor rules apply. Edit `AGENTS.md`;
 ## Sidebar and session rows
 
 - Sidebar rows represent Sessions, never Tasks.
+- Desktop project grouping shows only projects with session rows after pinned-tree
+  separation and opener placement. Hide empty machine sections, while retaining
+  machines with populated multi-repository projects.
 - Desktop Workspace/Local Project/Updated/Pinned rows support mention drag and
   Mark as unread, hidden when unread. Conversation/landing drops use
   `lib/session-mention-drag.ts`; parent tabs use HTML5 drag, children dnd-kit.
@@ -24,7 +26,7 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
 
 - Top-level opener/unrelated rows keep flat alignment. `session-row-leading-slot.tsx`
   owns disclosure for openers and ├/└ for children; hover replaces a child's connector
-  or a resting glyph with ⋯ at the same 7px centre, regardless of activity, while an
+  or a resting glyph with ⋯ at same 7px centre, regardless of activity, while an
   opener keeps its disclosure (its menu opens by right-click). Only child slots widen
   14px→26px, indenting titles 12px without moving backgrounds.
 
@@ -33,16 +35,14 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
   `sidebar-surface.ts` / `sidebar.tokens.stylex.ts` on conversation, repo and nav rows.
   Tailwind wins same-property conflicts; keep it only for groups, menu-open and focus states.
 - Desktop work/wait/unread/send status belongs only in `SessionRowStatusIndicator`
-  inside `SidebarRowEndSlot`. On two-line Session rows it stays on the title line while
-  the PR control remains accessible on the metadata line when Show Branch is enabled
-  ([decision](../../../../.agents/notes/implemented/feature/2026-11-02-sidebar-pull-requests.md));
-  otherwise hide the row's PR control. On single-line rows activity replaces resting
-  `Mergeable`, worktree or mobile time. +/- totals: hover card only.
+  inside `SidebarRowEndSlot`, never the leading slot; it replaces resting `Mergeable`,
+  worktree, PR icon or mobile time with one 14px mark. +/- totals: hover card only.
   Mobile: [mobile/AGENTS.md](mobile/AGENTS.md). Folded groups: only
-  `SidebarGroupActivityMark`, no counts ([why](../../../../.agents/notes/implemented/feature/2026-09-26-sidebar-folded-group-status.md)).
+  `SidebarGroupActivityMark`, no counts.
 - Missing, cross-section, cyclic or deeper-than-one-level openers render top-level.
   Workspace `placeWorkspaceSessionsWithOpeners` moves Sessions into their opener's
-  group; Pinned/Updated keep natural membership. `MAX_VISIBLE_SESSIONS` and
+  group. Pinned openers bring visible descendants into Pinned without changing
+  descendant pin flags. `MAX_VISIBLE_SESSIONS` and
   `SHOW_FULL_BUCKET_THRESHOLD` count roots. Pass `rootRank` everywhere; an opener
   ranks by its freshest opened Session.
 
@@ -108,7 +108,7 @@ Ancestor rules apply. Edit `AGENTS.md`; `CLAUDE.md` links here.
 - Directory registration and standalone display are independent. Missing
   `standaloneVisible` means visible. Hide registrations only in standalone lists,
   retaining member resolution, repository-copy selection and session access.
-- Delete local projects through the existing action without confirmation/dependency
+- Delete local projects through existing action without confirmation/dependency
   UI. Retain referenced registrations/sessions; delete unreferenced ones normally.
   Explicit Add restores standalone display/identity.
 - Direct folder selection is draft-only until save. Gate read-only inspection on

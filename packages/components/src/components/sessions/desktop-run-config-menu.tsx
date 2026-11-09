@@ -244,6 +244,7 @@ export function DesktopMachineMenu({
   value,
   visibleLocalMachineId = null,
   selectedLabel,
+  offline = false,
   options,
   onChange,
   disabled = false,
@@ -253,6 +254,8 @@ export function DesktopMachineMenu({
   value: MachineId | null;
   visibleLocalMachineId?: MachineId | null;
   selectedLabel?: string | null;
+  /** The selected machine is definitely offline; never set for an unknown status. */
+  offline?: boolean;
   options: ReadonlyArray<DesktopMachineMenuOption>;
   onChange: (machineId: MachineId) => void;
   disabled?: boolean;
@@ -280,6 +283,7 @@ export function DesktopMachineMenu({
           {label}
         </span>
         {selectedIsLocal ? <Badge>{t('chat.machineSelector.local', 'Local')}</Badge> : null}
+        {offline ? <Badge>{t('chat.machineSelector.offline', 'Offline')}</Badge> : null}
         {selectedOption?.isPrivate ? (
           <LockKeyhole {...stylex.props(surface.glyph12, surface.hint)} aria-hidden="true" />
         ) : null}

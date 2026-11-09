@@ -1,5 +1,3 @@
-import { SidebarPullRequests } from './sidebar-pull-requests';
-import type { SessionPullRequestMeta } from '@lody/shared';
 import { isElectronRenderer } from '@/lib/electron';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { SessionWindowMenuItem } from './session-window-menu-item';
@@ -91,6 +89,7 @@ import { useStableNow } from '@/hooks/use-stable-now';
 import { formatCompactRelativeTime, type RelativeTimeValue } from '@/lib/format-relative-time';
 import {
   GitHubOwnerIcon,
+  SessionPrIcon,
   SessionRowAuthorAvatar,
   SessionRowLeadingSlot,
   SidebarRowArchiveButton,
@@ -160,7 +159,6 @@ export type SessionListRow = {
   historyBackend?: SessionHistoryBackendKind;
   repoFullName?: string | null;
   branchName: string;
-  pullRequests?: readonly SessionPullRequestMeta[];
   prUrl?: string | null;
   prNumber?: number | null;
   prStatus?: PrStatus | null;
@@ -799,7 +797,7 @@ const SessionGroupRow = memo(function SessionGroupRow({
   // PRs). Gate the pill on the PR still being live.
   const isMergeable =
     hasPr && session.prReadiness === 'y' && prStatus !== 'merged' && prStatus !== 'closed';
-  const showMergeablePill = (session.pullRequests?.length ?? 0) <= 1 && isMergeable && !isSelected;
+  const showMergeablePill = isMergeable && !isSelected;
   const canArchive = typeof onArchiveSession === 'function';
   const canMarkUnread = typeof onMarkSessionUnread === 'function' && !session.hasUnreadMessages;
   const showInlineArchive = canArchive && !isMobile;
@@ -1188,33 +1186,23 @@ const SessionGroupRow = memo(function SessionGroupRow({
             />
           ) : null}
         </div>
-        {/* Keep the metadata controls separate from the title-line status. */}
-        <div
-          className={
-            showMetaLine && showBranchNames && (hasPr || hasChanges)
-              ? 'flex self-stretch'
-              : showMetaLine
-                ? lineBoxClassName
-                : 'contents'
-          }
-        >
+        {/* Keep PR at the right edge. Line totals stay in the hover card. */}
+        <div className={showMetaLine ? lineBoxClassName : 'contents'}>
           <SidebarRowEndSlot
             sessionId={session.sessionId}
             isWaitingPermission={session.isWaitingPermission}
             isWorking={session.isWorking}
             hasUnreadMessages={session.hasUnreadMessages}
             familyActivity={familyActivity}
-            restOnSecondLine={showMetaLine && showBranchNames && (hasPr || hasChanges)}
-            interactiveRest={showBranchNames && (hasPr || (showMetaLine && hasChanges))}
             restIcon={
-              isChatSession && !(hasPr && showBranchNames) ? (
+              isChatSession ? (
                 <span className={cn('flex items-center gap-1.5', useAnchor && 'z-20')}>
                   <SessionRowTime
                     latestMessageAt={session.latestMessageAt}
                     className={cn(SIDEBAR_CAPTION_TEXT_CLASS, 'text-muted-foreground')}
                   />
                 </span>
-              ) : (hasPr && showBranchNames) || showMergeablePill || isMobile ? (
+              ) : hasPr || showMergeablePill || isMobile ? (
                 <span
                   className={cn(
                     SIDEBAR_CAPTION_TEXT_CLASS,
@@ -1229,15 +1217,8 @@ const SessionGroupRow = memo(function SessionGroupRow({
                     />
                   ) : null}
                   {showMergeablePill ? <SessionMergeablePill /> : null}
-                  {hasPr && showBranchNames ? (
-                    <SidebarPullRequests
-                      alignWithBranch={showMetaLine && showBranchNames}
-                      pullRequests={
-                        session.pullRequests?.length
-                          ? session.pullRequests
-                          : [{ url: prUrl!, status: prStatus }]
-                      }
-                    />
+                  {hasPr ? (
+                    <SessionPrIcon compact prStatus={prStatus} prCiState={session.prCiState} />
                   ) : null}
                 </span>
               ) : undefined

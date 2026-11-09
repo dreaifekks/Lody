@@ -18,13 +18,15 @@ import {
 } from 'react';
 import { getDefaultStore } from 'jotai';
 import { createSessionSendResources } from '../src/lib/session-send-resources';
+import { selectedMessageMarkdown } from '../src/components/ai-gui/message-quote-markdown';
 import { authTokenAtom, runtimeAtom } from '../src/atoms/runtime';
 import { localProbeResultAtom } from '../src/atoms/local-probe';
 import {
   canUseElectronLocalFileSend,
   sendSessionFileToLocalRuntime,
 } from '../src/lib/electron-session-file-sender';
-import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
+import { currentWorkspaceIdAtom, setWorkspaceContextAtom } from '../src/atoms/workspace-context';
+import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { computeSha256Hex, uploadSessionFile } from '../src/lib/session-file-upload';
 import { uploadSessionImage } from '../src/lib/session-image-upload';
 import { createRoot, type Root } from 'react-dom/client';
@@ -162,7 +164,7 @@ import {
 import { initI18n } from '../src/i18n';
 import { PASTED_TEXT_FILE_MIN_CHAR_COUNT } from '../src/lib/pasted-text-draft';
 import { toast } from '@/lib/toast';
-import { formatMessageQuote } from '@lody/shared';
+import { formatMessageQuote, getSessionRoomId } from '@lody/shared';
 import { conversationQuoteDraftKey } from '../src/lib/conversation-quote-draft';
 
 (
@@ -314,6 +316,8 @@ describe('SessionChatInputArea submission feedback', () => {
     getDefaultStore().set(localProbeResultAtom, null);
     getDefaultStore().set(authTokenAtom, null);
     getDefaultStore().set(currentWorkspaceIdAtom, null);
+    getDefaultStore().set(sessionMetaCacheAtom, {});
+    getDefaultStore().set(setWorkspaceContextAtom, { slug: null, workspaceId: null });
     vi.restoreAllMocks();
     Reflect.deleteProperty(window, '__LODY_NATIVE__');
     Reflect.deleteProperty(window.navigator, 'userAgent');
@@ -392,6 +396,65 @@ describe('SessionChatInputArea submission feedback', () => {
     });
     return container!.querySelector('textarea')!;
   }
+
+  it('retires the shown prompt suggestion once a sent message is accepted', async () => {
+    const store = getDefaultStore();
+    let publish: ((text: string | null) => void) | undefined;
+    store.set(runtimeAtom, {
+      workspaceId: 'workspace-upload',
+      workspaceSlug: 'workspace-upload',
+      sendResources: resources,
+      subscribePromptSuggestion: (
+        _machineId: string,
+        _sessionId: string,
+        listener: (text: string | null) => void
+      ) => {
+        publish = listener;
+        listener('Run the tests');
+        return () => {
+          publish = undefined;
+        };
+      },
+    } as never);
+    store.set(setWorkspaceContextAtom, {
+      slug: 'workspace-upload',
+      workspaceId: 'workspace-upload' as never,
+    });
+    store.set(sessionMetaCacheAtom, {
+      [getSessionRoomId('suggestion-send' as never)]: { machineId: 'machine-1' } as SessionMeta,
+    });
+    const accept = deferredBoolean();
+    const submitted: unknown[] = [];
+    const textarea = await renderComposer({
+      sessionId: 'suggestion-send',
+      onSendMessage: (blocks) => {
+        submitted.push(blocks);
+        return accept.promise;
+      },
+      overrides: { initialInputText: '' },
+    });
+    const hint = () => container!.querySelector('[data-prompt-suggestion]');
+    expect(hint()?.textContent).toContain('Run the tests');
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      );
+    });
+    expect(textarea.value).toBe('Run the tests');
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      );
+    });
+    expect(submitted).toHaveLength(1);
+    await act(async () => accept.resolve(true));
+    // The previous turn is still running: the daemon has not replaced the suggestion yet.
+    await act(async () => publish?.('Run the tests'));
+    expect(textarea.value).toBe('');
+    expect(hint()).toBeNull();
+    await act(async () => publish?.('Open a PR'));
+    expect(hint()?.textContent).toContain('Open a PR');
+  });
 
   it('restores an archived conversation from the composer without losing its draft', async () => {
     let finishRestore!: () => void;
@@ -481,6 +544,68 @@ describe('SessionChatInputArea submission feedback', () => {
     });
   }
 
+  it.each([true, false])(
+    'retires command hydration only after /compact acceptance=%s',
+    async (accepted) => {
+      const acceptance = deferredBoolean();
+      const submitted: SessionInputBlock[][] = [];
+      const textarea = await renderComposer({
+        onSendMessage: (blocks) => {
+          submitted.push(blocks);
+          return acceptance.promise;
+        },
+        overrides: {
+          initialInputText: '',
+          availableCommands: [{ name: 'compact', description: 'Compact history' }],
+        },
+      });
+      const commandRanges = () => container!.querySelectorAll('[data-mention-kind="command"]');
+      const input = async (text: string, inputType = 'insertText') => {
+        await act(async () => {
+          textarea.focus();
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(
+            textarea,
+            text
+          );
+          textarea.setSelectionRange(text.length, text.length);
+          textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType }));
+        });
+      };
+      await input('/compact');
+      // Commit the command menu item before submitting the message.
+      await act(async () => {
+        textarea.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        );
+      });
+      const commandDraft = textarea.value;
+      expect(commandDraft.trimEnd()).toBe('/compact');
+      expect(commandRanges().length).toBeGreaterThan(0);
+      await submit('button');
+      expect(submitted[0]).toMatchObject([{ type: 'text', text: '/compact' }]);
+      expect(textarea.value).toBe('');
+      await act(async () => acceptance.resolve(accepted));
+      if (!accepted) {
+        expect(textarea.value).toBe(commandDraft);
+        expect(commandRanges().length).toBeGreaterThan(0);
+        expect(commandRanges()[0]?.textContent).toBe('/compact');
+        return;
+      }
+      expect(textarea.value).toBe('');
+      // A first fragment shorter than /compact must not consume its stale seed.
+      const mixedText = '中文测试123456789';
+      for (let length = 1; length <= mixedText.length; length++) {
+        await input(mixedText.slice(0, length));
+      }
+      expect(commandRanges()).toHaveLength(0);
+      textarea.select();
+      await input('', 'deleteContentBackward');
+      await input(mixedText, 'historyUndo');
+      expect(textarea.value).toBe(mixedText);
+      expect(commandRanges()).toHaveLength(0);
+    }
+  );
+
   it('inserts a quote at the caret, preserves it after rejection, and restores deletion with undo/redo', async () => {
     scheduleMachine.value = { protocolCapabilities: { messageQuotes: 1 } } as MachineMeta;
     const composerRef = createRef<SessionChatInputAreaHandle>();
@@ -541,6 +666,37 @@ describe('SessionChatInputArea submission feedback', () => {
     });
     await submit('button');
     expect(submitted[1]).toEqual(submitted[0]);
+  });
+
+  it('sends the selected Markdown snapshot in the actual session input', async () => {
+    scheduleMachine.value = { protocolCapabilities: { messageQuotes: 1 } } as MachineMeta;
+    const composerRef = createRef<SessionChatInputAreaHandle>();
+    const submitted: SessionInputBlock[][] = [];
+    await renderComposer({
+      composerRef,
+      onSendMessage: async (blocks) => {
+        submitted.push(blocks);
+        return true;
+      },
+    });
+    const region = document.createElement('div');
+    region.innerHTML =
+      '<div data-message-quote-text><p><strong>Important</strong> <a href="https://example.com">guide</a></p><ul><li>first</li><li>second</li></ul></div>';
+    document.body.append(region);
+    const range = document.createRange();
+    range.selectNodeContents(region.querySelector('[data-message-quote-text]')!);
+    const markdown = selectedMessageMarkdown(range, region);
+    region.remove();
+    expect(markdown).toBe('**Important** [guide](https://example.com)\n\n* first\n* second');
+    await act(async () => {
+      expect(composerRef.current!.addMessageQuote(markdown)).toBe(true);
+    });
+    await submit('button');
+    expect(submitted[0]?.[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining(formatMessageQuote(markdown)),
+      spans: [{ kind: 'message_quote', quoteVersion: 1 }],
+    });
   });
 
   it('preserves a quote draft when the target machine loses support', async () => {

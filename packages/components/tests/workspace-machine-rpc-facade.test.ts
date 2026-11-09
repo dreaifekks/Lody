@@ -28,6 +28,104 @@ afterEach(() => {
 });
 
 describe('createWorkspaceMachineRpcFacade', () => {
+  it('negotiates blob persistence while retaining writer-only encrypted diff authority', async () => {
+    for (const [plane, protectedContent, supported, persist] of [
+      ['local', false, true, false],
+      ['cloud', false, true, true],
+      ['cloud', true, true, false],
+      ['cloud', false, false, true],
+    ] as const) {
+      let role: 'read' | 'write' = 'read';
+      const facade = createWorkspaceMachineRpcFacade({
+        workspaceId,
+        protectedContent,
+        protectedCodeCollabRole: () => role,
+        getMachineProtocolCapabilities: async () =>
+          supported ? { codeCollabDiffBlobs: 1 } : undefined,
+        targetRouter: {
+          getPlaneForMachine: () => plane,
+          resolvePlaneForMachine: async () => plane,
+        },
+        getMachineRpcClient: async () => {
+          throw new Error('Plaintext fallback opened.');
+        },
+        requestEncryptedFeature: async (request) => {
+          expect(request.ownerSessionId).toBe('parent');
+          expect(request.params).toHaveProperty('sessionId', sessionId);
+          if (request.method === 'code-collab/open-diff-manifest')
+            return { ok: true, result: { status: 'ok', entries: [], nextCursor: null } };
+          if (request.method === 'code-collab/read-blob')
+            return {
+              ok: true,
+              result: { offset: 0, length: 0, totalBytes: 0, encoding: 'gzip-base64', data: '' },
+            };
+          throw new Error('Unexpected action.');
+        },
+      });
+      expect(await facade.getDiffBlobTransportOptions(remoteMachineId)).toEqual({
+        supported,
+        persist,
+        scope: workspaceId,
+      });
+      if (protectedContent) {
+        expect(
+          await facade.requestCodeCollabOpenDiffManifest(remoteMachineId, {
+            sessionId,
+            path: 'a.ts',
+          })
+        ).toMatchObject({ status: 'error', code: 'permission_denied' });
+        expect(
+          await facade.requestCodeCollabReadBlob(remoteMachineId, {
+            sessionId,
+            key: `sha256:${'1'.repeat(64)}`,
+            offset: 0,
+            length: 100,
+          })
+        ).toMatchObject({ status: 'error', code: 'permission_denied' });
+        role = 'write';
+        expect(
+          await facade.requestCodeCollabOpenDiffManifest(
+            remoteMachineId,
+            { sessionId, path: 'a.ts' },
+            { ownerSessionId: 'parent' }
+          )
+        ).toEqual({ status: 'ok', entries: [], nextCursor: null });
+        expect(
+          await facade.requestCodeCollabReadBlob(
+            remoteMachineId,
+            { sessionId, key: `sha256:${'1'.repeat(64)}`, offset: 0, length: 100 },
+            { ownerSessionId: 'parent' }
+          )
+        ).toMatchObject({ offset: 0, length: 0, totalBytes: 0 });
+      }
+    }
+  });
+
+  it.each([true, false])(
+    'does not wait for cold routing to classify the optional blob cache (supported=%s)',
+    async (supported) => {
+      const facade = createWorkspaceMachineRpcFacade({
+        workspaceId,
+        getMachineProtocolCapabilities: async () =>
+          supported ? { codeCollabDiffBlobs: 1 } : undefined,
+        targetRouter: {
+          getPlaneForMachine: () => null,
+          resolvePlaneForMachine: async () => {
+            throw new Error('workspace_target_pending');
+          },
+        },
+        getMachineRpcClient: async () => {
+          throw new Error('No body RPC expected.');
+        },
+      });
+      expect(await facade.getDiffBlobTransportOptions(remoteMachineId)).toEqual({
+        supported,
+        scope: workspaceId,
+        persist: false,
+      });
+    }
+  );
+
   it('retrieves every remote wait page using a separately authorized cursor', async () => {
     const claims: unknown[] = [];
     const uninstall = installCloudHttpPort({
@@ -1026,6 +1124,115 @@ describe('machine bug report client log', () => {
 });
 
 describe('local MCP discovery routing', () => {
+  it.each(['local', 'cloud', 'unsupported'] as const)(
+    'limits Sorbet credentials to a capable local target (%s)',
+    async (route) => {
+      const sent: unknown[] = [];
+      vi.stubGlobal('window', {
+        __LODY_ELECTRON__: true,
+        ipc: {
+          invoke: async (_channel: string, request: unknown) => {
+            sent.push(request);
+            return {
+              ok: true,
+              result: {
+                type: 'sorbet/credentials-list',
+                credentials: [{ providerId: 'openai', type: 'oauth' }],
+              },
+            };
+          },
+        },
+      });
+      const facade = createWorkspaceMachineRpcFacade({
+        workspaceId,
+        getMachineProtocolCapabilities: async () =>
+          route === 'unsupported' ? {} : { sorbetCredentials: 1 },
+        targetRouter: {
+          getPlaneForMachine: () => (route === 'cloud' ? 'cloud' : 'local'),
+          resolvePlaneForMachine: async () => (route === 'cloud' ? 'cloud' : 'local'),
+        },
+        getMachineRpcClient: async () => {
+          throw new Error('remote RPC forbidden');
+        },
+      });
+      const promise = facade.requestLocalSorbetCredentials(localMachineId, {
+        method: 'sorbet/credentials-list',
+        params: { configId: 'config' },
+      });
+      if (route === 'local') {
+        expect(await promise).toEqual({
+          type: 'sorbet/credentials-list',
+          credentials: [{ providerId: 'openai', type: 'oauth' }],
+        });
+        expect(sent).toEqual([
+          expect.objectContaining({
+            machineId: localMachineId,
+            workspaceId,
+            method: 'sorbet/credentials-list',
+            params: { configId: 'config' },
+          }),
+        ]);
+      } else {
+        await expect(promise).rejects.toThrow('unsupported on this machine');
+        expect(sent).toEqual([]);
+      }
+    }
+  );
+  it.each(['sorbet/credentials-list', 'sorbet/credentials-logout'] as const)(
+    'routes remote %s only through encrypted feature RPC',
+    async (method) => {
+      const received: unknown[] = [];
+      const base = {
+        workspaceId,
+        getMachineProtocolCapabilities: async () => ({ sorbetCredentialsRemote: 1 }),
+        targetRouter: {
+          getPlaneForMachine: () => 'cloud' as const,
+          resolvePlaneForMachine: async () => 'cloud' as const,
+        },
+        getMachineRpcClient: async () => {
+          throw new Error('plaintext RPC forbidden');
+        },
+      };
+      const request =
+        method === 'sorbet/credentials-list'
+          ? ({ method, params: { configId: 'config' } } as const)
+          : ({ method, params: { configId: 'config', providerId: 'openai' } } as const);
+      const facade = createWorkspaceMachineRpcFacade({
+        ...base,
+        requestEncryptedFeature: async (value) => {
+          received.push(value);
+          return {
+            ok: true,
+            result:
+              method === 'sorbet/credentials-list'
+                ? { type: method, credentials: [] }
+                : { type: method },
+          };
+        },
+      });
+      expect(await facade.requestLocalSorbetCredentials(remoteMachineId, request)).toMatchObject({
+        type: method,
+      });
+      expect(received).toEqual([
+        expect.objectContaining({ ...request, machineId: remoteMachineId, workspaceId }),
+      ]);
+      await expect(
+        createWorkspaceMachineRpcFacade(base).requestLocalSorbetCredentials(
+          remoteMachineId,
+          request
+        )
+      ).rejects.toThrow('transport unavailable');
+      await expect(
+        createWorkspaceMachineRpcFacade({
+          ...base,
+          getMachineProtocolCapabilities: async () => ({ sorbetCredentials: 1 }),
+          requestEncryptedFeature: async () => {
+            throw new Error('should not send');
+          },
+        }).requestLocalSorbetCredentials(remoteMachineId, request)
+      ).rejects.toThrow('unsupported');
+    }
+  );
   const server = {
     id: 'test' as McpServerId,
     name: 'Test',
@@ -1629,7 +1836,7 @@ describe('encrypted remote files from a browser or mobile device', () => {
     });
   });
 
-  it('refuses Guest writes and diffs before signing, while reads stay available', async () => {
+  it('refuses Guest writes and legacy diff actions before signing, while reads stay available', async () => {
     let role: 'read' | 'write' = 'write';
     const machine = encryptedMachine({ 'src/app.ts': 'one\n' });
     const facade = encryptedFacade(machine, () => role);

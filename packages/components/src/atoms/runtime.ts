@@ -1,3 +1,9 @@
+import type {
+  CodeCollabOpenDiffManifestRequest,
+  CodeCollabOpenDiffManifestResponse,
+  CodeCollabReadBlobRequest,
+  CodeCollabReadBlobResponse,
+} from '@lody/shared';
 import type { FileDownloadRequest, FileDownloadResponse } from '@lody/shared';
 import type {
   MemoryProviderRequest,
@@ -508,6 +514,19 @@ export type WorkspaceRuntime = {
     request: CodeCollabV2SaveTextRequest,
     options?: { timeoutMs?: number; ownerSessionId?: SessionId | string }
   ) => Promise<CodeCollabV2SaveTextResponse | CodeCollabV2Error | null>;
+  getDiffBlobTransportOptions: (
+    machineId: MachineId
+  ) => Promise<{ supported: boolean; scope: string; persist: boolean }>;
+  requestCodeCollabOpenDiffManifest: (
+    machineId: MachineId,
+    request: CodeCollabOpenDiffManifestRequest,
+    options?: { timeoutMs?: number; ownerSessionId?: SessionId | string }
+  ) => Promise<CodeCollabOpenDiffManifestResponse | CodeCollabV2Error | null>;
+  requestCodeCollabReadBlob: (
+    machineId: MachineId,
+    request: CodeCollabReadBlobRequest,
+    options?: { timeoutMs?: number; ownerSessionId?: SessionId | string }
+  ) => Promise<CodeCollabReadBlobResponse | CodeCollabV2Error | null>;
   requestCodeCollabOpenCurrentDiff: (
     machineId: MachineId,
     request: CodeCollabV2OpenCurrentDiffRequest,
@@ -582,6 +601,49 @@ export type WorkspaceRuntime = {
     server: WorkspaceMcpServerMeta,
     requesterUserId?: string
   ) => Promise<McpToolListResult>;
+  requestLocalSorbetCredentials: (
+    machineId: MachineId,
+    request:
+      | Pick<
+          Extract<
+            import('@lody/shared').LocalMachineRpcRequest,
+            { method: 'sorbet/credentials-list' }
+          >,
+          'method' | 'params'
+        >
+      | Pick<
+          Extract<
+            import('@lody/shared').LocalMachineRpcRequest,
+            { method: 'sorbet/credentials-logout' }
+          >,
+          'method' | 'params'
+        >
+  ) => Promise<import('@lody/shared/local-machine-rpc').SorbetCredentialsResult>;
+  requestLocalSorbetProviders: (
+    machineId: MachineId,
+    request:
+      | Pick<
+          Extract<
+            import('@lody/shared').LocalMachineRpcRequest,
+            { method: 'sorbet/providers-list' }
+          >,
+          'method' | 'params'
+        >
+      | Pick<
+          Extract<
+            import('@lody/shared').LocalMachineRpcRequest,
+            { method: 'sorbet/providers-create' }
+          >,
+          'method' | 'params'
+        >
+      | Pick<
+          Extract<
+            import('@lody/shared').LocalMachineRpcRequest,
+            { method: 'sorbet/providers-delete' }
+          >,
+          'method' | 'params'
+        >
+  ) => Promise<import('@lody/shared/local-machine-rpc').SorbetProvidersResult>;
   requestLocalMcpAuthentication: (
     machineId: MachineId,
     params: Extract<

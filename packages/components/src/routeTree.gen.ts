@@ -48,6 +48,7 @@ import { Route as WorkspaceNameAuthSettingsMyMachinesRouteImport } from './route
 import { Route as WorkspaceNameAuthSettingsMemoryRouteImport } from './routes/$workspaceName/_auth/settings/memory';
 import { Route as WorkspaceNameAuthSettingsMcpRouteImport } from './routes/$workspaceName/_auth/settings/mcp';
 import { Route as WorkspaceNameAuthSettingsMachinesRouteImport } from './routes/$workspaceName/_auth/settings/machines';
+import { Route as WorkspaceNameAuthSettingsLodyAgentRouteImport } from './routes/$workspaceName/_auth/settings/lody-agent';
 import { Route as WorkspaceNameAuthSettingsLanRouteImport } from './routes/$workspaceName/_auth/settings/lan';
 import { Route as WorkspaceNameAuthSettingsKeyboardShortcutsRouteImport } from './routes/$workspaceName/_auth/settings/keyboard-shortcuts';
 import { Route as WorkspaceNameAuthSettingsGithubRouteImport } from './routes/$workspaceName/_auth/settings/github';
@@ -264,6 +265,12 @@ const WorkspaceNameAuthSettingsMachinesRoute = WorkspaceNameAuthSettingsMachines
   path: '/machines',
   getParentRoute: () => WorkspaceNameAuthSettingsRoute,
 } as any);
+const WorkspaceNameAuthSettingsLodyAgentRoute =
+  WorkspaceNameAuthSettingsLodyAgentRouteImport.update({
+    id: '/lody-agent',
+    path: '/lody-agent',
+    getParentRoute: () => WorkspaceNameAuthSettingsRoute,
+  } as any);
 const WorkspaceNameAuthSettingsLanRoute = WorkspaceNameAuthSettingsLanRouteImport.update({
   id: '/lan',
   path: '/lan',
@@ -398,6 +405,7 @@ export interface FileRoutesByFullPath {
   '/$workspaceName/settings/github': typeof WorkspaceNameAuthSettingsGithubRoute;
   '/$workspaceName/settings/keyboard-shortcuts': typeof WorkspaceNameAuthSettingsKeyboardShortcutsRoute;
   '/$workspaceName/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
+  '/$workspaceName/settings/lody-agent': typeof WorkspaceNameAuthSettingsLodyAgentRoute;
   '/$workspaceName/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
   '/$workspaceName/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
@@ -451,6 +459,7 @@ export interface FileRoutesByTo {
   '/$workspaceName/settings/github': typeof WorkspaceNameAuthSettingsGithubRoute;
   '/$workspaceName/settings/keyboard-shortcuts': typeof WorkspaceNameAuthSettingsKeyboardShortcutsRoute;
   '/$workspaceName/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
+  '/$workspaceName/settings/lody-agent': typeof WorkspaceNameAuthSettingsLodyAgentRoute;
   '/$workspaceName/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
   '/$workspaceName/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
@@ -510,6 +519,7 @@ export interface FileRoutesById {
   '/$workspaceName/_auth/settings/github': typeof WorkspaceNameAuthSettingsGithubRoute;
   '/$workspaceName/_auth/settings/keyboard-shortcuts': typeof WorkspaceNameAuthSettingsKeyboardShortcutsRoute;
   '/$workspaceName/_auth/settings/lan': typeof WorkspaceNameAuthSettingsLanRoute;
+  '/$workspaceName/_auth/settings/lody-agent': typeof WorkspaceNameAuthSettingsLodyAgentRoute;
   '/$workspaceName/_auth/settings/machines': typeof WorkspaceNameAuthSettingsMachinesRoute;
   '/$workspaceName/_auth/settings/mcp': typeof WorkspaceNameAuthSettingsMcpRoute;
   '/$workspaceName/_auth/settings/memory': typeof WorkspaceNameAuthSettingsMemoryRoute;
@@ -569,6 +579,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/settings/github'
     | '/$workspaceName/settings/keyboard-shortcuts'
     | '/$workspaceName/settings/lan'
+    | '/$workspaceName/settings/lody-agent'
     | '/$workspaceName/settings/machines'
     | '/$workspaceName/settings/mcp'
     | '/$workspaceName/settings/memory'
@@ -622,6 +633,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/settings/github'
     | '/$workspaceName/settings/keyboard-shortcuts'
     | '/$workspaceName/settings/lan'
+    | '/$workspaceName/settings/lody-agent'
     | '/$workspaceName/settings/machines'
     | '/$workspaceName/settings/mcp'
     | '/$workspaceName/settings/memory'
@@ -680,6 +692,7 @@ export interface FileRouteTypes {
     | '/$workspaceName/_auth/settings/github'
     | '/$workspaceName/_auth/settings/keyboard-shortcuts'
     | '/$workspaceName/_auth/settings/lan'
+    | '/$workspaceName/_auth/settings/lody-agent'
     | '/$workspaceName/_auth/settings/machines'
     | '/$workspaceName/_auth/settings/mcp'
     | '/$workspaceName/_auth/settings/memory'
@@ -992,6 +1005,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceNameAuthSettingsMachinesRouteImport;
       parentRoute: typeof WorkspaceNameAuthSettingsRoute;
     };
+    '/$workspaceName/_auth/settings/lody-agent': {
+      id: '/$workspaceName/_auth/settings/lody-agent';
+      path: '/lody-agent';
+      fullPath: '/$workspaceName/settings/lody-agent';
+      preLoaderRoute: typeof WorkspaceNameAuthSettingsLodyAgentRouteImport;
+      parentRoute: typeof WorkspaceNameAuthSettingsRoute;
+    };
     '/$workspaceName/_auth/settings/lan': {
       id: '/$workspaceName/_auth/settings/lan';
       path: '/lan';
@@ -1167,6 +1187,7 @@ interface WorkspaceNameAuthSettingsRouteChildren {
   WorkspaceNameAuthSettingsGithubRoute: typeof WorkspaceNameAuthSettingsGithubRoute;
   WorkspaceNameAuthSettingsKeyboardShortcutsRoute: typeof WorkspaceNameAuthSettingsKeyboardShortcutsRoute;
   WorkspaceNameAuthSettingsLanRoute: typeof WorkspaceNameAuthSettingsLanRoute;
+  WorkspaceNameAuthSettingsLodyAgentRoute: typeof WorkspaceNameAuthSettingsLodyAgentRoute;
   WorkspaceNameAuthSettingsMachinesRoute: typeof WorkspaceNameAuthSettingsMachinesRoute;
   WorkspaceNameAuthSettingsMcpRoute: typeof WorkspaceNameAuthSettingsMcpRoute;
   WorkspaceNameAuthSettingsMemoryRoute: typeof WorkspaceNameAuthSettingsMemoryRoute;
@@ -1195,6 +1216,7 @@ const WorkspaceNameAuthSettingsRouteChildren: WorkspaceNameAuthSettingsRouteChil
   WorkspaceNameAuthSettingsGithubRoute: WorkspaceNameAuthSettingsGithubRoute,
   WorkspaceNameAuthSettingsKeyboardShortcutsRoute: WorkspaceNameAuthSettingsKeyboardShortcutsRoute,
   WorkspaceNameAuthSettingsLanRoute: WorkspaceNameAuthSettingsLanRoute,
+  WorkspaceNameAuthSettingsLodyAgentRoute: WorkspaceNameAuthSettingsLodyAgentRoute,
   WorkspaceNameAuthSettingsMachinesRoute: WorkspaceNameAuthSettingsMachinesRoute,
   WorkspaceNameAuthSettingsMcpRoute: WorkspaceNameAuthSettingsMcpRoute,
   WorkspaceNameAuthSettingsMemoryRoute: WorkspaceNameAuthSettingsMemoryRoute,

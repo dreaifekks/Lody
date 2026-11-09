@@ -70,7 +70,7 @@ describe('session prompt suggestion subscription', () => {
     const root = createRoot(host);
     function Probe({ sessionId }: { sessionId: SessionId }) {
       const suggestion = useSessionPromptSuggestion(sessionId);
-      return createElement('span', null, suggestion ?? 'none');
+      return createElement('span', null, suggestion.text ?? 'none');
     }
     const render = (sessionId: string) =>
       act(async () =>
@@ -98,6 +98,69 @@ describe('session prompt suggestion subscription', () => {
       );
       expect(host.textContent).toBe('none');
       expect(callbacks.size).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('hides a suggestion answered by a send until a different suggestion arrives, across remounts', async () => {
+    const store = createStore();
+    let publish: ((value: string | null) => void) | undefined;
+    let latest: string | null = 'Run the tests';
+    const runtime = {
+      workspaceSlug: 'answered',
+      workspaceId: 'answered' as WorkspaceId,
+      subscribePromptSuggestion: (
+        _machine: string,
+        _session: string,
+        listener: (value: string | null) => void
+      ) => {
+        publish = listener;
+        listener(latest);
+        return () => {
+          publish = undefined;
+        };
+      },
+    } as WorkspaceRuntime;
+    store.set(runtimeAtom, runtime);
+    store.set(setWorkspaceContextAtom, { slug: 'answered', workspaceId: runtime.workspaceId });
+    store.set(sessionMetaCacheAtom, {
+      [getSessionRoomId('answered-session' as SessionId)]: { machineId: 'machine' } as SessionMeta,
+    });
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    let markAnswered: ((text: string | null) => void) | undefined;
+    function Probe() {
+      const suggestion = useSessionPromptSuggestion('answered-session' as SessionId);
+      markAnswered = suggestion.markAnswered;
+      return createElement('span', null, suggestion.text ?? 'none');
+    }
+    const emit = (value: string | null) =>
+      act(async () => {
+        latest = value;
+        publish?.(value);
+      });
+    const mount = () =>
+      act(async () => root.render(createElement(Provider, { store }, createElement(Probe))));
+    try {
+      await mount();
+      expect(host.textContent).toBe('Run the tests');
+      await act(async () => markAnswered?.('Run the tests'));
+      expect(host.textContent).toBe('none');
+      // The running turn has not replaced it yet; a transient empty route must not revive it.
+      await emit('Run the tests');
+      await emit(null);
+      await emit('Run the tests');
+      expect(host.textContent).toBe('none');
+      // A remounted composer (tab switch) keeps the answered state.
+      await act(async () => root.render(createElement('span')));
+      await mount();
+      expect(host.textContent).toBe('none');
+      await emit('Open a PR');
+      expect(host.textContent).toBe('Open a PR');
+      // A newer suggestion releases the mark, so the earlier text can return later.
+      await emit('Run the tests');
+      expect(host.textContent).toBe('Run the tests');
     } finally {
       await act(async () => root.unmount());
     }
@@ -143,7 +206,7 @@ it('removes the suggestion and Tab hint from the real composer when the workspac
     return createElement(ChatComposer, {
       promptValue: value,
       onPromptChange: setValue,
-      promptSuggestion: suggestion,
+      promptSuggestion: suggestion.text,
     });
   }
   const render = () =>

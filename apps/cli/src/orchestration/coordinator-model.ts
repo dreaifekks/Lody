@@ -1,26 +1,66 @@
-import type { SessionHistoryInput, SessionMeta, StoredLodyOperation } from '@lody/shared';
-import { readChatFailureNotice } from '@lody/shared';
+import type {
+  LodyError,
+  SessionHistoryInput,
+  SessionMeta,
+  StoredLodyOperation,
+} from '@lody/shared';
+import { describeChatFailure, readChatFailureNotice } from '@lody/shared';
 import {
   getOperationProgressTargetKey,
   type OperationProgressStatusByTarget,
 } from '@lody/shared/session-data';
 export { assistantOutputPreview, isTerminalAssistantEntry } from '@lody/shared';
-const MAX_FAILURE_DETAIL_CHARS = 500;
+const failureReferenceMs = (output: readonly SessionHistoryInput[], fallbackMs: number): number => {
+  const notice = readChatFailureNotice(output);
+  if (!notice) return fallbackMs;
+  const parsed = notice.at ? Date.parse(notice.at) : Number.NaN;
+  if (Number.isFinite(parsed)) return parsed;
+  // The notice normally carries its own timestamp. A malformed one degrades to
+  // the coordinator clock, never a clock read inside this native model.
+  for (let index = output.length - 1; index >= 0; index -= 1) {
+    const turnAt = Date.parse(output[index]?.timestamp ?? '');
+    if (Number.isFinite(turnAt)) return turnAt;
+  }
+  return fallbackMs;
+};
 
 /**
  * Explains a failed target from the durable `chat_failed` notice recorded after
- * its user turn. The reason and original message travel in the error message so
- * older readers of the strict Operation result schema keep working. Without a
- * notice the generic text stands; a cause is never guessed.
+ * its user turn. The reason and redacted provider text remain in the message for
+ * plain-text consumers; readers that validate the strict Operation schema get
+ * the normalized cause and quota reset as structured fields. Without a notice
+ * the generic text stands; a cause is never guessed.
  */
-export const targetFailureMessage = (output: readonly SessionHistoryInput[]): string => {
+export const targetFailureError = (
+  output: readonly SessionHistoryInput[],
+  assistantTurnId?: string,
+  referenceMs = 0
+): LodyError => {
   const notice = readChatFailureNotice(output);
-  if (!notice) return 'Target Turn failed.';
-  const detail = notice.message
-    ? `: ${Array.from(notice.message).slice(0, MAX_FAILURE_DETAIL_CHARS).join('')}`
-    : '';
-  return `Target Turn failed (${notice.reason ?? 'unknown'})${detail}`;
+  if (!notice)
+    return {
+      code: 'TARGET_FAILED',
+      message: 'Target Turn failed.',
+      retryable: false,
+      reason: 'unknown',
+    };
+  const failure = describeChatFailure(notice, failureReferenceMs(output, referenceMs));
+  const detail = failure.detail ? `: ${failure.detail}` : '';
+  return {
+    code: 'TARGET_FAILED',
+    message: `Target Turn failed (${notice.reason ?? 'unknown'})${detail}`,
+    retryable: failure.retryable,
+    reason: failure.reason,
+    ...(failure.detail ? { detail: failure.detail } : {}),
+    ...(failure.resetAt ? { resetAt: failure.resetAt } : {}),
+    ...(assistantTurnId ? { assistantTurnId } : {}),
+  };
 };
+
+export const targetFailureMessage = (
+  output: readonly SessionHistoryInput[],
+  referenceMs = 0
+): string => targetFailureError(output, undefined, referenceMs).message;
 
 /** Bounds a handoff walk so a malformed steer ledger cannot loop reconciliation. */
 export const MAX_STEER_HANDOFF_HOPS = 16;

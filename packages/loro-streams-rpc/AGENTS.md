@@ -1,7 +1,6 @@
 # packages/loro-streams-rpc
 
-Edit `AGENTS.md`; `CLAUDE.md` symlinks here. Root rules apply.
-
+Edit `AGENTS.md`;
 Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.md).
 
 ## Invariants
@@ -17,8 +16,12 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
   The closed pure-read list uses fresh read authority, never execution journals; other admitted
   Code Collab/preview actions require write authority and execution claims. Keep same-member
   machine binding, exact originals and explicit size errors; never fall back to ordinary RPC.
-- Only verified `authorizeTarget: false` produces `e2ee_machine_not_shared`;
-  authorization failure produces `e2ee_machine_sharing_unavailable`.
+- Encrypted dispatch fails with `e2ee_machine_not_shared` only if `authorizeTarget`
+  returns a verified `false`. An unknown policy signs, because senders withhold input
+  only for a known withdrawal and the receiving machine decides.
+- A fully verified ledger view that no longer contains the requester classifies
+  dispatch/read as exact `e2ee_device_revoked` (membership retained) or
+  `e2ee_member_removed`; never as generic `e2ee_rpc_denied`.
 - Encrypted dispatch retains exact frames across retry/fallback. Receipt ACK never
   completes the shared execution claim. [Ownership/close](README.md#encrypted-dispatch).
 - Request stream ids are workspace/machine scoped:
@@ -70,17 +73,16 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
   requests before their final response/error. Key capability refresh context and
   pending correlation by `configId`.
 - Capability refresh cancellation uses the control-lane
-  `machine/acp-capabilities-refresh-cancel` method keyed by the original RPC id. Client
+  `machine/acp-capabilities-refresh-cancel` method keyed by original RPC id. Client
   abort, response timeout, and response-dispatcher stop/owner cancellation all discard
-  that exact pending entry and, once the original request was appended, best-effort append
+  that exact pending entry and, once original request was appended, best-effort append
   one cancel request. A pending request must return at its response deadline even if the original
   append POST is still half-open; if that append later succeeds, append the cancel then. The server
   must abort that request's work and suppress all later
-  progress/final envelopes; a cancel for one shared CLI probe consumer must not abort other
-  consumers of the same launch/config work.
+  progress/final envelopes; a cancel for one shared CLI probe consumer never abort other
+  consumers of same launch/config work.
 - `machine/acp-authenticate` similarly may append
-  `machine/acp-authentication-progress` envelopes before its final response. Progress
-  output must not resolve or remove the pending authentication request. Browser-returned
+  `machine/acp-authentication-progress` envelopes before its final response. Progress never settles the pending authentication request. Browser-returned
   codes, method/form replies, and other authentication input must never appear in retained
   request JSON: the target server advertises an ephemeral ECDH public key in progress, the
   client persists only an AES-GCM envelope bound to the authentication request and interaction,
@@ -101,11 +103,9 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
 - Remote Streams wraps Code Collab params, results and business error `data` in
   v2 owner-session content-key envelopes. Keep business schemas unchanged;
   `ownerSessionId` is transport metadata and children use the parent owner key.
-- The CLI server validates the envelope owner against the business `sessionId`'s
-  resolved owner session before dispatching Code Collab handlers; mismatches return
-  `permission_denied` and must not call the file operation.
-- Session-scoped Code Collab RPC methods are not part of this transport. Add v2 work
-  under the ordinary `code-collab/*` machine methods.
-- `file/preview` (v3) stays outside `code-collab/` and must not activate Code Collab.
+- Validate envelope ownership against resolved `sessionId` ownership before dispatch.
+  Mismatches return `permission_denied` without file operations.
+- Add Code Collab v2 only under machine `code-collab/*`, never session-scoped methods.
+- `file/preview` v3 stays outside `code-collab/` and never activates it.
   Use its owner-session envelope and verification; every encrypt/decrypt/error-decode
   site calls `isOwnerScopedEncryptedRpcMethod`.

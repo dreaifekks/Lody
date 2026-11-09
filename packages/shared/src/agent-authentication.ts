@@ -132,7 +132,7 @@ export const supportsBuiltinAuthentication = (input: {
 
 /**
  * True when the config uses agent-driven authentication (registry, custom, or
- * builtin Devin), which authenticates
+ * builtin Devin or Sorbet), which authenticates
  * through the standard ACP `initialize` → `authenticate` exchange.
  *
  * The methods are advertised by the agent itself, so the list cannot be known
@@ -147,7 +147,7 @@ export const usesAcpProtocolAuthentication = (
 ): boolean =>
   cliType === 'registry' ||
   cliType === 'custom' ||
-  (cliType === 'builtin' && agentType === 'devin');
+  (cliType === 'builtin' && (agentType === 'devin' || agentType === 'sorbet'));
 
 /**
  * True when Lody has any sign-in flow to offer for this config after the agent

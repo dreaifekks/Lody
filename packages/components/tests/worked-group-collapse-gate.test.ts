@@ -45,18 +45,18 @@ describe('Worked for … collapse gate (buildAssistantTurnRenderLayout)', () => 
     expect(hasVisibleFinalContent([toolCall(), toolCall(), text('all done')], true)).toBe(true);
   });
 
-  it('an answer followed by more tool work keeps the answer visible → collapse', () => {
-    expect(hasVisibleFinalContent([text('the answer'), toolCall()], true)).toBe(true);
+  it('text followed by unfinished tool work has no answer tail → do not collapse', () => {
+    expect(hasVisibleFinalContent([text('the answer'), toolCall()], true)).toBe(false);
   });
 
   it('a failure notice folded onto a turn cut off mid-step is not an answer → do not collapse', () => {
     expect(hasVisibleFinalContent([toolCall(), chatFailed('daemon_restart')], true)).toBe(false);
   });
 
-  it('retains short prose before a tool and failure notice, so only activity can collapse', () => {
+  it('keeps interrupted narration expanded without claiming a final answer', () => {
     expect(
       hasVisibleFinalContent([text('checking'), toolCall(), chatFailed('daemon_restart')], true)
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('an answer followed by a notice still collapses the work before it', () => {
@@ -65,8 +65,8 @@ describe('Worked for … collapse gate (buildAssistantTurnRenderLayout)', () => 
     ).toBe(true);
   });
 
-  it('streaming turn folds nothing (workBlockKeys empty), so it never collapses', () => {
+  it('streaming turn keeps its work region so the reader can fold it, with no visible tail', () => {
     const { workBlockKeys } = buildAssistantTurnRenderLayout('m1', [toolCall(), toolCall()], false);
-    expect(workBlockKeys.size).toBe(0);
+    expect(workBlockKeys.size).toBe(1);
   });
 });

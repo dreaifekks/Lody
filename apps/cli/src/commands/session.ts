@@ -7,9 +7,14 @@ import {
   syncMcpCatalog,
   waitForMcpDefaultCatalog,
 } from '@/lib/workspace-mcp-store';
-import { getDaemonWorkspace } from '@/lib/session-command-environment';
+import { getDaemonWorkspace, readEncryptedMachineAccess } from '@/lib/session-command-environment';
 import type { SessionSteerResponse } from '@lody/shared';
-import { normalizeMcpServerIdSelection, resolveSessionConversationConfig } from '@lody/shared';
+import {
+  buildSessionGroupRenamePatch,
+  buildSessionTabRenamePatch,
+  normalizeMcpServerIdSelection,
+  resolveSessionConversationConfig,
+} from '@lody/shared';
 import type { SessionLiveActivity } from '@lody/shared/local-machine-rpc';
 import {
   getMachineRoomId,
@@ -369,6 +374,7 @@ type ListOptions = CommonOptions &
 
 type RenameOptions = CommonOptions & {
   title?: string;
+  group?: boolean;
 };
 
 type HistoryOptions = CommonOptions & {
@@ -2551,7 +2557,7 @@ export async function ensureTargetMachineNotOffline(args: {
   auth: AuthContext;
   workspaceId: WorkspaceId;
   machineId: MachineId;
-  manager: Pick<LoroDocumentManager, 'getOnlineMachineIds'>;
+  manager: Pick<LoroDocumentManager, 'getMachinePresenceView'>;
 }): Promise<MachinePresence> {
   const environment = getSessionCommandEnvironment();
   if (environment) {
@@ -2655,6 +2661,12 @@ async function readResolvedSessionMachineAccess(args: {
   requester: ResolvedSessionRequester;
   localProjectId?: string;
 }): Promise<MachineAccessCheckResult> {
+  const encrypted = await readEncryptedMachineAccess({
+    machineId: args.machineId,
+    requesterUserId: args.requester.userId,
+    ...(args.localProjectId ? { localProjectId: args.localProjectId } : {}),
+  });
+  if (encrypted) return encrypted;
   const environment = getSessionCommandEnvironment();
   if (environment) {
     if (args.auth !== environment.auth) throw new Error('Session command identity mismatch');
@@ -4694,7 +4706,7 @@ async function readSessionLiveStatus(args: {
   workspaceId: WorkspaceId;
   machineId: MachineId;
   sessionId: SessionId;
-  manager: Pick<LoroDocumentManager, 'getOnlineMachineIds'>;
+  manager: Pick<LoroDocumentManager, 'getMachinePresenceView'>;
 }): Promise<{
   machineOnline: boolean;
   liveStatus: SessionStatusResult['liveStatus'];
@@ -4747,7 +4759,8 @@ async function readSessionLiveStatus(args: {
 
 export type SessionLiveStatusBatchItem = {
   sessionId: SessionId;
-  machineOnline: boolean;
+  /** Three-state; an unanswered RPC never turns unknown presence into offline. */
+  machinePresence: MachinePresence;
   state?: string;
   fresh: boolean;
   observedAt?: number;
@@ -4761,7 +4774,7 @@ export async function readSessionLiveStatusesMany(args: {
   auth: AuthContext;
   workspaceId: WorkspaceId;
   sessions: ReadonlyArray<Pick<SessionMeta, 'id' | 'machineId'>>;
-  manager: Pick<LoroDocumentManager, 'getOnlineMachineIds'> & {
+  manager: Pick<LoroDocumentManager, 'getMachinePresenceView'> & {
     repo?: Pick<LoroDocumentManager['repo'], 'getDocMeta'>;
   };
 }): Promise<Map<SessionId, SessionLiveStatusBatchItem>> {
@@ -4777,16 +4790,17 @@ export async function readSessionLiveStatusesMany(args: {
       if (!remote) {
         output.set(session.id, {
           sessionId: session.id,
-          machineOnline: false,
+          machinePresence: 'offline',
           fresh: false,
           reason: 'Machine unavailable in local workspace',
         });
         continue;
       }
-      if ((await remote.isOnline(session.machineId)) === false) {
+      const online = await remote.isOnline(session.machineId);
+      if (online === false) {
         output.set(session.id, {
           sessionId: session.id,
-          machineOnline: false,
+          machinePresence: 'offline',
           fresh: false,
           reason: `Machine ${session.machineId} is offline`,
         });
@@ -4800,7 +4814,7 @@ export async function readSessionLiveStatusesMany(args: {
         );
         output.set(session.id, {
           sessionId: session.id,
-          machineOnline: true,
+          machinePresence: online === true || response !== null ? 'online' : 'unknown',
           fresh: response?.success === true,
           ...(response?.state ? { state: response.state } : {}),
           ...(response?.success === true && typeof response.observedAtMs === 'number'
@@ -4811,7 +4825,7 @@ export async function readSessionLiveStatusesMany(args: {
       } catch (error) {
         output.set(session.id, {
           sessionId: session.id,
-          machineOnline: true,
+          machinePresence: online === true ? 'online' : 'unknown',
           fresh: false,
           reason: formatErrorMessage(error),
         });
@@ -4833,10 +4847,16 @@ export async function readSessionLiveStatusesMany(args: {
         presence = await ensureTargetMachineNotOffline({ ...args, machineId });
       } catch (error) {
         const reason = formatErrorMessage(error);
+        // Definite presence absence, or this machine's own runtime being down, is offline;
+        // a presence read failure proves nothing about the target.
+        const failedPresence: MachinePresence =
+          error instanceof MachineOfflineError || machineId === args.auth.machineId
+            ? 'offline'
+            : 'unknown';
         for (const session of sessions) {
           output.set(session.id, {
             sessionId: session.id,
-            machineOnline: false,
+            machinePresence: failedPresence,
             fresh: false,
             reason,
           });
@@ -4872,7 +4892,7 @@ export async function readSessionLiveStatusesMany(args: {
         for (const { session, response } of responses) {
           output.set(session.id, {
             sessionId: session.id,
-            machineOnline: !unknownPresence || response !== null,
+            machinePresence: unknownPresence && response === null ? 'unknown' : 'online',
             fresh: response?.success === true,
             ...(response?.state ? { state: response.state } : {}),
             ...(response?.success === true && typeof response.observedAtMs === 'number'
@@ -4889,7 +4909,7 @@ export async function readSessionLiveStatusesMany(args: {
         for (const session of sessions) {
           output.set(session.id, {
             sessionId: session.id,
-            machineOnline: !unknownPresence,
+            machinePresence: presence,
             fresh: false,
             reason,
           });
@@ -6185,6 +6205,10 @@ const sessionRenameCommand = new Command('rename')
   .description('Rename a session')
   .option('--workspace <selector>', 'Target workspace id, slug, or name')
   .option('--title <title>', 'New session title')
+  .option(
+    '--group',
+    "Rename the root session's conversation group in the sidebar instead of its tab"
+  )
   .option('--json', 'Print JSON output')
   .option('--debug', 'Enable debug output')
   .argument('[sessionId]', 'Session ID; falls back to LODY_SESSION_ID')
@@ -6217,14 +6241,22 @@ const sessionRenameCommand = new Command('rename')
           options.workspace
         );
         await withWorkspaceManager(auth, workspace, async (manager) => {
-          await resolveSessionMetaOrThrow(manager, sessionId);
-          await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
-            title,
-          } satisfies Partial<SessionMeta>);
+          const meta = await resolveSessionMetaOrThrow(manager, sessionId);
+          if (options.group && meta.parentSessionId) {
+            throw new Error(
+              `Session ${sessionId} is a child tab; only a root session has a group title.`
+            );
+          }
+          await manager.repo.upsertDocMeta(
+            getSessionRoomId(sessionId),
+            options.group
+              ? buildSessionGroupRenamePatch(title)
+              : buildSessionTabRenamePatch(meta, title)
+          );
           await ensureWorkspaceMetaSynced(manager, `session.rename:${sessionId}`);
 
           if (options.json) {
-            printJson({ ok: true, sessionId, title });
+            printJson({ ok: true, sessionId, title, scope: options.group ? 'group' : 'tab' });
             return;
           }
 

@@ -9,7 +9,7 @@ import {
 import { useLegacyWorkspaceQueryStatus } from '@/hooks/use-workspace-feature';
 import { E2eeLocalAgentApproval } from '../e2ee-local-agent-approval';
 import { useProviderQuotaRefresh } from '@/hooks/use-provider-quota-refresh';
-import { getAgentRoleTargets } from '@lody/shared';
+import { getAgentRoleTargets, getSessionGroupTitle } from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import {
@@ -116,7 +116,11 @@ import {
   localProbeAttemptedAtom,
   localProbeResultAtom,
 } from '@/atoms/local-probe';
-import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '@/atoms/presence';
+import {
+  lodyPresenceNowMsAtom,
+  lodyPresenceStatesAtom,
+  lodyPresenceSyncStateAtom,
+} from '@/atoms/presence';
 import { buildAgentPrompt } from '@/lib';
 import { getAppCurrentPathWithSearch } from '@/lib/app-location';
 import { isImeComposingKeyboardEvent } from '@/lib/ime';
@@ -142,7 +146,7 @@ import {
   useAcpSessionConfigSelectionState,
   useResolvedAcpSessionConfigSelection,
 } from '@/hooks/use-acp-session-config-selection';
-import { useOnlineMachineIds } from '@/hooks/use-machine-online-status';
+import { useMachineOnlineStatus, useOnlineMachineIds } from '@/hooks/use-machine-online-status';
 import { useResolvedWorkspaceScope } from '@/hooks/use-resolved-workspace-scope';
 import {
   getChatLandingAgentSelectionsForMachine,
@@ -448,6 +452,7 @@ import {
   getSharingReviewTeamLooksEmpty,
   shouldRetrySharingReviewConflict,
   shouldReportLocalProjectUnavailable,
+  getChatLandingSelectedMachineState,
   getChatLandingSubmitDisabled,
   getChatLandingVisibleComposerStatus,
   isChatLandingMachineReachable,
@@ -843,6 +848,9 @@ function WorkspaceChatLanding({
   const localProbeResult = useAtomValue(localProbeResultAtom);
   const localProbeAttempted = useAtomValue(localProbeAttemptedAtom);
   const onlineMachineIds = useOnlineMachineIds();
+  const presenceSynced = useAtomValue(lodyPresenceSyncStateAtom) === 'synced';
+  const presenceSyncedRef = useRef(presenceSynced);
+  presenceSyncedRef.current = presenceSynced;
   const onlineMachineIdsRef = useRef(onlineMachineIds);
   onlineMachineIdsRef.current = onlineMachineIds;
   const isPresenceMachineOnline = useCallback(
@@ -2403,6 +2411,7 @@ function WorkspaceChatLanding({
     executorConfigs,
     machines,
     selectableMachines,
+    presenceSynced,
     visibleMachinesLoading,
     docMetaCacheReady,
     repositories,
@@ -2671,6 +2680,7 @@ function WorkspaceChatLanding({
           projectMachineId: project.machineId,
           visibleLocalMachineId,
           targetMachine: machinesRef.current.get(project.machineId),
+          presenceSynced: presenceSyncedRef.current,
           isMachineOnline: (machineId) => onlineMachineIdsRef.current.has(machineId),
         })
       ) {
@@ -2746,9 +2756,16 @@ function WorkspaceChatLanding({
       projectMachineId: selectedLocalProjectMachineId,
       visibleLocalMachineId,
       targetMachine: machines.get(selectedLocalProjectMachineId),
+      presenceSynced,
       isMachineOnline: isPresenceMachineOnline,
     });
-  }, [isPresenceMachineOnline, machines, selectedLocalProjectMachineId, visibleLocalMachineId]);
+  }, [
+    isPresenceMachineOnline,
+    machines,
+    presenceSynced,
+    selectedLocalProjectMachineId,
+    visibleLocalMachineId,
+  ]);
   const localGitStateLoadKey = useMemo(
     () =>
       getLocalProjectGitStateLoadKey({
@@ -3193,7 +3210,11 @@ function WorkspaceChatLanding({
           : null;
     if (!scopedMachineId || selectedAgent.machineId !== scopedMachineId) {
       captureSessionInputBlocked('missing_machine');
-      setComposerError(t('chat.validation.missingMachine'));
+      setComposerError(
+        selectedMachineState === 'offline'
+          ? t('chat.validation.machineOffline', 'The selected machine is offline.')
+          : t('chat.validation.missingMachine')
+      );
       return;
     }
     const machine = machines.get(scopedMachineId);
@@ -3652,16 +3673,27 @@ function WorkspaceChatLanding({
   };
 
   // ── Selector nodes ──
-  // Only constrain to selectedMachineId if it still refers to a valid online machine.
-  const isSelectedMachineValid = useMemo(() => {
-    if (!selectedMachineId) return false;
-    return isChatLandingMachineReachable({
-      machineId: selectedMachineId,
-      localMachineId: visibleLocalMachineId,
+  // Only constrain to selectedMachineId unless it is definitely offline or gone.
+  const selectedMachineOnlineStatus = useMachineOnlineStatus(selectedMachineId);
+  const selectedMachineState = useMemo(
+    () =>
+      getChatLandingSelectedMachineState({
+        machineId: selectedMachineId,
+        localMachineId: visibleLocalMachineId,
+        machines,
+        isMachineOnline: isPresenceMachineOnline,
+        onlineStatus: selectedMachineOnlineStatus,
+      }),
+    [
+      selectedMachineId,
       machines,
-      isMachineOnline: isPresenceMachineOnline,
-    });
-  }, [selectedMachineId, machines, visibleLocalMachineId, isPresenceMachineOnline]);
+      visibleLocalMachineId,
+      isPresenceMachineOnline,
+      selectedMachineOnlineStatus,
+    ]
+  );
+  const isSelectedMachineValid =
+    selectedMachineState === 'available' || selectedMachineState === 'unknown';
 
   // The agent selector must always be scoped to exactly one machine.
   const localProjectMachineId =
@@ -4121,7 +4153,9 @@ function WorkspaceChatLanding({
       })),
     [accessByMachineId, selectableMachines, showProjectSharing]
   );
-  const desktopSelectedMachineId = scopedMachineId;
+  // An offline selection stays visible and marked rather than reading as unset.
+  const desktopSelectedMachineId =
+    selectedMachineState === 'offline' ? selectedMachineId : scopedMachineId;
   const desktopSelectedMachineLabel = desktopSelectedMachineId
     ? machines.get(desktopSelectedMachineId)?.name
     : null;
@@ -4171,6 +4205,7 @@ function WorkspaceChatLanding({
           value={desktopSelectedMachineId}
           visibleLocalMachineId={visibleLocalMachineId}
           selectedLabel={desktopSelectedMachineLabel}
+          offline={selectedMachineState === 'offline'}
           options={desktopMachineOptions}
           onChange={handleMachineChange}
           disabled={isInitialDataLoading}
@@ -4213,7 +4248,9 @@ function WorkspaceChatLanding({
           disabledReason={
             scopedMachineId
               ? undefined
-              : t('chat.machineSelector.selectFirst', 'Select a machine first')
+              : selectedMachineState === 'offline'
+                ? t('chat.machineSelector.offline', 'Offline')
+                : t('chat.machineSelector.selectFirst', 'Select a machine first')
           }
           fallbackAgent={{
             cliType: selectedConfig?.cliType,
@@ -4273,7 +4310,7 @@ function WorkspaceChatLanding({
   /* Mobile target options retain the same machine and project scoping as desktop. */
   const mobileSheetOnlineMachines = useOnlineMachines();
   const mobileProjectSelectedMachineId =
-    selectedMachineId && isSelectedMachineValid
+    selectedMachineId && (isSelectedMachineValid || selectedMachineState === 'offline')
       ? selectedMachineId
       : (selectedLocalProject?.machineId ?? null);
   const mobileSheetSelectedMachineLabel = mobileProjectSelectedMachineId
@@ -5073,7 +5110,7 @@ function WorkspaceChatLanding({
         }
         return {
           id: session.id,
-          title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
+          title: getSessionGroupTitle(session) || t('sessions.untitled', 'Untitled session'),
           kind,
           branchName: session.branchName?.trim() || null,
           prNumber: prInfo.number,
@@ -5992,7 +6029,7 @@ function WorkspaceChatLanding({
         }
         return {
           id: session.id,
-          title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
+          title: getSessionGroupTitle(session) || t('sessions.untitled', 'Untitled session'),
           kind,
           branchName: session.branchName?.trim() || null,
           prNumber: prInfo.number,

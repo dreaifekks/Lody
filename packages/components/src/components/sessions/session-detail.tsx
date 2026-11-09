@@ -18,7 +18,7 @@ import { BoardThreadParentBreadcrumb } from '../boards/board-thread-breadcrumb';
 import { BoardThreadBackButton, BoardThreadOpenButton } from '../boards/board-panel-view';
 import { resolveBoardThreadPageNavigation } from '../boards/board-threads';
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
-import { machineSupportsAndroidEmulatorProtocol } from '@lody/shared';
+import { getSessionGroupTitle, machineSupportsAndroidEmulatorProtocol } from '@lody/shared';
 import { SessionHistoryAccessBoundary } from './session-history-access-boundary';
 import { useSessionForkCapabilities } from '@/hooks/use-session-fork-capabilities';
 import { requireWorkspaceFeature } from '@/lib/workspace-feature';
@@ -2310,8 +2310,8 @@ const SessionDetail = ({
     [postHog]
   );
 
-  // Set document title based on session title
-  useDocumentTitle(activeSession?.title);
+  // The window names the conversation group, not whichever tab is active.
+  useDocumentTitle(getSessionGroupTitle(activeSession));
 
   useEffect(() => {
     attemptedExternalHistoryRefreshKeysRef.current.clear();
@@ -4402,7 +4402,7 @@ const SessionDetail = ({
 
   const handleOpenBrowser = useCallback(
     // `true` navigates to the agent-reported candidate, `{ url }` to that address.
-    (tabSessionId?: SessionId, navigateCandidate: boolean | { url: string } = false) => {
+    (tabSessionId?: SessionId, navigateCandidate: boolean | { url: string } = isMobile) => {
       requireWorkspaceFeature(
         { mode: runtime?.contentMode === 'e2ee' ? 'protected' : 'plaintext' },
         'remote-preview'

@@ -47,6 +47,20 @@ function makeSession(overrides: Partial<SessionMeta> & { id: string }): SessionM
   } as SessionMeta;
 }
 
+test('names a sidebar row by its group title, independent of the root tab title', () => {
+  const rows = buildSessionListRows(
+    [
+      makeSession({ id: 'named', title: 'Root tab', groupTitle: 'Group name' }),
+      makeSession({ id: 'legacy', title: 'Root tab only' }),
+    ],
+    { scope: 'team', currentUserId: 'user-1', defaultTitle: 'Untitled' }
+  );
+  expect(Object.fromEntries(rows.map((row) => [row.sessionId, row.title]))).toEqual({
+    named: 'Group name',
+    legacy: 'Root tab only',
+  });
+});
+
 describe('buildSessionListRows child-time aggregation', () => {
   test("parent task's latestMessageAt reflects the most recent child activity", () => {
     const parent = makeSession({ id: 'parent', lastMessageAt: 1_000, title: 'Parent' });
@@ -176,20 +190,6 @@ describe('getEffectiveSessionActivitySummary child-status aggregation', () => {
 });
 
 describe('buildSessionListRows repo + PR mapping', () => {
-  test('keeps all pull request URLs and statuses on the sidebar row', () => {
-    const pullRequests = [
-      { url: 'https://github.com/example/one/pull/42', status: 'open' as const },
-      { url: 'https://github.com/example/two/pull/42', status: 'merged' as const },
-    ];
-    const session = makeSession({ id: 'multi', pullRequests });
-    const rows = buildSessionListRows([session], {
-      scope: 'my',
-      currentUserId: 'user-1',
-      defaultTitle: 'Untitled',
-    });
-    expect(rows[0]?.pullRequests).toEqual(pullRequests);
-  });
-
   test("shows a Project group's default-repository PR, matching the Info Bar", () => {
     const api = 'https://github.com/example/api/pull/7';
     const web = 'https://github.com/example/web/pull/9';

@@ -19,12 +19,17 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   memoryProviders: 'memoryProviders',
   mcpToolDiscovery: 'mcpToolDiscovery',
   mcpLocalAuthentication: 'mcpLocalAuthentication',
+  sorbetCredentials: 'sorbetCredentials',
+  sorbetCredentialsRemote: 'sorbetCredentialsRemote',
+  sorbetProviders: 'sorbetProviders',
+  sorbetProvidersRemote: 'sorbetProvidersRemote',
   localProjectHistoryProvider: 'localProjectHistoryProvider',
   codexAuthProfiles: 'codexAuthProfiles',
   builtinPi: 'builtinPi',
   subagentCancellation: 'subagentCancellation',
   subagentEvents: 'subagentEvents',
   acpAuthenticationInteractions: 'acpAuthenticationInteractions',
+  e2eeAcpInteraction: 'e2eeAcpInteraction',
   acpAuthenticationMethodSelection: 'acpAuthenticationMethodSelection',
   localProjectRemoval: 'localProjectRemoval',
   localProjectCreateDirectory: 'localProjectCreateDirectory',
@@ -60,6 +65,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   scheduleAgentRoles: 'scheduleAgentRoles',
   providerRateLimitsRefresh: 'providerRateLimitsRefresh',
   codeCollabAllChangesScope: 'codeCollabAllChangesScope',
+  codeCollabDiffBlobs: 'codeCollabDiffBlobs',
   sessionHistory: 'sessionHistory',
   sessionHistoryIncremental: 'sessionHistoryIncremental',
   sessionHistoryWatch: 'sessionHistoryWatch',
@@ -80,8 +86,13 @@ export const OPERATION_INBOX_PROTOCOL_VERSION = 2;
 export const MEMORY_PROVIDERS_PROTOCOL_VERSION = 1;
 export const MCP_TOOL_DISCOVERY_PROTOCOL_VERSION = 1;
 export const MCP_LOCAL_AUTHENTICATION_PROTOCOL_VERSION = 1;
+export const SORBET_CREDENTIALS_PROTOCOL_VERSION = 1;
+export const SORBET_CREDENTIALS_REMOTE_PROTOCOL_VERSION = 1;
+export const SORBET_PROVIDERS_PROTOCOL_VERSION = 1;
+export const SORBET_PROVIDERS_REMOTE_PROTOCOL_VERSION = 1;
 export const LOCAL_PROJECT_HISTORY_PROVIDER_PROTOCOL_VERSION = 1;
 
+export const E2EE_ACP_INTERACTION_PROTOCOL_VERSION = 1;
 export const ACP_AUTHENTICATION_INTERACTIONS_PROTOCOL_VERSION = 2;
 /** `start` accepts the `methodId` the reader picked from the agent's advertised methods. */
 export const ACP_AUTHENTICATION_METHOD_SELECTION_PROTOCOL_VERSION = 1;
@@ -116,6 +127,7 @@ export const LAN_IOS_SIMULATOR_PROTOCOL_VERSION = 1;
 export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
 export const SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION = 1;
 export const CODE_COLLAB_ALL_CHANGES_SCOPE_PROTOCOL_VERSION = 1;
+export const CODE_COLLAB_DIFF_BLOBS_PROTOCOL_VERSION = 1;
 /** Native publication and watch are the history authority; no Loro cursor log. */
 export const SESSION_HISTORY_PROTOCOL_VERSION = 3;
 export const SESSION_HISTORY_INCREMENTAL_PROTOCOL_VERSION = 1;
@@ -179,6 +191,7 @@ export const PROJECT_FILE_ROOTS_PROTOCOL_VERSION = 1;
 export const PROJECT_REPOSITORY_MEMBERS_PROTOCOL_VERSION = 1;
 
 export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities = {
+  [MACHINE_PROTOCOL_CAPABILITIES.codeCollabDiffBlobs]: CODE_COLLAB_DIFF_BLOBS_PROTOCOL_VERSION,
   // `session/live-status` accepts `includeActivity` and may answer with `activity`.
   [MACHINE_PROTOCOL_CAPABILITIES.sessionLiveActivity]: 1,
   // `machine/status` accepts `includeDisk` and may answer with `disk`.

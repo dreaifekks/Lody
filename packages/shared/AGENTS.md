@@ -42,6 +42,8 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
 
 ## Machine protocol negotiation
 
+- Sorbet credential metadata and per-provider logout use local Machine RPC or signed E2EE owned execution, gated remotely by `sorbetCredentialsRemote`. The target verifies the signing device belongs to its owner's membership; shared members and plaintext fallback are forbidden. Metadata does not imply credential validity or account identity.
+
 - Ask Question consumers must preserve Core note/replacement semantics and validate
   associations per the [notes contract](../../specs/ask-question-answer-notes.md).
 
@@ -51,6 +53,8 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
   change permission policy.
 
 - Session automation readers require `sessionAutomations` locally or `remoteAutomationControl` remotely; unsupported machines expose no controls, polling or connection warning.
+- Before changing Code Collab diff methods or generation rows, read the
+  [file-index contracts](src/AGENTS.md#code-collab).
 - Daemon workflows gate on `MachineMeta.protocolCapabilities`, never CLI version.
   Missing means unsupported. Full-message schedules require v3 and `messageVersion: 1`.
 - An ACP capability entry may carry the agent's advertised `authMethods`; absence means no probe
@@ -78,31 +82,8 @@ Exact deletion bypasses discovery: [relations](../../specs/session-relations.md)
 
 ## Workspace MCP / Roles
 
-- MCP/UI: read [auth contracts](src/AGENTS.md).
-  Catalog/defaults: workspace Flock; selections: turns. Missing project rows inherit
-  workspace defaults; `[]` disables all. Resolve defaults only at authoring; no machine
-  bindings. Preserve `mcpServerIds: []`; send the driving turn's selection to ACP,
-  never reread history. Schedule definitions can select MCP ids for future turns.
-- MCP/Role catalog writes resolve on local Flock durability, followed by explicit
-  upload. Settings neither await nor report upload; its failure never fails or rolls
-  back a durable write. CLI reports its sync result. See
-  [catalog explanation](../../.agents/docs/workspace-catalog-durability.md).
-- Roles use one workspace Flock `agentRole` family; sharing changes `visibility`.
-  No secrets, MCP selections or memory contents; filter sensitive options on read/write.
-  `modeId`/`_permission` pins hide the permission button, retaining warnings.
-  No Role-level auto-approval policy.
-  Settings/mentions check read/manage access; explicit MCP ids need no mention grant.
-- Role targets bind ids to machine, Agent config, run config and memory.
-  Write one as v1 with an `instances` mirror preserving ids/aliases/config on old
-  forks; multiple as v2. Read legacy instances/placements intact, without writing.
-  Old clients skip v2.
-- Within one Role/machine, alias or unaliased Agent family is unique. Aliases may
-  repeat elsewhere. Multiple machines require a machine; multiple targets there
-  require an alias/id. Pins fail without fallback. Menus list and pin every target.
-  Freeze target/config/prompt/revision at acceptance; retries ignore edits.
-  [Memory](../../specs/agent-role-memory.md).
-- Keep `author`, human `userId`, and recipient execution config separate.
-  [Contract](../../specs/message-author-identity.md).
+Before changing MCP/Role catalogs, their UI consumers, per-turn selection, Role
+creation/dispatch or authentication, read the [source contracts](src/AGENTS.md#workspace-mcp--roles).
 
 Presence: E2EE requires UUID session IDs and bounded plaintext allowlists on publish/receive;
 ordinary behavior stays unchanged. [Contract](../../.agents/docs/cli-lib-loro-presence.md).

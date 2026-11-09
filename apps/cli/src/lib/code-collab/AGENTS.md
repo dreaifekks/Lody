@@ -1,9 +1,6 @@
 # CLI Code Collab — Index
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
-
-Ground truth for the rewrite: specs/code-collab-v2.md. The old v1
-host/runtime/CRDT capture implementation has been removed from this directory.
+Ground truth for the rewrite: specs/code-collab-v2.md.
 File-by-file responsibilities: [README.md](README.md).
 
 ## Invariants
@@ -23,42 +20,46 @@ File-by-file responsibilities: [README.md](README.md).
   `getLatestText`. Resolve direct old evidence before loading a bounded path head.
   ACP-covered paths skip gap-fill; missing pre-images fail loudly.
   Badge and clickable content both derive from these exact events, never Git stats.
-- The mandatory production Worker `turn-diff-store-worker.ts` must exist: missing
-  emitted workers are fatal. The diff-store adapter injects `getServerNow()` so
+- `turn-diff-store-worker.ts` is required in production; missing output is fatal. The diff-store adapter injects `getServerNow()` so
   worker startup, retention reads, and background/manual GC stay on the same
   calibrated clock as persisted turn timestamps; it allocates one durable
-  attempt-start head proof and advances a path only when its `newText` matches
+  attempt-start head proof and advances a path only if its `newText` matches
   current disk.
 - Shared file tree/All Changes uses owner-session Flock stream
-  `<workspace-id>:fi:<master-session-id>` (one row per path); successful changes or
+  `<workspace-id>:fi:<master-session-id>` (one file row plus an optional opaque generation row per changed path); successful changes or
   targeted repairs advance signal stream `<workspace-id>:fis:<master-session-id>`,
   and the named Flock bridge in `apps/cli/src/lib/loro/doc.ts` lets Electron
   invalidate and refresh its Machine RPC snapshot. Both streams have 180-day TTL and
-  must not enter repo meta. Root activation and terminal turn refresh may mirror only
+  never enter repo meta. Root activation and terminal turn refresh may mirror only
   compact aggregate add/del `diffStats`; file/diff watcher refreshes stay Flock-only, and PR
   sessions retain committed compare totals. The injected `observeWorkspaceGit` observer
   runs only on activation/explicit root refresh, never file watcher or terminal diff refresh;
-  it must not gate file snapshots.
-- A file-index row whose path key carries U+FFFD came from a byte stream decoded
-  across a chunk boundary, not from a scan; it is its own LWW key, so a correct
-  republish cannot overwrite it. The shared helpers hide it on read and delete it on
-  the next write — do not "restore" such rows.
+  it never gate file snapshots.
+- The whole published file index stays within `CODE_COLLAB_FILE_INDEX_LIMITS`
+  (1,000 rows, 100 KiB of estimated Flock JSON), applied after the tree and All
+  Changes are merged, never per input. Over-budget paths stay unloaded behind lazy
+  parents; only a change recording `del: true` may publish `deleted`. Publication
+  commits batches within that byte budget, separated by flush/sync. Package-manager
+  caches in `CODE_COLLAB_IGNORED_DIRECTORY_NAMES` filter watcher, FS and untracked
+  Git paths before reads, never tracked files. FS scans use `createGitIgnoreScanFilter`
+  to mark ignored entries without descending; tracked files remain visible. Watcher batches confined to `git check-ignore`d paths skip
+  the rescan; pathless dirt always rescans. Local Flock exports rely on the
+  coalescing streams-crdt patch.
+  [Decision](../../../../../.agents/notes/implemented/bug-fix/2026-11-05-code-collab-file-index-budget.md).
+- Hide file-index paths containing U+FFFD on read and delete them on the next
+  write. They are corrupted keys, never valid scan paths; never restore them.
 - Only Code Collab RPC use extends `WorkspaceWatchCoordinator` idle ownership.
   Startup/restart/coverage gaps trigger authoritative full refresh; there is no
   per-directory fallback. Verify worker changes with the emitted
-  `dist/code-collab-watch-worker.js` handshake/shutdown smoke. Its credential-safe env
-  allowlist must preserve `ELECTRON_RUN_AS_NODE`: packaged Electron uses `Lody Helper`
-  as Node, and dropping the flag launches a second GUI app instead of the worker.
+  `dist/code-collab-watch-worker.js` handshake/shutdown smoke. Preserve `ELECTRON_RUN_AS_NODE` in its environment allowlist for packaged Electron.
 - `save-text` never throws on a changed file: if the disk content is too large,
   binary, or invalid UTF-8 it returns a `digest_mismatch` conflict (with the disk
   digest via streaming when the file is too large to read) instead of an error, so
   the guest's unsaved edits survive. See `readDiskStateForSave`.
-- In Git worktrees, scanning prefers `git ls-files` only for recursive scans and
-  synthesizes lazy parent directories; non-recursive directory refresh stays on FS
-  scanning because Git does not record empty directories. Fallback FS scanning is
-  path-only and must not read file contents to classify text/binary/size. Root
-  init/full/turn refresh should use the worker `full-state` path when available so
-  file listing and fileIndex building stay off the main thread.
+- Use `git ls-files` for recursive Git scans and synthesize lazy parents.
+  Non-recursive refreshes scan the filesystem. Classification stays path-only;
+  never read file contents. Root init/full/turn refreshes use the worker
+  `full-state` path when available to keep listing and index building off-thread.
 - Ignored paths are listed with `ignored: true`, never hidden and never walked: Git
   scans add `git ls-files --others --ignored --directory` (a wholly ignored directory
   is one lazy row); FS scans mark the fixed directory names; only `.git` is omitted.
@@ -67,20 +68,16 @@ File-by-file responsibilities: [README.md](README.md).
   replaces the tree around them reads their level back.
 - Machine RPC is the integration boundary. Local/Electron direct transport can be
   added below that RPC abstraction, but file operations still route to the single CLI
-  service. In particular, local `code-collab/get-file-index` scans/builds the initial
-  tree and All Changes snapshot without awaiting Flock publication, then queues a
-  force-reconcile of that fresh in-memory state without delaying the response. This
-  repairs a durable file-index Flock that became stale while the CLI was stopped;
-  Flock remains the durable replication path for remote consumers and local renderer
-  invalidation after that initial snapshot.
-- Non-Git All Changes reconstruction is bounded before SQLite decompresses a snapshot:
-  at most four paths run concurrently, one request retains at most 8 MiB of raw cached
-  snapshots by default, and over-limit paths are returned as deferred for single-file
-  loading. Never restore an unbounded candidate array or reconstruct deferred paths twice.
-- File RPCs canonicalize an absolute request path to a workspace-relative path only
-  when the target machine resolves it inside a registered session file root. Absolute
-  paths outside all roots remain `invalid_path`; never rely on frontend path stripping
-  as the filesystem access boundary.
+  service. Local `code-collab/get-file-index` returns the fresh tree/All Changes without
+  awaiting Flock, then force-reconciles that snapshot. Flock owns remote replication
+  and subsequent renderer invalidation.
+- Non-Git All Changes bounds SQLite decompression: <= four concurrent paths
+  and 8 MiB of cached raw snapshots per request by default. Over-limit paths stay
+  deferred for single-file loading. Never collect unbounded candidates or
+  reconstruct deferred paths twice.
+- File RPCs convert absolute paths to workspace-relative paths only inside the
+  target's registered session roots. Reject other paths as `invalid_path`;
+  frontend path stripping never grants filesystem access.
 - Native `fs.watch` handles must stay in `workspace-watch-worker-core.ts`; the main CLI
   Worker owns only subscriptions, refresh timers, scans, file-index/All Changes state,
   and Flock publication. The child receives canonical roots over private IPC only and
@@ -89,17 +86,22 @@ File-by-file responsibilities: [README.md](README.md).
   the session metadata has a parent.
 - Shared file-index publishing is content-deduped. Do not publish full rows or advance the
   `<workspace-id>:fis:<master-session-id>` signal only to bump `updatedAtMs`; unchanged
-  rows must not wake file surfaces. Transport/Meta reconnects are not dirty signals and
-  must not rescan known owners. Initial activation reconciles only that owner. A failed
+  rows never wake file surfaces. Transport/Meta reconnects are not dirty signals and
+  never rescan known owners. Initial activation reconciles only that owner. A failed
   write/flush/post-sync/signal transaction schedules bounded exponential-backoff repair
   only for the affected owner, serialized with its local refresh publication and using
   the latest in-memory state. Keep a failed signal pending even when the FI repair already
   landed so the targeted repair cannot mistake the transaction for complete.
-- Machine RPC now dispatches handlers concurrently (see
-  `packages/loro-streams-rpc/AGENTS.md`), so handlers cannot assume serial execution.
-  `save-text` keeps its read-check-write atomic via `serializeByAbsolutePath`
-  (per-file write chain) so two concurrent saves to the same path can't both pass the
-  base-digest check and clobber each other; different paths still save in parallel.
-  Pure reads (open/refresh/diff) stay lock-free.
+- Machine RPC handlers run concurrently ([contract](../../../../../packages/loro-streams-rpc/AGENTS.md)).
+  `save-text` uses `serializeByAbsolutePath` for an atomic read-check-write per file;
+  different files stay parallel. Pure reads (open/refresh/diff) stay lock-free.
 
-- Root-scoped file state shares the owner publication and physical-file save chains. Watch subscriptions include root identity; wire keys must be decoded before filesystem access.
+- Root-scoped file state shares the owner publication and physical-file save chains. Watch subscriptions include root identity; wire keys is decoded before filesystem access.
+
+- Diff blob handlers are capability-gated reads. They do not start watches, initialize
+  a snapshot database or migrate it. Encrypted calls retain writer authority and
+  execution claims. Reauthorize each page and serve only session-issued handles;
+  never resolve a caller's hash as global authority.
+  Generation rows contain no content hashes. Disk identity and non-Git base metadata
+  stay daemon-local and invalidate generations even when line counts are unchanged.
+  [Decision](../../../../../.agents/notes/implemented/architecture/2026-10-31-remote-diff-transport.md).

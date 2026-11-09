@@ -1,3 +1,4 @@
+import { LODY_HELP_INSTRUCTIONS } from '../src/mcp/tool-help';
 import { normalizeBoardMeta, SessionProjectRunSchema } from '@lody/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalProjectId } from '@lody/shared';
@@ -6,7 +7,7 @@ import { setLanSessionCommand } from '../src/lib/lan/lan-session-command';
 import { BOARD_UI_COMPARISON_GUIDE, buildPrompt } from '../src/session/session-execution-helpers';
 
 const SESSION_REMINDERS =
-  '\n\nUse the available Lody MCP tools when relevant; rely on their tool descriptions for complete, current capabilities and usage guidance.' +
+  '\n\nUse the available Lody MCP tools when relevant. ' + LODY_HELP_INSTRUCTIONS +
   "\n\nFile paths in your replies become links that open relative to this session's working directory: " +
   'write a file inside it by its full path from there, and a file anywhere else by its absolute path.';
 
@@ -15,7 +16,7 @@ describe('session execution prompt helpers', () => {
     setLanSessionCommand(null);
   });
 
-  it('replaces detailed Lody MCP guidance with a concise reminder', () => {
+  it('requires command-specific help before executing Lody commands', () => {
     const prompt = buildPrompt('inspect the UI');
 
     expect(prompt).toBe(`inspect the UI${SESSION_REMINDERS}`);

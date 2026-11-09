@@ -81,6 +81,19 @@ subdirectory; this file is the navigation index. Cross-module explanations live 
 and per-agent installs from slow probes; restart/upgrade share one lifecycle lane.
 Unlisted requests retain their existing ordering. [Local control lane decision](../../../../.agents/notes/implemented/bug-fix/2026-09-20-acp-authenticate-queue-lane.md).
 
+`e2ee/acp-interaction-owner.ts` owns encrypted remote ACP capability probes and
+interactive authentication for one workspace and machine. The signed feature RPC
+requires the target machine owner's current authority and binds subsequent controls to
+the initiating device. `start` prepares an interaction; `activate` starts the probe or
+login; `poll` acknowledges ordered progress; `submit` and `cancel` control the same
+interaction. A probe is execution and uses the feature journal's duplicate protection.
+The requesting device supplies an ephemeral response key: progress and results use a
+separate recipient envelope, while input uses the target's ephemeral key. Both directions
+bind the workspace, machine, device and interaction; the workspace epoch alone does not
+protect these values from other members. The owner bounds interaction lifetime and queued
+progress, cancels work on revocation or shutdown, and retains unfinished work until it
+settles. A lost response does not authorize repeating an uncertain execution.
+
 - `github-git-transport.ts` — generated Git wrapper and HTTP credential adapters.
   HTTP helper redispatch preserves the parent operation's read/write context;
   independent commands classify themselves, and missing/invalid helper context
@@ -102,7 +115,9 @@ Unlisted requests retain their existing ordering. [Local control lane decision](
 
 - `usage/usage-tracking-service.ts` — cumulative usage snapshot staging and
   acknowledgement-based retry retention; deltas are never added again.
-  Scope and limits: [usage delivery](../../../../specs/usage-delivery.md).
+  Scope and limits: [usage delivery](../../../../specs/usage-delivery.md). Codex
+  attributes each turn's new tokens to its submitted model:
+  [decision](../../../../.agents/notes/implemented/bug-fix/2026-09-15-codex-per-model-attribution.md).
 
 - `message-handler.ts` — the CLI's central message hub (largest file): session chat
   handling (`handleSessionChat`), ACP update buffering/flush, Code Collab v2 machine

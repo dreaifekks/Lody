@@ -769,6 +769,8 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
       });
       this.logger.debug(`[${this.sessionId}] ndJsonStream created, calling createAcpClient`);
       let client: AgentClient;
+      let usageState: 'starting' | 'active' | 'failed' = 'starting';
+      const pendingUsage: Parameters<CreateAgentConfig['onUsageUpdate']>[] = [];
       let acpSessionId: ACPSessionId;
       let acpCapabilities: AcpCapabilitiesResult;
       try {
@@ -795,7 +797,11 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           onStartupStage: callbacks.onStartupStage,
           onUpdateMessage: callbacks.onUpdateMessage,
           onRequestPermission: callbacks.onRequestPermission,
-          onUsageUpdate: callbacks.onUsageUpdate,
+          onUsageUpdate: (usage, accountingId) => {
+            if (usageState === 'starting') pendingUsage.push([usage, accountingId]);
+            else if (usageState === 'active' && usage.sessionId === acpSessionId)
+              callbacks.onUsageUpdate(usage, accountingId);
+          },
           onContextWindowUsageUpdate: callbacks.onContextWindowUsageUpdate,
           onRateLimitUpdate: callbacks.onRateLimitUpdate,
           onPromptSuggestion: callbacks.onPromptSuggestion,
@@ -827,6 +833,8 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           agent: { cliType: this.config.agentCliType, agentType: this.config.agentType },
         });
       } catch (error) {
+        usageState = 'failed';
+        pendingUsage.length = 0;
         const startupError = startupMonitor.resolveError(error);
         // The agent process died before startup completed (the startup monitor
         // surfaces async ENOENT/EACCES/early-exit here). Protocol-level failures
@@ -852,6 +860,11 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
       this.acpSessionId = acpSessionId;
       this.agentClient = client;
       this.acpCapabilities = acpCapabilities;
+      usageState = 'active';
+      for (const [usage, accountingId] of pendingUsage) {
+        if (usage.sessionId === acpSessionId) callbacks.onUsageUpdate(usage, accountingId);
+      }
+      pendingUsage.length = 0;
       this.logger.debug(`[${this.sessionId}] ACP agent process started, returning acpSessionId`);
       return acpSessionId;
     };

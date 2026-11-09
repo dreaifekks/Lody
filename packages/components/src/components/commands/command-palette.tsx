@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from '@tanstack/react-router';
 import { useAtomValue, useStore } from 'jotai';
 import { boardSessionNavigationAtom } from '../boards/board-session-navigation';
+import { getSessionGroupTitle } from '@lody/shared';
 import {
   commands,
   useCommandPaletteState,
@@ -142,7 +143,7 @@ export function CommandPalette() {
       const lastActivityValue = session.lastMessageAt ?? session.createdAt ?? null;
       const board = session.boardId ? activeBoards.get(session.boardId) : undefined;
       const coordinator = board?.coordinatorSessionId === session.id;
-      const title = session.title?.trim() || t('sessions.untitled', 'Untitled session');
+      const title = getSessionGroupTitle(session) || t('sessions.untitled', 'Untitled session');
       return {
         kind: 'session',
         key: `session:${session.id}`,
@@ -206,7 +207,7 @@ export function CommandPalette() {
       // just `repoFullName`), so a session is findable by what the row shows.
       const projectLabel = resolveSessionProjectLabel(session, localProjects) ?? '';
       const boardName = (session.boardId && activeBoards.get(session.boardId)?.name) || '';
-      for (const text of [boardName, session.title ?? '', projectLabel, session.branchName ?? '']) {
+      for (const text of [boardName, session.groupTitle ?? '', session.title ?? '', projectLabel, session.branchName ?? '']) {
         if (!text) continue;
         const score = fuzzyMatch(trimmedQuery, text);
         if (score !== null && (best === null || score > best)) best = score;

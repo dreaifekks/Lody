@@ -1,7 +1,6 @@
 # apps/electron/src
 
-Edit `AGENTS.md`; `CLAUDE.md` symlinks here. Root and `apps/electron/AGENTS.md`
-apply; the latter owns build, packaging, native dependencies and OSS composition.
+Edit `AGENTS.md`; apply; the latter owns build, packaging, native dependencies and OSS composition.
 
 ## Module boundaries
 
@@ -11,7 +10,7 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
   Pre-ready APIs stay in `desktop-bootstrap`; buffer launch URLs before any await.
   Quit must retain ownership if the embedded CLI has not confirmed exit.
   Nightly reserves the CLI Host before application import and passes that identity
-  to `CliService`; Worker stop/restart and control-only mode must not release it.
+  to `CliService`; Worker stop/restart and control-only mode never release it.
   Stable/local keep their existing external-runtime policy.
 - Put domain services in `src/main/services/*`, IPC handlers and input validation in
   `src/main/ipc/*`, and local-project worker/storage code in
@@ -21,7 +20,7 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
   Rules: [process layer](../../../packages/shared/src/node/AGENTS.md).
 - Keep main-only helpers in `src/main/utils.ts`, cross-runtime pure logic/types in
   `@lody/shared`, and IPC contracts in `@lody/shared/electron-ipc`.
-- Electron main and preload code must not import runtime values from the
+- Electron main and preload code never import runtime values from the
   `@lody/shared` root barrel. Use a narrow subpath so Node bundles do not pull in
   renderer modules or `loro-crdt` WASM.
 - Derive invoke signatures from `IpcService` and the sole constructor list in
@@ -30,7 +29,8 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
   Components may import inferred service types only with erased `import type`, never
   a runtime dependency. Keep push/send maps in `@lody/shared/electron-ipc`. Preload
   exposes only `{ invoke, on, send }`, gates invoke by service groups in
-  `preload/ipc-invoke-policy.ts`, and retains push/send allowlists. Do not add
+  `preload/ipc-invoke-policy.ts`, and retains push/send allowlists. The `e2ee` group uses an explicit method list covering every
+  `E2eeIpc` method, checked by `e2ee-account-runtime.test.mjs`. Do not add
   `window.api`; validate foreign input at the IPC class boundary.
 - The E2E client-loss probe (`e2ee.inspectClientLoss` and `e2ee.clientLossEffects`) is the
   only channel pair outside the service classes. Main registers it, and preload admits it,
@@ -44,7 +44,7 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
 
 - Only factory-registered product windows may invoke product-window IPC. Dialogs,
   embedded browsers, navigation and close actions belong to their source window;
-  auxiliary windows must not overwrite the primary window's persisted view state.
+  auxiliary windows never overwrite the primary window's persisted view state.
 
 - Devbar is off by default; hidden Developer Mode enables it, while
   `LODY_DEVBAR=true` is automation only. Keep data in memory; MCP/Terminals
@@ -75,7 +75,7 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
   regions in native fullscreen. Windows caption buttons stay an OS overlay
   (`MAIN_WINDOW_TITLE_BAR_OVERLAY_HEIGHT`), measured by `--window-caption-*`:
   right-edge headers pad by its width, full-window overlays start below it.
-- The onboarding window must be native Light before its first renderer paint; normal product windows start from the committed theme ([main/AGENTS.md](main/AGENTS.md#startup-theme)).
+- The onboarding window is native Light before its first renderer paint; normal product windows start from the committed theme ([main/AGENTS.md](main/AGENTS.md#startup-theme)).
   An automatic login launch may suppress the initial product window, but onboarding and deep-link launches must remain visible during normal product use. Unpackaged E2E windows are the exception: they stay hidden unless `LODY_E2E_SHOW_WINDOW=1` and always disable background throttling.
 - `sessionControl.send` streams intermediate responses on `sessionControl.response`
   keyed by request id. The renderer subscribes before `invoke`, removes the
@@ -94,7 +94,7 @@ apply; the latter owns build, packaging, native dependencies and OSS composition
 
 - Electron previews local files directly after matching the target to its on-disk
   machine identity; never require daemon liveness or protocol metadata. Relative
-  paths need the original workspace root; never guess a substitute. Remote paths
+  paths need original workspace root; never guess a substitute. Remote paths
   stay remote. Never expose filesystem paths in resource URLs. `local-file-resource.ts` issues opaque renderer-lifetime
   capabilities, bounded per renderer, revoked on navigation/destruction.
 - Each resource read opens a regular file without following a substituted symlink

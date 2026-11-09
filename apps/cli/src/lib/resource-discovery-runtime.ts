@@ -118,12 +118,12 @@ export async function createResourceDiscovery(args: {
       workspace: baselines.get(getWorkspaceFlockDocId(workspaceId)) !== false,
       machines: machineBaselines,
     }),
-    onlineMachineIds: async () =>
+    machinePresence: async () =>
       getSessionCommandEnvironment() && !getSessionCommandEnvironment()!.host.remote
-        ? new Set([auth.machineId])
+        ? { online: new Set([auth.machineId]), synced: true }
         : args.offline
-          ? null
-          : manager.getOnlineMachineIds(),
+          ? { online: new Set(), synced: false }
+          : manager.getMachinePresenceView(),
     canAccess: async (machineId, localProjectId) =>
       // On the local platform every project of a machine its user reaches is theirs.
       (localProjectId !== undefined &&

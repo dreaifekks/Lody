@@ -40,11 +40,30 @@ context/message-flow.md "Upstream".
   `newSession`/`loadSession` share `acp-session-start-gate.ts`.
 - `acp-session-start-gate.ts` — process-wide start semaphore used by
   `Session.createAgent`, `startLocalAcpAgent`, and history-catalog ACP spawn.
-- `setting.ts` — launch resolution for every agent kind, including the user-installed
-  `dimcode acp` builtin. Users manage Dimcode installation and versions; Lody disables
+- `setting.ts` — launch resolution for every agent kind, including Sorbet's floating
+  `@sorbetai/acp@alpha` through the isolated npx cache. npm revalidates its tag with
+  a five-second fetch timeout and no fetch retries; network errors can retry a ready
+  tagged install offline. A cold offline install can still fail. The tag is not a
+  capability version: capability refresh probes again because the version is unknown,
+  and the stamped source version reports the installed build when the npx cache can name
+  it, falling back to the tag when it cannot. Its state lives at `<LodyDataDir>/sorbet`:
+  the agent owns that store's format, atomicity and migration, so Lody never parses,
+  rewrites, exports or previews it.
+  The `dimcode acp` builtin is user-installed. Users manage Dimcode installation and versions; Lody disables
   upstream auto-update in its child process and never downloads a fallback. Credentials
   remain in Dimcode's own configuration or provider environment. Refresh capabilities
   after upgrading. Existing registry configurations retain their saved launch contract.
+  [Sorbet authentication](../../../../.agents/notes/proposed/feature/2026-11-02-sorbet-acp-authentication.md)
+  uses the existing protected ACP interaction path. Its `sorbet.dev` credentials v1
+  extension runs in a separate bounded builtin Sorbet ACP process, with no session or
+  terminal; the daemon verifies the local Provider identity and does not use stored
+  launch overrides. Socket disconnect cancels the operation. Authentication and logout
+  share a daemon-wide mutation owner across workspaces; unconfirmed process cleanup is
+  retried before a later mutation. Account management is also available through signed E2EE
+  owned execution when the target advertises `sorbetCredentialsRemote`: the target verifies
+  the signer belongs to its owner's membership. List and logout use the execution journal;
+  an interrupted logout can have an unknown result. Metadata lists saved credential types,
+  not account identities, remote validity or environment-provided credentials.
 - `deepseek-harness-runtime.ts` — Provider-scoped Harness homes, atomic host bundles,
   and npx launch wrapper around the `packages/acp-extension-dsh` submodule. DSH uses
   a supported standalone Node from the final launch PATH in the target working directory.
@@ -256,6 +275,8 @@ production upload/readback. The CLI rejects adapter/manifest version drift. See 
 The submodule owns the private-wire contract
 and minimum official version. Kimi is different: `packages/acp-extension-kimi` owns the
 Lody-maintained runtime source and implements the shared `acp-extension-core` contract.
+The [Kimi media-output fix](../../../../.agents/notes/proposed/bug-fix/2026-11-04-kimi-media-output.md)
+requires a new published and verified runtime before the manifest can advance.
 
 Corrupt caches are reported absent with a warning; launch never executes them. Installation
 publishes a verified successor in a sibling `<arch>.gen-<uuid>` directory and leaves existing
@@ -263,7 +284,7 @@ paths untouched, including same-version replacements. Status, installation and l
 selector: filter the base and all completed generations by current pins and host compatibility,
 then rank eligible candidates by installedAt and command. Best-effort cleanup conservatively retains corrupt originals and generation trees
 because the manager cannot prove their readers have exited. Downloads have a 60-second idle deadline;
-progressing transfers have no total deadline. Idle timeout retains partial bytes for Range resume. [Decision](../../../../.agents/notes/proposed/bug-fix/2026-09-21-acp-auth-runtime-download.md).
+progressing transfers have no total deadline. Idle timeout retains partial bytes for Range resume. [Decision](../../../../.agents/notes/implemented/bug-fix/2026-09-21-acp-auth-runtime-download.md).
 
 Completed caches written before metadata schema v1 remain reusable through a separate strict
 legacy schema; their old `name`/`version`/`platform` fields are normalized in memory and only
@@ -276,8 +297,10 @@ failures retain the URL plus nested transport cause for diagnostics.
 ### Authentication
 
 Which authentication path runs is decided by the provider, not the caller: a managed builtin
-runs its pinned login command, and everything else (registry and custom ACP) opens a
-temporary standard ACP connection in the same bounded lifecycle. Kimi runs `acp --login`;
+runs its pinned login command; registry, custom ACP, and builtin Devin and Sorbet open a
+temporary standard ACP connection in the same bounded lifecycle. The authentication connection
+advertises credential form version 1; forms support text, secret and single-select fields.
+Kimi runs `acp --login`;
 Grok runs the official `login --device-auth`; Claude Code runs the official
 `auth login --claudeai` subscription flow. Codex ChatGPT runs official
 `login --device-auth`; managed API profiles use the existing secret-input interaction
@@ -311,7 +334,9 @@ connection.
 A protocol agent publishes its sign-in methods in the `initialize` response. The capability
 probe stores that list on the Provider's capability row (`authMethods`), so the account panel
 and the in-conversation auth notice list what the agent supports before anyone starts a
-sign-in; picking a row sends its `methodId` with the `start` request. The daemon re-reads the
+sign-in. Sorbet's probe advertises URL and credential-form discovery; ordinary sessions do
+not. Earlier Sorbet probe method lists are ignored and refreshed under the new source version.
+Picking a row sends its `methodId` with the `start` request. The daemon re-reads the
 advertised list on its own connection, ignores a pick the agent no longer advertises (falling
 back to the single method or its own picker), and still runs `authenticate` itself. A machine
 that predates `acpAuthenticationMethodSelection` receives no `methodId` at all, because its
@@ -390,6 +415,11 @@ sending task text through native default credentials.
 Other isolated title sessions retain the Provider's current model unless a title model
 was explicitly saved. Catalog order does not define a model preference; inferred safe
 mode and reasoning options remain independent of the model choice.
+
+Every generated or agent-pushed title names one tab. A root Session's sidebar title is
+the separate `groupTitle`: the first generated root title is copied into it once, and
+later titles never replace it. See the
+[group title decision](../../../../.agents/notes/implemented/architecture/2026-11-05-session-group-titles.md).
 
 Title output accepts normal assistant text with an absent message phase, as Codex
 providers do not all emit that optional field. Explicit `commentary` is excluded;

@@ -6,8 +6,6 @@ import { BoardSidebar } from './boards/board-sidebar-section';
 import { CreateBoardDialog } from './boards/create-board-dialog';
 import { boardActivity, boardEntrySearch, isBoardSession } from './boards/board-threads';
 import { parseLanHubRole } from '@lody/shared/lan-hub-role';
-import { SidebarPullRequests } from './sidebar-pull-requests';
-import { resolveSessionPullRequests } from '@lody/shared';
 import { E2eeSettingsIcon } from './settings/e2ee/security-state';
 import { openSessionOnModifiedClick } from '@/lib/desktop-window';
 import { buildSessionLink } from '@lody/shared/session-link';
@@ -41,6 +39,7 @@ import { useLocation, useRouter } from '@tanstack/react-router';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   findFreshSessionPresenceState,
+  getSessionGroupTitle,
   machineSupportsLocalProjectRemovalProtocol,
   resolveProjectGitHubRepo,
   resolveSessionHistoryBackendKind,
@@ -134,6 +133,7 @@ import {
 } from '@/atoms/sidebar-state';
 import {
   sortUpdatedItems,
+  SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS,
   type SidebarUpdatedBucketKey,
   type SidebarUpdatedItem,
 } from '@/components/sidebar-updated-session-list';
@@ -221,6 +221,7 @@ import { useStableNow } from '@/hooks/use-stable-now';
 import { useSidebarWorkspaceNavigation } from './sidebar-workspaces';
 import {
   SessionOpenedByTreeRow,
+  SessionPrIcon,
   SessionRowAuthorAvatar,
   SessionRowLeadingSlot,
   SessionRowWorktreeIndicator,
@@ -245,6 +246,7 @@ import type { SessionSendState } from '@/lib/session-send-status';
 import {
   buildOpenedBySessionTree,
   countOpenedByTreeRoots,
+  getPinnedSessionTreeIds,
   hasOpenedByTreeNesting,
   normalizeSessionRowId,
 } from '@/lib/session-opened-by-tree';
@@ -463,7 +465,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
   const { t } = useTranslation();
   const familyActivityDescription = useSidebarGroupActivityDescription(familyActivity);
   const moreActionsLabel = t('sessions.moreActions', 'More actions');
-  const title = (session.title ?? '').trim() || defaultSessionTitle;
+  const title = getSessionGroupTitle(session) || defaultSessionTitle;
   // Self-ticking on the shared sidebar timer: a tick re-renders only this row's
   // time label, not every row in the project section.
   const now = useStableNow(SIDEBAR_RELATIVE_TIME_REFRESH_MS);
@@ -657,11 +659,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
         {/* ④ Fixed end slot: the PR status sits here at rest when the session
             has one, with a faint worktree glyph just to its left; the Archive
             button replaces it on desktop hover. */}
-        <div
-          className={
-            showMetaLine && showBranchNames && showPr ? 'flex self-stretch' : lineBoxClassName
-          }
-        >
+        <div className={lineBoxClassName}>
           <SidebarRowEndSlot
             sessionId={session.id}
             isWaitingPermission={isWaitingPermission}
@@ -669,17 +667,12 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
             hasUnreadMessages={hasUnreadMessages}
             familyActivity={familyActivity}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
-            restOnSecondLine={showMetaLine && showBranchNames && showPr}
-            interactiveRest={showBranchNames && showPr}
             restIcon={
-              (showPr && showBranchNames) || showWorktreeIcon ? (
+              showPr || showWorktreeIcon ? (
                 <span className="flex items-center gap-1.5">
                   <SessionRowWorktreeIndicator isWorktree={showWorktreeIcon} />
-                  {showPr && showBranchNames ? (
-                    <SidebarPullRequests
-                      alignWithBranch={showMetaLine && showBranchNames}
-                      pullRequests={resolveSessionPullRequests(session)}
-                    />
+                  {showPr ? (
+                    <SessionPrIcon compact prStatus={prStatus} prCiState={prInfo.ciState} />
                   ) : null}
                 </span>
               ) : undefined
@@ -1931,7 +1924,7 @@ export function LoroAppSidebar({
     [postHog, setShowBranchNames]
   );
   const sessionSidebarCodeChangesOnly = useAtomValue(sessionSidebarCodeChangesOnlyAtom);
-  const { archiveSession, markSessionUnread, setSessionPinned, updateSessionTitle } =
+  const { archiveSession, markSessionUnread, setSessionPinned, updateSessionGroupTitle } =
     useSessionActions();
   const { removeLocalProject } = useRemoveLocalProject();
   const presenceStates = useAtomValue(lodyPresenceStatesAtom);
@@ -2047,7 +2040,7 @@ export function LoroAppSidebar({
       }
       setPendingSessionShare({
         sessionId: sessionId,
-        title: session?.title?.trim() || defaultSessionTitle,
+        title: getSessionGroupTitle(session) || defaultSessionTitle,
         sharing,
       });
     },
@@ -2278,26 +2271,14 @@ export function LoroAppSidebar({
   );
   const { projects: workspaceProjects } = useWorkspaceProjects();
   const projectGroupTasks = useMemo(() => tasks.filter((task) => task.projectGroup), [tasks]);
-  const naturalProjectGroupSessions = useMemo(
-    () => projectGroupTasks.filter((task) => !task.isPinned),
-    [projectGroupTasks]
-  );
-  const naturalWorkspaceChatSessions = useMemo(
-    () => chatSessions.filter((task) => !task.isPinned),
-    [chatSessions]
-  );
-  const naturalWorkspaceRepoSessions = useMemo(
-    () => repoSessions.filter((task) => !task.isPinned),
-    [repoSessions]
-  );
   // Progress-free: changes only when a local send starts, fails or finishes.
   const sendStates = useAtomValue(sessionSendStatesAtom);
   const handleRenameSession = useCallback(
     (sessionId: string, nextTitle: string) => {
       if (rejectHistoryWrite([sessionId])) return Promise.resolve();
-      return updateSessionTitle(sessionId as SessionId, nextTitle);
+      return updateSessionGroupTitle(sessionId as SessionId, nextTitle);
     },
-    [rejectHistoryWrite, updateSessionTitle]
+    [rejectHistoryWrite, updateSessionGroupTitle]
   );
   const [repoCollapseState, setRepoCollapseState] = useAtom(repoCollapseStateAtom);
   const [repoOrder, setRepoOrder] = useAtom(repoOrderAtom);
@@ -2523,63 +2504,6 @@ export function LoroAppSidebar({
 
     return map;
   }, [childSessionsByParent, scope, listSessions, sessionsListLoading, userId]);
-  const naturalWorkspaceLocalProjectSessionsByKey = useMemo(() => {
-    const map = new Map<string, SessionMeta[]>();
-    for (const [projectKey, sessionsForProject] of localProjectSessionsByKey) {
-      map.set(
-        projectKey,
-        sessionsForProject.filter((session) => !session.isPinned)
-      );
-    }
-    return map;
-  }, [localProjectSessionsByKey]);
-
-  // Workspace groups only: an opened Session joins its opener's group so the
-  // tree there can indent it, even across Machines and work contexts.
-  const workspaceGroups = useMemo(
-    () =>
-      placeWorkspaceSessionsWithOpeners(
-        {
-          chatSessions: naturalWorkspaceChatSessions,
-          repoSessions: naturalWorkspaceRepoSessions,
-          projectGroupSessions: naturalProjectGroupSessions,
-          localProjectSessionsByKey: naturalWorkspaceLocalProjectSessionsByKey,
-        },
-        {
-          sessions: sessionsListLoading ? [] : sessions,
-          // A project the sidebar does not render cannot host anything.
-          isRenderedLocalProject: (projectKey) =>
-            visibleLocalProjectMap.has(projectKey) || pendingLocalProjectRemovals.has(projectKey),
-          resolveOpenerRowId,
-          toTaskRows: buildSidebarTaskRows,
-          latestMessageAt: (session) => getEffectiveLatestMessageAt(session, childSessionsByParent),
-        }
-      ),
-    [
-      buildSidebarTaskRows,
-      childSessionsByParent,
-      naturalProjectGroupSessions,
-      naturalWorkspaceChatSessions,
-      naturalWorkspaceLocalProjectSessionsByKey,
-      naturalWorkspaceRepoSessions,
-      pendingLocalProjectRemovals,
-      resolveOpenerRowId,
-      sessions,
-      sessionsListLoading,
-      visibleLocalProjectMap,
-    ]
-  );
-  const {
-    chatSessions: workspaceChatSessions,
-    repoSessions: workspaceRepoSessions,
-    projectGroupSessions,
-    localProjectSessionsByKey: workspaceLocalProjectSessionsByKey,
-  } = workspaceGroups;
-  const repoFullNames = useMemo(
-    () => getStableRepoFullNames(workspaceRepoSessions),
-    [workspaceRepoSessions]
-  );
-
   // The ONE session-navigation callback for every sidebar surface (rows,
   // Updated items, keyboard nav). `tabSessionId` restores the precise child Tab
   // that "Go to Opener Session" points at.
@@ -2756,7 +2680,7 @@ export function LoroAppSidebar({
     userId,
     visibleLocalProjectMap,
   ]);
-  const localProjectSections = localProjectLayout.sections;
+  const catalogLocalProjectSections = localProjectLayout.sections;
   const pinnedProjectRows = localProjectLayout.pinned;
 
   // Register newly visible projects without deleting saved entries. A project
@@ -2767,7 +2691,7 @@ export function LoroAppSidebar({
     const prevOrder = localProjectOrderRef.current;
     const known = new Set(prevOrder);
     const discovered: string[] = [];
-    for (const section of localProjectSections) {
+    for (const section of catalogLocalProjectSections) {
       if (!section.machineId) continue;
       for (const project of section.projects) {
         const key = `${section.machineId}:${project.id}`;
@@ -2777,7 +2701,7 @@ export function LoroAppSidebar({
       }
     }
     if (discovered.length > 0) setLocalProjectOrder([...prevOrder, ...discovered]);
-  }, [localProjectSections, sessionsListLoading, setLocalProjectOrder]);
+  }, [catalogLocalProjectSections, sessionsListLoading, setLocalProjectOrder]);
 
   const handleMoveLocalProject = useCallback(
     (sectionProjectKeys: readonly string[], event: DragEndEvent) => {
@@ -2827,12 +2751,6 @@ export function LoroAppSidebar({
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
         isWaitingPermission: task.isWaitingPermission,
-        pullRequests: task.pullRequests,
-        prUrl: task.prUrl,
-        prStatus: task.prStatus,
-        prCiState: task.prCiState,
-        prReadiness: task.prReadiness,
-        prNumber: task.prNumber,
         externalHistoryProvider: task.externalHistoryProvider ?? null,
         owner: task.owner ?? null,
         openedBySessionId: task.openedBySessionId ?? null,
@@ -2865,7 +2783,6 @@ export function LoroAppSidebar({
         prCiState: task.prCiState,
         prReadiness: task.prReadiness,
         prNumber: task.prNumber,
-        pullRequests: task.pullRequests,
         prUrl: task.prUrl ?? null,
         externalHistoryProvider: task.externalHistoryProvider ?? null,
         owner: task.owner ?? null,
@@ -2905,7 +2822,6 @@ export function LoroAppSidebar({
         prCiState: task.prCiState,
         prReadiness: task.prReadiness,
         prNumber: task.prNumber,
-        pullRequests: task.pullRequests,
         prUrl: task.prUrl ?? null,
         externalHistoryProvider: task.externalHistoryProvider ?? null,
         owner: task.owner ?? null,
@@ -2915,7 +2831,7 @@ export function LoroAppSidebar({
       });
     }
 
-    for (const section of localProjectSections) {
+    for (const section of catalogLocalProjectSections) {
       const machineId = section.machineId;
       if (!machineId) continue;
       for (const project of section.projects) {
@@ -2923,7 +2839,7 @@ export function LoroAppSidebar({
         const sessionsForProject = localProjectSessionsByKey.get(projectKey) ?? [];
         const sectionLabel = `${localSectionLabel} · ${project.name}`;
         for (const session of sessionsForProject) {
-          const title = (session.title ?? '').trim() || defaultSessionTitle;
+          const title = getSessionGroupTitle(session) || defaultSessionTitle;
           const activity = getEffectiveSessionActivitySummary(
             session,
             childSessionsByParent,
@@ -2959,10 +2875,7 @@ export function LoroAppSidebar({
             prCiState: prInfo.ciState,
             prReadiness: prInfo.readiness,
             prNumber: prInfo.number,
-            pullRequests: resolveSessionPullRequests(session),
             prUrl: prInfo.url,
-            addedLines: session.diffStats?.allChange?.add,
-            deletedLines: session.diffStats?.allChange?.del,
             openedBySessionId: session.openedBySessionId ?? null,
             openedByRowSessionId:
               session.openedByRootSessionId ?? resolveOpenerRowId(session.openedBySessionId),
@@ -2981,7 +2894,7 @@ export function LoroAppSidebar({
     chatSessions,
     childSessionsByParent,
     defaultSessionTitle,
-    localProjectSections,
+    catalogLocalProjectSections,
     localProjectSessionsByKey,
     liveSessionStatuses,
     onlineMachineIds,
@@ -2994,13 +2907,90 @@ export function LoroAppSidebar({
     t,
   ]);
   previousSidebarItemsRef.current = allSidebarItems;
-  const pinnedItems = useMemo(
-    () => sortUpdatedItems(allSidebarItems.filter((item) => item.isPinned)),
+  const pinnedSessionIds = useMemo(
+    () =>
+      getPinnedSessionTreeIds(allSidebarItems, {
+        ...SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS,
+        isPinned: (item) => Boolean(item.isPinned),
+      }),
     [allSidebarItems]
   );
+  const pinnedItems = useMemo(
+    () => sortUpdatedItems(allSidebarItems.filter((item) => pinnedSessionIds.has(item.id))),
+    [allSidebarItems, pinnedSessionIds]
+  );
   const updatedItems = useMemo(
-    () => allSidebarItems.filter((item) => !item.isPinned),
-    [allSidebarItems]
+    () => allSidebarItems.filter((item) => !pinnedSessionIds.has(item.id)),
+    [allSidebarItems, pinnedSessionIds]
+  );
+
+  const naturalProjectGroupSessions = useMemo(
+    () => projectGroupTasks.filter((task) => !pinnedSessionIds.has(task.sessionId)),
+    [projectGroupTasks, pinnedSessionIds]
+  );
+  const naturalWorkspaceChatSessions = useMemo(
+    () => chatSessions.filter((task) => !pinnedSessionIds.has(task.sessionId)),
+    [chatSessions, pinnedSessionIds]
+  );
+  const naturalWorkspaceRepoSessions = useMemo(
+    () => repoSessions.filter((task) => !pinnedSessionIds.has(task.sessionId)),
+    [repoSessions, pinnedSessionIds]
+  );
+  const naturalWorkspaceLocalProjectSessionsByKey = useMemo(() => {
+    const map = new Map<string, SessionMeta[]>();
+    for (const [projectKey, sessionsForProject] of localProjectSessionsByKey) {
+      map.set(
+        projectKey,
+        sessionsForProject.filter((session) => !pinnedSessionIds.has(session.id))
+      );
+    }
+    return map;
+  }, [localProjectSessionsByKey, pinnedSessionIds]);
+
+  // Workspace groups only: an opened Session joins its opener's group so the
+  // tree there can indent it, even across Machines and work contexts.
+  const workspaceGroups = useMemo(
+    () =>
+      placeWorkspaceSessionsWithOpeners(
+        {
+          chatSessions: naturalWorkspaceChatSessions,
+          repoSessions: naturalWorkspaceRepoSessions,
+          projectGroupSessions: naturalProjectGroupSessions,
+          localProjectSessionsByKey: naturalWorkspaceLocalProjectSessionsByKey,
+        },
+        {
+          sessions: sessionsListLoading ? [] : sessions,
+          // A project the sidebar does not render cannot host anything.
+          isRenderedLocalProject: (projectKey) =>
+            visibleLocalProjectMap.has(projectKey) || pendingLocalProjectRemovals.has(projectKey),
+          resolveOpenerRowId,
+          toTaskRows: buildSidebarTaskRows,
+          latestMessageAt: (session) => getEffectiveLatestMessageAt(session, childSessionsByParent),
+        }
+      ),
+    [
+      buildSidebarTaskRows,
+      childSessionsByParent,
+      naturalProjectGroupSessions,
+      naturalWorkspaceChatSessions,
+      naturalWorkspaceLocalProjectSessionsByKey,
+      naturalWorkspaceRepoSessions,
+      pendingLocalProjectRemovals,
+      resolveOpenerRowId,
+      sessions,
+      sessionsListLoading,
+      visibleLocalProjectMap,
+    ]
+  );
+  const {
+    chatSessions: workspaceChatSessions,
+    repoSessions: workspaceRepoSessions,
+    projectGroupSessions,
+    localProjectSessionsByKey: workspaceLocalProjectSessionsByKey,
+  } = workspaceGroups;
+  const repoFullNames = useMemo(
+    () => getStableRepoFullNames(workspaceRepoSessions),
+    [workspaceRepoSessions]
   );
 
   const archiveTooltipLabel = useMemo(() => t('sessions.archive', 'Archive session'), [t]);
@@ -3125,7 +3115,11 @@ export function LoroAppSidebar({
     const rank = new Map(projectGroupOrder.map((id, index) => [id, index]));
     const collapsedOf = (projectId: string) =>
       repoCollapseState[getProjectGroupSessionGroupKey(projectId)] ?? false;
+    const activeProjectIds = new Set(
+      projectGroupSessions.map((session) => session.projectGroup?.id)
+    );
     const defined = workspaceProjects
+      .filter((project) => activeProjectIds.has(project.id))
       .map((project, index) => ({ project, index }))
       .sort(
         (left, right) =>
@@ -3163,10 +3157,33 @@ export function LoroAppSidebar({
         states: projectGroupStates,
         sessions: projectGroupSessions,
         listedMachineIds: new Set(
-          localProjectSections.flatMap((section) => (section.machineId ? [section.machineId] : []))
+          catalogLocalProjectSections.flatMap((section) =>
+            section.machineId ? [section.machineId] : []
+          )
         ),
       }),
-    [localProjectSections, projectGroupSessions, projectGroupStates, workspaceProjects]
+    [catalogLocalProjectSections, projectGroupSessions, projectGroupStates, workspaceProjects]
+  );
+  // Filter after pinned trees and opened-by placement have assigned each row
+  // its final group. Keep the catalog above for Updated/Pinned and saved order.
+  const localProjectSections = useMemo(
+    () =>
+      catalogLocalProjectSections
+        .map((section) => ({
+          ...section,
+          projects: section.projects.filter(
+            (project) =>
+              (workspaceLocalProjectSessionsByKey.get(`${section.machineId}:${project.id}`)
+                ?.length ?? 0) > 0
+          ),
+        }))
+        .filter(
+          (section) =>
+            section.projects.length > 0 ||
+            (section.machineId &&
+              (projectGroupPlacement.byMachine.get(section.machineId)?.sessions.length ?? 0) > 0)
+        ),
+    [catalogLocalProjectSections, projectGroupPlacement, workspaceLocalProjectSessionsByKey]
   );
   const showGithubWorktrees =
     sessionsListLoading ||

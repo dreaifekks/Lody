@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/server';
+import type { LodyToolServer } from './tool-help';
 import { z } from 'zod';
 import {
   ScheduleProposalDestinationSchema,
@@ -56,7 +56,7 @@ const id = z
   .max(50)
   .regex(/^[a-zA-Z0-9_-]+$/);
 export function registerScheduleTools(
-  server: McpServer,
+  server: LodyToolServer,
   registerSessionTool: ReturnType<typeof createSessionToolRegistrar>,
   deps: Dependencies
 ): void {
@@ -93,6 +93,7 @@ export function registerScheduleTools(
   registerSessionTool(
     'lody_schedule_create',
     {
+      summary: 'Create a scheduled task',
       title: 'Create a scheduled task',
       description: [
         'Create and enable a scheduled task the user asked for; it runs without a confirmation',
@@ -107,6 +108,7 @@ export function registerScheduleTools(
   registerSessionTool(
     'lody_schedule_update',
     {
+      summary: 'Change a scheduled task',
       title: 'Change a scheduled task',
       description: [
         'Change the title, prompt, rule, destination or target of a Schedule the user owns.',
@@ -127,6 +129,7 @@ export function registerScheduleTools(
   registerSessionTool(
     'lody_schedule_resume',
     {
+      summary: 'Resume a scheduled task',
       title: 'Resume a scheduled task',
       description: [
         'Resume a paused Schedule the user owns. Only a schedule within this conversation’s',
@@ -140,6 +143,7 @@ export function registerScheduleTools(
   server.registerTool(
     'lody_schedule_list',
     {
+      summary: 'Find scheduled tasks in this workspace and their owner-machine execution scope.',
       description:
         'List scheduled-task summaries in the current workspace; `agentRoleId` is set on one that runs as an Agent Role. Use get for details; execution belongs to the owner machine.',
       inputSchema: z
@@ -156,6 +160,7 @@ export function registerScheduleTools(
   server.registerTool(
     'lody_schedule_get',
     {
+      summary: 'Read one scheduled task prompt, configuration activity and upcoming run times.',
       description:
         'Read a Schedule, its prompt, recent configuration activity and next five times. `definition.agentRole` is the Agent Role it runs as, read again at every run; `definition.agent` is then only what that Role resolved to when the schedule was saved. definition.mcpServerIds contains the saved workspace MCP ids; absent uses enabledByDefault, [] selects none. Ordinary Sessions own execution results.',
       inputSchema: z.object({ scheduleId: id }).strict(),
@@ -165,6 +170,7 @@ export function registerScheduleTools(
   server.registerTool(
     'lody_schedule_pause',
     {
+      summary: 'Pause future schedule runs; already accepted Sessions continue.',
       description:
         'Pause a Schedule owned by the authenticated user. Already accepted Sessions continue. Reuse requestId when retrying. lody_schedule_resume starts it again.',
       inputSchema: z.object({ scheduleId: id, requestId: id }).strict(),
@@ -174,6 +180,8 @@ export function registerScheduleTools(
   server.registerTool(
     'lody_schedule_propose',
     {
+      summary:
+        'Propose scheduled work for user confirmation; it is created only when the user clicks Create.',
       description: [
         'Propose a scheduled task from what the user described. This writes a card into the',
         'current chat with a Create button; the user creates the schedule by pressing it — do not',

@@ -42,6 +42,7 @@ import {
   type CommonCommandOptions,
 } from '@/lib/command-runtime';
 import { toAgentConfigOutput, type AgentConfigOutput } from './agent-config-output';
+import { readMachinePresence } from './session-machine-presence';
 import { renderTerminalTable } from '@/lib/terminal-table';
 import { formatErrorMessage } from '@/utils/format-error';
 import { getCliPlatformKind } from '@/lib/cli-platform';
@@ -169,7 +170,7 @@ export function resolveAgentConfigSelector(
 // CLI inference predates explicit cliType. Keep the historical Claude/Codex
 // aliases and the unambiguous built-in Grok/Bub/Dimcode aliases here; `kimi` continues
 // to mean the registry agent for backward compatibility.
-const LEGACY_BUILTIN_AGENT_TYPES = new Set(['claude', 'codex', 'grok', 'bub', 'dimcode']);
+const LEGACY_BUILTIN_AGENT_TYPES = new Set(['claude', 'codex', 'grok', 'bub', 'dimcode', 'sorbet']);
 
 export function inferAgentConfigCliType(agentType: string): AgentConfigCliType {
   const normalized = normalizeCliValue(agentType)?.toLowerCase();
@@ -501,13 +502,13 @@ export async function resolveAgentConfigTarget(
     selector: input.machine,
     authMachineId: auth.machineId,
   });
-  const onlineMachineIds = await manager.getOnlineMachineIds();
+  const presence = await readMachinePresence(manager, machine.id);
   return {
     workspaceId: workspace.id,
     config: { id: config.id, name: config.name, agentType: config.agentType },
     machine,
     // Null when presence is unknown: the refresh then fails on its own if the machine is down.
-    online: onlineMachineIds ? onlineMachineIds.has(machine.id) : null,
+    online: presence === 'unknown' ? null : presence === 'online',
   };
 }
 
@@ -944,8 +945,7 @@ const agentConfigImportMagpieCommand = new Command('import-magpie')
                 'Current machine is not registered in this workspace. Run lody start first.'
               );
             assertMagpieImportMachine(machine, request);
-            const online = await manager.getOnlineMachineIds();
-            if (online && !online.has(machine.id))
+            if ((await readMachinePresence(manager, machine.id)) === 'offline')
               throw new Error('Current machine is offline. Run lody start first.');
             if (
               !(await manager.syncMachineFlockDoc(machine.id, { reason: 'magpie-import:prewrite' }))

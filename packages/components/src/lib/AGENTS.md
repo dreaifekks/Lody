@@ -103,9 +103,11 @@ Organization queries require matching authenticated sessions.
   same-machine Electron. Preserve explicit absolute artifact paths; never launch
   remote paths on the viewer's machine.
 
-- Native file/PNG sharing uses complete authorized bytes, never paths. Preserve
+- Native sharing uses authorized bytes, never paths. Preserve
   limits; isolate caches and clean on handoff/failure/cancel. Distinguish cancellation
   while retaining preview/selection.
+- Diff blobs require negotiation, current manifests, verified bytes and bounded caches.
+  Protected/local blobs never persist; hidden diffs cancel paging.
 
 - Before changing conversation Markdown/PNG exports, read the
   [conversation export rules](../AGENTS.md#conversation-exports).
@@ -121,13 +123,12 @@ Organization queries require matching authenticated sessions.
   checks. Saves refresh every `cacheKeys` alias. Preview tolerates case; `save-text`
   requires exact case.
 
-- In `session-file-error-state.tsx`, "outside the workspace" means policy rejection,
-  never "Access denied"; CLI retains that phrase. "owner session mismatch" means
-  startup race; advise "try again".
+- File errors: "outside the workspace" means policy rejection, never "Access denied".
+  "owner session mismatch" advises retry.
 
 - Read [path provenance and skipped entries](../../../../.agents/docs/components-file-paths.md#known-gaps)
-  before repairs. Distinguish directory failures; preserve `openFile`'s index
-  `readonly`; opening a file must not make it uneditable.
+  before repairs. Distinguish directory failures; preserve index
+  `readonly`; opening never makes files uneditable.
 
 ## Dropped files and folders
 
@@ -148,7 +149,7 @@ Organization queries require matching authenticated sessions.
 - `formatAgentRateLimitWindowLabel` shows every reported window with localized
   duration, even when duration/utilization/reset match.
 
-- Before creating top-level or child sessions, call `filterAcpSessionConfigOptionValues()`
-  so cached values outside the current selector schema are neither dispatched nor persisted.
+- Before creating any session, call `filterAcpSessionConfigOptionValues()`
+  so cached values outside current selector schema are neither dispatched nor persisted.
 
-Attachment lifetime: [workspace ownership](../providers/AGENTS.md#attachment-transfer-ownership).
+Attachments: [workspace ownership](../providers/AGENTS.md#attachment-transfer-ownership).

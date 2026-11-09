@@ -55,7 +55,10 @@ vi.mock('@/lib/command-runtime', async (importOriginal) => {
             openFlockDoc: vi.fn(async () => ({ flock: { scan: () => mocks.catalogScan() ?? [] } })),
           },
           syncFlockDocOrThrow: vi.fn(async () => undefined),
-          getOnlineMachineIds: vi.fn(async () => new Set(['machine-id'])),
+          getMachinePresenceView: vi.fn(async () => ({
+            online: new Set(['machine-id']),
+            synced: true,
+          })),
           syncDocOrThrow: async () => undefined,
           getOrCreateSessionDoc: vi.fn(async () => ({ getMetaState: async () => ({}) })),
         })

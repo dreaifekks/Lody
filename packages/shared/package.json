@@ -83,7 +83,8 @@
     },
     "./electron-ipc": {
       "types": "./src/electron-ipc.ts",
-      "import": "./src/electron-ipc.ts"
+      "import": "./src/electron-ipc.ts",
+      "default": "./src/electron-ipc.ts"
     },
     "./devbar": {
       "types": "./src/devbar.ts",

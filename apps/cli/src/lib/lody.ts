@@ -4,6 +4,7 @@ import { workspaceSupports } from '@lody/shared/workspace-streams-content';
 import type { CliE2eeWorkspaceLegacy } from './e2ee/workspace-legacy';
 import { LoroDocumentManager } from '@/lib/loro/doc';
 import { MachineRuntime } from '@/lib/machine-runtime';
+import { createSorbetCredentialsHandler } from '@/lib/sorbet-credentials';
 import { Logger } from '@/utils/logger';
 import {
   CliType,
@@ -76,8 +77,13 @@ interface LodyOptions {
   onStorageWriteFailure?: (error: Error) => void;
   onInboxAvailabilityChange?: (message: string | undefined) => void;
   /** Drain this owner on confirmed member removal or device revocation.
+   * `member-removed` ends the account's membership; `device-revoked` retires only
+   * this machine identity, so the workspace may re-enrol with a fresh one.
    * The workspace host alone owns receipt-verified member-data erasure. */
-  onEncryptedMemberRemoved?: (owner: Lody) => Promise<void>;
+  onEncryptedAccessLost?: (
+    owner: Lody,
+    reason: 'member-removed' | 'device-revoked'
+  ) => Promise<void>;
   onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
   workspaceWatchCoordinator?: WorkspaceWatchCoordinatorApi;
   /** Carries out what another member of the LAN of this workspace asks of this machine. */
@@ -143,15 +149,17 @@ export class Lody {
         genesisHash: options.genesisHash,
         cloud: options.cloudPort.e2ee,
         onUnavailable: () => options.logger.debug('e2ee_background_unavailable'),
-        onRemoved: async (reason) => {
+        onRemoved: async (reason, recorded) => {
           const owner = await removalOwner;
           if (!owner) return;
           owner.encryptedRevocation =
             reason === 'device-revoked' ? 'e2ee_device_revoked' : 'e2ee_member_removed';
-          owner.clientLossReceipt?.loss(owner.encryptedRevocation);
+          // The probe may fence only a durable exact receipt. Cleanup still stops
+          // the owner when that write failed, but it is not a drain proof.
+          if (recorded) owner.clientLossReceipt?.loss(owner.encryptedRevocation);
           try {
             await owner.startReceipt?.catch(() => undefined);
-            if (options.onEncryptedMemberRemoved) await options.onEncryptedMemberRemoved(owner);
+            if (options.onEncryptedAccessLost) await options.onEncryptedAccessLost(owner, reason);
             else await owner.cleanup();
             if (!owner.startReceipt) await owner.documentManager.cleanUp();
             owner.clientLossReceipt?.retired();
@@ -189,6 +197,9 @@ export class Lody {
         genesis: options.genesisHash,
         workspaceId: options.workspaceId,
         targetMachineId: options.machineId,
+        machineUserId: options.cloudPort.identity.userId,
+        ledgerIdentity: e2ee.ledgerIdentity,
+        authorizeMachineTarget: e2ee.authorizeMachineTarget,
         journal: lazyExecutionJournal(join(e2ee.repositoryDirectory, 'execution.sqlite'), Date.now),
         authorizeExecution: options.authorizeEncryptedExecution ?? e2ee.authorizeExecution,
         isExecutionOpen: e2ee.isExecutionOpen,
@@ -292,6 +303,7 @@ export class Lody {
           machineId: options.machineId,
           accountId: options.userId,
           workspaceId: options.workspaceId,
+          deviceKey: e2ee.signingPublicKey,
         },
         () => {
           const work = lody.runtime.inspectClientLoss();
@@ -332,6 +344,11 @@ export class Lody {
       workspaceDocument: documentManager,
       memoryPressure: options.memoryPressure,
       handlerConfig: {
+        sorbetCredentials: createSorbetCredentialsHandler(
+          documentManager,
+          this.machineId,
+          this.logger
+        ),
         token: this.token,
         encryptedWorkspace: options.contentMode === 'e2ee',
         encryptedExecution: options.contentMode === 'e2ee' ? encryptedExecution : undefined,
@@ -594,9 +611,10 @@ export class Lody {
   }
 
   async dispatchLocalMachineRpc(
-    message: LocalMachineRpcRequestValidated
+    message: LocalMachineRpcRequestValidated,
+    signal?: AbortSignal
   ): Promise<LocalMachineRpcResponse> {
-    return await this.runtime.dispatchLocalMachineRpc(message);
+    return await this.runtime.dispatchLocalMachineRpc(message, signal);
   }
 
   /** A machine RPC request a member of this workspace's LAN sent directly. */

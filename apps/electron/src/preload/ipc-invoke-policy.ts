@@ -44,6 +44,13 @@ export function isIpcInvokeChannel(channel: string): boolean {
       'approvePersonalJoin',
       'claimPersonalJoin',
       'cancelPersonalJoin',
+      'requestAccountPairing',
+      'accountPairingRequest',
+      'cancelAccountPairing',
+      'accountPairingCode',
+      'inspectAccountPairing',
+      'approveAccountPairing',
+      'declineAccountPairing',
 
       'prepareLocalAgent',
       'admitLocalAgent',

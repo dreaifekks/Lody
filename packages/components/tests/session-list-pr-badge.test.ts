@@ -5,15 +5,11 @@ import React, { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { createStore, getDefaultStore, Provider } from 'jotai';
-import { sidebarShowBranchNamesAtom } from '../src/atoms/sidebar-state';
+import { createStore, Provider } from 'jotai';
 import { sessionSendStatusesAtom } from '../src/atoms/session-send-status';
 import { SessionList } from '../src/components/session-list';
-import { SidebarBranchSegment, SidebarRowEndSlot } from '../src/components/sidebar-row-shared';
 import { initI18n } from '../src/i18n';
 import { WORKING_HAND_OVER_MS } from '../src/ui/working-status-mark';
-
-
 
 const PR_STATUS_CASES = [
   ['open', '.lucide-git-pull-request', 'text-github-open'],
@@ -73,52 +69,7 @@ describe('SessionList PR badge', () => {
     root = undefined;
     container?.remove();
     container = undefined;
-    getDefaultStore().set(sidebarShowBranchNamesAtom, false);
     vi.restoreAllMocks();
-  });
-
-  it('keeps activity and PR visible on separate lines while preserving single-line priority', () => {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    const openPr = vi.fn();
-    const archive = vi.fn();
-    const renderSlot = (twoLines: boolean) =>
-      React.createElement(SidebarRowEndSlot, {
-        isWaitingPermission: true,
-        restOnSecondLine: twoLines,
-        interactiveRest: true,
-        restIcon: React.createElement('button', { type: 'button', onClick: openPr }, 'PR #42'),
-        archive: React.createElement('button', { type: 'button', onClick: archive }, 'Archive'),
-      });
-    flushSync(() => root?.render(renderSlot(true)));
-    expect(container.querySelector('[data-session-row-end-slot]')?.textContent).toContain('PR #42');
-    expect(
-      container.querySelector('[data-session-row-end-slot]')?.querySelector('svg')
-    ).not.toBeNull();
-    expect(container.textContent).toContain('Archive');
-    flushSync(() => {
-      container?.querySelectorAll('button')[0]?.click();
-      container?.querySelectorAll('button')[1]?.click();
-    });
-    expect(openPr).toHaveBeenCalledOnce();
-    expect(archive).toHaveBeenCalledOnce();
-    flushSync(() => root?.render(renderSlot(false)));
-    expect(container.textContent).not.toContain('PR #42');
-    expect(container.textContent).toContain('Archive');
-  });
-
-  it('keeps the full branch available when its middle is clipped', () => {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    const branch = 'feature/a-very-long-branch-name-with-a-distinct-ending';
-    flushSync(() =>
-      root?.render(React.createElement(SidebarBranchSegment, { branchName: branch }))
-    );
-    const label = container.querySelector('[title]');
-    expect(label?.getAttribute('title')).toBe(branch);
-    expect(label?.textContent).toBe(branch);
   });
 
   it('opens the in-app PR target instead of GitHub when a handler is provided', () => {
@@ -187,7 +138,6 @@ describe('SessionList PR badge', () => {
   });
 
   it('replaces diff stats with a Mergeable pill only while the ready session is inactive', () => {
-    getDefaultStore().set(sidebarShowBranchNamesAtom, true);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -223,7 +173,11 @@ describe('SessionList PR badge', () => {
     expect(row?.querySelector('[data-session-mergeable-pill]')?.textContent).toBe('Mergeable');
     expect(row?.querySelector('.text-github-addition')).toBeNull();
     expect(row?.querySelector('.text-github-deletion')).toBeNull();
-    expect(row?.querySelector('.lucide-git-pull-request')).not.toBeNull();
+    const anchor = row?.querySelector('[data-session-pr-icon-anchor]');
+    expect(anchor).not.toBeNull();
+    expect(anchor?.className).toContain('w-5');
+    expect(anchor?.querySelector('.lucide-git-pull-request')).not.toBeNull();
+    expect(anchor?.querySelector('[data-session-mergeable-pill]')).toBeNull();
 
     flushSync(() => {
       root?.render(
@@ -239,50 +193,58 @@ describe('SessionList PR badge', () => {
     expect(selectedRow?.querySelector('[data-session-mergeable-pill]')).toBeNull();
     expect(selectedRow?.querySelector('.text-github-addition')).toBeNull();
     expect(selectedRow?.querySelector('.text-github-deletion')).toBeNull();
-    expect(selectedRow?.querySelector('.lucide-git-pull-request')).not.toBeNull();
+    const selectedAnchor = selectedRow?.querySelector('[data-session-pr-icon-anchor]');
+    expect(selectedAnchor?.className).toBe(anchor?.className);
+    expect(selectedAnchor?.querySelector('.lucide-git-pull-request')).not.toBeNull();
   });
 
-  it('shows the PR control only while branch names are enabled', () => {
+  it('keeps the PR mark in the same trailing box when a sibling row has no Mergeable pill', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    const store = createStore();
-    const session = {
-      sessionId: 'pr-toggle',
-      title: 'PR session',
-      repoFullName: 'example/repo',
-      branchName: 'feature',
+    const row = (sessionId: string, prReadiness?: 'y') => ({
+      sessionId,
+      title: sessionId,
+      repoFullName: 'loro-dev/lody',
+      branchName: sessionId,
+      prUrl: `https://github.com/loro-dev/lody/pull/${sessionId}`,
+      prStatus: 'open' as const,
+      prCiState: 's' as const,
+      prReadiness,
       latestMessageAt: '2026-04-22T00:00:00.000Z',
-      addedLines: 0,
+      addedLines: 1,
       deletedLines: 0,
       isWorking: false,
       hasUnreadMessages: false,
       isOffline: false,
       isWaitingPermission: false,
-      prUrl: 'https://github.com/example/repo/pull/42',
-      prStatus: 'open' as const,
-    };
-    flushSync(() =>
+    });
+
+    flushSync(() => {
       root?.render(
-        React.createElement(
-          Provider,
-          { store },
-          React.createElement(SessionList, {
-            sessions: [session],
-            repos: [{ repoFullName: 'example/repo', collapsed: false }],
-            onToggleRepoCollapsed: () => undefined,
-          })
-        )
-      )
+        React.createElement(SessionList, {
+          sessions: [row('plain'), row('ready', 'y')],
+          repos: [{ repoFullName: 'loro-dev/lody', collapsed: false }],
+        })
+      );
+    });
+
+    const anchorOf = (sessionId: string) =>
+      container?.querySelector(
+        `[data-sidebar-session-id="${sessionId}"] [data-session-pr-icon-anchor]`
+      );
+    const plain = anchorOf('plain');
+    const ready = anchorOf('ready');
+    expect(plain).not.toBeNull();
+    expect(ready?.className).toBe(plain?.className);
+    expect(
+      container?.querySelector('[data-sidebar-session-id="plain"] [data-session-mergeable-pill]')
+    ).toBeNull();
+    const readyPill = container?.querySelector(
+      '[data-sidebar-session-id="ready"] [data-session-mergeable-pill]'
     );
-    const row = container.querySelector('[data-sidebar-session-id="pr-toggle"]')!;
-    expect(row.querySelector('.lucide-git-pull-request')).toBeNull();
-    expect(row.querySelector('[aria-label="Open pull request #42"]')).toBeNull();
-    flushSync(() => store.set(sidebarShowBranchNamesAtom, true));
-    expect(row.querySelector('[aria-label="Open pull request #42"]')).not.toBeNull();
-    flushSync(() => store.set(sidebarShowBranchNamesAtom, false));
-    expect(row.querySelector('[aria-label="Open pull request #42"]')).toBeNull();
-    expect(row.querySelector('.lucide-git-pull-request')).toBeNull();
+    expect(readyPill).not.toBeNull();
+    expect(ready?.contains(readyPill ?? null)).toBe(false);
   });
 
   it('keeps a folded repo group telling what its hidden sessions are doing', () => {

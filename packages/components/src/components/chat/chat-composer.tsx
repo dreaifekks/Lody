@@ -874,26 +874,12 @@ export function ChatComposer({
 
   const boxTextareaClassName = getChatComposerTextareaClassName({ tone, variant, isMobile });
 
-  /**
-   * The colour a mention decoration paints to hide the textarea's own glyphs
-   * before redrawing them in the mention colour. It has to equal whatever this
-   * composer paints behind the textarea, or the "invisible" cover shows up as a
-   * rectangle — which is exactly what `--input` did here, since this surface is
-   * deliberately `--composer` rather than the muddy `bg-input`.
-   *
-   * KEEP IN SYNC with the `bg-*` classes below. CSS cannot read an ancestor's
-   * background, so this is a copy, and a copy can drift.
-   */
-  const mentionSurfaceClassName =
-    '[--mention-chip-surface:hsl(var(--composer))] dark:[--mention-chip-surface:color-mix(in_srgb,hsl(var(--input))_90%,hsl(var(--background)))]';
-
   // Light surface: near-white composer on the gray canvas + 1px border.
   // Avoid heavy bg-input fills that read as muddy gray on cool-white themes.
   const mentionContainerClassName = !isLanding
     ? cn(
         'w-full focus-within:outline-hidden',
-        'rounded-2xl border border-foreground/[0.10] bg-[hsl(var(--composer))] dark:border-input-border/70 dark:bg-input/90',
-        mentionSurfaceClassName
+        'rounded-2xl border border-foreground/[0.10] bg-[hsl(var(--composer))] dark:border-input-border/70 dark:bg-input/90'
       )
     : undefined;
 
@@ -906,7 +892,7 @@ export function ChatComposer({
 
   const actionBaseClassName = cn(
     stylex.props(isLanding ? typography.caption : typography.code).className,
-    'select-none border font-semibold transition-all focus-visible:ring-2 focus-visible:ring-offset-2',
+    'select-none border font-medium transition-all focus-visible:ring-2 focus-visible:ring-offset-2',
     isDialog
       ? 'h-10 rounded-lg px-5'
       : isLanding
@@ -924,18 +910,14 @@ export function ChatComposer({
     '@container/composer-box flex flex-col gap-4 rounded-xl border px-4 pt-4 pb-3',
     'border-foreground/[0.10] bg-[hsl(var(--composer))]',
     COMPOSER_ELEVATION_CLASS,
-    'dark:border-input-border/60 dark:bg-input/90',
-    mentionSurfaceClassName
+    'dark:border-input-border/60 dark:bg-input/90'
   );
 
-  const sessionContainerClassName = cn(COMPOSER_SESSION_SURFACE_CLASS, mentionSurfaceClassName);
+  const sessionContainerClassName = COMPOSER_SESSION_SURFACE_CLASS;
 
   /* Sheet: the composer is the page, not a card floating on it. The writing
      surface runs edge to edge; only the footer draws a separator. */
-  const sheetContainerClassName = cn(
-    'flex h-full min-h-0 flex-col px-0 py-0',
-    mentionSurfaceClassName
-  );
+  const sheetContainerClassName = 'flex h-full min-h-0 flex-col px-0 py-0';
   const boxContainerClassName = isSheet
     ? sheetContainerClassName
     : isLanding
@@ -1202,7 +1184,7 @@ export function ChatComposer({
                     >
                       <span
                         className={cn(
-                          'max-w-[64%] truncate font-semibold uppercase tracking-wide',
+                          'max-w-[64%] truncate font-medium uppercase tracking-wide',
                           file.status === 'failed'
                             ? 'text-destructive/80'
                             : 'text-muted-foreground',
@@ -1213,7 +1195,7 @@ export function ChatComposer({
                       </span>
                       <span
                         className={cn(
-                          'mt-1 break-words text-left font-medium text-input-foreground',
+                          'mt-1 break-words text-left font-normal text-input-foreground',
                           isMobile ? 'line-clamp-3' : 'line-clamp-2',
                           stylex.props(typography.helper).className
                         )}

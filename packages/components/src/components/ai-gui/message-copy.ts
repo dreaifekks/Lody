@@ -1,3 +1,4 @@
+import { lanShareWorkOf } from '@lody/shared/lan-share';
 import {
   applyTextRewrites,
   sanitizeMessageTextSpans,
@@ -15,6 +16,14 @@ export const USER_TEXT_RENDER_CHAR_LIMIT = 900;
 export type StandaloneToolCallPredicate = (
   toolCall: Extract<MessageContent, { type: 'tool_call' }>
 ) => boolean;
+
+/** Completed-turn narration follows the same visibility rule as LAN shares. */
+export const shouldCollapseAssistantMessageItem = ({ index, items, isTurnFinished }: {
+  content: MessageContent;
+  index: number;
+  items: MessageContent[];
+  isTurnFinished: boolean;
+}): boolean => isTurnFinished && lanShareWorkOf(items).has(index);
 
 // Copyable text = plain `text` answers plus `proposed_plan` markdown. The plan
 // is the meaningful payload of a plan-only turn, so the message-footer copy

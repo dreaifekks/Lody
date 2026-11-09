@@ -4,6 +4,7 @@ import {
   type AssistantMessageRenderItem,
 } from './assistant-message-render-items';
 import type { StandaloneToolCallPredicate } from './message-copy';
+import { shouldCollapseAssistantMessageItem } from './message-copy';
 
 type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
 type ThoughtMessage = Extract<MessageContent, { type: 'thought' }>;
@@ -305,6 +306,23 @@ export const segmentHasVisibleFinalContent = (
   return false;
 };
 
+const collectSegmentEntries = (
+  blocks: readonly AssistantTurnRenderBlock[],
+  [start, end]: readonly [number, number]
+): AssistantMessageRenderItem[] => {
+  const entries: AssistantMessageRenderItem[] = [];
+  for (let index = start; index < end; index += 1) {
+    const block = blocks[index];
+    if (!block) continue;
+    if (block.kind === 'content') {
+      entries.push(block.entry);
+    } else {
+      entries.push(...block.entries);
+    }
+  }
+  return entries;
+};
+
 export const buildAssistantTurnRenderLayout = (
   messageId: string,
   items: readonly MessageContent[],
@@ -321,22 +339,42 @@ export const buildAssistantTurnRenderLayout = (
   );
   const ranges = buildSegmentBlockRanges(blocks);
 
-  // Nothing folds while the turn streams, but the segment shape does not depend
-  // on that — keep it stable so only the fold state changes at turn end.
   const segments: AssistantTurnRenderSegment[] = ranges.map((blockRange, segmentIndex) => {
     const key = `segment:${messageId}:${segmentIndex}`;
-    if (!isTurnFinished) {
-      return { key, blockRange, workBlockKeys: new Set<string>(), firstWorkBlockIndex: -1 };
-    }
 
-    // Only process folds. Prose is what the reader came for, and whether a text
-    // block is narration or the answer cannot be known from where it sits: a run
-    // may answer first and keep working. Folding by position buried that answer.
+    const collapsibleItemIndexes = new Set<number>();
+    if (isTurnFinished) {
+      const segmentEntries = collectSegmentEntries(blocks, blockRange);
+      const segmentContents = segmentEntries.map((entry) => entry.content);
+      segmentEntries.forEach((entry, index) => {
+        if (
+          !(entry.content.type === 'tool_call' && isStandaloneToolCall?.(entry.content)) &&
+          shouldCollapseAssistantMessageItem({
+            content: entry.content,
+            index,
+            items: segmentContents,
+            isTurnFinished,
+          })
+        )
+          collapsibleItemIndexes.add(entry.itemIndex);
+      });
+    }
     const segmentWorkBlockKeys = new Set<string>();
     let firstWorkBlockIndex = -1;
     for (let index = blockRange[0]; index < blockRange[1]; index += 1) {
       const block = blocks[index];
-      if (block?.kind !== 'activity_group') continue;
+      if (!block) continue;
+      const isLiveCommentary =
+        !isTurnFinished &&
+        block.kind === 'content' &&
+        block.entry.content.type === 'text' &&
+        block.entry.content.messagePhase === 'commentary';
+      if (
+        block.kind !== 'activity_group' &&
+        !isLiveCommentary &&
+        !collapsibleItemIndexes.has(block.entry.itemIndex)
+      )
+        continue;
       segmentWorkBlockKeys.add(block.key);
       if (firstWorkBlockIndex === -1) {
         firstWorkBlockIndex = index;

@@ -18,7 +18,8 @@ import type { PlatformSessionState } from './provider';
  * Do not acquire custody or perform I/O during this factory call. The live session
  * supplies account routing only; the runtime must verify every operation itself. */
 /** Delivery of the current workspace key to an admitted member, tracked by its approver. */
-export type E2eeMemberKeyDeliveryState = 'pending' | 'delivered' | 'failed';
+/** `delivering`: a round for this member is running in the approver's main process. */
+export type E2eeMemberKeyDeliveryState = 'pending' | 'delivering' | 'delivered' | 'failed';
 export type E2eeMemberKeyDelivery = {
   requestId: string;
   state: E2eeMemberKeyDeliveryState;
@@ -119,6 +120,8 @@ export interface E2eeManagementState {
   readonly rotationRequired: boolean;
   readonly mayRotate: boolean;
   readonly updatePending: boolean;
+  /** A management command (rotate or revoke) is running on this device now. */
+  readonly updateInProgress?: boolean;
   readonly recoveryIssue?: 'candidate-unavailable';
   readonly devices: readonly {
     key: string;
@@ -143,6 +146,15 @@ export interface E2eeAccountApprovalSession {
   invitation(record: Uint8Array): Promise<Uint8Array | null>;
   access(): Promise<{ workspaceId: string; credential: string }>;
   refresh(): Promise<void>;
+  /** Runs this session's existing key round once, so the device it just admitted
+   * receives the current epoch key. Distribution targets only verified ledger devices. */
+  keyRound(): Promise<void>;
+  /** Positive mailbox evidence for `device` at the current epoch: 'delivered', or a
+   * public retryable `e2ee_*` code. */
+  keyDeliveryEvidence(device: string): Promise<string>;
+  /** Ends this holder's use of the approval session. When it opened a reader for
+   * approval, the last release closes it so the workspace can drain. Idempotent. */
+  release(): Promise<void>;
 }
 
 /** Purpose-limited host contract for desktop IPC and portable personal-device assembly. Opening existing content never creates an identity. */

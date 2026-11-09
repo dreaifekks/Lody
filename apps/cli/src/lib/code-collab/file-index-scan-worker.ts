@@ -3,7 +3,7 @@ import { opendir } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  buildCodeCollabFileIndexState,
+  buildBoundedCodeCollabFileIndexState,
   isCodeCollabFileTreeValueIgnored,
   type CodeCollabV2AllChangesState,
   type CodeCollabV2FileIndexState,
@@ -14,6 +14,7 @@ import { closeDirectoryQuietly } from './directory-handle';
 import {
   computeAllChanges,
   IGNORED_LAZY_DIRECTORY_VALUE,
+  classifyIgnoredDirectoryEntry,
   computeProjectAllChanges,
   resolveProjectGitDirectory,
   type ProjectGitMember,
@@ -23,7 +24,10 @@ import {
   restoreExpandedIgnoredDirectories,
   scanGitDirectoryEntries,
   type ExpandedIgnoredDirectory,
+  createGitIgnoreScanFilter,
+  relativeScanDirectory,
 } from './file-index-scan-core';
+import { CODE_COLLAB_IGNORED_DIRECTORY_NAMES } from './workspace-watch-path-policy';
 
 export type FileIndexScanWorkerInput = {
   readonly kind?: 'scan';
@@ -51,6 +55,7 @@ export type FileIndexFullStateWorkerInput = {
   readonly workspaceRoot: string;
   readonly maxRawTextBytes: number;
   readonly entryBudget: number;
+  readonly priorityDirectories?: readonly string[];
   readonly preferredBaseBranch?: string;
   readonly expandedIgnoredDirectories?: readonly ExpandedIgnoredDirectory[];
   readonly providedAllChanges?: {
@@ -70,6 +75,8 @@ export type FileIndexFullStateWorkerResult =
       readonly allChangesSource: 'git' | 'diff-store';
       readonly changedPaths: number;
       readonly pathCount: number;
+      /** Complete-state rows left out by `CODE_COLLAB_FILE_INDEX_LIMITS`. */
+      readonly omittedPaths: number;
       readonly durationMs: number;
       readonly scanMs: number;
       readonly allChangesMs: number;
@@ -83,15 +90,6 @@ export type FileIndexFullStateWorkerResult =
 
 export type FileIndexWorkerInput = FileIndexScanWorkerInput | FileIndexFullStateWorkerInput;
 export type FileIndexWorkerResult = FileIndexScanWorkerResult | FileIndexFullStateWorkerResult;
-
-const DEFAULT_IGNORED_DIRECTORY_NAMES = new Set([
-  '.git',
-  'node_modules',
-  '.next',
-  'dist',
-  'build',
-  'target',
-]);
 
 export default async function fileIndexScanWorker(
   input: FileIndexWorkerInput
@@ -173,7 +171,11 @@ async function computeFullFileIndexState(
   const scanMs = Date.now() - scanStartedAtMs;
   const fileTree = Object.fromEntries(fileTreeEntries);
   const buildStartedAtMs = Date.now();
-  const fileIndex = buildCodeCollabFileIndexState(fileTree, allChangesResult.allChanges);
+  const { fileIndex, omittedPaths } = buildBoundedCodeCollabFileIndexState(
+    fileTree,
+    allChangesResult.allChanges,
+    { priorityDirectories: input.priorityDirectories }
+  );
   const buildMs = Date.now() - buildStartedAtMs;
   return {
     kind: 'full-state',
@@ -184,6 +186,7 @@ async function computeFullFileIndexState(
     allChangesSource: allChangesResult.source,
     changedPaths: Object.keys(allChangesResult.allChanges).length,
     pathCount: Object.keys(fileIndex).length,
+    omittedPaths,
     durationMs: Date.now() - startedAtMs,
     scanMs,
     allChangesMs: allChangesResult.allChangesMs,
@@ -250,6 +253,11 @@ async function scanDirectoryEntries(
     },
   ];
   let remainingEntries = Math.max(0, options.entryBudget);
+  // Prune `.gitignore`d entries before reading into them; null outside Git.
+  const ignoreFilter = await createGitIgnoreScanFilter(
+    options.directoryAbsolutePath,
+    options.signal
+  );
 
   while (queue.length > 0 && remainingEntries > 0) {
     options.signal?.throwIfAborted();
@@ -270,8 +278,18 @@ async function scanDirectoryEntries(
     if (!directoryEntries) {
       continue;
     }
-    const collisionKeys = findDirectoryEntryCollisionKeys(directoryEntries);
-    for (const { entry, comparisonKey } of directoryEntries) {
+    const ignoredNames = ignoreFilter
+      ? await ignoreFilter.ignoredEntryNames(
+          relativeScanDirectory(options.directoryWorkspacePath, currentDirectory.workspacePath),
+          directoryEntries.map(({ entry }) => ({
+            name: entry.name,
+            isDirectory: entry.isDirectory(),
+          }))
+        )
+      : undefined;
+    const visibleEntries = directoryEntries;
+    const collisionKeys = findDirectoryEntryCollisionKeys(visibleEntries);
+    for (const { entry, comparisonKey } of visibleEntries) {
       if (remainingEntries <= 0) {
         break;
       }
@@ -279,7 +297,9 @@ async function scanDirectoryEntries(
       const absolutePath = path.join(currentDirectory.absolutePath, entry.name);
       const value = collisionKeys.has(comparisonKey)
         ? ({ kind: 'skipped', reason: 'path_conflict' } as const)
-        : classifyDirectoryEntry(entry);
+        : ignoredNames?.has(entry.name) && entry.name !== '.git'
+          ? classifyIgnoredDirectoryEntry(entry)
+          : classifyDirectoryEntry(entry);
       if (value === undefined) {
         continue;
       }
@@ -370,7 +390,7 @@ function classifyDirectoryEntry(entry: {
       return undefined;
     }
     // Outside Git these names stand in for ignore rules: listed, never walked.
-    return DEFAULT_IGNORED_DIRECTORY_NAMES.has(entry.name)
+    return CODE_COLLAB_IGNORED_DIRECTORY_NAMES.has(entry.name)
       ? IGNORED_LAZY_DIRECTORY_VALUE
       : ({ kind: 'lazy' } as const);
   }

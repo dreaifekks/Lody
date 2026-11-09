@@ -8,7 +8,7 @@ Ownership: [README.md](README.md).
   markdown, including folded prose; matches open their groups. Never index tools
   (titles/JSON/output), terminals, diffs, plan checklists, goals, or worktree script
   output. Never wire `searchBlockId` to tool, terminal, or diff renderers.
-- Window stream readiness must use the same hydration/initial-scroll conditions as
+- Window stream readiness must use same hydration/initial-scroll conditions as
   viewport visibility; hydrated history alone cannot reveal a native window.
 - Stream scrolling uses `ConversationListHandle` and the
   [engine](../../lib/conversation-scroll/AGENTS.md) only. Use turn-ID keys through
@@ -28,41 +28,39 @@ Ownership: [README.md](README.md).
   target Turn (a Board main session's follows the thread) and subscribe only to its title; `progressMessageId` prevents
   duplicates. Share a five-card scroller; retain full hydration.
   Keep concrete cards; hide contentless successes and their empty batch rows.
+- Reveal scroll-to-latest during live work on hover/focus with StyleX selectors, not presence state.
 
 ## Turn Folding And Layout
 
-- Finished turns fold thoughts and tool calls into the work region; streaming
-  turns stay expanded.
-- Prose never folds. Every `text` item renders wherever it falls in the turn: a
-  later work cannot hide earlier answers.
+- Work regions start expanded while streaming and may be folded by the reader.
+  Finished turns keep the final contiguous text run before trailing attachments,
+  plans and notices visible, plus earlier text of at least 300 characters or with structure. A short closing
+  note also keeps the preceding text run. Other narration folds.
+  Apply this rule per plan segment regardless of ACP phase or provider.
+  Interrupted work without a visible result stays expanded. Expanded details keep
+  chronological order, with the header before the first work item.
 - Plan approval cuts a live turn by ACP kind `switch_mode`, never title.
   `plan-surface.ts` prefers nonempty `rawInput.plan` over replaceable tool content.
   Keep `workBlockKeys`, `hasVisibleFinalContent`, last-item visibility and expansion
   keys per segment. Only the last segment shows duration; earlier segments say
   "Finished working".
 - Standalone tool surfaces remain independent cards outside activity groups.
-- `shouldUseWorkedGroup` requires a finished turn, foldable work, and visible
-  final content outside `workBlockKeys`. A cancelled/interrupted or tool-only
-  turn with no answer stays expanded; `message.finished` cannot prove
-  completion alone. A reused entry reopening upstream
-  must clear `finished` and `endedAt` (see
-  `apps/cli/src/session/AGENTS.md`).
-- Thought/tool timelines are compact, transparent, 13px and glyph-free; verbs label
-  steps. Execute calls are not cards. Disclosure labels lead, chevrons trail
-  (desktop: hover-only, body type, no fill). Only builtin DSH shows thoughts:
-  separate groups default thoughts open and tools closed; explicit toggles win.
-  DSH thought prose uses answer typography, secondary ink and shared work folding. Other providers
-  hide thoughts. Footers show config, not author identity.
+- A finished `shouldUseWorkedGroup` requires foldable work and visible final
+  content outside `workBlockKeys`. A cancelled/interrupted or tool-only turn
+  with no answer stays expanded; `message.finished` cannot prove completion
+  alone. Reopened entries clear `finished` and `endedAt`.
+- Thought/tool timelines are transparent, 13px and glyph-free, with verb labels.
+  Execute calls are not cards. Disclosure labels lead; chevrons trail (desktop:
+  hover-only, body type, no fill). Only DSH shows thoughts, using answer type and
+  secondary ink. Default thoughts open/tools closed; explicit toggles win. Footers show config.
 - Expanded steps use `ToolDetailSheet`: composer fill, card shadow, no duplicate
-  header and sections in content order. Highlight commands with Shiki; retain ANSI
-  output and omit command echoes. [Note](../../../../../.agents/notes/implemented/feature/2026-09-26-tool-step-detail-sheet.md).
+  header, ordered sections, Shiki commands and ANSI output without command echoes.
 - Duration appears once: desktop folded header or footer after buttons; mobile
   footer before buttons. Preserve `MOBILE_TURN_ACTION_LEADING_INSET_PX`.
   Mobile buttons rest hidden but the newest turn's; a tap reveals one message's.
 - Live status precedes a trailing subagent task summary, including when the turn
   has no footer.
-- Streaming replies use a direct Copy action and turn-config info (set at open);
-  Fork controls and loading need a finished turn.
+- Streaming replies show Copy and initial turn-config info; Fork needs a finished turn.
 - `ConversationColumn` owns the gutter; row shells add no horizontal pad. EVERY
   row shares one rail: prose, process labels/steps, live status and the mobile
   footer sit at `conversation.railInset`; thought prose aligns with its label.
@@ -73,7 +71,6 @@ Ownership: [README.md](README.md).
 - Follow the StyleX [spacing contract](../../../../../specs/conversation-rhythm.md).
   User rows own `responseGap`; assistant tails own `roundGap` (desktop: including
   footer/metadata; mobile: below the footer).
-  Cache boundaries; expanded work preserves gaps.
 
 ## Conversation Outline
 
@@ -123,6 +120,6 @@ Ownership: [README.md](README.md).
   [session-files-rendering.md](session-files-rendering.md).
 - Markdown images remember each source's natural size or failure for the page's
   life: a virtualized remount must render at its final height (failed sources show alt text).
-- Live file Markdown images and plain-text image links use the owning file provider:
+- Live file Markdown images and plain-text image links use owning file provider:
   same-machine reads are automatic; remote ones need a per-image click. Anonymous
   shares never get this resolver. Release own Blob URLs; drop late reads.

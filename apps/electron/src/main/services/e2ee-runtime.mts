@@ -34,8 +34,10 @@ import {
 } from '@lody/e2ee-core'
 import {
   Bytes,
+  ContentError,
   LedgerError,
   decodeRecord,
+  inspectContentFrame,
   exportVerifiedState,
   hashRecordBytes,
   ledgerStateDigest,
@@ -93,6 +95,7 @@ export class DesktopE2eeRuntimeError extends Data.TaggedError('DesktopE2eeRuntim
     | 'corrupt'
     | 'snapshot-history-required'
     | 'key-update-required'
+    | 'key-pending'
     | 'local-evidence-conflict'
     | 'storage'
     | 'rotation_candidate_unavailable'
@@ -124,6 +127,7 @@ const historyFailure = (error: unknown) =>
     ? fail('local-history-recovery-required')
     : error
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
+type KeyRoundMode = 'full' | 'receive' | 'distribute'
 const unhex = (value: string) => {
   if (typeof value !== 'string' || !/^(?:[0-9a-f]{2})+$/.test(value)) throw fail('invalid-input')
   return new Uint8Array(Buffer.from(value, 'hex'))
@@ -155,6 +159,10 @@ const boundary = <A, E, R>(work: Effect.Effect<A, E, R>) =>
     Effect.mapError((error) => {
       if (error instanceof DesktopE2eeRuntimeError) return error
       if (error instanceof MachineSharingError) return fail(error.code)
+      if (error instanceof Error && error.message === 'e2ee_device_revoked')
+        return fail('device_revoked')
+      if (error instanceof Error && error.message === 'e2ee_member_removed')
+        return fail('member_removed')
       if (
         error instanceof Error &&
         ['e2ee_machine_not_owned', 'e2ee_machine_not_shared'].includes(error.message)
@@ -254,7 +262,8 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
         keyRound: (
           mailbox: (signal: AbortSignal) => KeyMailbox['Service'],
           staging?: (signal: AbortSignal) => EpochStagingStore['Service'],
-          refreshLedger?: (signal: AbortSignal) => DesktopE2eeManagementRemote['history']
+          refreshLedger?: (signal: AbortSignal) => DesktopE2eeManagementRemote['history'],
+          mode?: KeyRoundMode
         ) => Effect.Effect<void, unknown>
         seal: (
           input: E2eeContentSeal
@@ -861,6 +870,9 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
         let maintenance: Context.Context<KeyDistributor | KeyReceiver | KeyRepair> | undefined
         let maintainKeys: Effect.Success<ReturnType<typeof makeDesktopKeyMaintenance>> | undefined
         let round: Deferred.Deferred<void, unknown> | undefined
+        // The running round's mode: `receive` installs this device's key only; `distribute`
+        // only reconciles and sends deliveries; `full` is the maintenance round.
+        let roundMode: KeyRoundMode = 'full'
         let managing: Deferred.Deferred<void, unknown> | undefined
         let managementStores: Context.Context<EpochCandidateStore | SubmissionJournal> | undefined
         const localManagement = Effect.fnUntraced(function* () {
@@ -909,13 +921,22 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
         const keyRound = Effect.fnUntraced(function* (
           mailbox: (signal: AbortSignal) => KeyMailbox['Service'],
           staging?: (signal: AbortSignal) => EpochStagingStore['Service'],
-          refreshLedger?: (signal: AbortSignal) => DesktopE2eeManagementRemote['history']
+          refreshLedger?: (signal: AbortSignal) => DesktopE2eeManagementRemote['history'],
+          mode: KeyRoundMode = 'full'
         ) {
           if (closing) return yield* fail('closed')
-          roundAgain = true
-          if (round) return yield* Deferred.await(round)
+          if (mode === 'full') roundAgain = true
+          // One round at a time. A caller joins a running full round or one of its own
+          // mode; otherwise it waits that round out and then runs its own.
+          while (round) {
+            const joined = round
+            if (roundMode === 'full' || roundMode === mode) return yield* Deferred.await(joined)
+            yield* Effect.exit(Deferred.await(joined))
+            if (closing) return yield* fail('closed')
+          }
           const done = Deferred.makeUnsafe<void, unknown>()
           round = done
+          roundMode = mode
           const result = yield* Effect.exit(
             Effect.uninterruptible(
               Effect.gen(function* () {
@@ -981,13 +1002,10 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
                     scope
                   )
                 }
-                let passes = 0
-                let refreshedUnknown = false
-                do {
-                  roundAgain = false
+                const prepareReceive = Effect.fnUntraced(function* () {
                   const view = yield* verified.current()
                   const epoch = view.inspectState().epoch.number
-                  const currentReceiver = Context.get(maintenance, KeyReceiver)
+                  const currentReceiver = Context.get(maintenance!, KeyReceiver)
                   const beforeReceive = Effect.gen(function* () {
                     const checked = yield* Effect.result(keys.check(epoch))
                     if (staging && epoch > 0 && Result.isFailure(checked)) {
@@ -1009,6 +1027,32 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
                     }
                     return undefined
                   })
+                  return { epoch, currentReceiver, beforeReceive }
+                })
+                if (mode === 'distribute') {
+                  // Only this device's deliveries: reconcile targets, resume pending sends,
+                  // acknowledge ended tasks. Receiving and repair stay with a full round.
+                  const distributor = Context.get(maintenance!, KeyDistributor)
+                  yield* distributor.reconcileCurrentEpoch(100, null)
+                  yield* distributor.resumePendingDeliveries(100, null)
+                  const ended = yield* distributor.results(100, null)
+                  for (const item of ended.items) yield* distributor.acknowledge(item.id)
+                  return undefined
+                }
+                if (mode === 'receive') {
+                  // Only this device's own key, from a staged group or the mailbox. Queued
+                  // installation reports, distribution and repair stay with a full round.
+                  const { currentReceiver, beforeReceive } = yield* prepareReceive()
+                  yield* beforeReceive
+                  yield* currentReceiver.resume(100, null)
+                  yield* currentReceiver.fetchAndInstall(null, 100)
+                  return undefined
+                }
+                let passes = 0
+                let refreshedUnknown = false
+                do {
+                  roundAgain = false
+                  const { epoch, beforeReceive } = yield* prepareReceive()
                   maintainKeys ??= yield* makeDesktopKeyMaintenance().pipe(
                     Effect.provide(maintenance)
                   )
@@ -1026,6 +1070,7 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             )
           )
           round = undefined
+          roundMode = 'full'
           yield* Deferred.done(done, result)
           return yield* result
         }, Effect.uninterruptible)
@@ -1115,7 +1160,49 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           )
             return yield* fail('invalid-input')
           const provider = yield* binding(input.room)
-          return yield* provider.open(input)
+          return yield* provider.open(input).pipe(
+            Effect.catchIf(
+              (error): error is ContentError =>
+                error instanceof ContentError && error.code === 'missing-read-key',
+              (error) => keyPending(input, error)
+            )
+          )
+        })
+        /**
+         * Retryable only when this device's own verified ledger proves the frame's
+         * epoch exists, this device is a current member device, and the installed
+         * key store genuinely lacks that epoch: a rotation it has not received yet.
+         * Unreadable keys, unknown epochs and access loss keep the original failure.
+         */
+        const keyPending = Effect.fnUntraced(function* (
+          input: E2eeContentOpen,
+          original: ContentError
+        ) {
+          const model = encryptedWorkspaceRoom(workspaceId, input.room).model
+          const snapshot = input.context?.kind === 'snapshot'
+          const metadata = inspectContentFrame(
+            input.sealed,
+            model === 'loro'
+              ? snapshot
+                ? 'doc-snapshot'
+                : 'doc-update'
+              : snapshot
+                ? 'flock-snapshot'
+                : 'flock-update'
+          )
+          if (Result.isFailure(metadata)) return yield* original
+          const state = (yield* verified.current()).inspectState()
+          const own = state.devices.get(hex(device.publicKey.toBytes()))
+          if (
+            metadata.success.epoch > state.epoch.number ||
+            !own ||
+            !state.members.has(hex(own.membershipId.toBytes()))
+          )
+            return yield* original
+          const checked = yield* Effect.result(keys.check(metadata.success.epoch))
+          return yield* Result.isFailure(checked) && checked.failure.reason === 'missing-key'
+            ? fail('key-pending')
+            : original
         })
         let upgradeRequiredAt: number | undefined
         let retainedWriteEpoch: number | undefined
@@ -1347,7 +1434,9 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           return {
             epoch: state.epoch.number,
             rotationRequired: state.epoch.rotationRequired,
-            updatePending: Result.isFailure(continuation) || continuation.success,
+            // A command still before its first candidate write is an update too.
+            updatePending: !!managing || Result.isFailure(continuation) || continuation.success,
+            updateInProgress: !!managing,
             ...(Result.isFailure(continuation)
               ? { recoveryIssue: 'candidate-unavailable' as const }
               : {}),
@@ -1516,6 +1605,24 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           const entry = entries.get(workspaceId)
           if (!entry) return Effect.void
           entry.stop()
+          return Effect.gen(function* () {
+            yield* entry.close
+            yield* serial.withPermit(
+              Effect.sync(() => {
+                if (entries.get(workspaceId) === entry) entries.delete(workspaceId)
+              })
+            )
+          })
+        })
+      )
+    // An opener arriving while a released reader's entry still drains joins that
+    // actual close (memoized by the entry) instead of failing `closed`; a failed
+    // close keeps its restart-required fence and is never awaited again.
+    const pendingClose = (workspaceId: string) =>
+      run(
+        Effect.sync(() => {
+          const entry = entries.get(workspaceId)
+          if (!entry || !entry.isClosing() || entry.restartRequired()) return undefined
           return Effect.gen(function* () {
             yield* entry.close
             yield* serial.withPermit(
@@ -1782,6 +1889,39 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           ),
           (entry) => entry.keyRound(mailbox, staging, refreshLedger)
         ),
+      /** Fetch and install this device's current key only (no report flush, distribution or
+       * repair), under the same single-flight as keyRound. A joining member uses it to reach
+       * ready, then hands the remaining work to a full round. */
+      receiveKeys: (
+        workspaceId: string,
+        mailbox: (signal: AbortSignal) => KeyMailbox['Service'],
+        staging?: (signal: AbortSignal) => EpochStagingStore['Service']
+      ) =>
+        Effect.flatMap(
+          run(
+            Effect.suspend(() =>
+              entries.has(workspaceId)
+                ? Effect.succeed(entries.get(workspaceId)!)
+                : Effect.fail(fail('closed'))
+            )
+          ),
+          (entry) => entry.keyRound(mailbox, staging, undefined, 'receive')
+        ),
+      /** Reconcile and send this device's deliveries only, under the keyRound single-flight. */
+      distributeKeys: (
+        workspaceId: string,
+        mailbox: (signal: AbortSignal) => KeyMailbox['Service']
+      ) =>
+        Effect.flatMap(
+          run(
+            Effect.suspend(() =>
+              entries.has(workspaceId)
+                ? Effect.succeed(entries.get(workspaceId)!)
+                : Effect.fail(fail('closed'))
+            )
+          ),
+          (entry) => entry.keyRound(mailbox, undefined, undefined, 'distribute')
+        ),
       seal: (workspaceId: string, input: E2eeContentSeal) =>
         run(Effect.flatMap(openWorkspace(workspaceId), (entry) => entry.seal(input))),
       openContent: (workspaceId: string, input: E2eeContentOpen) =>
@@ -1953,6 +2093,7 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           )
         ),
       beginCloseWorkspace,
+      pendingClose,
       closeWorkspace,
       close
     }

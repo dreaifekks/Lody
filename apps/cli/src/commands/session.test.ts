@@ -1,4 +1,8 @@
 import { localProjectsLegacy } from '@lody/shared/node/local-project';
+import {
+  runWithDaemonWorkspace,
+  runWithEncryptedCommandAccess,
+} from '../lib/session-command-environment';
 import { Console } from 'node:console';
 import { Writable } from 'node:stream';
 import * as commandRuntime from '@/lib/command-runtime';
@@ -86,6 +90,7 @@ import {
   resolveSessionCreateOwnerUserId,
   selectDefaultAgentConfigForCreate,
   readDelegatedMachineAccess,
+  readSessionMachineAccess,
   resolveSessionRequester,
   sendSessionChatResult,
   ensureTargetMachineNotOffline,
@@ -1975,8 +1980,9 @@ describe('target Machine availability from presence', () => {
     workspaceId: 'workspace-1' as WorkspaceId,
     machineId: 'target-machine' as MachineId,
   };
-  const presence = (online: MachineId[] | null) => ({
-    getOnlineMachineIds: async () => (online === null ? null : new Set(online)),
+  // `null` is a presence room that is not joined and holds no fresh heartbeat.
+  const presence = (online: MachineId[] | null, synced = online !== null) => ({
+    getMachinePresenceView: async () => ({ online: new Set(online ?? []), synced }),
   });
   // A Streams path slow enough that every one-shot Machine RPC times out.
   const rpcTimesOut = () =>
@@ -2012,7 +2018,17 @@ describe('target Machine availability from presence', () => {
     });
   });
 
-  it('reports a presence-online Machine as online but stale when live status RPC times out', async () => {
+  it('admits a fresh heartbeat as online while the presence room is not joined', async () => {
+    rpcTimesOut();
+    await expect(
+      ensureTargetMachineNotOffline({
+        ...target,
+        manager: presence([target.machineId], false),
+      })
+    ).resolves.toBe('online');
+  });
+
+  it('keeps presence three-state when live status RPC times out', async () => {
     rpcTimesOut();
     const online = await readSessionLiveStatusesMany({
       ...target,
@@ -2021,17 +2037,18 @@ describe('target Machine availability from presence', () => {
     });
     expect(online.get(sessionId)).toEqual({
       sessionId,
-      machineOnline: true,
+      machinePresence: 'online',
       fresh: false,
       reason: 'timeout: Machine status request timed out',
     });
 
+    // An unanswered RPC is no evidence of absence: unknown presence stays unknown.
     const unknown = await readSessionLiveStatusesMany({
       ...target,
       sessions,
       manager: presence(null),
     });
-    expect(unknown.get(sessionId)?.machineOnline).toBe(false);
+    expect(unknown.get(sessionId)?.machinePresence).toBe('unknown');
 
     const offline = await readSessionLiveStatusesMany({
       ...target,
@@ -2040,7 +2057,7 @@ describe('target Machine availability from presence', () => {
     });
     expect(offline.get(sessionId)).toEqual({
       sessionId,
-      machineOnline: false,
+      machinePresence: 'offline',
       fresh: false,
       reason: 'Target Machine is offline: target-machine',
     });
@@ -2687,6 +2704,73 @@ describe('session command output boundary', () => {
       flush.mockRestore();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('encrypted one-shot machine access', () => {
+  it('answers from the command replica', async () => {
+    const asked: unknown[] = [];
+    const result = await runWithEncryptedCommandAccess(
+      async (target) => {
+        asked.push(target);
+        return { allowed: false, reason: 'not_visible' };
+      },
+      () =>
+        readSessionMachineAccess({
+          // A service call with this token would reject before any answer.
+          auth: { token: '', userId: 'machine-account', machineId: 'machine' } as never,
+          workspaceId: 'workspace' as never,
+          machineId: 'other-machine' as never,
+        })
+    );
+    expect(result).toEqual({ allowed: false, reason: 'not_visible' });
+    expect(asked).toEqual([{ machineId: 'other-machine', requesterUserId: 'machine-account' }]);
+  });
+});
+
+describe('encrypted daemon machine access', () => {
+  const access = (delegated: boolean) => {
+    const asked: unknown[] = [];
+    const daemon = {
+      workspaceId: 'workspace',
+      userId: 'machine-account',
+      machineId: 'machine',
+      manager: {},
+      readInvocation: () => ({ active: false }),
+      checkEncryptedMachineAccess: async (target: unknown) => {
+        asked.push(target);
+        return { allowed: true as const };
+      },
+    } as never;
+    const result = runWithDaemonWorkspace(daemon, () =>
+      readSessionMachineAccess({
+        // A service call with this token would reject before any answer.
+        auth: { token: '', userId: 'machine-account', machineId: 'machine' } as never,
+        workspaceId: 'workspace' as never,
+        machineId: 'other-machine' as never,
+        ...(delegated
+          ? {
+              delegatedRequester: {
+                userId: 'e2ee-member:verified',
+                author: { sessionId: 'session', turnId: 'turn' },
+              } as never,
+            }
+          : {}),
+        localProjectId: 'project' as never,
+      })
+    );
+    return { asked, result };
+  };
+
+  it.each([
+    ['a command', false, 'machine-account'],
+    ['a delegated command', true, 'e2ee-member:verified'],
+  ] as const)('answers %s from the daemon', async (_name, delegated, requesterUserId) => {
+    const { asked, result } = access(delegated);
+    await expect(result).resolves.toEqual({ allowed: true });
+    expect(asked).toEqual([
+      { machineId: 'other-machine', requesterUserId, localProjectId: 'project' },
+    ]);
   });
 });
 
