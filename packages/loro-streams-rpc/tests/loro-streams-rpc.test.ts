@@ -556,7 +556,7 @@ describe('LoroStreamsMachineRpcClient', () => {
   });
 
   describe('a direct transport', () => {
-    it('carries disk, withdrawal and steer through the real server without hub writes', async () => {
+    it('carries disk, withdrawal, steer and diff blobs through the real server without hub writes', async () => {
       const fake = createFakeStreamClient();
       const queued = new Set(['queued-turn']);
       let guidedPrompt: string | undefined;
@@ -572,6 +572,26 @@ describe('LoroStreamsMachineRpcClient', () => {
           ...(options?.includeDisk ? { disk: { totalGB: 100, freeGB: 40, usedPercent: 60 } } : {}),
         }),
         refreshMachineAcpCapabilities: vi.fn(),
+        resolveCodeCollabOwnerSessionId: async () => 'session-1' as SessionId,
+        openCodeCollabDiffManifest: async () => ({
+          status: 'ok',
+          entries: [
+            {
+              path: 'file.txt',
+              status: 'ok',
+              base: null,
+              head: { key: `sha256:${'a'.repeat(64)}`, rawBytes: 3, format: { encoding: 'utf8' } },
+            },
+          ],
+          nextCursor: null,
+        }),
+        readCodeCollabBlob: async ({ offset, length }) => ({
+          offset,
+          length,
+          totalBytes: 3,
+          encoding: 'gzip-base64',
+          data: 'synthetic-blob-bytes',
+        }),
         withdrawSessionInput: async ({ sessionId, userTurnId }) => ({
           type: 'session/withdraw-input_response',
           sessionId,
@@ -620,6 +640,28 @@ describe('LoroStreamsMachineRpcClient', () => {
           })
         ).resolves.toMatchObject({ applied: true, disposition: 'applied' });
         expect(guidedPrompt).toBe('Use the selected root');
+        const manifest = await client.requestCodeCollabOpenDiffManifest({
+          sessionId: 'session-1',
+          path: 'file.txt',
+        });
+        expect(manifest).toMatchObject({
+          status: 'ok',
+          entries: [{ path: 'file.txt', head: { rawBytes: 3 } }],
+        });
+        await expect(
+          client.requestCodeCollabReadBlob({
+            sessionId: 'session-1',
+            key: `sha256:${'a'.repeat(64)}`,
+            offset: 0,
+            length: 3,
+          })
+        ).resolves.toEqual({
+          offset: 0,
+          length: 3,
+          totalBytes: 3,
+          encoding: 'gzip-base64',
+          data: 'synthetic-blob-bytes',
+        });
         expect(fake.appended).toEqual([]);
       } finally {
         client.stop();
