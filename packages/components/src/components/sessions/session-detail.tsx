@@ -4749,8 +4749,12 @@ const SessionDetail = ({
     });
   });
 
+  // A thread's link to a Board file goes through the thread like its other
+  // links, so its Markdown and HTML read in the article window beside it.
   const openBoardFileLink = useStableCallback((href: string) =>
-    resolveBoardFileLink(href, currentWorkspaceId, boards) ? () => handleOpenFile(href) : undefined
+    resolveBoardFileLink(href, currentWorkspaceId, boards)
+      ? () => threadFileLinks.onFilePathClick(href)
+      : undefined
   );
 
   /**

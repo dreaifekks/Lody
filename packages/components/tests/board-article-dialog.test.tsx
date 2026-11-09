@@ -14,8 +14,13 @@ import {
   formatArticleAnnotations,
   type ArticleAnnotation,
 } from '../src/components/boards/article-annotations';
-import { BoardCompareView, type CompareFile } from '../src/components/boards/board-compare-view';
+import {
+  BoardCompareView,
+  SessionBoardCompareView,
+  type CompareFile,
+} from '../src/components/boards/board-compare-view';
 import { parseCompareManifest } from '../src/components/boards/compare-manifest';
+import type { SessionFileProvider } from '../src/lib/session-file-provider';
 import { ArticleReviewControls, useArticleChanges } from '../src/components/boards/article-review';
 import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
 import { ArticleHtmlFrame } from '../src/components/sessions/article-html-frame';
@@ -1204,6 +1209,34 @@ describe('UI comparison', () => {
       expect(option('C').textContent).toContain('Could not read c.html: ENOENT');
       expect(inOption('A', 'Build on this option')).toBeNull();
       expect(container.querySelector('button[aria-label="Comment on a spot"]')).toBeNull();
+    });
+
+    it('shows an option cut at the read limit as too large instead of running part of its page', async () => {
+      const fileProvider = {
+        openFile: async (path: string) => ({
+          status: 'ready',
+          entry: { path, name: path, kind: 'text' },
+          snapshot: {
+            kind: 'text',
+            text: files[path],
+            ...(path === 'c.html' ? { truncated: true } : {}),
+          },
+        }),
+      } as unknown as SessionFileProvider;
+      await act(async () =>
+        root.render(
+          createElement(SessionBoardCompareView, {
+            scope: 'board:b',
+            manifestPath: 'nav.compare.md',
+            fileProvider,
+            comments: null,
+          })
+        )
+      );
+      await settle();
+      expect(option('C').textContent).toContain('Could not read c.html: too large');
+      expect(option('C').querySelector('iframe')).toBeNull();
+      expect(option('A').querySelector('iframe')).not.toBeNull();
     });
 
     it("reports a pointed spot without letting the option's page act on the click", async () => {
