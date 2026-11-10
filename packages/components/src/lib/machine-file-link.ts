@@ -57,6 +57,17 @@ export function findLinkedMachine(
   return named.length === 1 && named[0] ? (named[0].id as MachineId) : null;
 }
 
+/**
+ * How a written link names a machine (a copied path): its LAN name, else its
+ * own name, where a link can spell it, else its id.
+ */
+export function machineLinkName(machine: MachineNames): string {
+  for (const candidate of [normalizeLanMachineAlias(machine.lanAlias), machine.name]) {
+    if (candidate && /^[A-Za-z0-9][A-Za-z0-9._-]+$/u.test(candidate)) return candidate;
+  }
+  return machine.id;
+}
+
 /** A file on a machine of the workspace, as a link names it. */
 export type MachineFileLink = { readonly machineId: MachineId; readonly path: string };
 

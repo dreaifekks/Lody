@@ -3,6 +3,7 @@ import { splitTextIntoFilePathSegments } from '../src/lib/linkify-file-paths';
 import {
   attachMachinePrefixes,
   findLinkedMachine,
+  machineLinkName,
   parseMachineFileHref,
   resolveMachineFileLink,
 } from '../src/lib/machine-file-link';
@@ -45,6 +46,12 @@ describe('machine file links', () => {
       path: '/var/log/a.log',
     });
     expect(resolveMachineFileLink('nobody:/var/log/a.log', machines)).toBeNull();
+  });
+
+  it('writes a machine into a link by its LAN name, else its own name, else its id', () => {
+    expect(machineLinkName({ id: 'm-1', name: 'Mac mini', lanAlias: 'mini' })).toBe('mini');
+    expect(machineLinkName({ id: 'm-2', name: 'devnuc' })).toBe('devnuc');
+    expect(machineLinkName({ id: 'm-3', name: "dreaife's Mac" })).toBe('m-3');
   });
 
   it('takes the prefix in front of a bare path along, and nothing else', () => {

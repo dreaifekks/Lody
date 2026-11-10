@@ -19,7 +19,7 @@ import {
   type SessionFileLinkOpener,
 } from '../boards/document-links';
 import { BoardSessionFilePage } from '../boards/board-session-file-page';
-import { MachineFileView } from '../boards/machine-file-view';
+import { MachineFileActionsMenu, MachineFileView } from '../boards/machine-file-view';
 import { linkedMachinesAtom } from '../ai-gui/machine-file-link';
 import {
   machineFileOfTab,
@@ -5599,6 +5599,8 @@ const SessionDetail = ({
     fileProvider: activeSessionFileProvider,
   });
   const activeViewerFilePath = activeViewerTab?.type === 'file' ? activeViewerTab.filePath : null;
+  const activeMachineFile =
+    activeViewerTab?.type === 'file' ? machineFileOfTab(activeViewerTab) : null;
   const handleSaveCurrentFile = useCallback(() => {
     if (!effectiveActiveViewerTabId || activeViewerTab?.type !== 'file') {
       return;
@@ -6964,16 +6966,26 @@ const SessionDetail = ({
     const machineFile = tab.type === 'file' ? machineFileOfTab(tab) : null;
     if (tab.type === 'file' && machineFile)
       return (
-        <MachineFileView
+        <DocumentLinks
           key={tab.id}
-          machineId={machineFile.machineId}
-          path={machineFile.path}
-          reader={activeSession}
-          startLine={tab.startLine}
-          endLine={tab.endLine}
-          active={active}
-          className={className}
-        />
+          document={{
+            source: { kind: 'machine', machineId: machineFile.machineId },
+            path: machineFile.path,
+          }}
+          owner={boardDocumentOwner}
+          onOpen={(target) => openFileTargetInTab(activeFileOpenContext, target)}
+        >
+          <MachineFileView
+            machineId={machineFile.machineId}
+            path={machineFile.path}
+            reader={activeSession}
+            startLine={tab.startLine}
+            endLine={tab.endLine}
+            focusRequestSeq={tab.focusRequestSeq}
+            active={active}
+            className={className}
+          />
+        </DocumentLinks>
       );
     const boardFile =
       tab.type === 'file'
@@ -8681,9 +8693,15 @@ const SessionDetail = ({
         onTabsSplit={handleSidePanelTabsSplit}
         onTabUnsplit={handleSidePanelTabUnsplit}
         moreSlot={
-          activeViewerTab?.type === 'file' &&
-          activeViewerTab.ownerSessionId &&
-          !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
+          activeMachineFile ? (
+            <MachineFileActionsMenu
+              file={activeMachineFile}
+              filePath={activeViewerFilePath}
+              leadingItems={fileTabArticleItems}
+            />
+          ) : activeViewerTab?.type === 'file' &&
+            activeViewerTab.ownerSessionId &&
+            !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
             <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
               {(scope) => (
                 <SessionOwnedFileActionsMenu
