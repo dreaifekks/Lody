@@ -520,6 +520,27 @@ describe('commands', () => {
     expectHealthy(sim);
   });
 
+  it('lands a jump below a covered top edge, and keeps it there while rows hydrate', () => {
+    let rows = turnRows(
+      200,
+      () => 100,
+      () => 60
+    );
+    const sim = new ScrollSim(rows, V);
+    sim.render();
+    sim.settle();
+    sim.task(() => sim.controller.jumpToIndex(100, false, 48));
+    sim.settle();
+    expect(sim.screenTop('t100')).toBe(48);
+    for (const key of ['t98', 't99', 't103']) {
+      rows = expand(rows, key, 4, 80);
+      sim.render(rows);
+      sim.settle();
+      expect(sim.screenTop('t100')).toBe(48);
+    }
+    expectHealthy(sim);
+  });
+
   describe('restoring a reading position (turn-link back)', () => {
     /** A reader resting mid-conversation, as a turn link finds them. */
     const reader = () => {

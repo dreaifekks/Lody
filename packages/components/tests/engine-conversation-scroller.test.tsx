@@ -344,6 +344,25 @@ it('restores a reading position and keeps it covered when rows far beyond the ov
   }
 });
 
+it('a jump with a gap lands its row that far below the top edge (fork: clear of the top fade)', async () => {
+  const keys = rowKeys(60);
+  const ctx = mount('engine-jump-gap' as SessionId, keys);
+  try {
+    await ctx.settle();
+    await act(async () => {
+      ctx.handle.current?.scrollRowToTop(30, { smooth: false, offset: 0, gap: 48 });
+    });
+    await ctx.settle();
+    expect(screenTopOf(ctx, 'r30')).toBe(48);
+    expect(ctx.state.current?.isSticky).toBe(false);
+    ctx.setKeys(expandAbove(keys, 14));
+    await ctx.settle();
+    expect(screenTopOf(ctx, 'r30')).toBe(48);
+  } finally {
+    unmount(ctx);
+  }
+});
+
 it('returns to following with the handle and keeps the latest row on screen as it grows', async () => {
   const keys = rowKeys(40);
   const ctx = mount('engine-follow' as SessionId, keys);

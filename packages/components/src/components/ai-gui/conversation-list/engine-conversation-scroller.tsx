@@ -336,7 +336,7 @@ export function EngineConversationScroller({
       findItemIndex: (offset) => controller.findItemIndex(offset),
       getItemOffset: (index) => controller.getItemOffset(index),
       getItemSize: (index) => controller.getItemSize(index),
-      scrollRowToTop: (index, { smooth }) => controller.jumpToIndex(index, smooth),
+      scrollRowToTop: (index, { smooth, gap }) => controller.jumpToIndex(index, smooth, gap),
       scrollToBottom: () => controller.scrollToBottom(),
       anchorToRow: (index) => controller.anchorToRow(index),
       retargetAnchor: (index) => controller.retargetAnchor(index),
