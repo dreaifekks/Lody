@@ -9,6 +9,7 @@ import {
   type FileDownloadResponse,
 } from '@lody/shared';
 import { open, stat, realpath } from 'node:fs/promises';
+import os from 'node:os';
 import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import {
@@ -226,6 +227,31 @@ export class FilePreviewService {
       return filePreviewV3Error(resolution.rejection.code, {
         message: resolution.rejection.message,
         path: request.path,
+      });
+    return resolution.resolved;
+  }
+
+  /**
+   * Where a file a link names by this machine (`<machine>:<path>`) is, with no
+   * session: absolute, home-rooted, or relative to the home directory, as
+   * `lody-lan lan cp` reads it. Authorized by the same policy as a preview;
+   * without a session there is no workspace root, so only a policy that allows
+   * arbitrary paths (the local platform) reads anything.
+   */
+  resolveMachinePath(
+    filePath: string
+  ): ResolvedPreviewPath | import('@lody/shared').FilePreviewV3Error {
+    const resolution = resolveFilePreviewPath({
+      workspaceRoot: null,
+      requestedPath: filePath,
+      relativeBase: this.deps.pathPolicy?.homeDir ?? os.homedir(),
+      extraRoots: this.deps.extraRoots,
+      options: this.deps.pathPolicy,
+    });
+    if (!resolution.ok)
+      return filePreviewV3Error(resolution.rejection.code, {
+        message: resolution.rejection.message,
+        path: filePath,
       });
     return resolution.resolved;
   }

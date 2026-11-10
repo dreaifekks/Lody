@@ -7834,6 +7834,17 @@ export class MessageHandler {
   }
 
   /**
+   * Where a file at a path of this machine is, for a member of this
+   * workspace's LAN that reads it by a link naming the machine instead of a
+   * session. Throws the refusal, code first.
+   */
+  resolveMachineFilePath(filePath: string): string {
+    const resolved = this.filePreviewService.resolveMachinePath(filePath);
+    if ('status' in resolved) throw new Error(`${resolved.code}:${resolved.message}`);
+    return resolved.absolutePath;
+  }
+
+  /**
    * Runs work of this machine's own, such as auto review, as a session command
    * of this workspace: on the local platform it is checked against the
    * workspace's members rather than a hosted account.

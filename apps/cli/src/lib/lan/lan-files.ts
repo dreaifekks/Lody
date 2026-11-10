@@ -266,7 +266,7 @@ function writeChunk(stream: Duplex, chunk: Buffer): Promise<void> {
  */
 export async function serveFileRange(
   stream: Duplex,
-  request: Pick<LanFileRangeRequest, 'offset' | 'length' | 'revision' | 'boardId'>,
+  request: Pick<LanFileRangeRequest, 'offset' | 'length' | 'revision'> & { boardId?: string },
   filePath: string
 ): Promise<void> {
   // A file of a Board directory is never reached through a link.

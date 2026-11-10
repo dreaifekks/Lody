@@ -28,21 +28,33 @@ const text = z.string().trim().min(1).max(256)
  * A file the agent service reads for the desktop: a block a session keeps
  * (`fileId`), or a file at a path of another machine of the LAN (`path`).
  */
-const MemberFileSchema = z
-  .object({
-    workspaceId: text,
-    machineId: text,
-    sessionId: text,
-    fileId: text.optional(),
-    path: z.string().min(1).max(4096).optional(),
-    rootId: SessionFileRootIdSchema.optional(),
-    /** A file of this Board's shared directory; `path` is then relative to it. */
-    boardId: z.string().startsWith('bd_').max(256).optional(),
-    /** Only what a player needs is taken from it. */
-    mimeType: z.string().max(128).optional()
-  })
-  .strict()
-  .refine((value) => (value.fileId === undefined) !== (value.path === undefined))
+/** Only what a player needs is taken from it. */
+const mimeType = z.string().max(128).optional()
+const MemberFileSchema = z.union([
+  z
+    .object({
+      workspaceId: text,
+      machineId: text,
+      sessionId: text,
+      fileId: text.optional(),
+      path: z.string().min(1).max(4096).optional(),
+      rootId: SessionFileRootIdSchema.optional(),
+      /** A file of this Board's shared directory; `path` is then relative to it. */
+      boardId: z.string().startsWith('bd_').max(256).optional(),
+      mimeType
+    })
+    .strict()
+    .refine((value) => (value.fileId === undefined) !== (value.path === undefined)),
+  /** A file a link names by its machine (`<machine>:<path>`), with no session. */
+  z
+    .object({
+      workspaceId: text,
+      machineId: text,
+      machinePath: z.string().min(1).max(4096),
+      mimeType
+    })
+    .strict()
+])
 export type MemberFileInput = z.input<typeof MemberFileSchema>
 export type MemberFileResource =
   | { ok: true; url: string; sizeBytes: number }

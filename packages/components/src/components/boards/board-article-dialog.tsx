@@ -5,6 +5,7 @@ import type { SessionId } from '@lody/shared';
 import { Dialog } from '@lody/ui/dialog';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import type { FileTarget } from '@/lib/document-link-open';
+import { machineFileOfTab } from '@/lib/machine-file-link';
 import { RelocatableSlot, type RelocatableHost } from './relocatable-host';
 
 /** Files a conversation can hand over as an article. */
@@ -32,11 +33,12 @@ export type ArticlePage = {
 
 /**
  * A file tab's file as the article window's page ("Open as article"): a
- * Board's, read for the page's session, or a session's, read for the session
- * the tab belongs to.
+ * Board's or a machine's, read for the page's session, or a session's, read
+ * for the session the tab belongs to.
  */
 export function fileTabArticlePage(
   tab: {
+    readonly id?: string;
     readonly filePath: string;
     readonly ownerSessionId?: SessionId | undefined;
     readonly fileId?: string | undefined;
@@ -54,13 +56,27 @@ export function fileTabArticlePage(
       },
       readerId: pageSessionId,
     };
+  const lines = {
+    ...(tab.startLine === undefined ? {} : { startLine: tab.startLine }),
+    ...(tab.endLine === undefined ? {} : { endLine: tab.endLine }),
+  };
+  const machineFile =
+    tab.id === undefined ? null : machineFileOfTab({ id: tab.id, filePath: tab.filePath });
+  if (machineFile)
+    return {
+      target: {
+        source: { kind: 'machine', machineId: machineFile.machineId },
+        path: machineFile.path,
+        ...lines,
+      },
+      readerId: pageSessionId,
+    };
   const sessionId = tab.ownerSessionId ?? pageSessionId;
   return {
     target: {
       source: { kind: 'session', sessionId },
       path: tab.filePath,
-      ...(tab.startLine === undefined ? {} : { startLine: tab.startLine }),
-      ...(tab.endLine === undefined ? {} : { endLine: tab.endLine }),
+      ...lines,
     },
     readerId: sessionId,
     ...(tab.fileId === undefined ? {} : { fileId: tab.fileId }),

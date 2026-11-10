@@ -19,6 +19,14 @@ import {
   type SessionFileLinkOpener,
 } from '../boards/document-links';
 import { BoardSessionFilePage } from '../boards/board-session-file-page';
+import { MachineFileView } from '../boards/machine-file-view';
+import { linkedMachinesAtom } from '../ai-gui/machine-file-link';
+import {
+  machineFileOfTab,
+  machineFileTabId,
+  machineFileTabPath,
+  resolveMachineFileTarget,
+} from '@/lib/machine-file-link';
 import { ArticlePageView } from '../boards/board-article-page';
 import { boardFileLinkPath, type FileTarget } from '@/lib/document-link-open';
 import { resolveBoardFileLink } from '@/lib/board-directory-file-provider';
@@ -1493,7 +1501,8 @@ const SessionDetail = ({
         (tab) =>
           tab.type === 'diff' ||
           (isFileViewerTabOwnedBySession(tab, activeSession?.id) &&
-            !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical'))
+            !resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical') &&
+            !machineFileOfTab(tab))
       ),
     [viewerTabs, currentWorkspaceId, boards, activeSession?.id]
   );
@@ -4555,6 +4564,8 @@ const SessionDetail = ({
 
   const openFileSessionIdRef = useRef(sessionId);
   openFileSessionIdRef.current = sessionId;
+  // Read when a link opens: the page does not render for machine changes.
+  const linkStore = useStore();
   const handleOpenFileForSession = useStableCallback(
     (
       context: SessionFileOpenContext,
@@ -4575,6 +4586,23 @@ const SessionDetail = ({
             type: 'file',
             filePath: boardFile.filePath,
             label: getBasename(boardFile.path),
+          },
+          () => claimCloseTarget?.()
+        );
+        return;
+      }
+      // `<machine>:<path>`: that machine's file, read with no session.
+      const machineFile = resolveMachineFileTarget(filePath, linkStore.get(linkedMachinesAtom));
+      if (machineFile) {
+        upsertViewerTab(
+          {
+            id: machineFileTabId(machineFile.machineId, machineFile.path),
+            type: 'file',
+            filePath: machineFileTabPath(machineFile.machineId, machineFile.path),
+            label: getBasename(machineFile.path),
+            startLine: options.startLine ?? machineFile.startLine,
+            endLine: options.endLine ?? machineFile.endLine,
+            focusRequestSeq: nextFocusRequestSeq(),
           },
           () => claimCloseTarget?.()
         );
@@ -4649,6 +4677,14 @@ const SessionDetail = ({
             ],
             beside,
           });
+        return;
+      }
+      const machineFile = resolveMachineFileTarget(path, linkStore.get(linkedMachinesAtom));
+      if (machineFile) {
+        const { machineId, ...file } = machineFile;
+        const target: FileTarget = { source: { kind: 'machine', machineId }, ...file };
+        if (!isBoardArticlePath(file.path)) openFileTargetInTab(scope, target);
+        else setArticleDialog({ pages: [{ target, readerId: scope.session.id }], beside });
         return;
       }
       const openedInSessionId = sessionId;
@@ -4856,7 +4892,8 @@ const SessionDetail = ({
           if (
             tab.type !== 'file' ||
             !isFileViewerTabOwnedBySession(tab, activeSession?.id) ||
-            resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')
+            resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical') ||
+            machineFileOfTab(tab)
           ) {
             return { tab, next: tab };
           }
@@ -6924,6 +6961,20 @@ const SessionDetail = ({
   );
 
   const renderViewerTabContent = (tab: ViewerTab, className = 'h-full', active = true) => {
+    const machineFile = tab.type === 'file' ? machineFileOfTab(tab) : null;
+    if (tab.type === 'file' && machineFile)
+      return (
+        <MachineFileView
+          key={tab.id}
+          machineId={machineFile.machineId}
+          path={machineFile.path}
+          reader={activeSession}
+          startLine={tab.startLine}
+          endLine={tab.endLine}
+          active={active}
+          className={className}
+        />
+      );
     const boardFile =
       tab.type === 'file'
         ? resolveBoardFileLink(tab.filePath, currentWorkspaceId, boards, 'canonical')

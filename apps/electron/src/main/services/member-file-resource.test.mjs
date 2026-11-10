@@ -14,6 +14,8 @@ import {
 } from './member-file-resource.ts'
 
 const target = { workspaceId: 'lw_home', machineId: 'devbox', sessionId: 's1', path: 'out/a.mp4' }
+/** The same file, named by its machine instead of a session there. */
+const machineTarget = { workspaceId: 'lw_home', machineId: 'devbox', machinePath: '~/out/a.mp4' }
 
 /**
  * The local file socket of an agent service that has one file. `cutAfter`
@@ -31,7 +33,7 @@ async function agentService(t, file, options = {}) {
       const request = JSON.parse(data.toString('utf8'))
       requests.push(request)
       const refusal =
-        request.path !== target.path
+        request.path !== target.path && request.machinePath !== machineTarget.machinePath
           ? { code: 'path_not_allowed', message: 'path_not_allowed:File is outside the workspace' }
           : request.revision && request.revision !== state.revision
             ? { code: 'file_changed', message: 'file_changed:the file changed' }
@@ -94,6 +96,28 @@ void test('member resources keep equal paths in different project roots distinct
   const response = await resources.respond(new Request(secondary.url))
   assert.deepEqual(await bytesOf(response.body), file)
   assert.equal(requests.at(-1).rootId, member.rootId)
+  resources.releaseOwner(1)
+})
+
+void test('a file a link names by its machine is asked for without a session', async (t) => {
+  const file = pattern(64)
+  const { open, requests } = await agentService(t, file)
+  const resources = new MemberFileResources(open)
+  const bySession = await resources.member(1, target, 'video/mp4')
+  const byMachine = await resources.member(1, machineTarget, 'video/mp4')
+
+  assert.notEqual(byMachine.url, bySession.url)
+  const response = await resources.respond(
+    new Request(byMachine.url, { headers: { Range: 'bytes=8-15' } })
+  )
+  assert.deepEqual(await bytesOf(response.body), file.subarray(8, 16))
+  assert.deepEqual(requests.at(-1), {
+    type: 'range',
+    ...machineTarget,
+    offset: 8,
+    length: 8,
+    revision: 'r1'
+  })
   resources.releaseOwner(1)
 })
 

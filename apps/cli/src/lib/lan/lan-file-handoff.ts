@@ -92,6 +92,12 @@ export class LanFileHandoff {
         filePath: string,
         rootId?: string
       ) => Promise<string>;
+      /**
+       * Where a file at a path of this machine is, for a link that names the
+       * machine instead of a session. It throws the reason for a path this
+       * machine's previews may not read.
+       */
+      resolveMachinePath?: (workspaceId: string, filePath: string) => Promise<string>;
       sendFiles?: SendFiles;
       fetchFile?: FetchFile;
       relayRange?: RelayRange;
@@ -258,6 +264,11 @@ export class LanFileHandoff {
 
   /** Where the file of a `range` request is on this machine. */
   private async locate(workspaceId: string, file: LanFileRangeRequest): Promise<string> {
+    if ('machinePath' in file) {
+      if (!this.options.resolveMachinePath)
+        throw new Error('invalid_request:this machine gives no file by its path');
+      return await this.options.resolveMachinePath(workspaceId, file.machinePath);
+    }
     if (file.boardId !== undefined) {
       // `files/…` or `memory/…`, relative to the Board directory.
       const [area, ...rest] = (file.path ?? '').split('/');
@@ -307,7 +318,7 @@ export class LanFileHandoff {
         const machine = await workspace.readMachine(machineId as MachineId);
         const endpoint = parseLanTerminalEndpoint(machine?.lanTerminal);
         const supported =
-          request.boardId !== undefined
+          'boardId' in request && request.boardId !== undefined
             ? machineSupportsLanBoardFiles(machine)
             : machineSupportsLanFileRanges(machine);
         if (!endpoint || !supported) {

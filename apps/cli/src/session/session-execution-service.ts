@@ -158,6 +158,7 @@ import {
   type InboxInput,
   type InboxScope,
 } from '@/orchestration/inbox/model';
+import { findResultsElsewhere } from '@/orchestration/inbox/batch-preview-lines';
 import { sessionExecutionResource } from '@/orchestration/platform/session-resources';
 import { TURN_BUDGETS } from './turn-budgets';
 import { formatErrorMessage, formatReportedError } from '@/utils/format-error';
@@ -5509,6 +5510,11 @@ export class SessionExecutionService {
                     },
                   })
                 );
+                const elsewhere = yield* self.tryPromise(() =>
+                  findResultsElsewhere(members, self.deps.machineId, (roomId) =>
+                    self.deps.workspaceDocument.repo.getDocMeta(roomId)
+                  ).catch(() => [])
+                );
                 promptBlocks = [
                   ...promptBlocks,
                   {
@@ -5516,6 +5522,7 @@ export class SessionExecutionService {
                     text: batchPreview(inboxBatch, members, {
                       sessionId: inboxBatch.sessionId,
                       turnId: runtime.turnId,
+                      elsewhere,
                     }),
                   },
                 ];

@@ -48,9 +48,8 @@ save path's text reads.
 - Shared `node/file-preview-path-policy.ts` is the security boundary. Hosted remote
   `file/preview` requests may read only the registered session file roots, `os.tmpdir()`,
   `<LodyDataDir>/chats`, and `LODY_FILE_PREVIEW_EXTRA_ROOTS`. On the local
-  platform `MessageHandler` lifts the boundary (`allowArbitraryPaths`): the only
-  callers are the installation's user and the members of its LAN, who already
-  hold a shell on every member. The separate
+  platform `MessageHandler` lifts the boundary (`allowArbitraryPaths`,
+  [why](README.md#local-platform-and-machine-links)). The separate
   local-only `file/resolve-local` IPC method is the Electron user's explicit
   same-machine capability and resolves any regular file for Electron; it returns
   identity only, never bytes, and is never added
@@ -99,9 +98,10 @@ save path's text reads.
   Legacy clients negotiate `localFileResources`. Current Electron resolves and reads
   directly, using its own disk machine identity rather than daemon ownership checks.
 - A LAN member reads a file in parts over its `files` connection, never through
-  this response. `resolveReadablePath` answers where such a file is under the SAME
-  resolution and authorization as `previewFile`, without its size limits and
-  without reading. Do not give ranged reads a path policy of their own.
+  this response. `resolveReadablePath` resolves and authorizes it exactly as
+  `previewFile`, without size limits or reading; ranged reads get no path policy
+  of their own. A sessionless `<machine>:<path>` link resolves through
+  `resolveMachinePath` with no workspace root: only an arbitrary-path policy serves it.
 - `maxBinaryBytes` stays pinned to `SESSION_IMAGE_MAX_SIZE_BYTES`. Do not raise these
   budgets without measuring against the real gateway, since a non-404 4xx append
   failure is not retried.

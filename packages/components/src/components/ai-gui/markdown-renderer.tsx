@@ -47,6 +47,7 @@ import { MonochromeFileIcon } from '@/components/icons/file-icons';
 import { writeTextToClipboard } from '@/lib/clipboard';
 import { toast } from '@/lib/toast';
 import { AgentFileLinkIndexContext, useAgentFileLinkMatch } from './agent-file-link-context';
+import { useMachineFileLink } from './machine-file-link';
 import { isAbsoluteFilePath } from '@/lib/session-local-file-path';
 import {
   isMarkdownAgentFileHref,
@@ -54,6 +55,7 @@ import {
   parseMarkdownAgentFileHref,
 } from '@/lib/markdown-agent-file-link';
 import { matchWholeFilePath, splitTextIntoFilePathSegments } from '@/lib/linkify-file-paths';
+import { attachMachinePrefixes, parseMachineFileHref } from '@/lib/machine-file-link';
 import {
   normalizeTexMathDelimiters,
   remarkSingleDollarTextMath,
@@ -850,15 +852,17 @@ const remarkLinkifyFilePaths = () => {
   return (tree: unknown) => {
     transformMdastChildren(tree, (child) => {
       if (child.type === 'text' && typeof child.value === 'string') {
-        const segments = splitTextIntoFilePathSegments(child.value);
+        const segments = attachMachinePrefixes(splitTextIntoFilePathSegments(child.value));
         if (segments.length === 1 && segments[0]?.type === 'text') return undefined;
 
         return {
-          nodes: segments.map((segment) =>
-            segment.type === 'path'
-              ? createTextLinkNode(segment.value, segment.value)
-              : { type: 'text', value: segment.value }
-          ),
+          nodes: segments.map((segment) => {
+            if (segment.type === 'text') return { type: 'text', value: segment.value };
+            const link = createTextLinkNode(segment.value, segment.value);
+            if (segment.type === 'machine-path')
+              link.data = { hProperties: { 'data-machine-prefix': segment.prefix } };
+            return link;
+          }),
         };
       }
 
@@ -1305,6 +1309,59 @@ function AgentFileLinkCandidate({
   return fileCard ? link : <MarkdownFileImageLink href={href} label={children} fallback={link} />;
 }
 
+/**
+ * `<machine>:<path>` (`lib/machine-file-link.ts`): a chip once the workspace
+ * knows the machine, opened there with no menu of the session's own file
+ * actions. Otherwise it is what it was before machine links: for a bare path
+ * the prefix stays text in front of the path's own candidate.
+ */
+function MachineFileLinkCandidate({
+  href,
+  prefix,
+  inlineCode,
+  children,
+  getContextMenuItems,
+  ...props
+}: {
+  href: string;
+  prefix: string | undefined;
+  inlineCode: string | undefined;
+  children: ReactNode;
+} & Omit<ComponentPropsWithoutRef<typeof AgentFileLink>, 'fileCard' | 'href' | 'children'>) {
+  if (useMachineFileLink(href))
+    return (
+      <AgentFileLink {...props} href={href}>
+        {children}
+      </AgentFileLink>
+    );
+  if (prefix === undefined)
+    return (
+      <AgentFileLinkCandidate
+        {...props}
+        href={href}
+        fileCard={false}
+        inlineCode={inlineCode}
+        getContextMenuItems={getContextMenuItems}
+      >
+        {children}
+      </AgentFileLinkCandidate>
+    );
+  const path = href.slice(prefix.length);
+  return (
+    <>
+      {prefix}
+      <AgentFileLinkCandidate
+        {...props}
+        href={path}
+        fileCard={false}
+        getContextMenuItems={getContextMenuItems}
+      >
+        {path}
+      </AgentFileLinkCandidate>
+    </>
+  );
+}
+
 function isWorkspaceResourceHref(href: string): boolean {
   try {
     return (
@@ -1477,6 +1534,24 @@ const createMarkdownComponents = ({
     // download API. Ordinary article/GitHub links remain explicit external navigation.
     if (readonly && href && isWorkspaceResourceHref(href)) {
       return <span>{children}</span>;
+    }
+
+    if (parseMachineFileHref(href)) {
+      const inlineCode = _node?.properties?.['data-file-path-inline-code'];
+      const prefix = _node?.properties?.['data-machine-prefix'];
+      return (
+        <MachineFileLinkCandidate
+          href={href}
+          prefix={typeof prefix === 'string' ? prefix : undefined}
+          inlineCode={typeof inlineCode === 'string' ? inlineCode : undefined}
+          onFilePathClick={onAgentFileLinkClick}
+          copyAgentFileLabel={copyAgentFileLabel}
+          openAgentFileLabel={openAgentFileLabel}
+          getContextMenuItems={getAgentFileLinkContextMenuItems}
+        >
+          {children}
+        </MachineFileLinkCandidate>
+      );
     }
 
     if (

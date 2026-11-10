@@ -631,6 +631,11 @@ export class Lody {
     return await this.runtime.resolveFilePreviewPath(sessionId, filePath, rootId);
   }
 
+  /** Where a file at a path of this machine is, for a link naming the machine; throws the refusal. */
+  resolveMachineFilePath(filePath: string): string {
+    return this.runtime.resolveMachineFilePath(filePath);
+  }
+
   /** Work of this machine's own, run as a session command of this workspace. */
   async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
     return await this.runtime.runAsSessionCommand(run);

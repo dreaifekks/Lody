@@ -462,6 +462,12 @@ export class LodyFleet {
           throw new Error('remote_unreachable:this machine does not run that workspace');
         return await runtime.lody.resolveFilePreviewPath(sessionId, filePath, rootId);
       },
+      resolveMachinePath: async (workspaceId, filePath) => {
+        const runtime = this.runtimes.get(workspaceId);
+        if (!runtime)
+          throw new Error('remote_unreachable:this machine does not run that workspace');
+        return runtime.lody.resolveMachineFilePath(filePath);
+      },
       boards: {
         directory: new BoardDirectory(getLodyDataDir),
         readBoard: async (workspaceId, boardId) => {

@@ -105,9 +105,7 @@ export function boardDocumentFilePath(
   if (/^(?:\/|[a-z]:\/)/i.test(path) || parts[0] === 'boards') {
     const index = parts.findIndex(
       (part, position) =>
-        part === 'boards' &&
-        parts[position + 1] === workspaceId &&
-        parts[position + 2] === boardId
+        part === 'boards' && parts[position + 1] === workspaceId && parts[position + 2] === boardId
     );
     if (index < 0) return null;
     parts = parts.slice(index + 3);
@@ -118,29 +116,27 @@ export function boardDocumentFilePath(
     : null;
 }
 
-/** What reading one file of a Board directory answers (`machineRpc.openMemberFile`). */
+/** What reading one file through the agent service answers (`machineRpc.openMemberFile`). */
 export type BoardMemberFileResource =
   | { readonly ok: true; readonly url: string; readonly sizeBytes: number }
   | { readonly ok: false; readonly error: string };
 
-/** The first bytes of a Board text file the viewer shows; the rest is cut. */
-const BOARD_TEXT_READ_BYTES = 1024 * 1024;
+/** The first bytes of a text file the viewer shows; the rest is cut. */
+const MEMBER_TEXT_READ_BYTES = 1024 * 1024;
 
 /**
- * One Board's directory for the file viewer (the article window), the way a
- * session's provider serves its workspace. Paths are the Board's canonical
- * spelling (`boards/<ws>/<board>/<area>/<path>`), so a document's images and a
- * comparison's options resolve inside the Board, and every read goes through
- * `read` to the machine that keeps the directory. Read-only, with no listing
- * or history.
+ * Files outside any session's workspace for the file viewer (the article
+ * window, a side tab), the way a session's provider serves its workspace:
+ * every read goes through `read` to the machine that has the file. `scope`
+ * turns a path the viewer asks for (a document, its images, a comparison's
+ * options) into what `read` takes, or null for a path outside. Read-only, with
+ * no listing or history.
  */
-export class BoardMemberFileProvider implements SessionFileProvider {
+export class MemberFileProvider implements SessionFileProvider {
   readonly kind = 'code-collab' as const;
 
   constructor(
-    private readonly workspaceId: string,
-    private readonly boardId: string,
-    /** Reads `<area>/<path>` of this Board. */
+    private readonly scope: (path: string) => string | null,
     private readonly read: (path: string) => Promise<BoardMemberFileResource>
   ) {}
 
@@ -173,15 +169,15 @@ export class BoardMemberFileProvider implements SessionFileProvider {
   }
 
   async openFile(path: string): Promise<FileWorkspaceOpenResult> {
-    const areaPath = boardDocumentFilePath(path, this.workspaceId, this.boardId);
-    if (areaPath === null)
+    const scoped = this.scope(path);
+    if (scoped === null)
       return { status: 'unavailable', entry: toFileEntry(path), reason: 'permission-denied' };
-    const resource = await this.read(areaPath);
+    const resource = await this.read(scoped);
     if (!resource.ok)
       return {
         status: 'unavailable',
         entry: toFileEntry(path),
-        reason: /ENOENT/.test(resource.error) ? 'deleted' : 'transient-io',
+        reason: /ENOENT|file_not_found/.test(resource.error) ? 'deleted' : 'transient-io',
         message: resource.error,
       };
     const entry = toFileEntry(path, resource.sizeBytes);
@@ -191,10 +187,10 @@ export class BoardMemberFileProvider implements SessionFileProvider {
       snapshot: { kind: 'binary', url: resource.url },
     };
     if (isBinaryImagePath(path)) return binary;
-    const cut = resource.sizeBytes > BOARD_TEXT_READ_BYTES;
+    const cut = resource.sizeBytes > MEMBER_TEXT_READ_BYTES;
     const response = await fetch(
       resource.url,
-      cut ? { headers: { Range: `bytes=0-${BOARD_TEXT_READ_BYTES - 1}` } } : {}
+      cut ? { headers: { Range: `bytes=0-${MEMBER_TEXT_READ_BYTES - 1}` } } : {}
     );
     let text: string;
     try {
@@ -210,5 +206,21 @@ export class BoardMemberFileProvider implements SessionFileProvider {
       entry,
       snapshot: { kind: 'text', text, ...(cut ? { truncated: true } : {}) },
     };
+  }
+}
+
+/**
+ * One Board's directory: paths are the Board's canonical spelling
+ * (`boards/<ws>/<board>/<area>/<path>`), so a document's images and a
+ * comparison's options resolve inside the Board, read from the machine that
+ * keeps the directory as `<area>/<path>`.
+ */
+export class BoardMemberFileProvider extends MemberFileProvider {
+  constructor(
+    workspaceId: string,
+    boardId: string,
+    read: (path: string) => Promise<BoardMemberFileResource>
+  ) {
+    super((path) => boardDocumentFilePath(path, workspaceId, boardId), read);
   }
 }

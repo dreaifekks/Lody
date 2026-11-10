@@ -430,6 +430,10 @@ export class MachineRuntime {
     return await this.requireHandler().resolveFilePreviewPath(sessionId, filePath, rootId);
   }
 
+  resolveMachineFilePath(filePath: string): string {
+    return this.requireHandler().resolveMachineFilePath(filePath);
+  }
+
   async runAsSessionCommand<T>(run: () => Promise<T>): Promise<T> {
     return await this.requireHandler().runAsSessionCommand(run);
   }

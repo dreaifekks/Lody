@@ -1,10 +1,13 @@
+import { isMachineFileTarget } from '@/lib/document-link-open';
 import { SessionFileContentView } from '../sessions/session-file-content-view';
 import { SessionDocumentScope, type BoardSessionFilePageProps } from './document-links';
+import { MachineFileView } from './machine-file-view';
 
 /**
  * A session's file a Board preview's link led to, read in that session's
  * machine and workspace like its side tab, where its menu moves it
- * (`onOpenInTab`). Out of sight (`active` false) it pauses, as a hidden tab does.
+ * (`onOpenInTab`); or a machine's file a link named, read for that session.
+ * Out of sight (`active` false) it pauses, as a hidden tab does.
  */
 export function BoardSessionFilePage({
   sessionId,
@@ -20,22 +23,34 @@ export function BoardSessionFilePage({
       document={target}
       onOpen={(_scope, next) => onOpen(next)}
     >
-      {(scope) => (
-        <SessionFileContentView
-          key={`${scope.session.id}:${target.path}`}
-          sessionId={scope.session.id}
-          session={scope.session}
-          filePath={target.path}
-          startLine={target.startLine}
-          endLine={target.endLine}
-          fileProvider={scope.fileProvider}
-          fileProviderPending={scope.fileProviderPending}
-          fileProviderMessage={scope.fileProviderMessage}
-          {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
-          active={active}
-          article={{ onOpenInTab, annotationThreadId: null, onBack }}
-        />
-      )}
+      {(scope) =>
+        isMachineFileTarget(target) ? (
+          <MachineFileView
+            machineId={target.source.machineId}
+            path={target.path}
+            reader={scope.session}
+            startLine={target.startLine}
+            endLine={target.endLine}
+            active={active}
+            article={{ onOpenInTab, annotationThreadId: null, onBack }}
+          />
+        ) : (
+          <SessionFileContentView
+            key={`${scope.session.id}:${target.path}`}
+            sessionId={scope.session.id}
+            session={scope.session}
+            filePath={target.path}
+            startLine={target.startLine}
+            endLine={target.endLine}
+            fileProvider={scope.fileProvider}
+            fileProviderPending={scope.fileProviderPending}
+            fileProviderMessage={scope.fileProviderMessage}
+            {...(scope.role === undefined ? {} : { fileProviderRole: scope.role })}
+            active={active}
+            article={{ onOpenInTab, annotationThreadId: null, onBack }}
+          />
+        )
+      }
     </SessionDocumentScope>
   );
 }
