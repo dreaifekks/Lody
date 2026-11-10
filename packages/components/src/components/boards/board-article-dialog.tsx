@@ -7,9 +7,15 @@ import { colors } from '@lody/ui/tokens/colors.stylex';
 import type { FileTarget } from '@/lib/document-link-open';
 import { RelocatableSlot, type RelocatableHost } from './relocatable-host';
 
-/** Files a Board thread can hand over as an article. */
+/** Files a conversation can hand over as an article. */
 export const isBoardArticlePath = (path: string): boolean =>
   /\.(?:md|markdown|html?)$/iu.test(path);
+
+/**
+ * The conversation beside an article: the Board panel's thread (whichever one
+ * the panel has open), one of the page's own conversations, or none.
+ */
+export type ArticleBeside = 'thread' | { readonly sessionId: SessionId } | null;
 
 /** One page of the article window. A link in the article opens the next one in place. */
 export type ArticlePage = {
@@ -23,6 +29,43 @@ export type ArticlePage = {
   readonly readerId: SessionId;
   readonly fileId?: string;
 };
+
+/**
+ * A file tab's file as the article window's page ("Open as article"): a
+ * Board's, read for the page's session, or a session's, read for the session
+ * the tab belongs to.
+ */
+export function fileTabArticlePage(
+  tab: {
+    readonly filePath: string;
+    readonly ownerSessionId?: SessionId | undefined;
+    readonly fileId?: string | undefined;
+    readonly startLine?: number | undefined;
+    readonly endLine?: number | undefined;
+  },
+  pageSessionId: SessionId,
+  boardFile: { readonly boardId: string; readonly area: string; readonly path: string } | null
+): ArticlePage {
+  if (boardFile)
+    return {
+      target: {
+        source: { kind: 'board', boardId: boardFile.boardId },
+        path: `${boardFile.area}/${boardFile.path}`,
+      },
+      readerId: pageSessionId,
+    };
+  const sessionId = tab.ownerSessionId ?? pageSessionId;
+  return {
+    target: {
+      source: { kind: 'session', sessionId },
+      path: tab.filePath,
+      ...(tab.startLine === undefined ? {} : { startLine: tab.startLine }),
+      ...(tab.endLine === undefined ? {} : { endLine: tab.endLine }),
+    },
+    readerId: sessionId,
+    ...(tab.fileId === undefined ? {} : { fileId: tab.fileId }),
+  };
+}
 
 const DEFAULT_RATIO = 60;
 /** A comparison of UI options wants the room more than the conversation does. */
@@ -81,13 +124,14 @@ export const ArticleDialogThreadContext = createContext<{
 } | null>(null);
 
 /**
- * A thread's article over the page, with the thread's own conversation beside
- * it (experimental). The conversation is not a second one: the page portals
- * the thread's single conversation into `threadHost`, and this dialog's right
- * pane claims it while open, so its composer text, chips and scroll stay as
- * they were on both sides. Without a `threadHost` the article has the dialog
- * to itself. Only the backdrop dismisses by pointer: menus and dialogs the
- * conversation opens are not this dialog's descendants.
+ * An article over the page, with the conversation it came from beside it
+ * (experimental): a Board thread or one of the page's own conversations. The
+ * conversation is not a second one: the page portals its single conversation
+ * into `threadHost`, and this dialog's right pane claims it while open, so its
+ * composer text, chips and scroll stay as they were on both sides. Without a
+ * `threadHost` the article has the dialog to itself. Only the backdrop
+ * dismisses by pointer: menus and dialogs the conversation opens are not this
+ * dialog's descendants.
  */
 export function BoardArticleDialog({
   title,
@@ -162,7 +206,7 @@ export function BoardArticleDialog({
             <div
               role="separator"
               aria-orientation="vertical"
-              aria-label={t('sessions.article.resize', 'Resize article and thread')}
+              aria-label={t('sessions.article.resize', 'Resize article and conversation')}
               aria-valuemin={MIN_RATIO}
               aria-valuemax={MAX_RATIO}
               aria-valuenow={Math.round(ratio)}

@@ -14,6 +14,7 @@ import { AgentFileLinkOpenContext } from '../ai-gui/markdown-renderer';
 import {
   DocumentLinks,
   SessionFileLinkOpenContext,
+  type DocumentLinkOwner,
   type BoardDocumentLinksValue,
   type SessionFileLinkOpener,
 } from '../boards/document-links';
@@ -47,6 +48,7 @@ import {
   ArrowLeft,
   Settings2,
   Copy,
+  BookOpenText,
   Ellipsis,
   FileText,
   Folder,
@@ -255,7 +257,7 @@ import { usePlatformCapability } from '@lody/platform/react';
 import { getMachineMetaByIdAtomFamily, getMachineMetaMapAtom } from '@/atoms/machines';
 import { deletePrCacheEntriesForSession } from '@/lib/github-pr-cache';
 import { FileTreeView } from './components/file-tree-view';
-import { useSessionFileActions } from '@/hooks/use-session-file-actions';
+import { useSessionFileActions, type SessionFileMenuItem } from '@/hooks/use-session-file-actions';
 import { SessionFileActionsMenu } from './session-file-actions-menu';
 import {
   MobileProjectFileBrowser,
@@ -273,17 +275,18 @@ import {
   allChangesDiffScopeAtom,
   semanticShortcutsFeatureEnabledAtom,
 } from '@/atoms/settings';
-import { createPortal } from 'react-dom';
-import { PopupContainerProvider, usePopupContainer } from '@lody/ui/popup-container';
+import { usePopupContainer } from '@lody/ui/popup-container';
 import {
   BoardArticleDialog,
+  fileTabArticlePage,
   isBoardArticlePath,
+  type ArticleBeside,
   type ArticlePage,
 } from '../boards/board-article-dialog';
 import { isCompareManifestPath } from '../boards/compare-manifest';
 import {
-  createRelocatableHost,
-  RelocatableSlot,
+  RelocatableConversation,
+  relocatableHostFor,
   type RelocatableHost,
 } from '../boards/relocatable-host';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
@@ -1311,19 +1314,21 @@ const SessionDetail = ({
   const [boardThreadRequest, setBoardThreadRequest] = useState<SessionId | null>(null);
   const finishBoardThreadRequest = useCallback(() => setBoardThreadRequest(null), []);
   const [mobileBoardOpen, setMobileBoardOpen] = useState(false);
-  // A thread's article open over the page with that thread beside it
-  // (experimental). The thread keeps its one conversation: it is portalled
+  // An article open over the page with the conversation it came from beside it
+  // (experimental). That conversation keeps its one instance: it is portalled
   // into a relocatable host that the dialog borrows while open.
   const [articleDialog, setArticleDialog] = useState<{
     /** The page on screen last; the ones before it are the way back. */
     readonly pages: readonly ArticlePage[];
-    /** Beside the article: the Board panel's thread, or no conversation. */
-    readonly beside: 'thread' | null;
+    readonly beside: ArticleBeside;
     readonly closing?: true;
   } | null>(null);
   const articlePage = articleDialog?.pages.at(-1);
   const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
+  // One host per conversation the dialog can borrow: a Board panel thread, or
+  // one of the page's tabs (the same session can be both at once).
   const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
+  const tabChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab | null>(
     () => initialTabState.sidePanel.tab
@@ -4614,11 +4619,16 @@ const SessionDetail = ({
 
   const boardArticleEnabled = useAtomValue(boardArticleFeatureEnabledAtom);
   const articleRoom = boardArticleEnabled && !isMobile && !isCompactDesktop;
-  // A thread's Markdown or HTML link opens the article dialog, a Board's file
-  // included; every other file, and every narrow layout, opens the side-panel
-  // tab as before.
-  const handleOpenThreadFile = useStableCallback(
-    (scope: SessionFileScopeValue, path: string, options: SessionDetailOpenFileOptions = {}) => {
+  // A conversation's Markdown or HTML link opens the article dialog beside that
+  // conversation, a Board's file included; every other file, and every narrow
+  // layout, opens the side-panel tab as before.
+  const openConversationFile = useStableCallback(
+    (
+      beside: ArticleBeside,
+      scope: DocumentLinkOwner,
+      path: string,
+      options: SessionDetailOpenFileOptions = {}
+    ) => {
       if (!articleRoom) {
         handleOpenFileForSession(scope, path, options);
         return;
@@ -4637,7 +4647,7 @@ const SessionDetail = ({
                 readerId: scope.session.id,
               },
             ],
-            beside: 'thread',
+            beside,
           });
         return;
       }
@@ -4646,7 +4656,13 @@ const SessionDetail = ({
         const target = await resolveSessionFileLinkOpen(path, options, scope, runtime);
         if (openFileSessionIdRef.current !== openedInSessionId) return;
         if (!isBoardArticlePath(target.filePath)) {
-          handleOpenFileForSession(scope, path, options);
+          // Opened where it was found, without asking its machine again.
+          openFileTargetInTab(scope, {
+            source: { kind: 'session', sessionId: scope.session.id },
+            path: target.filePath,
+            ...(target.startLine === undefined ? {} : { startLine: target.startLine }),
+            ...(target.endLine === undefined ? {} : { endLine: target.endLine }),
+          });
           return;
         }
         setArticleDialog({
@@ -4662,33 +4678,37 @@ const SessionDetail = ({
               ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
             },
           ],
-          beside: 'thread',
+          beside,
         });
       })();
     }
   );
+  const handleOpenThreadFile = useStableCallback(
+    (scope: SessionFileScopeValue, path: string, options?: SessionDetailOpenFileOptions) =>
+      openConversationFile('thread', scope, path, options)
+  );
   const threadFileLinks = useThreadFileLinks(boardThreadId, handleOpenThreadFile);
   const outerPopupContainer = usePopupContainer();
-  const getThreadChatHost = (threadId: SessionId) => {
-    const hosts = threadChatHostsRef.current;
-    let host = hosts.get(threadId);
-    if (!host) {
-      host = createRelocatableHost();
-      hosts.set(threadId, host);
-    }
-    return host;
-  };
   // The dialog shows whichever thread the Board panel has open, so moving to
-  // another member through its breadcrumb keeps it; it closes with the switch,
-  // with the panel's thread, and on any layout without room for it (the compact
-  // layout also remounts the Board panel, conversation included).
+  // another member through its breadcrumb keeps it; one of the page's own
+  // conversations stays only while its tab is the active one. It closes with
+  // the switch, with that conversation, and on any layout without room for it
+  // (the compact layout also remounts the Board panel, conversation included).
+  const articleBeside = articleDialog?.beside ?? null;
   const articleShown =
     articleDialog !== null &&
     !articleDialog.closing &&
     articleRoom &&
-    (articleDialog.beside === null || boardThreadId !== null);
-  const articleDialogThreadId =
-    articleShown && articleDialog.beside === 'thread' ? boardThreadId : null;
+    (articleBeside === null ||
+      (articleBeside === 'thread'
+        ? boardThreadId !== null
+        : articleBeside.sessionId === activeSessionTabId));
+  // The conversation in the dialog's right pane: the panel's thread or a tab's.
+  const articleThreadId = articleShown && articleBeside === 'thread' ? boardThreadId : null;
+  const articleTabId =
+    articleShown && articleBeside !== null && articleBeside !== 'thread'
+      ? articleBeside.sessionId
+      : null;
   // Closing takes two commits: the dialog lets go of the conversation while it
   // is still in the document, then unmounts.
   const closeArticleDialog = useCallback(
@@ -4698,9 +4718,15 @@ const SessionDetail = ({
   useLayoutEffect(() => {
     if (articleDialog && !articleShown) setArticleDialog(null);
   }, [articleDialog, articleShown]);
-  // Its thread, held for the commit in which the dialog lets go of it.
-  const articleDialogHostThreadId =
-    articleDialog?.beside === 'thread' ? (articleDialogThreadId ?? boardThreadId) : null;
+  // Its conversation's host, held for the commit in which the dialog lets go of it.
+  const articleHost =
+    articleBeside === 'thread'
+      ? boardThreadId === null
+        ? null
+        : relocatableHostFor(threadChatHostsRef.current, boardThreadId)
+      : articleBeside === null
+        ? null
+        : relocatableHostFor(tabChatHostsRef.current, articleBeside.sessionId);
 
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
@@ -4712,6 +4738,42 @@ const SessionDetail = ({
     (filePath: string, options: SessionDetailOpenFileOptions = {}) =>
       handleOpenFileForSession(activeFileOpenContext, filePath, options)
   );
+  // The page's own conversation, its active tab, hands its Markdown and HTML to
+  // the article window as a thread does, its replies' links included; a draft
+  // tab has no conversation to put beside the article.
+  const pageChatBeside = (): ArticleBeside =>
+    activeSessionTabId === null ? null : { sessionId: activeSessionTabId };
+  const handleOpenChatFile = useStableCallback(
+    (filePath: string, options?: SessionDetailOpenFileOptions) => {
+      if (activeSession)
+        openConversationFile(
+          pageChatBeside(),
+          { ...activeFileOpenContext, session: activeSession },
+          filePath,
+          options
+        );
+    }
+  );
+  const handleOpenChatHtmlFile = useStableCallback((filePath: string) =>
+    handleOpenChatFile(filePath, {
+      pathKind: 'canonical',
+      source: 'html_attachment',
+      previewHtml: true,
+    })
+  );
+  const handleOpenChatReplyFile = useStableCallback(
+    (scope: SessionFileScopeValue, path: string, options?: SessionDetailOpenFileOptions) =>
+      openConversationFile(pageChatBeside(), scope, path, options)
+  );
+  const pageChatFileLinks = {
+    onFilePathClick: handleOpenChatFile,
+    onOpenHtmlFile: handleOpenChatHtmlFile,
+    openReplyFile: handleOpenChatReplyFile,
+  };
+  // A tab's conversation sits in a host the dialog can borrow only while the
+  // article window is on; with it off, the tab renders as it always has.
+  const pageChatHost = (chatId: SessionId) =>
+    boardArticleEnabled ? relocatableHostFor(tabChatHostsRef.current, chatId) : null;
   // A link in a previewed document (`DocumentLinks`): a side tab beside a side tab.
   const openFileTargetInTab = useStableCallback(
     (scope: SessionFileOpenContext, target: FileTarget) =>
@@ -4991,12 +5053,17 @@ const SessionDetail = ({
     board: activeBoard,
     narrow: isMobile || isCompactDesktop,
     openPanel: (id) => {
+      // A thread beside the article is the panel's, so the article follows it;
+      // beside anything else it closes, as the thread opens under it.
+      setArticleDialog((current) =>
+        current && current.beside !== 'thread' ? { ...current, closing: true } : current
+      );
       setBoardThreadId(id);
       activateSidebarTab('board');
       revealRightSidebar();
     },
-    // A member opens in the panel, so an open article dialog follows it; every
-    // other destination leaves the panel and closes the dialog.
+    // A member opens in the panel, where an article dialog beside the panel's
+    // thread follows it; every other destination leaves the panel and closes it.
     showInCoordinatorPage: (target) => {
       closeArticleDialog();
       setMobileBoardOpen(false);
@@ -6609,7 +6676,7 @@ const SessionDetail = ({
   // Board documents are read for this page's session (the coordinator in its panel).
   // Their links open in place; a page of one of its files moves to a side tab, and
   // rests while its surface is out of sight. The panel's Markdown and HTML read in
-  // the article window, on their own until it holds the page's conversation.
+  // the article window beside the page's conversation.
   const boardDocumentOwner = { ...activeFileOpenContext, session: activeSession };
   const boardDocumentLinksFor = (onScreen: boolean): BoardDocumentLinksValue => ({
     owner: boardDocumentOwner,
@@ -6634,7 +6701,7 @@ const SessionDetail = ({
                     target.source.kind === 'session' ? target.source.sessionId : activeSession.id,
                 },
               ],
-              beside: null,
+              beside: pageChatBeside(),
             }),
         }
       : {}),
@@ -6967,7 +7034,7 @@ const SessionDetail = ({
       onScheduleRequestDone={() => setBoardScheduleRequest(null)}
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread, controls) => {
-        const inArticle = articleDialogThreadId === thread.id;
+        const inArticle = articleThreadId === thread.id;
         const threadOnScreen = boardPanelOnScreen || inArticle;
         const scopeHost = (
           <SessionFileScopeHost
@@ -7028,22 +7095,18 @@ const SessionDetail = ({
         );
         // One conversation, two places: the panel's slot, or the article
         // dialog's while it is open. Its popups follow it into the dialog.
-        const host = getThreadChatHost(thread.id);
         return (
           <Fragment key={thread.id}>
             {scopeHost}
-            <RelocatableSlot
-              host={host}
+            <RelocatableConversation
+              host={relocatableHostFor(threadChatHostsRef.current, thread.id)}
+              popupContainer={inArticle ? articlePanel : outerPopupContainer}
               className={stylex.props(detailStyles.rootFill).className}
-            />
-            {createPortal(
-              <PopupContainerProvider container={inArticle ? articlePanel : outerPopupContainer}>
-                <SessionFileLinkOpenContext.Provider value={handleOpenThreadFile}>
-                  {chat}
-                </SessionFileLinkOpenContext.Provider>
-              </PopupContainerProvider>,
-              host.node
-            )}
+            >
+              <SessionFileLinkOpenContext.Provider value={handleOpenThreadFile}>
+                {chat}
+              </SessionFileLinkOpenContext.Provider>
+            </RelocatableConversation>
           </Fragment>
         );
       }}
@@ -8359,8 +8422,10 @@ const SessionDetail = ({
             ? getExternalHistoryProviderLabel(externalHistoryRefresh.provider)
             : undefined;
           return (
-            <div
+            <RelocatableConversation
               key={tabSession.id}
+              host={pageChatHost(tabSession.id)}
+              popupContainer={articleTabId === tabSession.id ? articlePanel : outerPopupContainer}
               className={
                 stylex.props(
                   detailStyles.absoluteFill,
@@ -8372,7 +8437,7 @@ const SessionDetail = ({
             >
               <SessionChatSurface
                 {...getSharedChatSurfaceProps(tabSession, isActive)}
-                openReplyFile={handleOpenFileForSession}
+                {...pageChatFileLinks}
                 paintSessionMentionOverlay={false}
                 isChildTab={tabSession.id !== sessionId}
                 isExternalHistoryRefreshing={externalHistoryRefresh !== undefined}
@@ -8398,7 +8463,7 @@ const SessionDetail = ({
                 forkWorktreeAvailability={getForkWorktreeAvailability(tabSession)}
                 forkingAssistantMessageId={pendingForks[tabSession.id]?.turnId}
               />
-            </div>
+            </RelocatableConversation>
           );
         })}
       {draftTabs.map((draft) => {
@@ -8508,6 +8573,36 @@ const SessionDetail = ({
     </div>
   ) : null;
 
+  // A Markdown or HTML file tab opens as an article beside the page's
+  // conversation, its tab kept: the reverse of the article's "Open in side tab".
+  const fileTabArticleItems: readonly SessionFileMenuItem[] =
+    articleRoom && activeViewerTab?.type === 'file'
+      ? [
+          {
+            id: 'open-as-article',
+            label: t('sessions.article.openAsArticle', 'Open as article'),
+            icon: BookOpenText,
+            isAvailable: isBoardArticlePath,
+            run: () =>
+              setArticleDialog({
+                pages: [
+                  fileTabArticlePage(
+                    activeViewerTab,
+                    activeSession.id,
+                    resolveBoardFileLink(
+                      activeViewerTab.filePath,
+                      currentWorkspaceId,
+                      boards,
+                      'canonical'
+                    )
+                  ),
+                ],
+                beside: pageChatBeside(),
+              }),
+          },
+        ]
+      : [];
+
   // White reading surface (not bg-sidebar): the file editor/monaco canvas is
   // pure white, so a gray panel shell left a two-tone mismatch. Full-bleed
   // panel with a left hairline against the conversation.
@@ -8540,13 +8635,17 @@ const SessionDetail = ({
           !isFileViewerTabOwnedBySession(activeViewerTab, activeSession.id) ? (
             <SessionFileScope sessionId={activeViewerTab.ownerSessionId} unavailable={null}>
               {(scope) => (
-                <SessionOwnedFileActionsMenu scope={scope} filePath={activeViewerFilePath} />
+                <SessionOwnedFileActionsMenu
+                  scope={scope}
+                  filePath={activeViewerFilePath}
+                  leadingItems={fileTabArticleItems}
+                />
               )}
             </SessionFileScope>
           ) : (
             <SessionFileActionsMenu
               filePath={activeViewerFilePath}
-              items={activeSessionFileActions.menuItems}
+              items={[...fileTabArticleItems, ...activeSessionFileActions.menuItems]}
             />
           )
         }
@@ -8615,27 +8714,21 @@ const SessionDetail = ({
       }
     >
       {boardSettings}
-      {articleDialog &&
-      articlePage &&
-      (articleDialog.beside === null || articleDialogHostThreadId) ? (
+      {articleDialog && articlePage && (articleBeside === null || articleHost) ? (
         <BoardArticleDialog
           title={getBasename(articlePage.target.path)}
-          {...(articleDialogHostThreadId
-            ? { threadHost: getThreadChatHost(articleDialogHostThreadId) }
-            : {})}
-          holdsThread={articleDialogThreadId !== null}
+          {...(articleHost ? { threadHost: articleHost } : {})}
+          holdsThread={articleShown}
           onPanelChange={setArticlePanel}
           onClose={closeArticleDialog}
           wide={isCompareManifestPath(articlePage.target.path)}
           article={
             <ArticlePageView
               page={articlePage}
-              // Comments ride with the next message of the thread beside the
-              // article, which may be another member the reader moved to; on
-              // its own, with the page's conversation.
-              annotationThreadId={
-                articleDialog.beside === 'thread' ? articleDialogThreadId : activeSession.id
-              }
+              // Comments ride with the next message of the conversation beside
+              // the article, a thread the reader may have moved to another
+              // member; on its own, with the page's session.
+              annotationThreadId={articleThreadId ?? articleTabId ?? activeSession.id}
               onOpenLink={openArticleLink}
               onOpenInTab={(scope) => {
                 closeArticleDialog();

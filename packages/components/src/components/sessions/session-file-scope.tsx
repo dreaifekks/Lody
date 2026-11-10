@@ -13,7 +13,7 @@ import {
   useCodeCollabSessionFileProvider,
   type UseCodeCollabSessionFileProviderResult,
 } from '@/hooks/use-code-collab-session-file-provider';
-import { useSessionFileActions } from '@/hooks/use-session-file-actions';
+import { useSessionFileActions, type SessionFileMenuItem } from '@/hooks/use-session-file-actions';
 import { resolveEffectiveCodeCollabWorkspaceId } from '@/lib/code-collab-workspace-id';
 import {
   resolveSessionLocalProjectRootPath,
@@ -164,13 +164,18 @@ export function useThreadFileLinks(
 export function SessionOwnedFileActionsMenu({
   scope,
   filePath,
+  leadingItems = [],
 }: {
   scope: SessionFileScopeValue;
   filePath: string | null;
+  /** The page's own actions on the file, ahead of its session's. */
+  leadingItems?: readonly SessionFileMenuItem[];
 }) {
   const actions = useSessionFileActions({
     session: scope.session,
     fileProvider: scope.fileProvider,
   });
-  return <SessionFileActionsMenu filePath={filePath} items={actions.menuItems} />;
+  return (
+    <SessionFileActionsMenu filePath={filePath} items={[...leadingItems, ...actions.menuItems]} />
+  );
 }

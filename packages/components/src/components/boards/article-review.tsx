@@ -227,7 +227,7 @@ export function ArticleReviewControls({
           variant="ghost"
           title={t(
             'sessions.article.annotation.sendHint',
-            'Sends with whatever is typed in the thread'
+            'Sends with whatever is typed in the conversation'
           )}
           onClick={() => requestSend(threadId)}
         >

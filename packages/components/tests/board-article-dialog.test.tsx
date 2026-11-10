@@ -4,7 +4,19 @@ import { createPortal } from 'react-dom';
 import { JSDOM } from 'jsdom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BoardArticleDialog } from '../src/components/boards/board-article-dialog';
+import {
+  BoardArticleDialog,
+  fileTabArticlePage,
+} from '../src/components/boards/board-article-dialog';
+import { createStore } from 'jotai';
+import { usePopupContainer, type PopupContainer } from '@lody/ui/popup-container';
+import type { SessionId } from '@lody/shared';
+import {
+  boardArticleExperimentEnabledAtom,
+  boardArticleFeatureEnabledAtom,
+  boardEnabledAtom,
+  experimentalFeaturesEnabledAtom,
+} from '../src/atoms/settings';
 import { getDefaultStore } from 'jotai';
 import { ArticleAnnotationMarkers } from '../src/components/boards/article-annotation-markers';
 import {
@@ -26,6 +38,7 @@ import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
 import { ArticleHtmlFrame } from '../src/components/sessions/article-html-frame';
 import {
   createRelocatableHost,
+  RelocatableConversation,
   RelocatableSlot,
   type RelocatableHost,
 } from '../src/components/boards/relocatable-host';
@@ -310,6 +323,153 @@ describe('BoardArticleDialog', () => {
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a page tab beside an article', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let popups: PopupContainer;
+  function PopupProbe() {
+    popups = usePopupContainer();
+    return null;
+  }
+  /** A page tab's conversation, and the article dialog that may borrow it. */
+  function Tab({
+    host,
+    open,
+    holds,
+  }: {
+    host: RelocatableHost | null;
+    open: boolean;
+    holds: boolean;
+  }) {
+    const [panel, setPanel] = useState<HTMLElement | null>(null);
+    return createElement(
+      'div',
+      null,
+      createElement(
+        RelocatableConversation,
+        { host, popupContainer: open ? panel : null, className: 'tab-box', 'aria-hidden': false },
+        createElement(Conversation, { thread: 'tab' }),
+        createElement(PopupProbe)
+      ),
+      open && host
+        ? createElement(BoardArticleDialog, {
+            title: 'notes.md',
+            article: ARTICLE,
+            threadHost: host,
+            holdsThread: holds,
+            onPanelChange: setPanel,
+            onClose: () => {},
+          })
+        : null
+    );
+  }
+  const render = (props: Parameters<typeof Tab>[0]) =>
+    act(async () => root.render(createElement(Tab, props)));
+  const box = () => document.querySelector<HTMLElement>('.tab-box')!;
+
+  beforeEach(() => {
+    mounts = 0;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('moves into the dialog with its draft and popups, and back to its box on close', async () => {
+    const host = createRelocatableHost();
+    await render({ host, open: false, holds: true });
+    const composer = document.querySelector<HTMLTextAreaElement>('textarea')!;
+    composer.value = 'Draft about the outline';
+    expect(box().contains(composer)).toBe(true);
+
+    await render({ host, open: true, holds: true });
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.contains(composer)).toBe(true);
+    expect(box().contains(composer)).toBe(false);
+    // Its menus open inside the dialog, not under it.
+    expect(popups).toBeInstanceOf(HTMLElement);
+    expect(dialog.contains(popups as HTMLElement)).toBe(true);
+
+    // Closing lets go first, while both places are in the document, then unmounts.
+    await render({ host, open: true, holds: false });
+    expect(box().contains(composer)).toBe(true);
+    await render({ host, open: false, holds: true });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(box().contains(composer)).toBe(true);
+    expect(composer.value).toBe('Draft about the outline');
+    expect(mounts).toBe(1);
+  });
+
+  it('stays in its own box when nothing can borrow it, the article window off', async () => {
+    await render({ host: null, open: false, holds: true });
+    const composer = document.querySelector('textarea')!;
+    expect(composer.parentElement).toBe(box());
+    expect(box().getAttribute('aria-hidden')).toBe('false');
+  });
+});
+
+describe('opening a file tab as an article', () => {
+  const page = 'page' as SessionId;
+
+  it("reads a Board's file through the Board, for the page", () => {
+    expect(
+      fileTabArticlePage({ filePath: 'boards/ws/b1/files/ui/report.md' }, page, {
+        boardId: 'b1',
+        area: 'files',
+        path: 'ui/report.md',
+      })
+    ).toEqual({
+      target: { source: { kind: 'board', boardId: 'b1' }, path: 'files/ui/report.md' },
+      readerId: page,
+    });
+  });
+
+  it("reads a session's file for the session the tab belongs to, at the tab's lines", () => {
+    expect(
+      fileTabArticlePage(
+        {
+          filePath: 'docs/a.md',
+          ownerSessionId: 'child' as SessionId,
+          fileId: 'f1',
+          startLine: 3,
+          endLine: 9,
+        },
+        page,
+        null
+      )
+    ).toEqual({
+      target: {
+        source: { kind: 'session', sessionId: 'child' },
+        path: 'docs/a.md',
+        startLine: 3,
+        endLine: 9,
+      },
+      readerId: 'child',
+      fileId: 'f1',
+    });
+    expect(fileTabArticlePage({ filePath: 'docs/a.md' }, page, null)).toEqual({
+      target: { source: { kind: 'session', sessionId: page }, path: 'docs/a.md' },
+      readerId: page,
+    });
+  });
+});
+
+describe('the article window switch', () => {
+  it('turns the window on with experimental features, whether Boards are on or not', () => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(boardArticleExperimentEnabledAtom, true);
+    expect(store.get(boardEnabledAtom)).toBe(false);
+    expect(store.get(boardArticleFeatureEnabledAtom)).toBe(true);
+    store.set(experimentalFeaturesEnabledAtom, false);
+    expect(store.get(boardArticleFeatureEnabledAtom)).toBe(false);
+    localStorage.clear();
   });
 });
 

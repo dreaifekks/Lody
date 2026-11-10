@@ -87,21 +87,19 @@ export function ExperimentalFeatureRows() {
               aria-label={t('boards.title', 'Boards')}
             />
           </CompactRow>
-          {boardEnabled ? (
-            <CompactRow
-              label={t('settings.experimental.boardArticle', 'Article window')}
-              helper={t(
-                'settings.experimental.boardArticleHelper',
-                "In a Board, a Markdown or HTML file a thread links opens over the page with that thread's conversation beside it. Comment on selections; the file refreshes as the agent writes."
-              )}
-            >
-              <Switch
-                checked={boardArticleEnabled}
-                onCheckedChange={setBoardArticleEnabled}
-                aria-label={t('settings.experimental.boardArticle', 'Article window')}
-              />
-            </CompactRow>
-          ) : null}
+          <CompactRow
+            label={t('settings.experimental.boardArticle', 'Article window')}
+            helper={t(
+              'settings.experimental.boardArticleHelper',
+              'A Markdown or HTML file a conversation links opens over the page with that conversation beside it. Comment on selections; the file refreshes as the agent writes.'
+            )}
+          >
+            <Switch
+              checked={boardArticleEnabled}
+              onCheckedChange={setBoardArticleEnabled}
+              aria-label={t('settings.experimental.boardArticle', 'Article window')}
+            />
+          </CompactRow>
           <CompactRow
             label={t('settings.experimental.voice', 'Voice')}
             helper={t(
