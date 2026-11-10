@@ -26,6 +26,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAtomValue } from 'jotai';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
 import { useWorkingHandOver, WorkingStatusMark } from '@/ui/working-status-mark';
 import {
   sessionSendStatusAtomFamily,
@@ -240,6 +241,9 @@ export function SessionSendProgressRing({ progress }: { progress?: number }) {
  * own the leading slot unconditionally: before this, an active child had to drop
  * its ├/└ connectors and the nesting silently disappeared exactly on the rows a
  * user watches most.
+ *
+ * Low-stimulus mode keeps the marks and drops the working → unread transition:
+ * a finished session shows its dot without the bounce.
  */
 export function SessionRowStatusIndicator({
   isWaitingPermission,
@@ -259,6 +263,7 @@ export function SessionRowStatusIndicator({
   /** Spoken name of the send mark ("Sending · 12.4 MB / 38.0 MB"). */
   sendLabel?: string;
 }) {
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   let icon: ReactNode = null;
   let label: string | undefined;
 
@@ -277,6 +282,7 @@ export function SessionRowStatusIndicator({
       <WorkingStatusMark
         working={isWorking === true}
         unread={hasUnreadMessages === true}
+        doneTransition={!lowStimulusMode}
         className="text-primary"
       />
     );

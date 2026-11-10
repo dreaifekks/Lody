@@ -1166,7 +1166,12 @@ export const LocalProjectItem = memo(function LocalProjectItem({
     if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
     const activityRow = (session: SessionMeta): LocalSessionActivityRow => ({
       id: session.id,
-      ...getEffectiveSessionActivitySummary(session, childSessionsByParent, liveSessionStatuses),
+      ...getEffectiveSessionActivitySummary(
+        session,
+        childSessionsByParent,
+        liveSessionStatuses,
+        familyReadThrough(session.id, session.lastReadAt)
+      ),
     });
     return new Map(
       sessionNodes
@@ -1515,7 +1520,8 @@ export const LocalProjectItem = memo(function LocalProjectItem({
             const activity = getEffectiveSessionActivitySummary(
               session,
               childSessionsByParent,
-              liveSessionStatuses
+              liveSessionStatuses,
+              lowStimulusMode ? familyReadThrough(session.id, session.lastReadAt) : undefined
             );
             const openedByTree = buildSessionRowOpenedByTreeSlot(node, t, () =>
               onToggleOpenedBySessions(session.id)
@@ -2242,6 +2248,7 @@ export function LoroAppSidebar({
           lineChangeScope: sessionSidebarCodeChangesOnly ? 'code' : 'all',
           liveSessionStatuses,
           resolveOpenerRowId,
+          familyReadThrough: lowStimulusMode ? familyReadThrough : undefined,
         },
         allActiveSessions
       ).map((task) => ({
@@ -2254,6 +2261,8 @@ export function LoroAppSidebar({
     [
       activeOrganization?.members,
       allActiveSessions,
+      familyReadThrough,
+      lowStimulusMode,
       onlineMachineIds,
       liveSessionStatuses,
       machineMetaMap,
@@ -2860,7 +2869,8 @@ export function LoroAppSidebar({
           const activity = getEffectiveSessionActivitySummary(
             session,
             childSessionsByParent,
-            liveSessionStatuses
+            liveSessionStatuses,
+            lowStimulusMode ? familyReadThrough(session.id, session.lastReadAt) : undefined
           );
           const isOffline = !onlineMachineIds.has(session.machineId);
           // Local projects linked to a GitHub repo can have a PR; carry it so the
@@ -2912,8 +2922,10 @@ export function LoroAppSidebar({
     childSessionsByParent,
     defaultSessionTitle,
     catalogLocalProjectSections,
+    familyReadThrough,
     localProjectSessionsByKey,
     liveSessionStatuses,
+    lowStimulusMode,
     onlineMachineIds,
     projectGroupTasks,
     repoSessions,

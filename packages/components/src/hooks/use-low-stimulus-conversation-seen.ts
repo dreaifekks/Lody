@@ -1,7 +1,7 @@
-import { getServerNow } from '@lody/shared';
+import { getServerNow, type SessionMeta } from '@lody/shared';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useEffect } from 'react';
-import { setConversationOnScreenAtom } from '@/atoms/low-stimulus-seen';
+import { familyReadThroughAtom, setConversationOnScreenAtom } from '@/atoms/low-stimulus-seen';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
 
 /**
@@ -17,4 +17,13 @@ export function useLowStimulusConversationSeen(sessionId: string, onScreen: bool
     setOnScreen(sessionId, true, getServerNow());
     return () => setOnScreen(sessionId, false, getServerNow());
   }, [enabled, onScreen, sessionId, setOnScreen]);
+}
+
+/** Low-stimulus mode: how far the user has read this session (`familyReadThroughAtom`). */
+export function useLowStimulusReadThrough(
+  session: Pick<SessionMeta, 'id' | 'lastReadAt'>
+): number | undefined {
+  const enabled = useAtomValue(lowStimulusModeEnabledAtom);
+  const readThrough = useAtomValue(familyReadThroughAtom);
+  return enabled ? readThrough(session.id, session.lastReadAt) : undefined;
 }

@@ -1296,11 +1296,31 @@ describe('Board side panel', () => {
       }
     });
 
-    it('draws a running member on the root', async () => {
-      const view = await mountList(family({ status: 'running' }));
+    it('keeps a running member under Working without drawing its work on the root', async () => {
+      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 150 }));
       try {
         expect(view.headers()).toEqual(['Working1']);
-        expect(view.mark('root')?.querySelector('[data-session-working-indicator]')).not.toBeNull();
+        expect(view.row('root')).not.toBeNull();
+        expect(view.mark('root')).toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws output of a running member newer than the root read as a dot, not as work', async () => {
+      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 300 }));
+      try {
+        expect(view.row('root')!.querySelector('[data-session-working-indicator]')).toBeNull();
+        expect(view.row('root')!.querySelector('[data-session-unread-dot]')).not.toBeNull();
+      } finally {
+        await view.unmount();
+      }
+    });
+
+    it('draws the work of the root itself', async () => {
+      const view = await mountList(family({}, { status: 'running' }));
+      try {
+        expect(view.row('root')!.querySelector('[data-session-working-indicator]')).not.toBeNull();
       } finally {
         await view.unmount();
       }
@@ -1360,6 +1380,21 @@ describe('Board side panel', () => {
       } finally {
         await view.unmount();
       }
+    });
+
+    it('leaves the work of hidden members out of the root state, but not their failure or output', () => {
+      expect(foldedBoardThreadRoot(family({ status: 'running' }), 200).status).toBe('idle');
+      expect(
+        foldedBoardThreadRoot(family({ status: 'running', unread: true, updatedAt: 300 }), 200)
+          .unread
+      ).toBe(true);
+      expect(
+        foldedBoardThreadRoot(
+          [...family({ status: 'failed' }), thread('child-2', { depth: 1, status: 'running' })],
+          200
+        ).status
+      ).toBe('failed');
+      expect(foldedBoardThreadRoot(family({}, { status: 'running' }), 200).status).toBe('running');
     });
 
     it('does not let an archived member speak for the family', () => {
@@ -1428,6 +1463,41 @@ describe('Board side panel', () => {
     ).toBe(true);
     // Without the mode the member's own unread lights the row as before.
     expect(boardActivity(board, [root, covered], new Map()).hasUnreadMessages).toBe(true);
+  });
+
+  it('in low-stimulus mode leaves the work of a folded family member off the Board row', () => {
+    const board = testBoard();
+    const root = makeSession('root', { lastMessageAt: 100, lastReadAt: 100 });
+    const child = makeSession('child', {
+      openedBySessionId: 'root' as SessionId,
+      lastMessageAt: 300,
+      lastReadAt: 100,
+    });
+    const receiptOnly = (_rootId: string, rootLastReadAt: number | undefined) =>
+      rootLastReadAt ?? -Infinity;
+    const folded = { isFolded: () => true, readThrough: receiptOnly };
+    const live = (id: string, type: SessionStatus['type']) =>
+      new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);
+    // Its work draws nothing; its output newer than the root read counts, running or not.
+    expect(boardActivity(board, [root, child], live('child', 'running'), folded)).toEqual({
+      isWaitingPermission: false,
+      isWorking: false,
+      hasUnreadMessages: true,
+    });
+    // A member waiting for the user, and the root's own work, still light the row.
+    expect(
+      boardActivity(board, [root, child], live('child', 'requestPermission'), folded)
+        .isWaitingPermission
+    ).toBe(true);
+    expect(boardActivity(board, [root, child], live('root', 'running'), folded).isWorking).toBe(
+      true
+    );
+    // Unfolded, or without the mode, the member's work lights it as before.
+    const unfolded = { isFolded: () => false, readThrough: receiptOnly };
+    expect(boardActivity(board, [root, child], live('child', 'running'), unfolded).isWorking).toBe(
+      true
+    );
+    expect(boardActivity(board, [root, child], live('child', 'running')).isWorking).toBe(true);
   });
 
   it('marks a Board by its strongest member state', () => {

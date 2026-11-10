@@ -1,4 +1,5 @@
 import { getSessionGroupTitle, resolveSessionPrimaryPullRequest } from '@lody/shared';
+import { childTabActivity } from '@/lib/low-stimulus';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import type {
   LocalProjectHistoryProvider,
@@ -56,6 +57,8 @@ export type BuildSessionListRowsOptions = {
    * Omitted callers get one built here from `allSessions`.
    */
   resolveOpenerRowId?: (openerSessionId: string | null | undefined) => string | null;
+  /** Low-stimulus mode: how far each row's session is read (`familyReadThroughAtom`). */
+  familyReadThrough?: (sessionId: string, lastReadAt: number | undefined) => number;
 };
 
 function normalizeString(value: string | null | undefined): string {
@@ -195,7 +198,9 @@ export type EffectiveSessionActivitySummary = {
 export function getEffectiveSessionActivitySummary(
   session: SessionMeta,
   childSessionsByParent?: Map<string, SessionMeta[]>,
-  liveSessionStatuses?: ReadonlyMap<string, SessionStatus>
+  liveSessionStatuses?: ReadonlyMap<string, SessionStatus>,
+  /** Low-stimulus mode: how far this session is read, which quiets Tabs an agent opened. */
+  readThrough?: number
 ): EffectiveSessionActivitySummary {
   const liveStatus = liveSessionStatuses?.get(session.id);
   // Sidebar working state is live presence only. A goal may remain active while
@@ -211,13 +216,14 @@ export function getEffectiveSessionActivitySummary(
   if (children) {
     for (const child of children) {
       const childLiveStatus = liveSessionStatuses?.get(child.id);
-      if (!isWorking && childLiveStatus != null) {
+      const tab = childTabActivity(child, childLiveStatus != null, readThrough);
+      if (!isWorking && tab.working) {
         isWorking = true;
       }
       if (!isWaitingPermission && childLiveStatus?.type === 'requestPermission') {
         isWaitingPermission = true;
       }
-      if (!hasUnreadMessages && sessionHasUnreadMessages(child)) {
+      if (!hasUnreadMessages && tab.unread) {
         hasUnreadMessages = true;
       }
       const childMs = parseTimestamp(child.lastMessageAt) ?? parseTimestamp(child.createdAt) ?? 0;
@@ -363,14 +369,16 @@ function aggregateChildStatus(
   session: SessionMeta,
   task: SessionListRow,
   childSessionsByParent: Map<string, SessionMeta[]>,
-  liveSessionStatuses?: ReadonlyMap<string, SessionStatus>
+  liveSessionStatuses?: ReadonlyMap<string, SessionStatus>,
+  readThrough?: number
 ): SessionListRow {
   if (!childSessionsByParent.has(session.id)) return task;
 
   const activity = getEffectiveSessionActivitySummary(
     session,
     childSessionsByParent,
-    liveSessionStatuses
+    liveSessionStatuses,
+    readThrough
   );
   const taskLatestMessageAtMs = parseTimestamp(task.latestMessageAt) ?? 0;
   const latestMessageAt =
@@ -454,7 +462,13 @@ export function buildSessionListRows(
       liveSessionStatuses?.get(session.id) ?? null,
       resolveOpenerRowId
     );
-    return aggregateChildStatus(session, task, childSessionsByParent, liveSessionStatuses);
+    return aggregateChildStatus(
+      session,
+      task,
+      childSessionsByParent,
+      liveSessionStatuses,
+      options.familyReadThrough?.(session.id, session.lastReadAt)
+    );
   };
 
   if (scope === 'my') {

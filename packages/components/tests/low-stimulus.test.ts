@@ -13,9 +13,12 @@ import {
   lowStimulusExperimentEnabledAtom,
   lowStimulusModeEnabledAtom,
 } from '../src/atoms/settings';
+import type { SessionId, SessionMeta } from '@lody/shared';
 import { foldedFamilyActivity } from '../src/components/sidebar-folded-family';
+import { SessionRowStatusIndicator } from '../src/components/sidebar-row-shared';
 import { useLowStimulusConversationSeen } from '../src/hooks/use-low-stimulus-conversation-seen';
 import {
+  childTabActivity,
   familyReadThrough,
   hiddenSessionHasUnread,
   isOpenerCollapsed,
@@ -115,6 +118,26 @@ describe('hiddenSessionHasUnread', () => {
   it('never makes a read or closed session unread', () => {
     expect(hiddenSessionHasUnread(false, 300, 200)).toBe(false);
     expect(hiddenSessionHasUnread(false, 300, familyReadThrough(undefined, undefined))).toBe(false);
+  });
+});
+
+describe('childTabActivity', () => {
+  const tab = (overrides: Partial<SessionMeta> = {}) =>
+    ({ lastMessageAt: 300, lastReadAt: 100, ...overrides }) as SessionMeta;
+  const agentTab = (overrides: Partial<SessionMeta> = {}) =>
+    tab({ openedBySessionId: 'parent' as SessionId, ...overrides });
+
+  it('counts every Tab as it always did without the mode', () => {
+    expect(childTabActivity(agentTab(), true, undefined)).toEqual({ working: true, unread: true });
+  });
+
+  it('counts a Tab the user opened as it always did in the mode', () => {
+    expect(childTabActivity(tab(), true, 400)).toEqual({ working: true, unread: true });
+  });
+
+  it('quiets a Tab an agent opened: no work, and unread only past the parent read', () => {
+    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: false, unread: true });
+    expect(childTabActivity(agentTab(), true, 400)).toEqual({ working: false, unread: false });
   });
 });
 
@@ -308,16 +331,27 @@ describe('foldedFamilyActivity', () => {
     expect(family({ ...root, hasUnreadMessages: true }, [], 50).unread).toBe(1);
   });
 
-  it('counts waiting and working of hidden sessions however old their output is', () => {
+  it('counts a hidden session waiting for the user however old its output is', () => {
     const activity = family(
       root,
-      [
-        { id: 'waiting', latestMessageAt: 1, isWaitingPermission: true, isWorking: true },
-        { id: 'working', latestMessageAt: 1, isWorking: true },
-      ],
+      [{ id: 'waiting', latestMessageAt: 1, isWaitingPermission: true, isWorking: true }],
       200
     );
-    expect(activity).toMatchObject({ waiting: 1, working: 1, unread: 0 });
+    expect(activity).toMatchObject({ waiting: 1, working: 0, unread: 0 });
+  });
+
+  it('draws no work for a hidden session at work, only for the root itself', () => {
+    const working: Row = { id: 'working', latestMessageAt: 1, isWorking: true };
+    expect(family(root, [working], 200).working).toBe(0);
+    expect(family({ ...root, isWorking: true }, [working], 200).working).toBe(1);
+  });
+
+  it('keeps the unread of a hidden session that runs again', () => {
+    const child: Row = { id: 'child', latestMessageAt: 250, hasUnreadMessages: true };
+    expect(family(root, [{ ...child, isWorking: true }], 200)).toMatchObject({
+      working: 0,
+      unread: 1,
+    });
   });
 
   it('counts a hidden send failure and a root send in progress', () => {
@@ -326,5 +360,56 @@ describe('foldedFamilyActivity', () => {
       child: 'failed',
     });
     expect(activity).toMatchObject({ failed: 1, sending: 1 });
+  });
+});
+
+describe('the done transition of a status mark', () => {
+  let host: HTMLDivElement;
+  let reactRoot: Root;
+  const draw = (store: ReturnType<typeof createStore>, working: boolean) =>
+    act(() =>
+      reactRoot.render(
+        createElement(
+          Provider,
+          { store },
+          createElement(SessionRowStatusIndicator, {
+            isWorking: working,
+            hasUnreadMessages: !working,
+          })
+        )
+      )
+    );
+  /** A session finishes with output to read, as the row sees it. */
+  const finish = (lowStimulus: boolean) => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+    store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+    draw(store, true);
+    draw(store, false);
+  };
+
+  beforeEach(() => {
+    // Every animation stays unfinished, as a real one is while it plays.
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      configurable: true,
+      value: () => ({ finished: new Promise(() => {}), cancel: () => {} }),
+    });
+    host = document.createElement('div');
+    reactRoot = createRoot(host);
+  });
+  afterEach(() => {
+    act(() => reactRoot.unmount());
+    delete (HTMLElement.prototype as { animate?: unknown }).animate;
+  });
+
+  it('plays when a session finishes with output to read', () => {
+    finish(false);
+    expect(host.querySelector('[data-session-done-transition]')).not.toBeNull();
+  });
+
+  it('goes straight to the dot in the mode', () => {
+    finish(true);
+    expect(host.querySelector('[data-session-done-transition]')).toBeNull();
+    expect(host.querySelector('[data-session-unread-dot]')).not.toBeNull();
   });
 });

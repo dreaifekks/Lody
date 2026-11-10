@@ -189,6 +189,78 @@ describe('getEffectiveSessionActivitySummary child-status aggregation', () => {
   });
 });
 
+describe('child Tab roll-up in low-stimulus mode', () => {
+  const parent = makeSession({ id: 'parent', lastMessageAt: 300, lastReadAt: 300 });
+  const tab = (id: string, overrides: Partial<SessionMeta> = {}) =>
+    makeSession({
+      id,
+      parentSessionId: parent.id,
+      lastMessageAt: 300,
+      lastReadAt: 100,
+      ...overrides,
+    });
+  const agentTab = tab('agent-tab', { openedBySessionId: parent.id });
+  const userTab = tab('user-tab');
+
+  test('lets the read of the parent cover the output of a Tab an agent opened', () => {
+    const children = buildChildSessionsByParent([parent, agentTab]);
+    const summarize = (readThrough?: number) =>
+      getEffectiveSessionActivitySummary(parent, children, new Map(), readThrough);
+    expect(summarize(300).hasUnreadMessages).toBe(false);
+    expect(summarize(200).hasUnreadMessages).toBe(true);
+    expect(summarize().hasUnreadMessages).toBe(true);
+  });
+
+  test('shows the output of a Tab an agent opened through its parent until the parent is read', () => {
+    // The CLI raises the parent's last message time with each message of its Tab.
+    const unreadParent = makeSession({ id: 'parent', lastMessageAt: 300, lastReadAt: 100 });
+    const runningAgain = new Map<string, SessionStatus>([
+      [agentTab.id, { type: 'running' } as SessionStatus],
+    ]);
+    const summarize = (session: SessionMeta) =>
+      getEffectiveSessionActivitySummary(
+        session,
+        buildChildSessionsByParent([session, agentTab]),
+        runningAgain,
+        session.lastReadAt
+      );
+    expect(summarize(unreadParent)).toMatchObject({ isWorking: false, hasUnreadMessages: true });
+    expect(summarize(parent)).toMatchObject({ isWorking: false, hasUnreadMessages: false });
+  });
+
+  test('draws no work for a Tab an agent opened, keeps its wait, and leaves a user Tab alone', () => {
+    const live = (id: string, type: SessionStatus['type']) =>
+      new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);
+    const agentOnly = buildChildSessionsByParent([parent, agentTab]);
+    expect(
+      getEffectiveSessionActivitySummary(parent, agentOnly, live(agentTab.id, 'running'), 300)
+    ).toMatchObject({ isWorking: false, isWaitingPermission: false });
+    expect(
+      getEffectiveSessionActivitySummary(
+        parent,
+        agentOnly,
+        live(agentTab.id, 'requestPermission'),
+        300
+      ).isWaitingPermission
+    ).toBe(true);
+    const userOnly = buildChildSessionsByParent([parent, userTab]);
+    expect(
+      getEffectiveSessionActivitySummary(parent, userOnly, live(userTab.id, 'running'), 300)
+    ).toMatchObject({ isWorking: true, hasUnreadMessages: true });
+  });
+
+  test('reads each row through its own read-through when the rows are built', () => {
+    const build = (familyReadThrough?: (id: string, lastReadAt: number | undefined) => number) =>
+      buildSessionListRows(
+        [parent],
+        { scope: 'team', currentUserId: 'user-1', defaultTitle: 'Untitled', familyReadThrough },
+        [parent, agentTab]
+      )[0]!.hasUnreadMessages;
+    expect(build((_id, lastReadAt) => lastReadAt ?? -Infinity)).toBe(false);
+    expect(build()).toBe(true);
+  });
+});
+
 describe('buildSessionListRows repo + PR mapping', () => {
   test("shows a Project group's default-repository PR, matching the Info Bar", () => {
     const api = 'https://github.com/example/api/pull/7';

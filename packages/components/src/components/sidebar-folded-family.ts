@@ -9,9 +9,11 @@ import {
 
 /**
  * What a folded family's root row draws in low-stimulus mode: the root and its
- * hidden Sessions counted as a folded group counts its rows, with each hidden
- * Session's unread state first narrowed by how far the root is read
- * (`familyReadThroughAtom`).
+ * hidden Sessions counted as a folded group counts its rows. The root counts as
+ * its own row would. A hidden Session's work is the root's to report, so it
+ * draws no working mark; its unread counts only past how far the root is read
+ * (`hiddenSessionHasUnread`), and its waiting and its local sends count as they
+ * are.
  */
 export function foldedFamilyActivity<
   Row extends SessionRowStatusFlags & { latestMessageAt: Date | number | string },
@@ -24,6 +26,7 @@ export function foldedFamilyActivity<
 ): SidebarGroupActivity {
   const narrowed = hiddenChildren.map((child) => ({
     ...child,
+    isWorking: false,
     hasUnreadMessages: hiddenSessionHasUnread(
       child.hasUnreadMessages === true,
       new Date(child.latestMessageAt).getTime(),

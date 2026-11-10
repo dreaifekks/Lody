@@ -109,6 +109,7 @@ describe('sidebar local project row', () => {
     inPinnedSection?: boolean;
     /** A store of the test's own; the default one otherwise. */
     store?: ReturnType<typeof createStore>;
+    childSessionsByParent?: Map<string, SessionMeta[]>;
   }) {
     const item = (
       <LocalProjectItem
@@ -122,7 +123,7 @@ describe('sidebar local project row', () => {
         whetherShowFullList={options.whetherShowFullList ?? false}
         isSelected={false}
         sessionsForProject={options.sessions ?? []}
-        childSessionsByParent={new Map()}
+        childSessionsByParent={options.childSessionsByParent ?? new Map()}
         liveSessionStatuses={options.liveSessionStatuses ?? NO_LIVE_STATUSES}
         formattedPath={project.rootPath}
         defaultSessionTitle="New session"
@@ -361,6 +362,28 @@ describe('sidebar local project row', () => {
 
     it('shows hidden output newer than that read', () => {
       renderFamily({ lastMessageAt: 150 });
+      expect(markOf('opener')).not.toBeNull();
+    });
+
+    it('lets the read of a row cover the output of a Tab an agent opened in it', () => {
+      const tab = localSession('tab', {
+        parentSessionId: 'opener' as SessionId,
+        openedBySessionId: 'opener' as SessionId,
+        lastMessageAt: 100,
+        lastReadAt: 50,
+      });
+      const renderOpener = (rowStore: ReturnType<typeof createStore>) =>
+        render({
+          onNavigateProject: () => undefined,
+          onNewChatInProject: () => undefined,
+          store: rowStore,
+          sessions: [localSession('opener', { lastMessageAt: 100, lastReadAt: 100 })],
+          childSessionsByParent: new Map([['opener', [tab]]]),
+        });
+      renderOpener(store);
+      expect(markOf('opener')).toBeNull();
+      // Without the mode the Tab's own unread still marks the row.
+      renderOpener(createStore());
       expect(markOf('opener')).not.toBeNull();
     });
 
