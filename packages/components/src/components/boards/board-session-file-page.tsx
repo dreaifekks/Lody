@@ -16,8 +16,8 @@ export function BoardSessionFilePage({
 }: BoardSessionFilePageProps & { onOpenInTab: () => void; active: boolean }) {
   return (
     <SessionDocumentScope
-      sessionId={sessionId}
-      path={target.path}
+      readerId={sessionId}
+      document={target}
       onOpen={(_scope, next) => onOpen(next)}
     >
       {(scope) => (

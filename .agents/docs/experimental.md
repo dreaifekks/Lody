@@ -377,8 +377,7 @@ instead of a file tab: the file on the left, that thread's conversation on the r
 (60/40, the divider drags, nothing is remembered). Escape (after any open comment
 editor), the backdrop or the × in the thread header closes it and leaves the page as
 it was. The file header's ⋯ has "Open in side tab". A file link in the article opens
-the next page in place, with Back in the file header (a Board file's link still
-closes the window and opens its tab). The right pane is whichever
+the next page in place, with Back in the file header. The right pane is whichever
 thread the Board panel has open: moving to another member through the thread
 header's breadcrumb or a session link keeps the window and the article (still read
 from its own thread); a destination outside the panel closes it. Other files, phones, the compact desktop layout and a
@@ -386,6 +385,19 @@ thread opened as its own page keep the file tab; turning the switch off or going
 compact closes an open window. The agent side is a convention for the Board's thread
 instructions: write `articles/<name>.md|html` and give the path in the reply. No
 tool, CLI or protocol change.
+
+A Board's Markdown and HTML open in the window as well: a thread's link into the
+Board directory, and the Board panel's Files list and shared notes (these with no
+conversation beside the article). They are read like the panel's previews, from the
+machine that keeps the directory through the member file channel
+(`BoardMemberFileProvider` in `lib/board-directory-file-provider.ts`: read-only, text
+past 1 MiB cut, bytes that are not UTF-8 shown as binary), so the outline, comments,
+change marks, HTML and comparisons work as for a thread's file. A Board file goes by
+its canonical path (`boards/<ws>/<board>/<area>/<path>`) and its comments belong to the
+Board's coordinator, whoever reads it; they ride with the next message of the
+conversation beside the window, or of the page's own session when there is none. Other
+Board files keep the panel's preview, and so does every Board file wherever the window
+is unavailable.
 
 - One conversation: the panel's thread conversation is always portalled into a
   relocatable host (`components/boards/relocatable-host.tsx`), so the switch never

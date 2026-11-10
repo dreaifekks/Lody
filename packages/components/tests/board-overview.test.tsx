@@ -19,9 +19,12 @@ import {
 import { BoardFileLinkPreview, BoardFilePreview } from '../src/components/boards/board-directory';
 import { DocumentLinks, SessionFileLinkOpenContext } from '../src/components/boards/document-links';
 import { BoardSessionFilePage } from '../src/components/boards/board-session-file-page';
+import { ArticlePageView } from '../src/components/boards/board-article-page';
+import { articleAnnotationsAtom } from '../src/components/boards/article-annotations';
 import { SessionAgentFileLinkMenuProvider } from '../src/components/sessions/session-agent-file-link-menu';
 import { OperationReplyCard } from '../src/components/ai-gui/operation-reply-card';
 import {
+  BoardMemberFileProvider,
   boardDocumentFilePath,
   resolveBoardFileLink,
 } from '../src/lib/board-directory-file-provider';
@@ -2994,6 +2997,10 @@ it("maps a Board document's image paths into that Board only", () => {
   expect(boardDocumentFilePath('/data/boards/ws/bd_test/memory/a.png', 'ws', 'bd_test')).toBe(
     'memory/a.png'
   );
+  // The canonical spelling the article window reads Board files by.
+  expect(boardDocumentFilePath('boards/ws/bd_test/files/ui/shot.png', 'ws', 'bd_test')).toBe(
+    'files/ui/shot.png'
+  );
   for (const path of [
     '../outside.png',
     'shots/a.png',
@@ -3001,8 +3008,72 @@ it("maps a Board document's image paths into that Board only", () => {
     '/data/boards/ws/bd_other/files/a.png',
     '/data/boards/other/bd_test/files/a.png',
     '/home/me/a.png',
+    'boards/ws/bd_other/files/a.png',
+    'boards/ws/bd_test/a.png',
   ])
     expect(boardDocumentFilePath(path, 'ws', 'bd_test')).toBeNull();
+});
+
+it("serves a Board's files to the file viewer from the machine that keeps them", async () => {
+  const bytes: Record<string, Uint8Array> = {
+    'files/ui/plan.md': new TextEncoder().encode('# Plan ü'),
+    'files/ui/shot.png': new Uint8Array([137, 80, 78, 71]),
+    'files/ui/data.bin': new Uint8Array([0xff, 0xfe, 0x00, 0x81]),
+    'memory/big.md': new TextEncoder().encode('a'.repeat(1024 * 1024 + 10)),
+  };
+  const reads: string[] = [];
+  const provider = new BoardMemberFileProvider('ws', 'bd_test', async (path) => {
+    reads.push(path);
+    const body = bytes[path];
+    return body
+      ? { ok: true, url: `lody-resource://member/${path}`, sizeBytes: body.length }
+      : { ok: false, error: `ENOENT: no such file or directory, open '${path}'` };
+  });
+  // The member resource honours a byte range, as the desktop's protocol does.
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const body = bytes[String(input).slice('lody-resource://member/'.length)]!;
+    const headers = init?.headers as Record<string, string> | undefined;
+    const range = /bytes=0-(\d+)/.exec(headers?.Range ?? '');
+    return new Response(range ? body.slice(0, Number(range[1]) + 1) : body);
+  });
+  try {
+    expect(await provider.openFile('boards/ws/bd_test/files/ui/plan.md')).toMatchObject({
+      status: 'ready',
+      snapshot: { kind: 'text', text: '# Plan ü' },
+    });
+    expect(await provider.openFile('boards/ws/bd_test/files/ui/shot.png')).toMatchObject({
+      status: 'ready',
+      snapshot: { kind: 'binary', url: 'lody-resource://member/files/ui/shot.png' },
+    });
+    // Bytes that are not UTF-8 are a binary file, whatever the name says.
+    expect(await provider.openFile('boards/ws/bd_test/files/ui/data.bin')).toMatchObject({
+      status: 'ready',
+      snapshot: { kind: 'binary' },
+    });
+    const big = await provider.openFile('boards/ws/bd_test/memory/big.md');
+    expect(big).toMatchObject({ status: 'ready', snapshot: { kind: 'text', truncated: true } });
+    expect(big.status === 'ready' && big.snapshot.kind === 'text' && big.snapshot.text.length).toBe(
+      1024 * 1024
+    );
+    expect(await provider.openFile('boards/ws/bd_test/files/gone.md')).toMatchObject({
+      status: 'unavailable',
+      reason: 'deleted',
+    });
+    // Nothing outside this Board's areas is asked for.
+    expect(await provider.openFile('boards/ws/bd_other/files/ui/plan.md')).toMatchObject({
+      status: 'unavailable',
+      reason: 'permission-denied',
+    });
+    expect(reads).toEqual([
+      'files/ui/plan.md',
+      'files/ui/shot.png',
+      'files/ui/data.bin',
+      'memory/big.md',
+      'files/gone.md',
+    ]);
+  } finally {
+    fetchMock.mockRestore();
+  }
 });
 
 it('anchors Board files to the current workspace while preserving canonical filenames', () => {
@@ -3329,6 +3400,171 @@ it('drops a link still being looked up once the reader has gone back', async () 
   } finally {
     await act(async () => root.unmount());
     host.remove();
+  }
+});
+
+it("reads the Board panel's Markdown and HTML in the article window, other files in place", async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  store.set(sessionMetaCacheAtom, { [getSessionRoomId(coordinator.id)]: coordinator });
+  creation.boards = [testBoard()];
+  creation.notes = '# Shared\n\nThe [current plan](files/review/plan.md).';
+  const ipc = installIpc({
+    'board/files-list:files': {
+      entries: [
+        { path: 'review/plan.md', sizeBytes: 6, modifiedAtMs: 1 },
+        { path: 'review/page.html', sizeBytes: 6, modifiedAtMs: 1 },
+        { path: 'review/notes.txt', sizeBytes: 5, modifiedAtMs: 1 },
+      ],
+      truncated: false,
+    },
+    'file:files/review/notes.txt': 'plain',
+  });
+  const articles: unknown[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <BoardSidePanel
+        board={testBoard()}
+        documentLinks={{
+          owner: {
+            session: coordinator,
+            workspacePath: null,
+            preserveWorktreePath: false,
+            fileProvider: null,
+          },
+          renderSessionFile: () => null,
+          openArticle: (target) => articles.push(target),
+        }}
+        openThreadId={null}
+        onOpenThread={() => {}}
+        onShowInPage={() => {}}
+        onOpenThreadFull={() => {}}
+        renderThread={() => null}
+        requestedThreadId={null}
+        onThreadRequestDone={() => {}}
+      />
+    </Provider>
+  );
+  try {
+    const filesTab = [...view.host.querySelectorAll('[role="tab"]')].find(
+      (node) => node.textContent === 'Board files'
+    ) as HTMLElement;
+    await act(async () => filesTab.click());
+    const treeRow = (name: string) =>
+      [...view.host.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')].find(
+        (row) => row.textContent === name
+      );
+    await vi.waitFor(() => expect(treeRow('review')).toBeDefined());
+    await act(async () => treeRow('review')?.click());
+    const inBoard = (path: string) => ({ source: { kind: 'board', boardId: 'bd_test' }, path });
+    await act(async () => treeRow('plan.md')?.click());
+    await act(async () => treeRow('page.html')?.click());
+    expect(articles).toEqual([inBoard('files/review/plan.md'), inBoard('files/review/page.html')]);
+    // The panel stays on its tree; a text file still previews in it.
+    await act(async () => treeRow('notes.txt')?.click());
+    await vi.waitFor(() => expect(view.host.textContent).toContain('plain'));
+    await act(async () =>
+      view.host.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')!.click()
+    );
+    // A link in the shared notes reads the same way.
+    await act(async () => view.host.querySelector<HTMLButtonElement>('[data-id="notes"]')?.click());
+    const preview = [...view.host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Preview'
+    );
+    await act(async () => preview?.click());
+    await vi.waitFor(() => expect(linkButton(view.host, 'current plan')).toBeDefined());
+    await act(async () => linkButton(view.host, 'current plan')!.click());
+    await vi.waitFor(() => expect(articles).toHaveLength(3));
+    expect(articles[2]).toEqual(inBoard('files/review/plan.md'));
+  } finally {
+    await view.unmount();
+    ipc.remove();
+    creation.boards = [];
+    creation.notes = '# Shared';
+  }
+});
+
+it("shows a Board's file as an article the Board comments on, whoever reads it", async () => {
+  const store = createStore();
+  store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+  store.set(currentWorkspaceSlugAtom, 'ws');
+  store.set(localProbeResultAtom, { ok: true, machineId: 'laptop' });
+  const coordinator = makeSession('coordinator', { boardRole: 'coordinator', machineId: 'devnuc' });
+  const thread = makeSession('thread', { machineId: 'remote' });
+  store.set(sessionMetaCacheAtom, {
+    [getSessionRoomId(coordinator.id)]: coordinator,
+    [getSessionRoomId(thread.id)]: thread,
+  });
+  creation.boards = [testBoard()];
+  creation.machines.set('remote', { id: 'remote' });
+  // A comment on the Board's file, written while another member read it.
+  store.set(articleAnnotationsAtom, [
+    {
+      id: 'note-1',
+      threadId: thread.id,
+      ownerThreadId: coordinator.id,
+      path: 'boards/ws/bd_test/files/review/plan.md',
+      quote: 'Ship it',
+      comment: 'When?',
+      block: { index: 0, text: 'Plan' },
+    },
+  ]);
+  const ipc = installIpc({
+    'file:files/review/plan.md': '# Plan\n\nShip it. See [the notes](notes.md).',
+  });
+  // jsdom lays nothing out; a comment's mark asks where its line ends.
+  Object.defineProperty(Range.prototype, 'getClientRects', {
+    configurable: true,
+    value: () => [],
+  });
+  const opened: unknown[] = [];
+  const view = await mount(
+    <Provider store={store}>
+      <ArticlePageView
+        page={{
+          target: { source: { kind: 'board', boardId: 'bd_test' }, path: 'files/review/plan.md' },
+          readerId: thread.id,
+        }}
+        annotationThreadId={thread.id}
+        onOpenLink={(scope, target) => opened.push({ reader: scope.session.id, target })}
+        onOpenInTab={() => {}}
+        className={undefined}
+      />
+    </Provider>
+  );
+  try {
+    await vi.waitFor(() => expect(view.host.querySelector('h1')?.textContent).toBe('Plan'));
+    // Read from the Board's machine, asked in the Board's name.
+    expect(ipc.requests).toContainEqual({
+      method: 'openMemberFile',
+      params: {
+        workspaceId: 'ws',
+        machineId: 'devnuc',
+        sessionId: 'coordinator',
+        boardId: 'bd_test',
+        path: 'files/review/plan.md',
+      },
+    });
+    expect(view.host.querySelector('[data-article-annotation-marker]')).not.toBeNull();
+    // No copy of a session path: the file is not in the reader's workspace.
+    expect(view.host.querySelector('button[aria-label="Copy relative path"]')).toBeNull();
+    // Its links stay in the Board first, for the member reading it.
+    await act(async () => linkButton(view.host, 'the notes')!.click());
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toEqual({
+      reader: 'thread',
+      target: { source: { kind: 'board', boardId: 'bd_test' }, path: 'files/review/notes.md' },
+    });
+  } finally {
+    await view.unmount();
+    ipc.remove();
+    store.set(articleAnnotationsAtom, []);
+    delete (Range.prototype as Partial<Range>).getClientRects;
+    creation.boards = [];
+    creation.machines.delete('remote');
   }
 });
 

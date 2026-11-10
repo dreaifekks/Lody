@@ -564,6 +564,8 @@ export type SessionFileContentViewProps = {
     readonly annotationThreadId: SessionId | null;
     /** Back to the page a link here came from. */
     readonly onBack?: () => void;
+    /** A Board's file, read through `fileProvider`: the session's file actions do not apply. */
+    readonly boardFile?: true;
   };
 };
 
@@ -652,7 +654,10 @@ function SessionFileContentViewImpl({
   const machineFlockRows = useMachineFlockRows(session.machineId, {
     families: ['localProject'],
   });
-  const sessionFileActions = useSessionFileActions({ session, fileProvider });
+  const sessionFileActions = useSessionFileActions({
+    session: article?.boardFile ? null : session,
+    fileProvider,
+  });
   const sessionMachineLocalProjects = useMemo(
     () => ({
       ...(sessionMachine?.localProjects ?? {}),

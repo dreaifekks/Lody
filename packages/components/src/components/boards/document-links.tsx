@@ -124,29 +124,26 @@ export function DocumentLinks({
 }
 
 /**
- * A session's file scope with a document's links followed: `SessionFileScope`
- * and `DocumentLinks` together, for a container that renders the document
- * from that scope (the article window).
+ * The file scope of the session a document is read for, with the document's
+ * links followed: `SessionFileScope` and `DocumentLinks` together, for a
+ * container that renders the document from that scope (the article window).
  */
 export function SessionDocumentScope({
-  sessionId,
-  path,
+  readerId,
+  document,
   onOpen,
   children,
 }: {
-  sessionId: SessionId;
-  path: string;
+  /** The document's own session, or for a Board's file the member reading it. */
+  readerId: SessionId;
+  document: FileTarget;
   onOpen: (scope: SessionFileScopeValue, target: FileTarget) => void;
   children: (scope: SessionFileScopeValue) => ReactNode;
 }) {
   return (
-    <SessionFileScope sessionId={sessionId}>
+    <SessionFileScope sessionId={readerId}>
       {(scope) => (
-        <DocumentLinks
-          document={{ source: { kind: 'session', sessionId: scope.session.id }, path }}
-          owner={scope}
-          onOpen={(target) => onOpen(scope, target)}
-        >
+        <DocumentLinks document={document} owner={scope} onOpen={(target) => onOpen(scope, target)}>
           {children(scope)}
         </DocumentLinks>
       )}
@@ -218,13 +215,15 @@ export type BoardSessionFilePageProps = {
 
 /**
  * What a Board preview's links need from the session page: the session they
- * are read for (the coordinator in the Board panel), and the page for one of
- * that session's files. The session page renders it, so the file viewer stays
- * out of the Board panel's imports.
+ * are read for (the coordinator in the Board panel), the page for one of
+ * that session's files, and the article window where the page has one. The
+ * session page renders the file's page, so the file viewer stays out of the
+ * Board panel's imports.
  */
 export type BoardDocumentLinksValue = {
   readonly owner: DocumentLinkOwner;
   readonly renderSessionFile: (page: BoardSessionFilePageProps) => ReactNode;
+  readonly openArticle?: (target: FileTarget) => void;
 };
 export const BoardDocumentLinksContext = createContext<BoardDocumentLinksValue | null>(null);
 

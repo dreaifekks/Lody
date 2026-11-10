@@ -1146,7 +1146,11 @@ export function useSessionCompareReader(
             if (opened.status !== 'ready')
               return { kind: 'missing', message: opened.message ?? opened.reason };
             const { snapshot } = opened;
-            if (snapshot.kind === 'text') return { kind: 'text', text: snapshot.text };
+            // A cut page would run as if it were whole.
+            if (snapshot.kind === 'text')
+              return snapshot.truncated
+                ? { kind: 'missing', message: 'too large' }
+                : { kind: 'text', text: snapshot.text };
             if (snapshot.kind === 'binary')
               return {
                 kind: 'bytes',

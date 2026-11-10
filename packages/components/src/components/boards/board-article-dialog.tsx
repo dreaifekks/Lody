@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { SessionId } from '@lody/shared';
 import { Dialog } from '@lody/ui/dialog';
 import { colors } from '@lody/ui/tokens/colors.stylex';
+import type { FileTarget } from '@/lib/document-link-open';
 import { RelocatableSlot, type RelocatableHost } from './relocatable-host';
 
 /** Files a Board thread can hand over as an article. */
@@ -12,12 +13,15 @@ export const isBoardArticlePath = (path: string): boolean =>
 
 /** One page of the article window. A link in the article opens the next one in place. */
 export type ArticlePage = {
-  /** The thread whose workspace holds the file; the dialog's thread may change. */
-  readonly ownerThreadId: SessionId;
-  readonly filePath: string;
+  /** A session's file, or a Board's (`<area>/<path>`). */
+  readonly target: FileTarget;
+  /**
+   * The session the page is read for: the file's own, or for a Board's file
+   * the member that opened it, whose workspace answers the links the Board
+   * does not hold. The dialog's thread may change meanwhile.
+   */
+  readonly readerId: SessionId;
   readonly fileId?: string;
-  readonly startLine?: number;
-  readonly endLine?: number;
 };
 
 const DEFAULT_RATIO = 60;
@@ -81,8 +85,9 @@ export const ArticleDialogThreadContext = createContext<{
  * it (experimental). The conversation is not a second one: the page portals
  * the thread's single conversation into `threadHost`, and this dialog's right
  * pane claims it while open, so its composer text, chips and scroll stay as
- * they were on both sides. Only the backdrop dismisses by pointer: menus and
- * dialogs the conversation opens are not this dialog's descendants.
+ * they were on both sides. Without a `threadHost` the article has the dialog
+ * to itself. Only the backdrop dismisses by pointer: menus and dialogs the
+ * conversation opens are not this dialog's descendants.
  */
 export function BoardArticleDialog({
   title,
@@ -97,7 +102,8 @@ export function BoardArticleDialog({
   article: ReactNode;
   /** Starts with more room for the article. */
   wide?: boolean;
-  threadHost: RelocatableHost;
+  /** The conversation beside the article; none for an article on its own. */
+  threadHost?: RelocatableHost;
   /**
    * False for the one commit before the dialog unmounts, so the conversation
    * moves back while both places are still in the document.
@@ -109,10 +115,11 @@ export function BoardArticleDialog({
 }) {
   const { t } = useTranslation();
   const [ratio, setRatio] = useState(wide ? WIDE_RATIO : DEFAULT_RATIO);
-  const [threadHidden, setThreadHidden] = useState(false);
+  const [threadFolded, setThreadFolded] = useState(false);
+  const threadHidden = threadFolded || !threadHost;
   const thread = useMemo(
-    () => ({ hidden: threadHidden, setHidden: setThreadHidden }),
-    [threadHidden]
+    () => ({ hidden: threadFolded, setHidden: setThreadFolded }),
+    [threadFolded]
   );
   const bodyRef = useRef<HTMLDivElement>(null);
   const clamp = (value: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, value));
@@ -147,7 +154,7 @@ export function BoardArticleDialog({
           }}
         >
           <div {...stylex.props(styles.pane)}>
-            <ArticleDialogThreadContext.Provider value={thread}>
+            <ArticleDialogThreadContext.Provider value={threadHost ? thread : null}>
               {article}
             </ArticleDialogThreadContext.Provider>
           </div>
@@ -184,12 +191,14 @@ export function BoardArticleDialog({
           </div>
           <div {...stylex.props(styles.pane)} inert={threadHidden}>
             {/* Held over the Board panel's slot, even one that remounts meanwhile. */}
-            <RelocatableSlot
-              host={threadHost}
-              priority={1}
-              held={holdsThread}
-              className={stylex.props(styles.thread).className}
-            />
+            {threadHost ? (
+              <RelocatableSlot
+                host={threadHost}
+                priority={1}
+                held={holdsThread}
+                className={stylex.props(styles.thread).className}
+              />
+            ) : null}
           </div>
         </div>
       </Dialog.Content>
