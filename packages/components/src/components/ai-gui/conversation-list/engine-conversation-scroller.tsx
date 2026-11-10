@@ -336,7 +336,7 @@ export function EngineConversationScroller({
       findItemIndex: (offset) => controller.findItemIndex(offset),
       getItemOffset: (index) => controller.getItemOffset(index),
       getItemSize: (index) => controller.getItemSize(index),
-      scrollRowToTop: (index, { smooth }) => controller.jumpToIndex(index, smooth),
+      scrollRowToTop: (index, { smooth, gap }) => controller.jumpToIndex(index, smooth, gap),
       scrollToBottom: () => controller.scrollToBottom(),
       anchorToRow: (index) => controller.anchorToRow(index),
       retargetAnchor: (index) => controller.retargetAnchor(index),
@@ -399,6 +399,8 @@ export function EngineConversationScroller({
       if (next.width === previous.width && next.height === previous.height) return;
       previous = next;
       widthRef.current = next.width;
+      // Fork: the same offset now shows other rows; let the engine's report through once.
+      lastReportedScroll.current = null;
       controller.onViewportResized(layoutVersion(next.width));
     });
     observer.observe(element);

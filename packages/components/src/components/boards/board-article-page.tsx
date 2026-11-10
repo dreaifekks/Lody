@@ -12,6 +12,7 @@ import { BoardMemberFileProvider } from '@/lib/board-directory-file-provider';
 import {
   boardFileLinkPath,
   isBoardFileTarget,
+  isMachineFileTarget,
   type BoardFileTarget,
   type FileTarget,
 } from '@/lib/document-link-open';
@@ -22,6 +23,7 @@ import type { ArticlePage } from './board-article-dialog';
 import { SessionBoardCompareView } from './board-compare-view';
 import { isCompareManifestPath } from './compare-manifest';
 import { SessionDocumentScope } from './document-links';
+import { MachineFileView } from './machine-file-view';
 
 const styles = stylex.create({
   note: {
@@ -46,8 +48,9 @@ type ArticlePageViewProps = {
 
 /**
  * One page of the article window: a session's Markdown, HTML or comparison
- * read from its workspace, or a Board's read from the machine that keeps the
- * Board directory. Its links follow `DocumentLinks`.
+ * read from its workspace, a Board's read from the machine that keeps the
+ * Board directory, or a machine's at a path a link named. Its links follow
+ * `DocumentLinks`.
  */
 export function ArticlePageView({
   page,
@@ -62,6 +65,19 @@ export function ArticlePageView({
   return (
     <SessionDocumentScope readerId={page.readerId} document={target} onOpen={onOpenLink}>
       {(scope) => {
+        if (isMachineFileTarget(target))
+          return (
+            <MachineFileView
+              machineId={target.source.machineId}
+              path={target.path}
+              reader={scope.session}
+              startLine={target.startLine}
+              endLine={target.endLine}
+              active
+              article={{ onOpenInTab: () => onOpenInTab(scope), annotationThreadId, ...back }}
+              className={className}
+            />
+          );
         if (isBoardFileTarget(target))
           return (
             <BoardArticleFile
@@ -177,7 +193,8 @@ function BoardArticleFile({
       filePath={path}
       fileProvider={provider}
       active
-      article={{ onOpenInTab, annotationThreadId, boardFile: true, ...back }}
+      article={{ onOpenInTab, annotationThreadId, ...back }}
+      foreignFile={{}}
       className={className}
     />
   );

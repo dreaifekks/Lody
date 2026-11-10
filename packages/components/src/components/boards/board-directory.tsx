@@ -390,11 +390,19 @@ export function BoardFilePage({
   const { boards } = useWorkspaceCatalog();
   const links = useContext(BoardDocumentLinksContext);
   const source = target.source;
-  // A session's file scrolls inside a height of its own.
-  if (source.kind === 'session')
+  // A session's file scrolls inside a height of its own; a machine's is read
+  // for the session the preview's links are read for.
+  if (source.kind !== 'board')
     return (
       <div {...stylex.props(styles.compare)}>
-        {links?.renderSessionFile({ sessionId: source.sessionId, target, onBack, onOpen })}
+        {links
+          ? links.renderSessionFile({
+              sessionId: source.kind === 'session' ? source.sessionId : links.owner.session.id,
+              target,
+              onBack,
+              onOpen,
+            })
+          : null}
       </div>
     );
   const boardId = source.boardId;

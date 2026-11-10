@@ -2639,6 +2639,8 @@
   "sessions.machineInfo.connection": "Connection",
   "sessions.machineInfo.unknownStatus": "Status unavailable",
   "sessions.machineOffline": "Machine is offline",
+  "sessions.machineFile.offlineTitle": "{{machine}} is offline",
+  "sessions.machineFile.offlineDescription": "This file is on {{machine}}. It opens once that machine is back online.",
   "sessions.statusStrip.browserOffline": "You are offline. Reconnect to sync.",
   "sessions.statusStrip.machineOffline": "Machine is offline",
   "sessions.statusStrip.machineOfflineNamed": "{{machineName}} is offline",

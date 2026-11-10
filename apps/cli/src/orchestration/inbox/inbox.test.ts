@@ -26,6 +26,7 @@ import {
   type InboxRelease,
 } from './model';
 import { INBOX_DIGEST_OUTPUT_CHARS } from './rules';
+import { findResultsElsewhere } from './batch-preview-lines';
 import { InboxExecution, InboxRepository, OperationInbox } from './service';
 
 const roots: string[] = [];
@@ -1419,6 +1420,49 @@ it('tells the agent the link of the turn a batch is delivered in', () => {
   expect(parseSessionLink(link!)).toEqual(turn);
   // A token estimate of waiting results has no turn yet.
   expect(batchPreview(batch, [])).not.toContain('lody://');
+});
+
+it('names the machine a result ran on when it is not the one the batch reaches', async () => {
+  const result = (...sessionIds: string[]) => ({
+    completion: {
+      type: 'result',
+      value: {
+        items: sessionIds.map((sessionId) => ({
+          status: 'succeeded',
+          target: { sessionId, userTurnId: `${sessionId}-input` },
+          assistantTurnId: `assistant:${sessionId}-input`,
+        })),
+      },
+    },
+  });
+  const metas: Record<string, object> = {
+    'session-near': { machineId: 'here' },
+    'session-far-1': { machineId: 'm-mini' },
+    'session-far-2': { machineId: 'm-mini' },
+    'session-spaced': { machineId: 'm-spaced' },
+    'machine-m-mini': { name: 'Mac-mini.local', lanAlias: 'mini' },
+    'machine-m-spaced': { name: 'Dev Box' },
+  };
+  const elsewhere = await findResultsElsewhere(
+    [result('near', 'far-1'), result('far-2', 'spaced')],
+    'here',
+    async (roomId) => (metas[roomId] ? { meta: metas[roomId] } : undefined)
+  );
+
+  expect(elsewhere).toEqual([
+    { machine: 'mini', sessionIds: ['far-1', 'far-2'] },
+    // A name with a space cannot lead a link; the id still can.
+    { machine: 'm-spaced', sessionIds: ['spaced'] },
+  ]);
+  const preview = batchPreview({ batchId: 'batch-1', memberCount: 2 }, [], {
+    sessionId: 'coordinator',
+    turnId: 'assistant:inbox:completion:3',
+    elsewhere,
+  });
+  expect(preview).toContain(
+    'Results of far-1, far-2 ran on mini: write their files as mini:<absolute path>.'
+  );
+  expect(preview).not.toContain('near');
 });
 
 describe('manual Stop receipts', () => {

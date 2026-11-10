@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeBoardMeta, type BoardMeta, type SessionId } from '@lody/shared';
+import { normalizeBoardMeta, type BoardMeta, type MachineId, type SessionId } from '@lody/shared';
 import {
   boardFileLinkPath,
   fileSourceKey,
@@ -26,6 +26,14 @@ const inBoard = (path: string): FileTarget => ({
   source: { kind: 'board', boardId: 'bd_test' },
   path,
 });
+const machines = [
+  { id: 'm-mini', name: 'Mac-mini.local', lanAlias: 'mini' },
+  { id: 'm-nuc', name: 'devnuc' },
+];
+const onMachine = (path: string): FileTarget => ({
+  source: { kind: 'machine', machineId: 'm-mini' as MachineId },
+  path,
+});
 
 /** Resolves `href` written in `document`, against files that exist where `existing` says. */
 async function resolve(href: string, document: FileTarget, existing: readonly string[] = []) {
@@ -36,6 +44,7 @@ async function resolve(href: string, document: FileTarget, existing: readonly st
     readerSessionId: 'coordinator' as SessionId,
     workspaceId: 'ws',
     boards: [board],
+    machines,
     probe: async (candidate) => {
       const key = `${fileSourceKey(candidate.source)}:${candidate.path}`;
       probed.push(key);
@@ -162,6 +171,30 @@ describe('document links', () => {
       expect((await resolve(href, inSession('docs/guide.md'))).target).toBeNull();
   });
 
+  it('opens `<machine>:<path>` on that machine with no session, when the machine is known', async () => {
+    const document = inSession('docs/guide.md');
+    expect(await resolve('mini:~/out/report.md', document)).toEqual({
+      target: onMachine('~/out/report.md'),
+      probed: [],
+    });
+    expect((await resolve('DEVNUC:/var/log/agent.log:12', document)).target).toEqual({
+      source: { kind: 'machine', machineId: 'm-nuc' },
+      path: '/var/log/agent.log',
+      startLine: 12,
+    });
+    // An unknown prefix is not a machine: the link reads as it always did.
+    expect((await resolve('nobody:/x/a.md', document)).target?.source).toEqual(document.source);
+  });
+
+  it("reads a machine document's own links on that machine", async () => {
+    const document = onMachine('~/out/report.md');
+    expect(await resolve('shot.png', document)).toEqual({
+      target: onMachine('~/out/shot.png'),
+      probed: [],
+    });
+    expect((await resolve('/etc/hosts', document)).target).toEqual(onMachine('/etc/hosts'));
+  });
+
   it('spells a Board file the way the session page recognizes it', () => {
     const path = boardFileLinkPath('ws', inBoard('files/ui-todo/design.md'));
     expect(resolveBoardFileLink(path, 'ws', [board], 'canonical')).toMatchObject({
@@ -170,5 +203,6 @@ describe('document links', () => {
       path: 'ui-todo/design.md',
     });
     expect(boardFileLinkPath('ws', inSession('docs/a.md'))).toBe('docs/a.md');
+    expect(boardFileLinkPath('ws', onMachine('~/out/a.md'))).toBe('m-mini:~/out/a.md');
   });
 });

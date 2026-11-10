@@ -8,21 +8,26 @@ import { SessionFileRootIdSchema } from './project-path';
  * of its own machine over the local file socket, naming the machine as well.
  *
  * The file is a block a session keeps (`fileId`), a file at a path the
- * session's previews may read (`path`), or a file of a Board's shared
- * directory (`path` with `boardId`). `revision` names the content the
- * answer was read from: a later request that carries it is refused once the
- * file is another one, so the parts of two files are never joined.
+ * session's previews may read (`path`), a file of a Board's shared
+ * directory (`path` with `boardId`), or a file at a path of the machine
+ * itself (`machinePath`). `revision` names the content the answer was read
+ * from: a later request that carries it is refused once the file is another
+ * one, so the parts of two files are never joined.
  */
-const rangeFields = {
+const partFields = {
   type: z.literal('range'),
-  sessionId: z.string().trim().min(1).max(256),
-  fileId: z.string().trim().min(1).max(256).optional(),
-  path: z.string().min(1).max(4096).optional(),
-  rootId: SessionFileRootIdSchema.optional(),
   offset: z.number().int().nonnegative(),
   /** To the end of the file when absent; `0` asks for the size and revision alone. */
   length: z.number().int().nonnegative().optional(),
   revision: z.string().min(1).max(128).optional(),
+};
+
+const sessionFileFields = {
+  ...partFields,
+  sessionId: z.string().trim().min(1).max(256),
+  fileId: z.string().trim().min(1).max(256).optional(),
+  path: z.string().min(1).max(4096).optional(),
+  rootId: SessionFileRootIdSchema.optional(),
   /**
    * A file of this Board's shared directory: `path` is then relative to the
    * directory (`files/…` or `memory/…`) and `sessionId` a member of the Board.
@@ -30,21 +35,41 @@ const rangeFields = {
   boardId: z.string().startsWith('bd_').max(256).optional(),
 };
 
+/**
+ * A file a link names by its machine (`<machine>:<path>`), with no session
+ * involved: absolute, `~/…`, or relative to the machine's home directory, as
+ * `lody-lan lan cp` reads it. Only read; the machine's preview policy decides.
+ */
+const machineFileFields = {
+  ...partFields,
+  machinePath: z.string().min(1).max(4096),
+};
+
 const namesOneFile = (value: { fileId?: string; path?: string }) =>
   (value.fileId === undefined) !== (value.path === undefined);
 
-export const LanFileRangeRequestSchema = z.object(rangeFields).strict().refine(namesOneFile);
+const localFields = {
+  workspaceId: z.string().trim().min(1).max(256),
+  /** The machine that has the file. */
+  machineId: z.string().trim().min(1).max(256),
+};
+
+export const LanFileRangeRequestSchema = z.union([
+  z.object(sessionFileFields).strict().refine(namesOneFile),
+  z.object(machineFileFields).strict(),
+]);
 export type LanFileRangeRequest = z.infer<typeof LanFileRangeRequestSchema>;
 
-export const LocalFileRangeRequestSchema = z
-  .object({
-    ...rangeFields,
-    workspaceId: z.string().trim().min(1).max(256),
-    /** The machine that has the file. */
-    machineId: z.string().trim().min(1).max(256),
-  })
+const LocalSessionFileRangeRequestSchema = z
+  .object({ ...sessionFileFields, ...localFields })
   .strict()
   .refine(namesOneFile);
+export type LocalSessionFileRangeRequest = z.infer<typeof LocalSessionFileRangeRequestSchema>;
+
+export const LocalFileRangeRequestSchema = z.union([
+  LocalSessionFileRangeRequestSchema,
+  z.object({ ...machineFileFields, ...localFields }).strict(),
+]);
 export type LocalFileRangeRequest = z.infer<typeof LocalFileRangeRequestSchema>;
 
 export const LanFileRangeAnswerSchema = z.union([

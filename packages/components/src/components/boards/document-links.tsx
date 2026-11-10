@@ -20,6 +20,7 @@ import type {
   SessionFileOpenContext,
 } from '@/lib/session-file-link-open';
 import { AgentFileLinkOpenContext } from '../ai-gui/markdown-renderer';
+import { linkedMachinesAtom } from '../ai-gui/machine-file-link';
 import { SessionAgentFileLinkMenuProvider } from '../sessions/session-agent-file-link-menu';
 import {
   SessionFileScope,
@@ -53,6 +54,18 @@ export function DocumentLinks({
   const store = useStore();
   const { boards } = useWorkspaceCatalog();
   const probe = useStableCallback(async (target: FileTarget): Promise<FileLinkProbeResult> => {
+    if (target.source.kind === 'machine') {
+      const ipc = getIpcServices();
+      const workspaceId = store.get(currentWorkspaceIdAtom);
+      if (!ipc || !workspaceId) return { state: 'unknown' };
+      const resource = await ipc.machineRpc.openMemberFile({
+        workspaceId,
+        machineId: target.source.machineId,
+        machinePath: target.path,
+      });
+      if (resource.ok) return { state: 'found' };
+      return { state: /file_not_found|ENOENT/.test(resource.error) ? 'missing' : 'unknown' };
+    }
     if (target.source.kind === 'board') {
       const boardId = target.source.boardId;
       const board = boards.find((entry) => entry.id === boardId);
@@ -109,6 +122,7 @@ export function DocumentLinks({
       readerSessionId: owner.session.id,
       workspaceId: store.get(currentWorkspaceIdAtom),
       boards,
+      machines: store.get(linkedMachinesAtom),
       probe,
     }).then((target) => {
       if (target && latestClick.current === click) onOpen(target);

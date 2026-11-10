@@ -320,6 +320,35 @@ describe('FilePreviewService', () => {
     expect(await ask(local, 'missing.mp4')).toMatchObject({ code: 'file_not_found' });
   });
 
+  it('resolves a path a link names by the machine from its home, only where any path may be read', async () => {
+    const workspaceRoot = await makeDir('preview-ws-');
+    const homeDir = await makeDir('preview-home-');
+    await mkdir(path.join(homeDir, 'out'));
+    const report = path.join(homeDir, 'out', 'report.md');
+    await writeFile(report, '# Report\n');
+    const local = createService({
+      workspaceRoot,
+      pathPolicy: { allowArbitraryPaths: true, homeDir },
+    });
+    const hosted = createService({ workspaceRoot, pathPolicy: { homeDir } });
+
+    // Absolute, home-rooted and home-relative spellings all name the file, as `lan cp` reads them.
+    for (const spelling of [report, '~/out/report.md', 'out/report.md']) {
+      expect(local.resolveMachinePath(spelling)).toMatchObject({
+        absolutePath: await realpath(report),
+        external: true,
+      });
+    }
+    expect(local.resolveMachinePath('~/out/missing.md')).toMatchObject({
+      code: 'file_not_found',
+    });
+    // Without a session there is no workspace a hosted preview could be limited to.
+    expect(hosted.resolveMachinePath(report)).toMatchObject({
+      status: 'error',
+      code: 'workspace_root_unavailable',
+    });
+  });
+
   it('lets the same-machine Electron preview read an arbitrary external file as readonly', async () => {
     const workspaceRoot = await makeDir('preview-ws-');
     const outside = await makeDir('preview-outside-');

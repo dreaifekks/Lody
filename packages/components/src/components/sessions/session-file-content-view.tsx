@@ -53,6 +53,7 @@ import {
   resolveSessionLocalProjectRootPath,
 } from '@/lib/session-local-file-source';
 import { useSessionFileActions } from '@/hooks/use-session-file-actions';
+import type { SessionFileErrorActions } from '@/lib/session-file-actions';
 import { chooseSessionFileSurfaceSource } from '@/lib/session-file-source-selection';
 import { resolveEffectiveCodeCollabWorkspaceId } from '@/lib/code-collab-workspace-id';
 import {
@@ -564,9 +565,13 @@ export type SessionFileContentViewProps = {
     readonly annotationThreadId: SessionId | null;
     /** Back to the page a link here came from. */
     readonly onBack?: () => void;
-    /** A Board's file, read through `fileProvider`: the session's file actions do not apply. */
-    readonly boardFile?: true;
   };
+  /**
+   * A file `fileProvider` reads from outside the session's workspace: a
+   * Board's directory, or a path of a LAN machine (`<machine>:<path>`). The
+   * session's own file actions do not apply; `actions` stands in for them.
+   */
+  foreignFile?: { readonly actions?: SessionFileErrorActions };
 };
 
 const NOT_WORKING_ATOM = atom(false);
@@ -627,6 +632,7 @@ function SessionFileContentViewImpl({
   onAddSelectionToChat,
   onToggleVisualAnnotationInChat,
   article,
+  foreignFile,
 }: SessionFileContentViewProps) {
   const { t } = useTranslation();
   const postHog = usePostHog();
@@ -655,7 +661,7 @@ function SessionFileContentViewImpl({
     families: ['localProject'],
   });
   const sessionFileActions = useSessionFileActions({
-    session: article?.boardFile ? null : session,
+    session: foreignFile ? null : session,
     fileProvider,
   });
   const sessionMachineLocalProjects = useMemo(
@@ -775,7 +781,9 @@ function SessionFileContentViewImpl({
   // exist is `useSessionFileActions`' call, shared with the file tree context
   // menu and the side panel ⋯ menu: copying the path works anywhere, handing
   // the file to the OS needs the desktop bridge and this machine.
-  const fileErrorActions = sessionFileActions.buildErrorActions(normalizedPath);
+  const fileErrorActions = foreignFile
+    ? foreignFile.actions
+    : sessionFileActions.buildErrorActions(normalizedPath);
   const contentTargetKey = [
     fileContentSource,
     localFileSourceKind ?? '',
@@ -1873,7 +1881,11 @@ function SessionFileContentViewImpl({
         bytes={data.snapshot.bytes}
         url={data.snapshot.url}
         active={isActiveSurface}
-        fileActions={sessionFileActions.buildErrorActions(normalizedPath, data.snapshot)}
+        fileActions={
+          foreignFile
+            ? foreignFile.actions
+            : sessionFileActions.buildErrorActions(normalizedPath, data.snapshot)
+        }
         onAddSelectionToChat={onAddSelectionToChat}
       />
     );

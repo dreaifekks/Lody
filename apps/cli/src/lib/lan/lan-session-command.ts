@@ -157,6 +157,8 @@ export function getLanSessionCommandReminder(): string {
     '`lody-lan lan shell <machine> -- <command>` runs a command on one, ' +
     '`lody-lan lan cp [-r] <src> <machine>:<dst>` copies files either way (use it for files, ' +
     'not pipes into `lan shell`), and ' +
-    '`lody-lan lan forward <machine> <port>` reaches a port there; see `lody-lan lan --help`.'
+    '`lody-lan lan forward <machine> <port>` reaches a port there; see `lody-lan lan --help`. ' +
+    'Write a file on another machine as `<machine>:<absolute path>` (also as a link target): ' +
+    'the user opens it from there.'
   );
 }

@@ -23,6 +23,7 @@ import {
   LanFileRangeAnswerSchema,
   type LanFileRangeAnswer,
   type LocalFileRangeRequest,
+  type LocalSessionFileRangeRequest,
 } from '@lody/shared/lan-file-range';
 import { getLanHubWorkspaceId } from '@lody/shared/lan-hub';
 import type { LanTerminalEndpoint } from '@lody/shared/lan-terminal';
@@ -149,6 +150,7 @@ describe('files between LAN members', () => {
         filePath: string,
         rootId?: string
       ) => Promise<string>;
+      resolveMachinePath?: (workspaceId: string, filePath: string) => Promise<string>;
     } = {}
   ) {
     const { workspace, stored } = serverWorkspace(sessions);
@@ -160,6 +162,7 @@ describe('files between LAN members', () => {
       localSessions: (workspaceId) => (workspaceId === HOME ? workspace.lookupSession : null),
       keptPath,
       ...(options.resolvePath ? { resolvePath: options.resolvePath } : {}),
+      ...(options.resolveMachinePath ? { resolveMachinePath: options.resolveMachinePath } : {}),
     });
     const published = new Map<string, LanTerminalEndpoint | undefined>();
     const host = new LanTerminalHost({
@@ -485,7 +488,7 @@ describe('files between LAN members', () => {
     }
 
     const rangeRequest = (
-      overrides: Partial<LocalFileRangeRequest> = {}
+      overrides: Partial<LocalSessionFileRangeRequest> = {}
     ): LocalFileRangeRequest => ({
       type: 'range',
       workspaceId: HOME,
@@ -587,6 +590,36 @@ describe('files between LAN members', () => {
       expect(part.body.equals(video.subarray(100_000))).toBe(true);
       expect(refused.answer).toMatchObject({ type: 'error', code: 'path_not_allowed' });
       expect(refused.body.length).toBe(0);
+    });
+
+    it('gives a file by a path of the member itself, with no session there', async () => {
+      const report = crypto.randomBytes(200_000);
+      const reportPath = writeFile('report.pdf', report);
+      const { endpoint } = await startServer(
+        {},
+        {
+          resolveMachinePath: async (workspaceId, filePath) => {
+            if (workspaceId !== HOME || filePath !== '~/out/report.pdf')
+              throw new Error('file_not_found:File was not found.');
+            return reportPath;
+          },
+        }
+      );
+      const desktop = await desktopOf(startClient(endpoint, { capabilities: RANGES }));
+      const machineRange = (machinePath: string, offset = 0): LocalFileRangeRequest => ({
+        type: 'range',
+        workspaceId: HOME,
+        machineId: SERVER,
+        machinePath,
+        offset,
+      });
+
+      const part = await ask(desktop, machineRange('~/out/report.pdf', 150_000));
+      const missing = await ask(desktop, machineRange('~/out/other.pdf'));
+
+      expect(part.answer).toMatchObject({ type: 'range', sizeBytes: report.length });
+      expect(part.body.equals(report.subarray(150_000))).toBe(true);
+      expect(missing.answer).toMatchObject({ type: 'error', code: 'file_not_found' });
     });
 
     it('refuses an offset past the end, and a file the session does not keep', async () => {

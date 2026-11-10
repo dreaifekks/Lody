@@ -27,6 +27,8 @@ Design, invariants I1–I8 and the coverage lemma:
   painted; releasing native ownership may cancel in-flight input or momentum.
 - A transaction ends within two passes of at most two supplementary commits;
   `lastObserved` records only covered positions, and `onScroll` fires only for those.
+  Fork: a viewport resize reports its offset again even when unchanged, since other
+  rows are on screen (engine and adapter both reset their last report).
   A React re-render that did not change the list must not start a new cycle (that
   layout-effect `onScroll` → setState loop is React #185). Never add timers, frame
   retries or a hidden/reveal gate; the viewport is never hidden.

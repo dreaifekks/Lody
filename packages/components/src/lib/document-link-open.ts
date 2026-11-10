@@ -1,5 +1,10 @@
-import type { BoardFileArea, BoardMeta, SessionId } from '@lody/shared';
+import type { BoardFileArea, BoardMeta, MachineId, SessionId } from '@lody/shared';
 import { boardDocumentFilePath, resolveBoardFileLink } from './board-directory-file-provider';
+import {
+  machineFileTabPath,
+  resolveMachineFileTarget,
+  type MachineNames,
+} from './machine-file-link';
 import { parseMarkdownAgentFileHref } from './markdown-agent-file-link';
 import { isRelativeFileLinkPath, type FileLinkProbeResult } from './session-file-link-fallback';
 import { normalizeIndexedRelativePath, resolveMarkdownImagePath } from './session-file-open-target';
@@ -10,9 +15,11 @@ import { normalizeIndexedRelativePath, resolveMarkdownImagePath } from './sessio
 // `session-file-link-open.ts`; this is the document counterpart.
 //
 // The link alone says which machine and directory it reads:
+//   - `<machine>:<path>` is that machine's file, read with no session;
 //   - a path into a Board directory is that Board's, read through its member
 //     file channel;
-//   - any other absolute or home path is the owning session's machine;
+//   - any other absolute or home path is the owning session's machine, or the
+//     machine of a document read from a machine;
 //   - a relative path is read from the document's folder first. Agents also
 //     write paths from the root of the project they work in, so a path the
 //     folder does not hold is then tried in the owning session's workspace.
@@ -20,13 +27,11 @@ import { normalizeIndexedRelativePath, resolveMarkdownImagePath } from './sessio
 // Candidates are only probed; the machine that serves a file still decides
 // what may be read.
 
-/**
- * Where a file is read from. A path on a named LAN machine (`<machine>:<path>`)
- * is meant to become the third kind.
- */
+/** Where a file is read from: a session's workspace, a Board's directory, a machine's paths. */
 export type FileSource =
   | { readonly kind: 'session'; readonly sessionId: SessionId }
-  | { readonly kind: 'board'; readonly boardId: string };
+  | { readonly kind: 'board'; readonly boardId: string }
+  | { readonly kind: 'machine'; readonly machineId: MachineId };
 
 /** One file: its source, and its path there (`<area>/<path>` in a Board). */
 export type FileTarget = {
@@ -44,12 +49,24 @@ export type BoardFileTarget = FileTarget & {
 export const isBoardFileTarget = (target: FileTarget): target is BoardFileTarget =>
   target.source.kind === 'board';
 
+/** A file at a path of a machine, with no session (`<machine>:<path>`). */
+export type MachineFileTarget = FileTarget & {
+  readonly source: Extract<FileSource, { kind: 'machine' }>;
+};
+
+export const isMachineFileTarget = (target: FileTarget): target is MachineFileTarget =>
+  target.source.kind === 'machine';
+
 /** Whether the file exists, as far as its source can tell. */
 export type FileTargetProbe = (target: FileTarget) => Promise<FileLinkProbeResult>;
 
 /** One string per source, for keys. */
 export const fileSourceKey = (source: FileSource): string =>
-  source.kind === 'session' ? `session:${source.sessionId}` : `board:${source.boardId}`;
+  source.kind === 'session'
+    ? `session:${source.sessionId}`
+    : source.kind === 'board'
+      ? `board:${source.boardId}`
+      : `machine:${source.machineId}`;
 
 export const isSameFileTarget = (a: FileTarget, b: FileTarget): boolean =>
   a.path === b.path && fileSourceKey(a.source) === fileSourceKey(b.source);
@@ -60,11 +77,16 @@ export function splitBoardFilePath(path: string): { area: BoardFileArea; path: s
   return { area: path.slice(0, slash) as BoardFileArea, path: path.slice(slash + 1) };
 }
 
-/** The spelling the session page's opener recognizes as a Board file (`resolveBoardFileLink`). */
+/**
+ * The spelling the session page's opener recognizes: a Board file's canonical
+ * path (`resolveBoardFileLink`), a machine's file by the machine's id.
+ */
 export const boardFileLinkPath = (workspaceId: string | null, target: FileTarget): string =>
   target.source.kind === 'board'
     ? `boards/${workspaceId}/${target.source.boardId}/${target.path}`
-    : target.path;
+    : target.source.kind === 'machine'
+      ? machineFileTabPath(target.source.machineId, target.path)
+      : target.path;
 
 /** The link's path beside the document, in the document's own source; null when it leaves it. */
 function besideDocument(
@@ -74,7 +96,7 @@ function besideDocument(
 ): FileTarget | null {
   const joined = resolveMarkdownImagePath(document.path, path);
   if (joined === null) return null;
-  if (document.source.kind === 'session') return { source: document.source, path: joined };
+  if (document.source.kind !== 'board') return { source: document.source, path: joined };
   const scoped = workspaceId
     ? boardDocumentFilePath(joined, workspaceId, document.source.boardId)
     : null;
@@ -92,8 +114,14 @@ export async function resolveDocumentLink(args: {
   readonly readerSessionId: SessionId;
   readonly workspaceId: string | null;
   readonly boards: readonly BoardMeta[];
+  readonly machines: readonly MachineNames[];
   readonly probe: FileTargetProbe;
 }): Promise<FileTarget | null> {
+  const machineFile = resolveMachineFileTarget(args.href, args.machines);
+  if (machineFile) {
+    const { machineId, ...file } = machineFile;
+    return { source: { kind: 'machine', machineId }, ...file };
+  }
   const link = parseMarkdownAgentFileHref(args.href);
   if (!link) return null;
   let path = link.filePath;
@@ -104,6 +132,10 @@ export async function resolveDocumentLink(args: {
   }
   path = path.replace(/\\/g, '/');
   if (!path) return null;
+  const lines = {
+    ...(link.startLine === undefined ? {} : { startLine: link.startLine }),
+    ...(link.endLine === undefined ? {} : { endLine: link.endLine }),
+  };
 
   const board = resolveBoardFileLink(path, args.workspaceId, args.boards, 'canonical');
   if (board)
@@ -113,14 +145,16 @@ export async function resolveDocumentLink(args: {
     };
 
   const owner: FileSource =
-    args.document.source.kind === 'session'
-      ? args.document.source
-      : { kind: 'session', sessionId: args.readerSessionId };
-  const lines = {
-    ...(link.startLine === undefined ? {} : { startLine: link.startLine }),
-    ...(link.endLine === undefined ? {} : { endLine: link.endLine }),
-  };
+    args.document.source.kind === 'board'
+      ? { kind: 'session', sessionId: args.readerSessionId }
+      : args.document.source;
   if (!isRelativeFileLinkPath(path)) return { source: owner, path, ...lines };
+  // A machine's document has no project root to try: its folder is all there is.
+  if (owner.kind === 'machine')
+    return {
+      ...(besideDocument(args.document, path, args.workspaceId) ?? { source: owner, path }),
+      ...lines,
+    };
 
   const rooted: FileTarget = {
     source: owner,

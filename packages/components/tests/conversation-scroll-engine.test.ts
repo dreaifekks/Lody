@@ -239,6 +239,31 @@ describe('following', () => {
     expect(sim.controller.mode).toBe('follow');
     expectHealthy(sim);
   });
+
+  it('reports a still reader again when the viewport resizes (fork: what is on screen changed)', () => {
+    const sim = new ScrollSim(
+      turnRows(
+        60,
+        () => 100,
+        () => 100
+      ),
+      V
+    );
+    sim.render();
+    sim.settle();
+    sim.task(() => sim.controller.jumpToIndex(30));
+    sim.settle();
+    const scrolls: number[] = [];
+    sim.controller.setCallbacks({ onScroll: (offset) => scrolls.push(offset) });
+    sim.resizeViewport(V - 40);
+    sim.settle();
+    expect(sim.screenTop('t30')).toBe(0);
+    expect(scrolls).toEqual([sim.readScrollTop()]);
+    sim.render();
+    sim.settle();
+    expect(scrolls).toHaveLength(1);
+    expectHealthy(sim);
+  });
 });
 
 describe('reading', () => {
@@ -516,6 +541,27 @@ describe('commands', () => {
       sim.render(rows);
       sim.settle();
       expect(sim.screenTop('t100')).toBe(0);
+    }
+    expectHealthy(sim);
+  });
+
+  it('lands a jump below a covered top edge, and keeps it there while rows hydrate', () => {
+    let rows = turnRows(
+      200,
+      () => 100,
+      () => 60
+    );
+    const sim = new ScrollSim(rows, V);
+    sim.render();
+    sim.settle();
+    sim.task(() => sim.controller.jumpToIndex(100, false, 48));
+    sim.settle();
+    expect(sim.screenTop('t100')).toBe(48);
+    for (const key of ['t98', 't99', 't103']) {
+      rows = expand(rows, key, 4, 80);
+      sim.render(rows);
+      sim.settle();
+      expect(sim.screenTop('t100')).toBe(48);
     }
     expectHealthy(sim);
   });

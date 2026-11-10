@@ -406,6 +406,8 @@ type SearchContainerProps = ComponentPropsWithoutRef<'div'> & {
 };
 const expandStateCache = new Map<string, BubbleExpandState>();
 const MAX_EXPAND_CACHE = 500;
+/** Height of the desktop top fade; a jump lands below it (fork). */
+const CONVERSATION_TOP_FADE_PX = 48;
 
 function getExpandState(messageId: string): BubbleExpandState {
   return (
@@ -2090,14 +2092,20 @@ export const SessionChatStreamView = forwardRef<
      * outline rail then reports the round BEFORE the one that was asked for.
      * Bottom following uses the DOM extent, which already includes padding.
      */
+    // Fork: a jump lands clear of the desktop top fade, so the first line of
+    // the round it reaches is not drawn faded. Reader position counts from the
+    // same line (`syncActiveOutlineIndex`), or the rail would name the round
+    // above the one that was asked for.
+    const jumpGap = useIsMobile() ? 0 : CONVERSATION_TOP_FADE_PX;
     const scrollRowToTop = useCallback(
       (rowIndex: number, smooth = false) => {
         listRef.current?.scrollRowToTop(rowIndex + leadingRowCount, {
           smooth,
           offset: listRef.current?.contentOffset ?? 0,
+          gap: jumpGap,
         });
       },
-      [leadingRowCount]
+      [jumpGap, leadingRowCount]
     );
 
     const placeholderRowCount = useMemo(
@@ -2337,11 +2345,11 @@ export const SessionChatStreamView = forwardRef<
       const next = resolveActiveOutlineIndex(
         outlineAnchors,
         (rowIndex) => vlist.getItemOffset(rowIndex + leadingRowCount),
-        vlist.scrollOffset - vlist.contentOffset,
+        vlist.scrollOffset - vlist.contentOffset + jumpGap,
         isAtEnd
       );
       setActiveOutlineIndex(next);
-    }, [initialScrollRestored, leadingRowCount, outlineAnchors]);
+    }, [initialScrollRestored, jumpGap, leadingRowCount, outlineAnchors]);
 
     // The handle owns the unshifted content origin. Observe viewport resizes
     // through a stable callback instead of sampling shifted DOM rectangles.
@@ -2765,7 +2773,10 @@ export const SessionChatStreamView = forwardRef<
               {/* Top fade into the bg-background canvas above (desktop only),
                 hinting that the conversation continues past the top edge. */}
               {!isMobile && isScrolledFromTop ? (
-                <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-background to-transparent" />
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-background to-transparent"
+                  style={{ height: CONVERSATION_TOP_FADE_PX }}
+                />
               ) : null}
               {/* Bottom fade into the same canvas over the last 40px above the
                 info bar (desktop only): more conversation below. */}

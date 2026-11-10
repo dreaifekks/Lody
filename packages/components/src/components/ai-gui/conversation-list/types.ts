@@ -31,8 +31,11 @@ export interface ConversationListHandle {
   findItemIndex(offset: number): number;
   getItemOffset(index: number): number;
   getItemSize(index: number): number;
-  /** Put row `index` (a list index, leading row included) at the viewport's top edge. */
-  scrollRowToTop(index: number, options: { smooth: boolean; offset: number }): void;
+  /**
+   * Put row `index` (a list index, leading row included) at the viewport's top
+   * edge, or `gap` below it (fork: clear of the top fade).
+   */
+  scrollRowToTop(index: number, options: { smooth: boolean; offset: number; gap?: number }): void;
   /** Force the bottom and re-enable follow. */
   scrollToBottom(): void;
   /** Hold a just-sent row at the top with the reply room reserved below it. */

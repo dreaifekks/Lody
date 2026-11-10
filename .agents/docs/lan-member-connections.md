@@ -321,6 +321,14 @@ parts are bounded, not the file. A member says that it answers with the
 `lanFileRanges` protocol capability. One that does not is not asked, and the
 desktop then does what it did before.
 
+A link may name a machine instead of a session (`<machine>:<path>`, written as
+`lody-lan lan cp` takes it; `packages/components/src/lib/machine-file-link.ts`).
+Its range carries `machinePath` and no session: the member resolves it with
+`FilePreviewService.resolveMachinePath`, absolute, `~/…` or relative to its home,
+under the same policy with no workspace root, so only the local platform's lifted
+boundary serves it. There is no capability of its own: a member that does not
+know the field refuses the line, and the viewer shows that refusal.
+
 ```text
  player, or ─ lody-resource://member/<token> ─▶ shell ─ local file ─▶ agent service ─ TLS-PSK ─▶ agent service
  Save dialog   a Range request                         socket         of this machine            of the member

@@ -388,6 +388,9 @@ export class ScrollController {
     if (this.disposed || this.hidden) return;
     if (layoutVersion !== undefined) this.geometry.setLayoutVersion(layoutVersion);
     this.refreshViewport();
+    // Fork: the rows on screen change even where the offset does not; report it
+    // again so readers of the position (visible turns, outline) see the new extent.
+    this.lastReportedScroll = null;
     this.run('viewport', true);
   }
 
@@ -555,8 +558,11 @@ export class ScrollController {
     this.run('scroll-to-bottom', true);
   }
 
-  /** Put row `index` at the viewport's top edge (outline and search jumps). */
-  jumpToIndex(index: number, smooth = false): void {
+  /**
+   * Put row `index` at the viewport's top edge (outline and search jumps), or
+   * `screenY` below it where something covers the edge (fork: the top fade).
+   */
+  jumpToIndex(index: number, smooth = false, screenY = 0): void {
     if (this.disposed) return;
     const row = this.rows[index];
     if (!row) return;
@@ -564,10 +570,10 @@ export class ScrollController {
     this.cancelGlide();
     const anchor = this.anchorForRow(index);
     if (!anchor) return;
-    const settle: Intent = { kind: 'read', anchor, screenY: 0 };
+    const settle: Intent = { kind: 'read', anchor, screenY };
     this.setIntent(settle);
     if (smooth && !this.host.prefersReducedMotion()) {
-      this.startGlide(row.key, 0, settle);
+      this.startGlide(row.key, screenY, settle);
       return;
     }
     this.run('jump', true);

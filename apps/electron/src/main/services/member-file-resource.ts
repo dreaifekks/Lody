@@ -9,10 +9,11 @@ import { LanFileRangeAnswerSchema, type LocalFileRangeRequest } from '@lody/shar
  * it, in the parts asked for, over its local file socket; the credential of the
  * LAN stays there.
  */
-export type AgentFileTarget = Pick<
-  LocalFileRangeRequest,
-  'workspaceId' | 'machineId' | 'sessionId' | 'fileId' | 'path' | 'rootId' | 'boardId'
->
+export type AgentFileTarget = LocalFileRangeRequest extends infer Request
+  ? Request extends unknown
+    ? Omit<Request, 'type' | 'offset' | 'length' | 'revision'>
+    : never
+  : never
 
 export type AgentFileRange = {
   /** The size of the whole file. */
@@ -202,11 +203,15 @@ export class MemberFileResources {
     const key = JSON.stringify([
       target.workspaceId,
       target.machineId,
-      target.sessionId,
-      target.fileId ?? null,
-      target.path ?? null,
-      target.rootId ?? null,
-      target.boardId ?? null,
+      ...('machinePath' in target
+        ? [target.machinePath]
+        : [
+            target.sessionId,
+            target.fileId ?? null,
+            target.path ?? null,
+            target.rootId ?? null,
+            target.boardId ?? null
+          ]),
       revision,
       mime
     ])

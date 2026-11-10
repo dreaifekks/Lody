@@ -79,6 +79,17 @@ carries the files of a message ([how](../../../../../.agents/docs/lan-member-con
 boundary as a preview, so it reaches nothing a preview could not, and no size limit,
 because each part is bounded by the request rather than by one response.
 
+### Local platform and machine links
+
+On the local platform `MessageHandler` lifts the remote boundary: the only callers
+are the installation's user and the members of its LAN, who already hold a shell on
+every member. A link may also name a machine instead of a session
+(`<machine>:<path>`, the spelling `lody-lan lan cp` takes). `resolveMachinePath`
+resolves it with no workspace root: absolute and `~/` paths as they are, a relative
+path from the home directory as `lan cp` reads it. Without a root nothing lies inside
+a boundary, so only that lifted policy serves such a read, and it reaches nothing
+`lan cp` or a session's preview could not.
+
 `maxBinaryBytes` is pinned to `SESSION_IMAGE_MAX_SIZE_BYTES` because that is the only
 budget for this payload shape (base64 image bytes in one Machine RPC response)
 already proven in production, via `local-project/control` image reads. The gateway's
