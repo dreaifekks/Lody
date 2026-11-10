@@ -5,6 +5,7 @@ import type {
   SessionId,
   WorkspaceId,
 } from '@lody/shared';
+import { parseSessionLink } from '@lody/shared/session-link';
 import Database from 'better-sqlite3';
 import { Context, Deferred, Effect, Fiber, Layer, Scheduler } from 'effect';
 import { execFile } from 'node:child_process';
@@ -1402,6 +1403,22 @@ it('includes the header and omission footer in the complete 64 KiB preview budge
   expect(Buffer.byteLength(preview, 'utf8')).toBeLessThanOrEqual(INBOX_PREVIEW_BYTES);
   expect(preview).toContain('Shown 0/1.');
   expect(f.sql.members(batch)).toHaveLength(1);
+});
+
+it('tells the agent the link of the turn a batch is delivered in', () => {
+  const batch = { batchId: 'batch-1', memberCount: 0 };
+  const turn = {
+    sessionId: '7c1d3a52-5f0e-4f8a-9d61-0b2a4c6e8f10',
+    turnId: 'assistant:inbox:completion:12',
+  };
+  const link = /\[short label\]\(([^)\s]+)\)/u.exec(batchPreview(batch, [], turn))?.[1];
+  // The agent copies this into a later reply; the desktop must read it back as this turn.
+  expect(link).toBe(
+    'lody://session/7c1d3a52-5f0e-4f8a-9d61-0b2a4c6e8f10?turn=assistant:inbox:completion:12'
+  );
+  expect(parseSessionLink(link!)).toEqual(turn);
+  // A token estimate of waiting results has no turn yet.
+  expect(batchPreview(batch, [])).not.toContain('lody://');
 });
 
 describe('manual Stop receipts', () => {

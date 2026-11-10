@@ -41,6 +41,7 @@ import {
   isSessionLinkDestination,
 } from '@/lib/session-deep-link';
 import { formatExplicitSessionTabSearch } from '@/lib/session-tab-url';
+import { pendingTurnLinkAtom } from '@/lib/pending-turn-link';
 import { usePlatformWorkspaces } from '@lody/platform/react';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
 import { onIpcEvent, getIpcServices } from '@/lib/electron-ipc-client';
@@ -478,6 +479,12 @@ export function SessionDeepLinkRouter() {
       if (link) {
         setNavigationTarget(null);
         setPending(link);
+        // Fork: the conversation scrolls to a linked turn once it shows (turn-links.tsx).
+        if (link.turnId)
+          store.set(pendingTurnLinkAtom, {
+            sessionId: link.tabSessionId ?? link.sessionId,
+            turnId: link.turnId,
+          });
       }
     };
     const onOpen = (event: Event) => receive((event as CustomEvent<unknown>).detail);
@@ -485,7 +492,7 @@ export function SessionDeepLinkRouter() {
     return () => {
       window.removeEventListener(SESSION_DEEP_LINK_EVENT, onOpen);
     };
-  }, [setNavigationTarget]);
+  }, [setNavigationTarget, store]);
   useEffect(() => {
     // Let auth/provisioning and the default landing settle before applying the explicit target.
     if (!pending) return;

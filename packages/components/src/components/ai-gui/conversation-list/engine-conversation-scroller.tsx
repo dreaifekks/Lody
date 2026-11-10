@@ -340,6 +340,9 @@ export function EngineConversationScroller({
       scrollToBottom: () => controller.scrollToBottom(),
       anchorToRow: (index) => controller.anchorToRow(index),
       retargetAnchor: (index) => controller.retargetAnchor(index),
+      readingPosition: () => controller.savedIntent(),
+      restoreReadingPosition: (position, { smooth }) =>
+        controller.restoreReadingPosition(position, smooth),
     };
     return () => {
       handleRef.current = null;

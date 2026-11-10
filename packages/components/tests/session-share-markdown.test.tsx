@@ -31,6 +31,7 @@ import { sessionMetaCacheAtom } from '../src/atoms/doc-meta';
 import { writeStoredLastActiveTabState } from '../src/lib/session-draft-tabs';
 import { getSessionNavigationLocation } from '../src/lib/session-navigation';
 import { pendingSessionLinkAtom } from '../src/lib/session-deep-link';
+import { pendingTurnLinkAtom } from '../src/lib/pending-turn-link';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownRenderer } from '../src/components/ai-gui/markdown-renderer';
@@ -651,6 +652,95 @@ describe('Markdown session links', () => {
       }
     }
   );
+
+  it('hands a linked turn to the conversation it opens, from a chip or an OS deep link', async () => {
+    const store = createStore();
+    store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
+    const platform: PlatformProvider = {
+      kind: 'cloud',
+      identity: {
+        session: createStaticStore({ status: 'unauthenticated' }),
+        signOut: async () => {},
+      },
+      workspaces: {
+        state: createStaticStore({
+          status: 'ready',
+          activeWorkspaceId: 'ws',
+          workspaces: [{ id: 'ws', slug: 'ws', name: 'Workspace', role: 'owner' }],
+        }),
+        setActive: async () => {},
+      },
+      capabilities: CLOUD_PLATFORM_CAPABILITIES,
+      sync: { mode: 'cloud' },
+    };
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <SessionDeepLinkRouter />
+          <Outlet />
+        </>
+      ),
+    });
+    const sessionRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/$workspaceName/sessions/$sessionId',
+      validateSearch: SessionRoute.options.validateSearch,
+      beforeLoad: SessionRoute.options.beforeLoad as never,
+      component: () => (
+        <SessionLinkProvider enabled>
+          <MarkdownRenderer text="[回执 3](lody://session/outside?workspace=ws&turn=assistant:inbox:completion:3)" />
+        </SessionLinkProvider>
+      ),
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([sessionRoute]),
+      history: createMemoryHistory({ initialEntries: ['/ws/sessions/coordinator'] }),
+      defaultPendingMs: Infinity,
+      defaultPendingMinMs: 0,
+    });
+    await router.load();
+    await act(async () =>
+      root.render(
+        <PlatformContext.Provider value={platform}>
+          <Provider store={store}>
+            <RouterProvider router={router} />
+          </Provider>
+        </PlatformContext.Provider>
+      )
+    );
+    const arrivedAt = (pathname: string) =>
+      new Promise<void>((resolve) => {
+        const unsubscribe = router.subscribe('onResolved', ({ toLocation }) => {
+          if (toLocation.pathname !== pathname) return;
+          unsubscribe();
+          resolve();
+        });
+      });
+
+    const outside = arrivedAt('/ws/sessions/outside');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[data-session-link]')!.click();
+    });
+    await outside;
+    // The navigation itself carries no turn; it must not drop the one the chip left.
+    expect(opened).toEqual(['lody://session/outside?workspace=ws']);
+    expect(store.get(pendingTurnLinkAtom)).toEqual({
+      sessionId: 'outside',
+      turnId: 'assistant:inbox:completion:3',
+    });
+
+    store.set(pendingTurnLinkAtom, null);
+    const another = arrivedAt('/ws/sessions/another');
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(SESSION_DEEP_LINK_EVENT, {
+          detail: 'lody://session/another?workspace=ws&turn=user-1',
+        })
+      );
+    });
+    await another;
+    expect(store.get(pendingTurnLinkAtom)).toEqual({ sessionId: 'another', turnId: 'user-1' });
+  });
 
   it.each([
     [legacyText, 'lody://session/1ed6ba53-93bc-46d5-91e3-bb693cb0e729'],

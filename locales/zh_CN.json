@@ -3014,6 +3014,8 @@
   "sessions.route.loadingDescription": "正在准备对话历史。",
   "sessions.route.loadingTitle": "正在加载会话",
   "sessions.scrollToLatest": "回到底部",
+  "sessions.turnLink.back": "回到刚才的位置",
+  "sessions.turnLink.missing": "这一轮已经不在这个会话里了。",
   "sessions.searchNoResults": "0 / 0",
   "sessions.searchResultPosition": "{{current}} / {{total}}",
   "sessions.selectIde": "选择 IDE",

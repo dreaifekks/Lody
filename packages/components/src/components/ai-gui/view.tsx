@@ -9,6 +9,7 @@ import {
   type ComponentProps,
   type ComponentPropsWithoutRef,
   type ComponentType,
+  type ContextType,
   type ElementType,
   createContext,
   forwardRef,
@@ -114,6 +115,7 @@ import type {
 } from './conversation-list/types';
 import { buildResendInputBlocks, isUndeliveredUserTurnEntry } from '@/lib/undelivered-user-turn';
 import { ConversationOutlineRail } from './conversation-outline-rail';
+import { TurnLinkHighlight, TurnLinkProvider, useTurnLinkNavigation } from './turn-links';
 import { useLatestRef } from '@/hooks/use-latest-ref';
 import { observeResizeOnAnimationFrame } from '@/lib/resize-observer';
 import {
@@ -156,6 +158,7 @@ import {
   GitFork,
   Pin,
   PinOff,
+  Undo2,
   Wrench,
 } from 'lucide-react';
 import { Spinner } from '@/ui/spinner';
@@ -628,6 +631,23 @@ const LEADING_ROW_KEY = '\u0000leading';
 const AGENT_ACTIVITY_ROW_KEY = '\u0000agent-activity';
 const TRAILING_ROW_KEY = '\u0000trailing';
 
+/** Fork: turn links (`turn-links.tsx`) reach the rows with the rows' own context. */
+function ConversationRowsProvider({
+  rows,
+  turnLinks,
+  children,
+}: {
+  rows: ContextType<typeof NativeSelectionRowsContext>;
+  turnLinks: ReturnType<typeof useTurnLinkNavigation>;
+  children: ReactNode;
+}) {
+  return (
+    <NativeSelectionRowsContext.Provider value={rows}>
+      <TurnLinkProvider value={turnLinks}>{children}</TurnLinkProvider>
+    </NativeSelectionRowsContext.Provider>
+  );
+}
+
 function ConversationVirtualRow({ index, ...props }: ConversationRowComponentProps) {
   const { rows, leading, held } = useContext(NativeSelectionRowsContext);
   const row = rows[index - leading];
@@ -643,7 +663,10 @@ function ConversationVirtualRow({ index, ...props }: ConversationRowComponentPro
           data-virtual-index={index}
           data-conversation-row-key={row?.key}
           data-conversation-turn-id={row?.turnId}
-        />
+        >
+          {props.children}
+          <TurnLinkHighlight turnId={row?.turnId} />
+        </div>
       </InteractionArmedProvider>
     </NativeTextSelectionHoldContext.Provider>
   );
@@ -2199,6 +2222,18 @@ export const SessionChatStreamView = forwardRef<
         })),
       [virtualRows]
     );
+    const turnLinks = useTurnLinkNavigation({
+      sessionId,
+      listRef,
+      rows: selectableRows,
+      scrollRowToTop,
+      scrollToBottom,
+      revealed: initialScrollRestored,
+      isVisible,
+      isSticky,
+      latestSendId: localUserMessages?.at(-1)?.id,
+    });
+    const ScrollToLatestGlyph = turnLinks.canGoBack ? Undo2 : ArrowDown;
     const nativeTextSelection = useConversationTextSelection({
       sessionId,
       view: conversationView,
@@ -2692,7 +2727,7 @@ export const SessionChatStreamView = forwardRef<
               ref={scrollRootRef}
               className={cn('relative bg-background', className)}
             >
-              <NativeSelectionRowsContext.Provider value={nativeSelectionRows}>
+              <ConversationRowsProvider rows={nativeSelectionRows} turnLinks={turnLinks}>
                 <EngineConversationScroller
                   sessionId={sessionId}
                   rows={listRows}
@@ -2726,7 +2761,7 @@ export const SessionChatStreamView = forwardRef<
                   bufferSize={CONVERSATION_OVERSCAN}
                   handleRef={listRef}
                 />
-              </NativeSelectionRowsContext.Provider>
+              </ConversationRowsProvider>
               {/* Top fade into the bg-background canvas above (desktop only),
                 hinting that the conversation continues past the top edge. */}
               {!isMobile && isScrolledFromTop ? (
@@ -2769,8 +2804,12 @@ export const SessionChatStreamView = forwardRef<
                         stylex.props(stylex.defaultMarker()).className,
                         'pointer-events-auto rounded-full border-[0.5px] border-border bg-white text-foreground shadow-[0_0.5px_1px_1px_rgba(0,0,0,0.04)] hover:bg-white dark:bg-secondary dark:text-secondary-foreground dark:shadow-none'
                       )}
-                      onClick={scrollToBottom}
-                      aria-label={t('sessions.scrollToLatest')}
+                      onClick={turnLinks.goBackOrToLatest}
+                      aria-label={
+                        turnLinks.canGoBack
+                          ? t('sessions.turnLink.back', 'Back to where you were')
+                          : t('sessions.scrollToLatest')
+                      }
                     >
                       {agentActivityLabel && agentActivityShimmer ? (
                         <Spinner
@@ -2781,7 +2820,7 @@ export const SessionChatStreamView = forwardRef<
                           aria-hidden="true"
                         />
                       ) : null}
-                      <ArrowDown
+                      <ScrollToLatestGlyph
                         {...stylex.props(
                           scrollToLatestStyles.icon,
                           !!agentActivityLabel &&
