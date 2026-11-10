@@ -113,6 +113,7 @@ function mount(
     feedback = false,
     tickOnScroll = false,
     oscillatingFeedback,
+    viewport,
   }: {
     strict?: boolean;
     suppress?: { current: boolean };
@@ -126,16 +127,19 @@ function mount(
     /** A view that setStates on every onScroll, like the top-fade flag. */
     tickOnScroll?: boolean;
     oscillatingFeedback?: { current: boolean };
+    /** The viewport's height, when a test resizes it (fork). */
+    viewport?: { current: number };
   } = {}
 ): Ctx {
   let keys = initialKeys;
   const px = (value: string | undefined) => parseFloat(value ?? '0') || 0;
   const isHidden = () => hidden?.current === true;
+  const viewportSize = () => viewport?.current ?? VIEWPORT;
   let attached: HTMLDivElement | null = null;
   const harness: FrameHarness =
     harnessToReuse ??
     createFrameHarness({
-      viewportHeight: () => (isHidden() ? 0 : VIEWPORT),
+      viewportHeight: () => (isHidden() ? 0 : viewportSize()),
       scrollHeightOf: (viewport) => {
         if (isHidden()) return 0;
         const container = viewport.firstElementChild as HTMLElement | null;
@@ -147,7 +151,7 @@ function mount(
       sizeOf: (element) => {
         const el = element as HTMLElement;
         if (isHidden()) return 0;
-        if (el.hasAttribute('data-message-selection-scroll')) return VIEWPORT;
+        if (el.hasAttribute('data-message-selection-scroll')) return viewportSize();
         if (el.hasAttribute('data-virtual-index'))
           return (
             rowHeights.get(el.querySelector<HTMLElement>('[data-row-key]')?.dataset.rowKey ?? '') ??
@@ -168,7 +172,8 @@ function mount(
           }
         }
         if (isHidden()) return { top: 0, height: 0 };
-        if (el.hasAttribute('data-message-selection-scroll')) return { top: 0, height: VIEWPORT };
+        if (el.hasAttribute('data-message-selection-scroll'))
+          return { top: 0, height: viewportSize() };
         if (
           el.parentElement?.hasAttribute('data-message-selection-scroll') &&
           !el.hasAttribute('data-conversation-reply-room')
@@ -339,6 +344,25 @@ it('restores a reading position and keeps it covered when rows far beyond the ov
     const onScreen = keysOnScreen(expanded, ctx.harness.scrollTop);
     expect(mountedKeys(ctx)).toEqual(expect.arrayContaining(onScreen));
     expect(ctx.viewport().style.visibility).toBe('');
+  } finally {
+    unmount(ctx);
+  }
+});
+
+it('a viewport resize under a still reader reports its offset again (fork: other rows are on screen)', async () => {
+  const viewport = { current: VIEWPORT };
+  const ctx = mount('engine-resize-report' as SessionId, rowKeys(60), undefined, { viewport });
+  try {
+    await ctx.settle();
+    await act(async () => {
+      ctx.handle.current?.scrollRowToTop(30, { smooth: false, offset: 0 });
+    });
+    await ctx.settle();
+    const reported = ctx.scrolls.length;
+    viewport.current = VIEWPORT - 60;
+    await ctx.settle();
+    expect(screenTopOf(ctx, 'r30')).toBe(0);
+    expect(ctx.scrolls.slice(reported)).toEqual([ctx.harness.scrollTop]);
   } finally {
     unmount(ctx);
   }

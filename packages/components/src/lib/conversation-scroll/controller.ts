@@ -388,6 +388,9 @@ export class ScrollController {
     if (this.disposed || this.hidden) return;
     if (layoutVersion !== undefined) this.geometry.setLayoutVersion(layoutVersion);
     this.refreshViewport();
+    // Fork: the rows on screen change even where the offset does not; report it
+    // again so readers of the position (visible turns, outline) see the new extent.
+    this.lastReportedScroll = null;
     this.run('viewport', true);
   }
 

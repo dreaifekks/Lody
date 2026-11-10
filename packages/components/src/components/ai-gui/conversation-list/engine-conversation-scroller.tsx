@@ -399,6 +399,8 @@ export function EngineConversationScroller({
       if (next.width === previous.width && next.height === previous.height) return;
       previous = next;
       widthRef.current = next.width;
+      // Fork: the same offset now shows other rows; let the engine's report through once.
+      lastReportedScroll.current = null;
       controller.onViewportResized(layoutVersion(next.width));
     });
     observer.observe(element);

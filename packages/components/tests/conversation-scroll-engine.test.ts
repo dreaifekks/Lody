@@ -239,6 +239,31 @@ describe('following', () => {
     expect(sim.controller.mode).toBe('follow');
     expectHealthy(sim);
   });
+
+  it('reports a still reader again when the viewport resizes (fork: what is on screen changed)', () => {
+    const sim = new ScrollSim(
+      turnRows(
+        60,
+        () => 100,
+        () => 100
+      ),
+      V
+    );
+    sim.render();
+    sim.settle();
+    sim.task(() => sim.controller.jumpToIndex(30));
+    sim.settle();
+    const scrolls: number[] = [];
+    sim.controller.setCallbacks({ onScroll: (offset) => scrolls.push(offset) });
+    sim.resizeViewport(V - 40);
+    sim.settle();
+    expect(sim.screenTop('t30')).toBe(0);
+    expect(scrolls).toEqual([sim.readScrollTop()]);
+    sim.render();
+    sim.settle();
+    expect(scrolls).toHaveLength(1);
+    expectHealthy(sim);
+  });
 });
 
 describe('reading', () => {
