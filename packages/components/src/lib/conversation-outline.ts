@@ -1,6 +1,12 @@
 import type { MessageContent, SessionHistoryParsed } from '@lody/shared';
 import type { TurnIndexRow } from './conversation-view/types';
 import { isContinueDeliveryTurn } from './continue-delivery';
+import {
+  isReceiptRoundStart,
+  receiptRoundTitle,
+  receiptSourcesOf,
+  type ReceiptRoundSource,
+} from './conversation-outline-receipt';
 import { getSearchableMarkdownText } from './session-chat-search';
 
 /**
@@ -90,6 +96,11 @@ export interface ConversationOutlineEntry {
   /** True when the round leads with an agent turn rather than a user turn. */
   readonly startsWithAgent: boolean;
   readonly weight: ConversationOutlineWeight;
+  /**
+   * Fork: set when a receipt batch that woke the agent starts the round. The
+   * card titles the round by these sessions' live titles, as the receipt does.
+   */
+  readonly receiptSources?: readonly ReceiptRoundSource[];
 }
 
 /**
@@ -169,6 +180,8 @@ type MessageDigest = {
   /** The same prose cut to the longer preview limit. */
   readonly preview: string;
   readonly proseLength: number;
+  /** A receipt batch's sessions; absent on every other turn. */
+  readonly receiptSources?: readonly ReceiptRoundSource[];
 };
 
 /**
@@ -186,8 +199,22 @@ type MessageDigest = {
  */
 const digestByMessage = new WeakMap<SessionHistoryParsed, MessageDigest>();
 
-const digestFromSource = (source: string | null, proseLength: number): MessageDigest => {
+const digestFromSource = (
+  source: string | null,
+  proseLength: number,
+  receiptSources?: readonly ReceiptRoundSource[]
+): MessageDigest => {
   const summary = source === null ? '' : collapseWhitespace(getSearchableMarkdownText(source));
+  if (receiptSources?.length) {
+    // A receipt batch has no prose of its own; its title is what it reports on.
+    const title = collapseWhitespace(receiptRoundTitle(receiptSources));
+    return {
+      title: truncateToLength(title, OUTLINE_TITLE_MAX_LENGTH),
+      preview: '',
+      proseLength,
+      receiptSources,
+    };
+  }
   return {
     title: truncateToLength(summary, OUTLINE_TITLE_MAX_LENGTH),
     preview: truncateToLength(summary, OUTLINE_PREVIEW_MAX_LENGTH),
@@ -198,7 +225,11 @@ const digestFromSource = (source: string | null, proseLength: number): MessageDi
 const getMessageDigest = (message: SessionHistoryParsed): MessageDigest => {
   const cached = digestByMessage.get(message);
   if (cached) return cached;
-  const digest = digestFromSource(firstTextOf(message.items), proseLengthOf(message));
+  const digest = digestFromSource(
+    firstTextOf(message.items),
+    proseLengthOf(message),
+    receiptSourcesOf(message.items)
+  );
   digestByMessage.set(message, digest);
   return digest;
 };
@@ -218,7 +249,8 @@ const getRowDigest = (row: TurnIndexRow): MessageDigest => {
   if (cached) return cached;
   const digest = digestFromSource(
     summary.headText.trim() ? summary.headText.slice(0, SUMMARY_SOURCE_WINDOW) : null,
-    summary.textChars
+    summary.textChars,
+    summary.receiptSources
   );
   digestByRow.set(row, digest);
   return digest;
@@ -274,7 +306,9 @@ export function buildConversationOutline(
     // A Continue turn picks the interrupted round back up instead of opening one.
     if (continuesRound && openRound !== undefined) continue;
     const messageIndex = item.turnIndex ?? position;
-    const isUser = role === 'user';
+    // A receipt batch that woke the agent drives its round as a user message does.
+    const isReceipt = isReceiptRoundStart(role, key);
+    const isUser = role === 'user' || isReceipt;
 
     if (isUser || openRound === undefined) {
       closeRound();
@@ -285,6 +319,7 @@ export function buildConversationOutline(
         preview: isUser ? '' : digest.preview,
         startsWithAgent: !isUser,
         weight: 0,
+        ...(isReceipt && digest.receiptSources ? { receiptSources: digest.receiptSources } : {}),
       };
       entries.push(openRound);
       openRoundHasPreview = !isUser;
@@ -303,9 +338,10 @@ export function buildConversationOutline(
 }
 
 /**
- * Rounds that began with a user turn. {@link OUTLINE_MIN_USER_ROUNDS} applies
- * to this count: at most one entry can start with the agent (the leading round
- * of an agent-initiated session), and it is not a round the user drove.
+ * Rounds that began with a user turn — or with a receipt batch, so a
+ * coordinator woken by dozens of results gets its rail. {@link OUTLINE_MIN_USER_ROUNDS}
+ * applies to this count: at most one entry can start with the agent (the
+ * leading round of an agent-initiated session), and it is not a round the user drove.
  */
 export function countUserDrivenRounds(outline: readonly ConversationOutlineEntry[]): number {
   let count = 0;
@@ -337,7 +373,8 @@ export function reuseConversationOutline(
       a.title !== b.title ||
       a.preview !== b.preview ||
       a.weight !== b.weight ||
-      a.startsWithAgent !== b.startsWithAgent
+      a.startsWithAgent !== b.startsWithAgent ||
+      a.receiptSources !== b.receiptSources
     ) {
       return next;
     }
@@ -362,7 +399,10 @@ export interface ConversationOutlineAnchor {
  *
  * Entries with no rendered row are DROPPED rather than represented as holes, so
  * every consumer works on a strictly ascending list. A round can genuinely have
- * no rows: `buildChatStreamItems` discards empty assistant entries.
+ * no rows: `buildChatStreamItems` discards empty assistant entries. A round's
+ * opening turn can also render nothing while the round does — a receipt batch
+ * whose results earlier cards already show — so the anchor is the round's
+ * first row, wherever in the round it is.
  *
  * Both inputs are ascending by `messageIndex`, so this is a two-pointer merge:
  * no hash map, no per-row allocation. It runs on every streamed delta over the
@@ -382,7 +422,8 @@ export function buildOutlineAnchors(
       rowIndex += 1;
     }
     if (rowIndex >= rows.length) break;
-    if (rows[rowIndex]?.messageIndex !== entry.messageIndex) continue;
+    const nextRoundStart = outline[outlineIndex + 1]?.messageIndex ?? Number.POSITIVE_INFINITY;
+    if ((rows[rowIndex]?.messageIndex ?? -1) >= nextRoundStart) continue;
     anchors.push({ outlineIndex, rowIndex });
   }
   return anchors;

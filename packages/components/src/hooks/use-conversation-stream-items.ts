@@ -7,6 +7,7 @@ import {
 } from '@/components/ai-gui/build-chat-stream-items';
 import type { VisibleTurnRange } from '@/components/ai-gui/view';
 import { isUnloadedTurnId, type ConversationView } from '@/lib/conversation-view';
+import { opensOutlineRound } from '@/lib/conversation-outline-receipt';
 import { LRUCache } from '@/lib/lru-cache';
 import { scrollDebug } from './scroll-debug-log';
 import { useConversationVersion, useTurnRange } from './use-conversation-view';
@@ -207,9 +208,14 @@ export function useConversationStreamItems(
     (turnIndex: number) => {
       if (!view || !view.index(turnIndex)) return;
       previewRangeRef.current?.release();
-      // A round includes its user question and replies up to the next user.
+      // A round includes its user question (or receipt batch) and replies up to
+      // the next round.
       let end = turnIndex + 1;
-      while (end < view.turnCount && view.index(end)?.role !== 'user') end++;
+      while (end < view.turnCount) {
+        const row = view.index(end);
+        if (row && opensOutlineRound(row)) break;
+        end++;
+      }
       const range = view.acquireRange(turnIndex, end);
       previewRangeRef.current = range;
       const release = () => {

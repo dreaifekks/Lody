@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Popover } from '@/ui/armed-overlays';
 import type { ConversationOutlineEntry } from '@/lib/conversation-outline';
+import { ConversationOutlineReceiptTitle } from './conversation-outline-receipt-title';
 import { useLatestRef } from '@/hooks/use-latest-ref';
 import { capturePostHogSampled } from '@/lib/posthog-analytics';
 import { observeResizeOnAnimationFrame } from '@/lib/resize-observer';
@@ -709,7 +710,11 @@ export function ConversationOutlineRail({
           {hoveredEntry === null ? null : (
             <>
               <div className="line-clamp-3 text-[13px] font-medium leading-snug text-foreground">
-                {jumpLabel(hoveredEntry)}
+                {hoveredEntry.receiptSources ? (
+                  <ConversationOutlineReceiptTitle sources={hoveredEntry.receiptSources} />
+                ) : (
+                  jumpLabel(hoveredEntry)
+                )}
               </div>
               <div className="mt-1.5 line-clamp-6 text-[12px] leading-relaxed text-muted-foreground">
                 {hoveredEntry.preview ||

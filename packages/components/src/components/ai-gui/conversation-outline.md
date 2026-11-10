@@ -9,7 +9,10 @@ full because the topic outgrew that index.
 ## Invariants
 
 - Build entries from `items`, never DOM. The rail mounts only once user rounds
-  reach `OUTLINE_MIN_USER_ROUNDS`. Reader position is the last round
+  reach `OUTLINE_MIN_USER_ROUNDS`. Fork: an automatic receipt batch (system turn
+  `inbox:<executionId>`) starts a round and counts toward that threshold; it is
+  recognised by id so unhydrated turns count too, and its card shows the
+  reporting sessions' live titles (`lib/conversation-outline-receipt.ts`). Reader position is the last round
   anchored above the viewport top, resolved from the list's offsets; it never
   enters tick-list props. Paint one arithmetic active bar; sync `aria-current`
   imperatively. Pointer magnification may update memoized ticks; scrolling may

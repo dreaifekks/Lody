@@ -47,6 +47,24 @@ describe('buildOutlineAnchors', () => {
       { outlineIndex: 2, rowIndex: 1 },
     ]);
   });
+
+  it('anchors a round whose opening turn renders nothing at the round’s first row', () => {
+    // A receipt batch whose results earlier cards already show renders no row;
+    // its round is still the agent's reply below it.
+    const rows = [
+      { messageIndex: 0 },
+      { messageIndex: 1 },
+      { messageIndex: 3 },
+      { messageIndex: 4 },
+    ];
+    const anchors = buildOutlineAnchors(rows, [entry(0), entry(2), entry(4)]);
+
+    expect(anchors).toEqual<ConversationOutlineAnchor[]>([
+      { outlineIndex: 0, rowIndex: 0 },
+      { outlineIndex: 1, rowIndex: 2 },
+      { outlineIndex: 2, rowIndex: 3 },
+    ]);
+  });
 });
 
 describe('resolveActiveOutlineIndex', () => {
