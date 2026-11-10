@@ -4,7 +4,7 @@ import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
 import { Button } from '@lody/ui/button';
 import { ArrowLeft, Download } from 'lucide-react';
 import { useAtomValue } from 'jotai';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   BoardFileListSchema,
@@ -32,8 +32,16 @@ import { getIpcServices } from '@/lib/electron-ipc-client';
 import { formatCompactRelativeTime } from '@/lib/format-relative-time';
 import { toast } from '@/lib/toast';
 import { getImageMimeTypeForPath } from '@/lib/image-file-preview';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
+import { splitBoardFilePath, type FileTarget } from '@/lib/document-link-open';
 import { BoardCompareView, type CompareFile } from './board-compare-view';
 import { isCompareManifestPath } from './compare-manifest';
+import {
+  BoardDocumentLinks,
+  BoardDocumentLinksContext,
+  DocumentLinks,
+  type DocumentLinkOwner,
+} from './document-links';
 
 export type BoardDirectoryState =
   | { status: 'loading' }
@@ -320,13 +328,18 @@ export function BoardFileLinkPreview({
   target,
   memberSessionId,
   onClose,
+  links,
 }: {
   target: BoardFileLinkTarget;
   memberSessionId: import('@lody/shared').SessionId;
   onClose: () => void;
+  /** The file's own links: read for `owner`, opened by `onOpen` (a side tab). */
+  links?: { readonly owner: DocumentLinkOwner; readonly onOpen: (target: FileTarget) => void };
 }) {
   const { t } = useTranslation();
-  return target.board ? (
+  if (!target.board)
+    return <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>;
+  const preview = (
     <BoardFilePreview
       board={target.board}
       area={target.area}
@@ -335,8 +348,71 @@ export function BoardFileLinkPreview({
       onBack={onClose}
       backLabel={t('sessions.tabs.closeTab', 'Close tab')}
     />
+  );
+  return links ? (
+    <DocumentLinks
+      document={{
+        source: { kind: 'board', boardId: target.board.id },
+        path: `${target.area}/${target.path}`,
+      }}
+      owner={links.owner}
+      onOpen={links.onOpen}
+    >
+      {preview}
+    </DocumentLinks>
   ) : (
-    <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>
+    preview
+  );
+}
+
+/**
+ * One page of a preview that follows its links (the Board panel, the Board's
+ * memory): a Board file, or a session's file a link led to. A link opens the
+ * next page through `onOpen`, and Back returns.
+ */
+export function BoardFilePage({
+  board,
+  target,
+  modifiedAtMs,
+  backLabel,
+  onBack,
+  onOpen,
+}: {
+  /** The Board the preview belongs to; a link may lead to another one. */
+  board: BoardMeta;
+  target: FileTarget;
+  modifiedAtMs?: number;
+  backLabel: string;
+  onBack: () => void;
+  onOpen: (target: FileTarget) => void;
+}) {
+  const { t } = useTranslation();
+  const { boards } = useWorkspaceCatalog();
+  const links = useContext(BoardDocumentLinksContext);
+  const source = target.source;
+  // A session's file scrolls inside a height of its own.
+  if (source.kind === 'session')
+    return (
+      <div {...stylex.props(styles.compare)}>
+        {links?.renderSessionFile({ sessionId: source.sessionId, target, onBack, onOpen })}
+      </div>
+    );
+  const boardId = source.boardId;
+  const shown = board.id === boardId ? board : boards.find((entry) => entry.id === boardId);
+  const { area, path } = splitBoardFilePath(target.path);
+  if (!shown)
+    return <p {...stylex.props(styles.note)}>{t('boards.notFound', 'Board not found.')}</p>;
+  return (
+    <BoardDocumentLinks boardId={boardId} path={target.path} onOpen={onOpen}>
+      <BoardFilePreview
+        key={`${boardId}:${target.path}`}
+        board={shown}
+        area={area}
+        entry={{ path, ...(modifiedAtMs === undefined ? {} : { modifiedAtMs }) }}
+        onBack={onBack}
+        backLabel={backLabel}
+      />
+    </BoardDocumentLinks>
   );
 }
 

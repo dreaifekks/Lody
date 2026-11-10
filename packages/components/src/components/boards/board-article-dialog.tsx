@@ -1,6 +1,7 @@
 import * as stylex from '@stylexjs/stylex';
 import { createContext, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { SessionId } from '@lody/shared';
 import { Dialog } from '@lody/ui/dialog';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { RelocatableSlot, type RelocatableHost } from './relocatable-host';
@@ -8,6 +9,16 @@ import { RelocatableSlot, type RelocatableHost } from './relocatable-host';
 /** Files a Board thread can hand over as an article. */
 export const isBoardArticlePath = (path: string): boolean =>
   /\.(?:md|markdown|html?)$/iu.test(path);
+
+/** One page of the article window. A link in the article opens the next one in place. */
+export type ArticlePage = {
+  /** The thread whose workspace holds the file; the dialog's thread may change. */
+  readonly ownerThreadId: SessionId;
+  readonly filePath: string;
+  readonly fileId?: string;
+  readonly startLine?: number;
+  readonly endLine?: number;
+};
 
 const DEFAULT_RATIO = 60;
 /** A comparison of UI options wants the room more than the conversation does. */

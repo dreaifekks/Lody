@@ -35,6 +35,21 @@ SessionFileContentView wraps both file-provider paths in SessionLinkProvider, wh
 dispatches exact destinations through the existing deep-link mechanism. Standalone
 viewers default to inert links. [Decision and limits](../notes/implemented/bug-fix/2026-10-22-markdown-preview-session-links.md).
 
+File links in a rendered document (a file tab's Markdown, the article window, a Board
+file, memory or shared-notes preview, a reply card's full reply) open instead of
+copying their path (`components/boards/document-links.tsx`). The link alone says
+where it reads (`lib/document-link-open.ts`): a path into a Board directory is that
+Board's, through its member file channel; any other absolute or home path is on the
+owning session's machine; a relative path is tried beside the document first, then
+at the owning session's workspace root. A candidate opens only once its source
+confirms it (the index, a one-byte preview, or the member channel). The container
+decides where it shows: a file tab opens another tab; the article window and Board
+previews show it as their next page, with Back (a Board preview shows a session's
+file there too, its menu moving it to a side tab); a reply card opens it as the
+replying session's own conversation would, its relative paths confirmed by that
+session's index. Only the latest click opens, and none once its document has changed
+(Back) or closed.
+
 - Diff page: `session-conversation-diff-panel.tsx`, data from
   `use-session-conversation-diff-data.ts`. Each file title copies the
   workspace-relative path and, when wired, opens a file-preview viewer tab

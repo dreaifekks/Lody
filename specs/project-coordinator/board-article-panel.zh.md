@@ -50,9 +50,12 @@ Translation: pending
   打开的浮窗在关掉开关或跨过 compact 断点时会自动关闭。
 - 浮窗是 `@lody/ui` Dialog，带遮罩，四周留边距，左右默认 60/40，中间可以拖。Esc、点遮罩、
   右栏 × 都能关闭。⋯ 菜单里的「在侧边 tab 打开」是退路。
-- 浮窗记两样东西：article 归哪个线程（`ownerThreadId`，决定从哪里读文件），以及右栏现在
-  显示哪个对话（跟着 Board 面板走）。面包屑、父线程、本看板成员的会话链接只会切换右栏，
-  浮窗不关，左边 article 不变；会离开 Board 面板的导航则关闭浮窗。
+- 浮窗记两样东西：左边的一叠页面（每页是一个文件和读它的会话，决定从哪台机器、哪个
+  工作区读），以及右栏现在显示哪个对话（跟着 Board 面板走）。面包屑、父线程、本看板成员的
+  会话链接只会切换右栏，浮窗不关，左边 article 不变；会离开 Board 面板的导航则关闭浮窗。
+- article 里的文件链接原地换页：左边换成链接指向的文件，标题栏出返回键，退回上一篇；不开
+  文件 tab。读哪台机器、哪个目录由链接本身决定：相对路径先按文档所在目录，找不到再按所属
+  会话的工作目录；其他绝对路径归所属会话的机器。指向看板目录的链接仍开看板文件 tab。
 
 ### 右栏和侧边面板是同一个对话实例
 
@@ -182,9 +185,10 @@ Translation: pending
   `sessions/session-detail.tsx`（打开/关闭和状态）、`sessions/session-chat-input-area.tsx`（发送时拼接）；
   对比视图：`boards/compare-manifest.ts`（清单解析）、`boards/board-compare-view.tsx`、
   `boards/compare-board-frame.tsx`，Board Files 入口在 `boards/board-directory.tsx`；注入的约定是
-  `apps/cli/src/session/session-execution-helpers.ts` 的 `BOARD_UI_COMPARISON_GUIDE`。
+  `apps/cli/src/session/session-execution-helpers.ts` 的 `BOARD_UI_COMPARISON_GUIDE`；
+  文件链接：`lib/document-link-open.ts`（读哪里）、`boards/document-links.tsx`（探测和打开）。
 - 测试：`packages/components/tests/board-article-dialog.test.tsx`、`document-selection.test.tsx`、
   `use-session-file-digest-watch.test.tsx`、`session-file-content-view.test.tsx`、
-  `session-chat-input-submission.test.tsx`。
+  `session-chat-input-submission.test.tsx`、`document-link-open.test.ts`、`board-overview.test.tsx`。
 - 验证：2026-10-19 在 Mac 测试版上连续三轮实际操作核对，全部通过（第三轮在 `ed8ee80e2`）。
   LAN 跨机器读取的情况还没有在真实 LAN 上测过。

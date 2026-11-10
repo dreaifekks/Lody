@@ -3,6 +3,7 @@ import { PagedFileViewer } from './paged-file-viewer';
 import * as stylex from '@stylexjs/stylex';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  ArrowLeft,
   Copy,
   Download,
   Eye,
@@ -561,6 +562,8 @@ export type SessionFileContentViewProps = {
   article?: {
     readonly onOpenInTab: () => void;
     readonly annotationThreadId: SessionId | null;
+    /** Back to the page a link here came from. */
+    readonly onBack?: () => void;
   };
 };
 
@@ -2169,9 +2172,29 @@ function SessionFileContentViewImpl({
   const articleMenuItems = sessionFileActions.menuItems.filter(
     (item) => item.id !== 'copy-relative-path' && (item.isAvailable?.(normalizedPath) ?? true)
   );
+  // A link in an article can lead to any file; its kind is its extension.
+  const articleKindLabel = isHtmlFile
+    ? 'HTML'
+    : isSessionMarkdownPath(normalizedPath)
+      ? 'MD'
+      : /\.([^./]+)$/u.exec(normalizedPath)?.[1]?.toUpperCase();
   const articleHeader = article ? (
     <div {...stylex.props(styles.articleHeader)}>
-      <span {...stylex.props(styles.articleKind)}>{isHtmlFile ? 'HTML' : 'MD'}</span>
+      {article.onBack ? (
+        <Button
+          size="small"
+          variant="ghost"
+          icon
+          aria-label={t('common.back', 'Back')}
+          title={t('common.back', 'Back')}
+          onClick={article.onBack}
+        >
+          <ArrowLeft {...stylex.props(styles.icon)} aria-hidden="true" />
+        </Button>
+      ) : null}
+      {articleKindLabel ? (
+        <span {...stylex.props(styles.articleKind)}>{articleKindLabel}</span>
+      ) : null}
       <span {...stylex.props(styles.articleName)} title={normalizedPath}>
         {normalizedPath.split('/').at(-1)}
       </span>

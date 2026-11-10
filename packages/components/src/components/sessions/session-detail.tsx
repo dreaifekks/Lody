@@ -11,6 +11,15 @@ import {
   type SessionFileOpenContext,
 } from '@/lib/session-file-link-open';
 import { AgentFileLinkOpenContext } from '../ai-gui/markdown-renderer';
+import {
+  DocumentLinks,
+  SessionDocumentScope,
+  SessionFileLinkOpenContext,
+  type BoardDocumentLinksValue,
+  type SessionFileLinkOpener,
+} from '../boards/document-links';
+import { BoardSessionFilePage } from '../boards/board-session-file-page';
+import { boardFileLinkPath, type FileTarget } from '@/lib/document-link-open';
 import { resolveBoardFileLink } from '@/lib/board-directory-file-provider';
 import { BoardFileLinkPreview } from '../boards/board-directory';
 import { useBoardSessionNavigation } from '../boards/board-session-navigation';
@@ -266,7 +275,11 @@ import {
 } from '@/atoms/settings';
 import { createPortal } from 'react-dom';
 import { PopupContainerProvider, usePopupContainer } from '@lody/ui/popup-container';
-import { BoardArticleDialog, isBoardArticlePath } from '../boards/board-article-dialog';
+import {
+  BoardArticleDialog,
+  isBoardArticlePath,
+  type ArticlePage,
+} from '../boards/board-article-dialog';
 import { SessionBoardCompareView } from '../boards/board-compare-view';
 import { isCompareManifestPath } from '../boards/compare-manifest';
 import {
@@ -1129,9 +1142,12 @@ const TerminalDockToggleButton = memo(function TerminalDockToggleButton() {
 /** Keeps per-session imperative refs and event handlers stable across parent updates. */
 function SessionChatSurface({
   registerChatRef,
+  openReplyFile,
   ...props
 }: SessionChatInterfaceProps & {
   registerChatRef: (id: string, handle: SessionChatInterfaceHandle | null) => void;
+  /** Opens file links in replies other sessions sent (`SessionReplyFileLinks`). */
+  openReplyFile?: SessionFileLinkOpener;
 }) {
   const id = props.session.id;
   const setChatRef = useCallback(
@@ -1166,7 +1182,7 @@ function SessionChatSurface({
     (...args: Parameters<NonNullable<SessionChatInterfaceProps['onNavigateSession']>>) =>
       props.onNavigateSession?.(...args)
   );
-  return (
+  const chat = (
     <SessionChatInterface
       {...props}
       ref={setChatRef}
@@ -1183,6 +1199,11 @@ function SessionChatSurface({
       onOpenAllChanges={props.onOpenAllChanges ? openAllChanges : undefined}
       onNavigateSession={props.onNavigateSession ? navigateSession : undefined}
     />
+  );
+  return (
+    <SessionFileLinkOpenContext.Provider value={openReplyFile ?? null}>
+      {chat}
+    </SessionFileLinkOpenContext.Provider>
   );
 }
 
@@ -1295,12 +1316,11 @@ const SessionDetail = ({
   // (experimental). The thread keeps its one conversation: it is portalled
   // into a relocatable host that the dialog borrows while open.
   const [articleDialog, setArticleDialog] = useState<{
-    /** The thread whose workspace holds the file; the dialog's thread may change. */
-    readonly ownerThreadId: SessionId;
-    readonly filePath: string;
-    readonly fileId?: string;
+    /** The page on screen last; the ones before it are the way back. */
+    readonly pages: readonly ArticlePage[];
     readonly closing?: true;
   } | null>(null);
+  const articlePage = articleDialog?.pages.at(-1);
   const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
   const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
   const [boardSettingsOpen, setBoardSettingsOpen] = useState(false);
@@ -4614,9 +4634,15 @@ const SessionDetail = ({
           return;
         }
         setArticleDialog({
-          ownerThreadId: scope.session.id,
-          filePath: target.filePath,
-          ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
+          pages: [
+            {
+              ownerThreadId: scope.session.id,
+              filePath: target.filePath,
+              ...(target.fileId === undefined ? {} : { fileId: target.fileId }),
+              ...(target.startLine === undefined ? {} : { startLine: target.startLine }),
+              ...(target.endLine === undefined ? {} : { endLine: target.endLine }),
+            },
+          ],
         });
       })();
     }
@@ -4661,6 +4687,41 @@ const SessionDetail = ({
   const handleOpenFile = useStableCallback(
     (filePath: string, options: SessionDetailOpenFileOptions = {}) =>
       handleOpenFileForSession(activeFileOpenContext, filePath, options)
+  );
+  // A link in a previewed document (`DocumentLinks`): a side tab beside a side tab.
+  const openFileTargetInTab = useStableCallback(
+    (scope: SessionFileOpenContext, target: FileTarget) =>
+      handleOpenFileForSession(scope, boardFileLinkPath(currentWorkspaceId, target), {
+        pathKind: 'canonical',
+        ...(target.startLine === undefined ? {} : { startLine: target.startLine }),
+        ...(target.endLine === undefined ? {} : { endLine: target.endLine }),
+      })
+  );
+  // In the article window, the next page in place; a Board file keeps its own preview.
+  const openArticleLink = useStableCallback((scope: SessionFileOpenContext, target: FileTarget) => {
+    if (target.source.kind === 'board') {
+      closeArticleDialog();
+      openFileTargetInTab(scope, target);
+      return;
+    }
+    const page: ArticlePage = {
+      ownerThreadId: target.source.sessionId,
+      filePath: target.path,
+      ...(target.startLine === undefined ? {} : { startLine: target.startLine }),
+      ...(target.endLine === undefined ? {} : { endLine: target.endLine }),
+    };
+    setArticleDialog((current) =>
+      current && !current.closing ? { pages: [...current.pages, page] } : current
+    );
+  });
+  const backArticlePage = useCallback(
+    () =>
+      setArticleDialog((current) =>
+        current && current.pages.length > 1
+          ? { ...current, pages: current.pages.slice(0, -1) }
+          : current
+      ),
+    []
   );
 
   const handleOpenHtmlFile = useStableCallback((filePath: string) => {
@@ -6524,6 +6585,23 @@ const SessionDetail = ({
   if (activeSession.parentSessionId && activeSession.parentSessionId !== sessionId) {
     return null;
   }
+  // Board documents are read for this page's session (the coordinator in its panel).
+  // Their links open in place; a page of one of its files moves to a side tab, and
+  // rests while its surface is out of sight.
+  const boardDocumentOwner = { ...activeFileOpenContext, session: activeSession };
+  const boardDocumentLinksFor = (onScreen: boolean): BoardDocumentLinksValue => ({
+    owner: boardDocumentOwner,
+    renderSessionFile: (page) => (
+      <BoardSessionFilePage
+        {...page}
+        active={onScreen}
+        onOpenInTab={() => {
+          setBoardSettingsOpen(false);
+          openFileTargetInTab(activeFileOpenContext, page.target);
+        }}
+      />
+    ),
+  });
 
   /* The URL names a child tab whose meta has not reached this replica yet
      (a just-promoted draft, or a tab still syncing from another device).
@@ -6659,7 +6737,22 @@ const SessionDetail = ({
     />
   );
 
+  // A previewed document's links open beside it, in new side tabs.
   const renderFileTab = (
+    tab: Extract<ViewerTab, { type: 'file' }>,
+    scope: SessionFileScopeValue,
+    className: string,
+    active: boolean
+  ) => (
+    <DocumentLinks
+      document={{ source: { kind: 'session', sessionId: scope.session.id }, path: tab.filePath }}
+      owner={scope}
+      onOpen={(target) => openFileTargetInTab(scope, target)}
+    >
+      {renderFileTabView(tab, scope, className, active)}
+    </DocumentLinks>
+  );
+  const renderFileTabView = (
     tab: Extract<ViewerTab, { type: 'file' }>,
     scope: SessionFileScopeValue,
     className: string,
@@ -6739,6 +6832,10 @@ const SessionDetail = ({
             target={boardFile}
             memberSessionId={activeSession.id}
             onClose={() => handleCloseViewerTab(tab.id)}
+            links={{
+              owner: boardDocumentOwner,
+              onOpen: (target) => openFileTargetInTab(activeFileOpenContext, target),
+            }}
           />
         </div>
       );
@@ -6820,6 +6917,7 @@ const SessionDetail = ({
   const boardPanel = activeBoard ? (
     <BoardSidePanel
       board={activeBoard}
+      documentLinks={boardDocumentLinksFor(isMobile ? mobileBoardOpen : boardPanelOnScreen)}
       openThreadId={isMobile ? null : boardThreadId}
       onOpenThread={(thread) => {
         if (thread) handleNavigateSession({ sessionId: thread.id });
@@ -6903,7 +7001,9 @@ const SessionDetail = ({
             />
             {createPortal(
               <PopupContainerProvider container={inArticle ? articlePanel : outerPopupContainer}>
-                {chat}
+                <SessionFileLinkOpenContext.Provider value={handleOpenThreadFile}>
+                  {chat}
+                </SessionFileLinkOpenContext.Provider>
               </PopupContainerProvider>,
               host.node
             )}
@@ -6916,6 +7016,7 @@ const SessionDetail = ({
     activeBoard && boardSettingsOpen ? (
       <BoardSettings
         board={activeBoard}
+        documentLinks={boardDocumentLinksFor(true)}
         onClose={() => setBoardSettingsOpen(false)}
         onArchived={navigateToChat}
       />
@@ -7295,6 +7396,7 @@ const SessionDetail = ({
               >
                 <SessionChatSurface
                   registerChatRef={setChatTabRef}
+                  openReplyFile={handleOpenFileForSession}
                   claimNavigationFocus={
                     isActive && tabSession.id === sessionId ? claimNavigationFocus : undefined
                   }
@@ -8233,6 +8335,7 @@ const SessionDetail = ({
             >
               <SessionChatSurface
                 {...getSharedChatSurfaceProps(tabSession, isActive)}
+                openReplyFile={handleOpenFileForSession}
                 paintSessionMentionOverlay={false}
                 isChildTab={tabSession.id !== sessionId}
                 isExternalHistoryRefreshing={externalHistoryRefresh !== undefined}
@@ -8475,23 +8578,27 @@ const SessionDetail = ({
       }
     >
       {boardSettings}
-      {articleDialog && articleDialogHostThreadId ? (
+      {articleDialog && articlePage && articleDialogHostThreadId ? (
         <BoardArticleDialog
-          title={getBasename(articleDialog.filePath)}
+          title={getBasename(articlePage.filePath)}
           threadHost={getThreadChatHost(articleDialogHostThreadId)}
           holdsThread={articleDialogThreadId !== null}
           onPanelChange={setArticlePanel}
           onClose={closeArticleDialog}
-          wide={isCompareManifestPath(articleDialog.filePath)}
+          wide={isCompareManifestPath(articlePage.filePath)}
           article={
-            <SessionFileScope sessionId={articleDialog.ownerThreadId}>
+            <SessionDocumentScope
+              sessionId={articlePage.ownerThreadId}
+              path={articlePage.filePath}
+              onOpen={openArticleLink}
+            >
               {(scope) =>
-                isCompareManifestPath(articleDialog.filePath) ? (
+                isCompareManifestPath(articlePage.filePath) ? (
                   <SessionBoardCompareView
                     scope={`session:${scope.session.id}`}
-                    key={`${scope.session.id}:${articleDialog.filePath}`}
+                    key={`${scope.session.id}:${articlePage.filePath}`}
                     fileProvider={scope.fileProvider}
-                    manifestPath={articleDialog.filePath}
+                    manifestPath={articlePage.filePath}
                     comments={
                       articleDialogThreadId
                         ? { threadId: articleDialogThreadId, ownerThreadId: scope.session.id }
@@ -8499,20 +8606,21 @@ const SessionDetail = ({
                     }
                     onOpenInTab={() => {
                       closeArticleDialog();
-                      handleOpenFileForSession(scope, articleDialog.filePath, {
+                      handleOpenFileForSession(scope, articlePage.filePath, {
                         pathKind: 'canonical',
                       });
                     }}
+                    {...(articleDialog.pages.length > 1 ? { onBack: backArticlePage } : {})}
                   />
                 ) : (
                   <SessionFileContentView
-                    key={`${scope.session.id}:${articleDialog.filePath}`}
+                    key={`${scope.session.id}:${articlePage.filePath}`}
                     sessionId={scope.session.id}
                     session={scope.session}
-                    filePath={articleDialog.filePath}
-                    {...(articleDialog.fileId === undefined
-                      ? {}
-                      : { fileId: articleDialog.fileId })}
+                    filePath={articlePage.filePath}
+                    {...(articlePage.fileId === undefined ? {} : { fileId: articlePage.fileId })}
+                    startLine={articlePage.startLine}
+                    endLine={articlePage.endLine}
                     fileProvider={scope.fileProvider}
                     fileProviderPending={scope.fileProviderPending}
                     fileProviderMessage={scope.fileProviderMessage}
@@ -8521,19 +8629,20 @@ const SessionDetail = ({
                     article={{
                       onOpenInTab: () => {
                         closeArticleDialog();
-                        handleOpenFileForSession(scope, articleDialog.filePath, {
+                        handleOpenFileForSession(scope, articlePage.filePath, {
                           pathKind: 'canonical',
                         });
                       },
                       // Comments ride with the next message of the thread beside
                       // the article, which may be another member the reader moved to.
                       annotationThreadId: articleDialogThreadId,
+                      ...(articleDialog.pages.length > 1 ? { onBack: backArticlePage } : {}),
                     }}
                     className={stylex.props(detailStyles.rootFill).className}
                   />
                 )
               }
-            </SessionFileScope>
+            </SessionDocumentScope>
           }
         />
       ) : null}

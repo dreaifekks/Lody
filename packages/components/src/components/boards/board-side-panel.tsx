@@ -8,7 +8,6 @@ import { useTranslation } from 'react-i18next';
 import {
   getMachineFlockLocalProjects,
   getSessionRoomId,
-  type BoardFileEntry,
   type BoardMeta,
   type LocalProjectMeta,
   type MachineFlockRowMap,
@@ -45,10 +44,17 @@ import { BoardPanelView, type BoardPanelTab } from './board-panel-view';
 import { BoardThreadListView, type BoardThreadItem } from './board-thread-list';
 import { BoardDirectoryTreeView, BoardFileEditorView } from './board-files-view';
 import {
-  BoardFilePreview,
+  BoardFilePage,
   useBoardDirectoryFileProvider,
   useBoardFileDownload,
 } from './board-directory';
+import {
+  BOARD_NOTES_DOCUMENT_PATH,
+  BoardDocumentLinks,
+  BoardDocumentLinksContext,
+  type BoardDocumentLinksValue,
+} from './document-links';
+import type { FileTarget } from '@/lib/document-link-open';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
 import {
@@ -226,9 +232,18 @@ function BoardThreads({
   );
 }
 
+type BoardFilesPage =
+  | { readonly kind: 'notes' }
+  | { readonly kind: 'file'; readonly target: FileTarget; readonly modifiedAtMs?: number };
+
 function BoardFiles({ board }: { board: BoardMeta }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState<'notes' | BoardFileEntry | null>(null);
+  // A link in a preview opens the next page in place; the earlier ones are the way back.
+  const [pages, setPages] = useState<readonly BoardFilesPage[]>([]);
+  const page = pages.at(-1);
+  const back = () => setPages((current) => current.slice(0, -1));
+  const open = (target: FileTarget) =>
+    setPages((current) => [...current, { kind: 'file', target }]);
   const { document, save, error } = useBoardDocument(board.id);
   const { provider, truncated } = useBoardDirectoryFileProvider(board);
   const download = useBoardFileDownload(board, 'files');
@@ -241,40 +256,63 @@ function BoardFiles({ board }: { board: BoardMeta }) {
     [download, downloadLabel]
   );
   const notesName = t('boards.notes', 'Shared notes');
-  const back = t('boards.files.back', 'Back to files');
-  if (open === 'notes')
+  if (page)
     return (
-      <BoardFileEditorView name={notesName} onBack={() => setOpen(null)}>
-        {document && save ? (
-          <BoardNotesEditor notes={document.notes} onSave={save} />
-        ) : (
-          <p>
-            {error
-              ? t('boards.notesLoadFailed', 'Could not load notes.')
-              : t('boards.loading', 'Loading…')}
-          </p>
-        )}
-      </BoardFileEditorView>
-    );
-  if (open)
-    return (
-      <div {...stylex.props(panelStyles.padded)}>
-        <BoardFilePreview
-          board={board}
-          area="files"
-          entry={open}
-          backLabel={back}
-          onBack={() => setOpen(null)}
-        />
-      </div>
+      <>
+        {/* The notes stay mounted under the pages their links open: an unsaved
+            draft is still there on the way back. */}
+        {pages[0]?.kind === 'notes' ? (
+          <div hidden={page.kind !== 'notes'}>
+            <BoardFileEditorView name={notesName} onBack={back}>
+              <BoardDocumentLinks boardId={board.id} path={BOARD_NOTES_DOCUMENT_PATH} onOpen={open}>
+                {document && save ? (
+                  <BoardNotesEditor notes={document.notes} onSave={save} />
+                ) : (
+                  <p>
+                    {error
+                      ? t('boards.notesLoadFailed', 'Could not load notes.')
+                      : t('boards.loading', 'Loading…')}
+                  </p>
+                )}
+              </BoardDocumentLinks>
+            </BoardFileEditorView>
+          </div>
+        ) : null}
+        {page.kind === 'file' ? (
+          <div {...stylex.props(panelStyles.padded)}>
+            <BoardFilePage
+              board={board}
+              target={page.target}
+              {...(page.modifiedAtMs === undefined ? {} : { modifiedAtMs: page.modifiedAtMs })}
+              backLabel={
+                pages.length > 1
+                  ? t('common.back', 'Back')
+                  : t('boards.files.back', 'Back to files')
+              }
+              onBack={back}
+              onOpen={open}
+            />
+          </div>
+        ) : null}
+      </>
     );
   return (
     <BoardDirectoryTreeView
       notesName={notesName}
-      onOpenNotes={() => setOpen('notes')}
+      onOpenNotes={() => setPages([{ kind: 'notes' }])}
       provider={provider}
       truncated={truncated}
-      onOpenFile={(filePath) => setOpen(provider?.entry(filePath) ?? null)}
+      onOpenFile={(filePath) => {
+        const entry = provider?.entry(filePath);
+        if (entry)
+          setPages([
+            {
+              kind: 'file',
+              target: { source: { kind: 'board', boardId: board.id }, path: `files/${entry.path}` },
+              modifiedAtMs: entry.modifiedAtMs,
+            },
+          ]);
+      }}
       viewStateKey={`board-files:${board.id}`}
       {...(menuItems ? { menuItems } : {})}
     />
@@ -301,6 +339,8 @@ export function useThreadLocation(session: SessionMeta | null): string | undefin
 
 type BoardSidePanelProps = {
   board: BoardMeta;
+  /** How links in the panel's file previews open; without it they copy their path. */
+  documentLinks?: BoardDocumentLinksValue;
   openThreadId: SessionId | null;
   onOpenThread: (session: SessionMeta | null) => void;
   /**
@@ -333,7 +373,11 @@ type BoardSidePanelProps = {
  */
 export function BoardSidePanel(props: BoardSidePanelProps) {
   const workspaceId = useAtomValue(currentWorkspaceIdAtom);
-  return <BoardSidePanelContent key={`${workspaceId}:${props.board.id}`} {...props} />;
+  return (
+    <BoardDocumentLinksContext.Provider value={props.documentLinks ?? null}>
+      <BoardSidePanelContent key={`${workspaceId}:${props.board.id}`} {...props} />
+    </BoardDocumentLinksContext.Provider>
+  );
 }
 
 function BoardSidePanelContent({
