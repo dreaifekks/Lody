@@ -40,6 +40,7 @@ import {
   LanHubSnapshotRequestSchema,
   writeLanHubSnapshot,
 } from './hub-snapshot';
+import { reclaimLanHubStreams, trimLanHubStreams } from './hub-storage';
 
 /**
  * Where a hub serves shared conversations unless told otherwise. Not the port
@@ -88,7 +89,10 @@ export type LanHubServerOptions = {
   dataDir: string;
   tls?: { cert: Buffer; key: Buffer } | null;
   /** Replaces the Streams server; the gate is tested without spawning one. */
-  startUpstream?: (options: { dataDir: string }) => Promise<LanHubUpstream>;
+  startUpstream?: (options: {
+    dataDir: string;
+    log?: (line: string) => void;
+  }) => Promise<LanHubUpstream>;
   keepaliveMs?: number;
   handoverTimeoutMs?: number;
   /** Replaces APNs; push is tested without Apple. */
@@ -267,9 +271,23 @@ export const LAN_HUB_STREAMS_GUARD_IMPORT = `data:text/javascript,${encodeURICom
   LAN_HUB_STREAMS_GUARD
 )}`;
 
-async function startStreamsServer(options: { dataDir: string }): Promise<LanHubUpstream> {
+async function startStreamsServer(options: {
+  dataDir: string;
+  log?: (line: string) => void;
+}): Promise<LanHubUpstream> {
   const loroCli = resolveLoroCli();
   ensureSqliteBinding(loroCli.manifestPath);
+  const databasePath = path.join(options.dataDir, DATABASE_FILE_NAME);
+  if (fs.existsSync(databasePath)) {
+    const started = Date.now();
+    const reclaimed = reclaimLanHubStreams(databasePath);
+    if (reclaimed.streams > 0) {
+      options.log?.(
+        `[storage] Deleted what snapshots replaced in ${reclaimed.streams} stream(s): ` +
+          `${reclaimed.bytesBefore} -> ${reclaimed.bytesAfter} bytes in ${Date.now() - started} ms.`
+      );
+    }
+  }
   const handle = startProcessLegacy(
     {
       command: process.execPath,
@@ -297,6 +315,8 @@ async function startStreamsServer(options: { dataDir: string }): Promise<LanHubU
   const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
   try {
     const port = await waitForUpstreamPort(child);
+    // A database the server just created has its tables only now.
+    trimLanHubStreams(databasePath);
     return { port, exited, stop: () => handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 }) };
   } catch (error) {
     await handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 });
@@ -694,7 +714,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
 
   /** Starts the Streams server and serves the LAN with it. */
   const serve = async (): Promise<void> => {
-    const upstream = await startUpstream({ dataDir });
+    const upstream = await startUpstream({ dataDir, log: options.log });
     state = { kind: 'serving', upstream };
     void upstream.exited.then((code) => {
       // A handover stops the server on purpose, and a later one replaces it.
