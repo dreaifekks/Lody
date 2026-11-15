@@ -57,10 +57,14 @@ describe('classifyPermissionModeFace', () => {
       tone: 'neutral',
       render: 'icon',
     });
-    expect(classifyPermissionModeFace('acceptEdits')).toMatchObject({
-      tone: 'neutral',
-      render: 'icon',
-    });
+    // Claude's and the agy CLI's spelling of the same mode.
+    for (const modeId of ['acceptEdits', 'accept-edits']) {
+      expect(classifyPermissionModeFace(modeId)).toEqual({
+        kind: 'accept-edits',
+        tone: 'neutral',
+        render: 'icon',
+      });
+    }
     expect(classifyPermissionModeFace('plan')).toMatchObject({ tone: 'neutral', render: 'icon' });
   });
 });

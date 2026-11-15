@@ -397,7 +397,10 @@ leaves the draft title; there is no timeout-triggered duplicate generation.
 
 The builtin Claude/Grok identity table remains compatibility for older
 managed runtimes. Overrides revoke that fallback, but can independently advertise
-the new capability. Only legacy Claude/Grok titles are trusted without a tag.
+the new capability. Only legacy Claude/Grok titles are trusted without a tag. The
+LAN fork adds the registry's Google Antigravity to that fallback, because the entry
+runs the agy CLI, which titles its own conversations (see
+[Google Antigravity runs the agy CLI](#google-antigravity-runs-the-agy-cli-lan-fork)).
 See the [contract](../../../../specs/acp-session-titles.md) and
 [original compatibility decision](../../../../.agents/notes/implemented/architecture/2026-09-08-acp-owned-session-titles.md).
 
@@ -452,6 +455,35 @@ credential _syntax_ still let plain prose through, so it fails open on every mis
 be a security boundary. Naming refs after user text needs a source provably isolated from the
 prompt, and no such source exists at session-ready: the ACP title has not arrived yet, and the
 isolated generator's own fallback is the raw prompt.
+
+### Google Antigravity runs the agy CLI (LAN fork)
+
+The registry entry `antigravity-acp` launches the agy CLI's own ACP server
+(`antigravity acp`) from the CLI's GitHub release instead of the registry's
+`agy_acp_server`. `scripts/generate-acp-registry.mjs` pins that release in
+`ANTIGRAVITY_CLI_VERSION` and rewrites only this entry; a version bump is manual.
+The server loads the user's agy plugins, hooks and MCP servers, and offers `default`,
+`accept-edits`, `auto` and `plan` with a `thought_level` option. It lists Claude/GPT
+models to every client, so the Zed client identity no longer matters for it.
+
+- Titles: it pushes untagged `session_info_update` titles, so it uses the identity
+  fallback in [Session titles](#session-titles). An isolated title session would be
+  one more agy conversation running the user's plugin hooks.
+- Auto Review: `antigravity-auto-review.ts` checks the modes a session reports. When
+  `auto` is among them it adds no mode and reviews nothing, and a stored `auto_review`
+  is sent as `auto`, so the reviewer, a hidden session of the same binary, never
+  starts. Older servers keep the synthetic mode.
+- Permissions: in `default` and `auto`, agy asks before every tool call of an MCP
+  server the client passes (the builtin `lody` server, workspace MCP) and offers only
+  allow-once or reject-once. MCP servers from its own plugins run without asking.
+- Stored selections: `yolo`, `auto_edit`, `auto_review` and `thinking_level` are not
+  in this catalog. Create rejects them and continuing turns drop them. Session ids
+  from the former server load as empty conversations.
+- Quota still reads the former server's sign-in, `~/.gemini/antigravity-acp/acp_token.json`;
+  the agy CLI keeps its own credential.
+
+Decision, alternatives and evidence:
+[agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md).
 
 ### Local project identity
 

@@ -103,42 +103,46 @@ const REMOTE_REGISTRY_ACP_AGENTS: RegistryAcpAgent[] = [
   {
     id: 'antigravity-acp',
     name: 'Google Antigravity',
-    version: '1.4.5',
+    version: '1.5.9',
     description: 'Google’s AI coding agent',
     icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg',
     distribution: {
       binary: {
         'darwin-aarch64': {
           archive:
-            'https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.5-darwin-arm64.zip',
-          cmd: './agy_acp_server.par',
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_mac_arm64.tar.gz',
+          cmd: './antigravity',
+          args: ['acp'],
         },
         'darwin-x86_64': {
           archive:
-            'https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.5-darwin-x86_64.zip',
-          cmd: './agy_acp_server.par',
-        },
-        'linux-x86_64': {
-          archive:
-            'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip',
-          cmd: './agy_acp_server.par',
-          args: ['--uid='],
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_mac_x64.tar.gz',
+          cmd: './antigravity',
+          args: ['acp'],
         },
         'linux-aarch64': {
           archive:
-            'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-arm64.zip',
-          cmd: './agy_acp_server.par',
-          args: ['--uid='],
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_linux_arm64.tar.gz',
+          cmd: './antigravity',
+          args: ['acp'],
         },
-        'windows-x86_64': {
+        'linux-x86_64': {
           archive:
-            'https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.5-windows-x86_64.zip',
-          cmd: './agy_acp_server.exe',
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_linux_x64.tar.gz',
+          cmd: './antigravity',
+          args: ['acp'],
         },
         'windows-aarch64': {
           archive:
-            'https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.5-windows-arm64.zip',
-          cmd: './agy_acp_server.exe',
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_windows_arm64.zip',
+          cmd: './antigravity.exe',
+          args: ['acp'],
+        },
+        'windows-x86_64': {
+          archive:
+            'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_windows_x64.zip',
+          cmd: './antigravity.exe',
+          args: ['acp'],
         },
       },
     },
