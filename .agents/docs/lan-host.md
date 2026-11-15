@@ -53,10 +53,15 @@ the capable member closest to the hub that does not host it. One that keeps a
 fresh copy stays the standby until another is clearly closer.
 `LODY_LAN_STANDBY=off` keeps a server out of it.
 
-The standby copies the hub every ten minutes. The hub serializes a consistent
-SQLite image in memory, without a temporary database on disk, and streams only
-the 64 KB blocks whose digests differ, with its other files. This uses about one
-database's worth of hub memory; hashing yields to the event loop every 256 blocks.
+The standby copies the hub every ten minutes. The hub copies its database page
+by page with SQLite's online backup into `.standby-copy/` in its data directory,
+hashes that file, streams only the 64 KB blocks whose digests differ with its
+other files, and deletes the copy. It holds a read transaction on the source for
+the whole backup, so every step reads the same moment: without it, any write of
+the Streams server between two steps restarts the backup, which then never ends
+on a busy hub. A pull costs the hub a database's worth of disk writes and next to
+no memory. It used to serialize the image in memory instead, which SQLite refuses
+above its 2 GiB allocation limit (`Out of memory`).
 Before asking for a delta, the standby hashes its current database against the
 kept digests; a mismatch invalidates that copy and requests a full one. It stages
 and verifies changed blocks in a compact patch file, and finishes copying side
@@ -101,6 +106,34 @@ sends what the hub lacks, which is how a write that only it and the lost hub
 had survives (`hub-failover.test.ts` runs this against the Streams server).
 JSON streams, the short-lived request streams, keep their offsets.
 
+## What the hub keeps
+
+The Streams server records a snapshot of a stream by moving the stream's
+earliest offset; it never deletes the entries before it. No reader reaches them
+any more: a read from below the earliest offset is answered with 410, and a
+bootstrap sends the snapshot with the entries after it. The hub deletes them
+(`hub-storage.ts`) only while no Streams server has the database open: before
+it starts one, and before a standby starts a hub from its copy, so that the
+deletion does not use up the 30 seconds the takeover waits for that hub. It
+keeps the entry that ends at the snapshot, because the server records a
+snapshot, or reads a JSON stream, only at an offset where a stored entry starts
+or ends.
+
+It does not delete while serving. A bootstrap takes the snapshot, sends it, and
+reads the entries after it only once the snapshot is out. When another client
+records a newer snapshot meanwhile, as a member does while a slow reader
+receives a large one, entries deleted with it would be missing from that
+bootstrap, which would still answer 200 and claim the stream's end
+(`hub-storage.test.ts` holds a bootstrap open while that happens). The server
+could delete them itself once a bootstrap reads its snapshot and the entries
+after it in one view.
+
+Once a quarter of the file or more is free, the hub VACUUMs it; less stays on
+SQLite's free list for the server to reuse. A 2 GB database that had kept seven
+weeks of replaced entries took 13 seconds on a small NVMe server to delete them
+and VACUUM, and came out at half the size; the hub does not answer meanwhile.
+A start that finds nothing to delete costs a few milliseconds.
+
 ## Telling what is outside Lody
 
 A tunnel, a reverse proxy or a monitor that names the hub's machine has to
@@ -142,6 +175,15 @@ edit and is not told.
 
 - The hub is a development server on SQLite: one node, no replication. Back up
   its data directory.
+- Between starts, the entries that snapshots replace accumulate again: a hub
+  that runs for weeks grows by them until it starts next. `lody lan up` and
+  `lody lan take-over` delete them inside the 30 seconds they wait for the hub.
+  A take-over that runs out leaves the LAN with the former host, which deletes
+  them before it serves again, so the next take-over is quick.
+- Nothing removes the streams of archived or deleted sessions from the hub.
+  Their snapshots and the entries after them stay, as do the file index streams
+  of their worktrees; those expire 180 days after they were created when the
+  agent service created them, and never when a desktop did.
 - A credential cannot be rotated in place. Host a new LAN and move.
 - Only a server with a systemd user session takes a LAN over, as only one hosts
   it. A failover loses what the lost hub alone had: what was written after the

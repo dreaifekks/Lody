@@ -40,6 +40,7 @@ import {
   LanHubSnapshotRequestSchema,
   writeLanHubSnapshot,
 } from './hub-snapshot';
+import { reclaimLanHubStreams } from './hub-storage';
 
 /**
  * Where a hub serves shared conversations unless told otherwise. Not the port
@@ -88,7 +89,10 @@ export type LanHubServerOptions = {
   dataDir: string;
   tls?: { cert: Buffer; key: Buffer } | null;
   /** Replaces the Streams server; the gate is tested without spawning one. */
-  startUpstream?: (options: { dataDir: string }) => Promise<LanHubUpstream>;
+  startUpstream?: (options: {
+    dataDir: string;
+    log?: (line: string) => void;
+  }) => Promise<LanHubUpstream>;
   keepaliveMs?: number;
   handoverTimeoutMs?: number;
   /** Replaces APNs; push is tested without Apple. */
@@ -267,9 +271,13 @@ export const LAN_HUB_STREAMS_GUARD_IMPORT = `data:text/javascript,${encodeURICom
   LAN_HUB_STREAMS_GUARD
 )}`;
 
-async function startStreamsServer(options: { dataDir: string }): Promise<LanHubUpstream> {
+async function startStreamsServer(options: {
+  dataDir: string;
+  log?: (line: string) => void;
+}): Promise<LanHubUpstream> {
   const loroCli = resolveLoroCli();
   ensureSqliteBinding(loroCli.manifestPath);
+  reclaimLanHubStreams(options.dataDir, options.log);
   const handle = startProcessLegacy(
     {
       command: process.execPath,
@@ -694,7 +702,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
 
   /** Starts the Streams server and serves the LAN with it. */
   const serve = async (): Promise<void> => {
-    const upstream = await startUpstream({ dataDir });
+    const upstream = await startUpstream({ dataDir, log: options.log });
     state = { kind: 'serving', upstream };
     void upstream.exited.then((code) => {
       // A handover stops the server on purpose, and a later one replaces it.
