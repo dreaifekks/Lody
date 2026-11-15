@@ -1,0 +1,82 @@
+--- a/dist/streams.d.cts
++++ b/dist/streams.d.cts
+@@ -414,6 +414,14 @@
+   getLatency(): number | undefined;
+   onLatency(_listener: (latencyMs: number) => void): () => void;
+   reconnect(): Promise<void>;
++  /**
++   * Lody fork: uploads a snapshot of a joined room now, through the room's
++   * own snapshot path and however little it grew since the last one.
++   * Resolves whether the server recorded one.
++   */
++  uploadDocSnapshot(docId: string): Promise<boolean>;
++  uploadFlockDocSnapshot(flockDocId: string): Promise<boolean>;
++  private uploadRoomSnapshot;
+   syncMeta(flock: Flock, options?: {
+     timeout?: number;
+     signal?: AbortSignal;
+--- a/dist/streams.d.ts
++++ b/dist/streams.d.ts
+@@ -414,6 +414,14 @@
+   getLatency(): number | undefined;
+   onLatency(_listener: (latencyMs: number) => void): () => void;
+   reconnect(): Promise<void>;
++  /**
++   * Lody fork: uploads a snapshot of a joined room now, through the room's
++   * own snapshot path and however little it grew since the last one.
++   * Resolves whether the server recorded one.
++   */
++  uploadDocSnapshot(docId: string): Promise<boolean>;
++  uploadFlockDocSnapshot(flockDocId: string): Promise<boolean>;
++  private uploadRoomSnapshot;
+   syncMeta(flock: Flock, options?: {
+     timeout?: number;
+     signal?: AbortSignal;
+--- a/dist/transport/streams.cjs
++++ b/dist/transport/streams.cjs
+@@ -1831,6 +1831,21 @@
+ 		this.flockDocSessions.set(flockDocId, session);
+ 		return session;
+ 	}
++	/**
++	* Lody fork: uploads a snapshot of a joined room now, through the room's
++	* own snapshot path and however little it grew since the last one.
++	* Resolves whether the server recorded one.
++	*/
++	async uploadDocSnapshot(docId) {
++		return await this.uploadRoomSnapshot(this.docSessions.get(docId));
++	}
++	async uploadFlockDocSnapshot(flockDocId) {
++		return await this.uploadRoomSnapshot(this.flockDocSessions.get(flockDocId));
++	}
++	async uploadRoomSnapshot(session) {
++		const state = session == null || session.closed ? void 0 : session.stream.joinState;
++		return state == null ? false : await session.stream.snapshotManager.repair(state);
++	}
+ 	getFlockDocStreamUrl(flockDocId) {
+ 		return this.getStreamUrl(this.getFlockDocStreamAddress(flockDocId));
+ 	}
+--- a/dist/transport/streams.js
++++ b/dist/transport/streams.js
+@@ -1825,6 +1825,21 @@
+ 		this.flockDocSessions.set(flockDocId, session);
+ 		return session;
+ 	}
++	/**
++	* Lody fork: uploads a snapshot of a joined room now, through the room's
++	* own snapshot path and however little it grew since the last one.
++	* Resolves whether the server recorded one.
++	*/
++	async uploadDocSnapshot(docId) {
++		return await this.uploadRoomSnapshot(this.docSessions.get(docId));
++	}
++	async uploadFlockDocSnapshot(flockDocId) {
++		return await this.uploadRoomSnapshot(this.flockDocSessions.get(flockDocId));
++	}
++	async uploadRoomSnapshot(session) {
++		const state = session == null || session.closed ? void 0 : session.stream.joinState;
++		return state == null ? false : await session.stream.snapshotManager.repair(state);
++	}
+ 	getFlockDocStreamUrl(flockDocId) {
+ 		return this.getStreamUrl(this.getFlockDocStreamAddress(flockDocId));
+ 	}

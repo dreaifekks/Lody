@@ -85,6 +85,7 @@ import {
   isSensitiveAcpConfigOptionId,
   BuiltinRuntimeOverridesSchema,
   CustomAcpLaunchSpecSchema,
+  getCodeCollabFileIndexFlockDocId,
 } from '@lody/shared';
 import { LocalLoroDataPlaneServerLegacy } from '@lody/shared/local-loro-data-plane-server';
 import { getProcessLocalLoroWriterLegacy } from '@lody/shared/local-loro-writer/legacy';
@@ -139,7 +140,12 @@ import {
   createDocumentRemoteCursorStore,
   type DocumentCursorScope,
 } from './sqlite-repo-store';
-import { streamsRoomBinding, type StreamsRoomBinding } from './streams-room-binding';
+import {
+  STREAMS_TRANSPORT_ID,
+  streamsRoomBinding,
+  type StreamsRoomBinding,
+} from './streams-room-binding';
+import { StreamsTransportAdapter } from 'loro-repo/transport/streams';
 import { formatErrorMessage } from '@/utils/format-error';
 import {
   findSoleMachineAgentConfig,
@@ -1781,6 +1787,60 @@ export class LoroDocumentManager {
     if (!temporary) return await read(await this.getOrCreateSessionDoc(sessionId));
     if (!temporary.ok) throw temporary.error;
     return temporary.value;
+  }
+
+  /**
+   * Records a snapshot of an archived Session's streams on the hub now: its
+   * Session doc and, if the workspace has one, its file index. The hub keeps
+   * a stream's entries until a snapshot replaces them and deletes those only
+   * when it next starts ([what the hub keeps](../../../../../.agents/docs/lan-host.md#what-the-hub-keeps));
+   * an archived Session would otherwise keep every entry it wrote, as no one
+   * writes enough to it again for an automatic snapshot. A doc a live owner
+   * holds is left to that owner. Rejects while no Streams transport is
+   * attached. Resolves which of the two the server recorded.
+   */
+  async compactArchivedSessionStreams(
+    sessionId: SessionId
+  ): Promise<{ session: boolean; fileIndex: boolean }> {
+    const adapter = this.repo.getTransportAdapter(STREAMS_TRANSPORT_ID);
+    if (!(adapter instanceof StreamsTransportAdapter))
+      throw new Error('streams_transport_detached');
+    const docId = getSessionRoomId(sessionId);
+    const session = await this.withLocalDocOwnership(docId, async () => {
+      if (this.sessions.has(sessionId) || this.pendingSessionDocs.has(sessionId)) return false;
+      const room = await this.repo.joinDocRoom(docId);
+      try {
+        await withTimeout(
+          streamsRoomBinding(room).firstSyncedWithRemote,
+          SYNC_CONFIRMATION_TIMEOUT_MS,
+          `Timeout waiting for archived session doc sync (room=${docId})`
+        );
+        return await adapter.uploadDocSnapshot(docId);
+      } finally {
+        room.unsubscribe();
+        if (!this.localDocRoomBridges.has(docId) && !this.localRendererDocRooms.has(docId))
+          await this.unloadDocRoom(docId);
+      }
+    });
+    const flockDocId = getCodeCollabFileIndexFlockDocId(this.workspaceId, sessionId);
+    const known = await this.repo.getFlockDoc(flockDocId);
+    // Joining a room creates its stream; one that expired or never existed stays absent.
+    if (!known || known.deleted || (known.expiresAtMs ?? Infinity) <= Date.now())
+      return { session, fileIndex: false };
+    const room = await this.repo.joinFlockDocRoom(flockDocId);
+    let fileIndex: boolean;
+    try {
+      await withTimeout(
+        streamsRoomBinding(room).firstSyncedWithRemote,
+        SYNC_CONFIRMATION_TIMEOUT_MS,
+        `Timeout waiting for archived file index sync (room=${flockDocId})`
+      );
+      fileIndex = await adapter.uploadFlockDocSnapshot(flockDocId);
+    } finally {
+      room.unsubscribe();
+    }
+    if (!this.localFlockRoomBridges.has(flockDocId)) await this.repo.unloadFlockDoc(flockDocId);
+    return { session, fileIndex };
   }
 
   private async joinTransientDocRoom(
