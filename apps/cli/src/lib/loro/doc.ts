@@ -1797,11 +1797,12 @@ export class LoroDocumentManager {
    * an archived Session would otherwise keep every entry it wrote, as no one
    * writes enough to it again for an automatic snapshot. A doc a live owner
    * holds is left to that owner. Rejects while no Streams transport is
-   * attached. Resolves which of the two the server recorded.
+   * attached. Resolves which of the two the server recorded; `fileIndex` is
+   * null for a Session without one.
    */
   async compactArchivedSessionStreams(
     sessionId: SessionId
-  ): Promise<{ session: boolean; fileIndex: boolean }> {
+  ): Promise<{ session: boolean; fileIndex: boolean | null }> {
     const adapter = this.repo.getTransportAdapter(STREAMS_TRANSPORT_ID);
     if (!(adapter instanceof StreamsTransportAdapter))
       throw new Error('streams_transport_detached');
@@ -1826,7 +1827,7 @@ export class LoroDocumentManager {
     const known = await this.repo.getFlockDoc(flockDocId);
     // Joining a room creates its stream; one that expired or never existed stays absent.
     if (!known || known.deleted || (known.expiresAtMs ?? Infinity) <= Date.now())
-      return { session, fileIndex: false };
+      return { session, fileIndex: null };
     const room = await this.repo.joinFlockDocRoom(flockDocId);
     let fileIndex: boolean;
     try {

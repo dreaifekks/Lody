@@ -126,18 +126,36 @@ describe('archived session streams', () => {
       meta: { id, machineId, isArchived } as SessionMeta,
     });
 
-    await backfillArchivedSessionStreams({
-      manager,
-      workspaceId,
-      machineId: OWN,
-      listSessions: async () => [
-        meta(archivedWithFiles, OWN, true),
-        meta(archived, OWN, true),
-        meta(othersArchived, OTHER, true),
-        meta(open, OWN, false),
-      ],
-      logger: silentLogger(),
-    });
+    const backfill = () =>
+      backfillArchivedSessionStreams({
+        manager,
+        workspaceId,
+        machineId: OWN,
+        listSessions: async () => [
+          meta(archivedWithFiles, OWN, true),
+          meta(archived, OWN, true),
+          meta(othersArchived, OTHER, true),
+          meta(open, OWN, false),
+        ],
+        logger: silentLogger(),
+      });
+    const marker = path.join(getLoroRepoStorageBaseDir(workspaceId), 'archived-streams-compacted');
+
+    // The server refuses every snapshot: the run is not recorded as done.
+    const fetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      init?.method === 'PUT' && String(input).includes('/snapshot/')
+        ? new Response(null, { status: 503 })
+        : await fetch(input, init);
+    try {
+      await backfill();
+    } finally {
+      globalThis.fetch = fetch;
+    }
+    expect(streamsOf(hubDir, archived)[0]?.earliest).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
+
+    await backfill();
 
     const [fileIndexStream, sessionStream] = streamsOf(hubDir, archivedWithFiles);
     for (const stream of [fileIndexStream, sessionStream]) {
@@ -153,9 +171,7 @@ describe('archived session streams', () => {
     for (const id of [othersArchived, open]) {
       expect(streamsOf(hubDir, id)).toEqual([expect.objectContaining({ earliest: 0 })]);
     }
-    expect(
-      fs.existsSync(path.join(getLoroRepoStorageBaseDir(workspaceId), 'archived-streams-compacted'))
-    ).toBe(true);
+    expect(fs.existsSync(marker)).toBe(true);
 
     await manager.detachRemoteStreamsTransport();
     await hub.close();

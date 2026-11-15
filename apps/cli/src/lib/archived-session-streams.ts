@@ -15,7 +15,8 @@ type Compactor = Pick<LoroDocumentManager, 'compactArchivedSessionStreams'>;
 
 /**
  * Records a snapshot of the streams of a Session this machine archived, so the
- * hub can delete the entries before it when it next starts.
+ * hub can delete the entries before it when it next starts. Resolves whether
+ * the server recorded every snapshot the Session needs.
  */
 export async function compactArchivedSessionStreams(
   manager: Compactor,
@@ -27,7 +28,8 @@ export async function compactArchivedSessionStreams(
     logger.debug(
       `[${sessionId}] Archived session snapshot recorded: session=${recorded.session} fileIndex=${recorded.fileIndex}`
     );
-    return true;
+    // False is an upload that did not happen, whatever stopped it.
+    return recorded.session && recorded.fileIndex !== false;
   } catch (error) {
     logger.debug(
       `[${sessionId}] Archived session snapshot not recorded: ${formatErrorMessage(error)}`
