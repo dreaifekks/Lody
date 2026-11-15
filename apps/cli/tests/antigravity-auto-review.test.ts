@@ -401,7 +401,9 @@ describe('Antigravity Auto Review stream', () => {
       toClient,
       toAgent,
       settle,
-      async start() {
+      async start(
+        availableModes: { id: string; name: string }[] = [{ id: 'default', name: 'Default' }]
+      ) {
         await clientWriter.write({
           jsonrpc: '2.0',
           id: 1,
@@ -417,13 +419,7 @@ describe('Antigravity Auto Review stream', () => {
         await agentWriter.write({
           jsonrpc: '2.0',
           id: 1,
-          result: {
-            sessionId: 's',
-            modes: {
-              currentModeId: 'default',
-              availableModes: [{ id: 'default', name: 'Default' }],
-            },
-          },
+          result: { sessionId: 's', modes: { currentModeId: 'default', availableModes } },
         });
         await clientWriter.write({
           jsonrpc: '2.0',
@@ -460,7 +456,8 @@ describe('Antigravity Auto Review stream', () => {
           method: 'session/cancel',
           params: { sessionId: 's' },
         }),
-      async switchMode(id: number, value: string) {
+      /** `reported` is the mode the agent then reports as current. */
+      async switchMode(id: number, value: string, reported = value) {
         await clientWriter.write({
           jsonrpc: '2.0',
           id,
@@ -477,7 +474,7 @@ describe('Antigravity Auto Review stream', () => {
                 name: 'Mode',
                 category: 'mode',
                 type: 'select',
-                currentValue: value,
+                currentValue: reported,
                 options: [{ value: 'default', name: 'Default' }],
               },
             ],
@@ -536,6 +533,36 @@ describe('Antigravity Auto Review stream', () => {
     expect(wired.toAgent[0]).toMatchObject({
       params: { _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'default' } } } } },
     });
+  });
+
+  it("runs Auto Review in the agent's own Auto mode when it has one, and reviews nothing", async () => {
+    const agyModes = [
+      { id: 'default', name: 'Default' },
+      { id: 'accept-edits', name: 'Accept edits' },
+      { id: 'auto', name: 'Auto' },
+      { id: 'plan', name: 'Plan' },
+    ];
+    const wired = wire(neverAnswers());
+    await wired.start(agyModes);
+    const response = wired.toClient.find((message) => 'id' in message && message.id === 1) as {
+      result: { modes: unknown };
+    };
+    expect(response.result.modes).toEqual({ currentModeId: 'default', availableModes: agyModes });
+
+    await wired.switchMode(3, 'auto_review', 'auto');
+    expect(wired.toAgent.at(-1)).toMatchObject({
+      method: 'session/set_config_option',
+      params: { configId: 'mode', value: 'auto' },
+    });
+    expect(wired.toClient.at(-1)).toMatchObject({
+      id: 3,
+      result: { configOptions: [expect.objectContaining({ currentValue: 'auto' })] },
+    });
+
+    // The agent's own reviewer already let this through to the user: no wait, no audit entry.
+    await wired.requestPermission(10, 'make build');
+    expect(forwarded(wired.toClient)).toEqual([10]);
+    expect(JSON.stringify(wired.toClient)).not.toContain('Auto Review');
   });
 
   it('hands a request to the user when the reviewer does not answer in time', async () => {

@@ -103,6 +103,35 @@ const LOCAL_REGISTRY_AGENT_FALLBACKS = {
   },
 };
 
+// LAN fork: Google Antigravity runs the agy CLI's own ACP server (`antigravity acp`)
+// instead of the registry's `agy_acp_server`, which loads no plugins and offers no
+// Auto or Plan mode. The CLI ships one executable per GitHub release; bump the
+// pinned version together with the CLI.
+const ANTIGRAVITY_CLI_VERSION = '1.5.9';
+const ANTIGRAVITY_CLI_ARCHIVES = {
+  'darwin-aarch64': 'mac_arm64.tar.gz',
+  'darwin-x86_64': 'mac_x64.tar.gz',
+  'linux-aarch64': 'linux_arm64.tar.gz',
+  'linux-x86_64': 'linux_x64.tar.gz',
+  'windows-aarch64': 'windows_arm64.zip',
+  'windows-x86_64': 'windows_x64.zip',
+};
+
+function antigravityCliDistribution() {
+  return {
+    binary: Object.fromEntries(
+      Object.entries(ANTIGRAVITY_CLI_ARCHIVES).map(([platform, archive]) => [
+        platform,
+        {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_CLI_VERSION}/agy_cli_${archive}`,
+          cmd: platform.startsWith('windows-') ? './antigravity.exe' : './antigravity',
+          args: ['acp'],
+        },
+      ])
+    ),
+  };
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
@@ -206,14 +235,15 @@ function normalizeRegistryAgent(agent) {
       arg === 'acp-daemon' ? 'acp' : arg
     );
   }
+  const antigravityCli = id === 'antigravity-acp';
 
   return {
     id,
     name,
-    version,
+    version: antigravityCli ? ANTIGRAVITY_CLI_VERSION : version,
     description: typeof agent.description === 'string' ? agent.description : undefined,
     icon: typeof agent.icon === 'string' ? agent.icon : undefined,
-    distribution,
+    distribution: antigravityCli ? antigravityCliDistribution() : distribution,
   };
 }
 

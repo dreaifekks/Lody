@@ -109,8 +109,9 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
   probe errors. Keep Provider homes unchanged.
 
 - Core sessionTitle v1 owns post-init titles except Codex, whose titles/settings Lody
-  owns. Accept generated/explicit, never fallback/unset. Only legacy managed Claude/Grok
-  without overrides accept untagged titles. Strip internal instructions and keep user titles.
+  owns. Accept generated/explicit, never fallback/unset. Untagged titles: legacy managed
+  Claude/Grok without overrides; fork registry Antigravity. Strip internal instructions;
+  keep user titles.
   Isolated generation accepts absent phases, prefers final answers, discards commentary/
   pre-prompt text and sanitizes output. Follow [title rules](README.md#session-titles).
 

@@ -67,6 +67,42 @@ void describe('ACP registry icon generation', () => {
   });
 });
 
+void it("launches Google Antigravity through the agy CLI's ACP server", () => {
+  const [antigravity] = normalizeRegistryAgents([
+    {
+      id: 'antigravity-acp',
+      name: 'Google Antigravity',
+      version: '1.5.0',
+      distribution: {
+        binary: {
+          'linux-x86_64': {
+            archive: 'https://dl.google.com/agy-extensions/agy-acp-server-1.5.0-linux-x86_64.zip',
+            cmd: './agy_acp_server.par',
+            args: ['--uid='],
+          },
+        },
+      },
+    },
+  ]).filter(({ id }) => id === 'antigravity-acp');
+  assert.equal(antigravity.version, '1.5.9');
+  const binary = antigravity.distribution.binary;
+  assert.deepEqual(Object.keys(binary).sort(), [
+    'darwin-aarch64',
+    'darwin-x86_64',
+    'linux-aarch64',
+    'linux-x86_64',
+    'windows-aarch64',
+    'windows-x86_64',
+  ]);
+  assert.deepEqual(binary['linux-x86_64'], {
+    archive:
+      'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.9/agy_cli_linux_x64.tar.gz',
+    cmd: './antigravity',
+    args: ['acp'],
+  });
+  assert.equal(binary['windows-aarch64'].cmd, './antigravity.exe');
+});
+
 void it('excludes builtin duplicates without reintroducing local Kimi fallbacks', () => {
   const agents = ['devin', 'dimcode', 'kimi', 'kimi-code', 'third-party'].map((id) => ({
     id,

@@ -43,6 +43,8 @@ const MODE_TIERS: ReadonlyMap<string, PermissionTier> = new Map([
   // Google Antigravity / Gemini, Kimi (`default`, `plan`, `auto` above).
   ['auto_edit', 'edit'],
   ['yolo', 'full'],
+  // The agy CLI's ACP server (LAN fork registry entry for Google Antigravity).
+  ['accept-edits', 'edit'],
   // Antigravity Auto Review, added by Lody (LAN fork): the CLI reviews each request.
   ['auto_review', 'auto'],
   // Grok `permission_mode`.

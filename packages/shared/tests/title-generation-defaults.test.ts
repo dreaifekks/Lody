@@ -158,6 +158,13 @@ describe('acpOwnsSessionTitleGeneration', () => {
     expect(acpOwnsSessionTitleGeneration('custom', 'claude')).toBe(false);
     expect(acpOwnsSessionTitleGeneration('builtin', 'not-an-agent')).toBe(false);
   });
+
+  // LAN fork: the registry entry runs the agy CLI, which titles its conversations.
+  it("lets the registry's Google Antigravity title its own sessions", () => {
+    expect(acpOwnsSessionTitleGeneration('registry', 'antigravity-acp')).toBe(true);
+    expect(trustsUntaggedAcpSessionTitle('registry', 'antigravity-acp')).toBe(true);
+    expect(acpOwnsSessionTitleGeneration('custom', 'antigravity-acp')).toBe(false);
+  });
 });
 
 describe('trustsUntaggedAcpSessionTitle', () => {

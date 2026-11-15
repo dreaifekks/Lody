@@ -25,6 +25,10 @@ subdirectory; this file is the navigation index. Cross-module explanations live 
   Successful polls replace that config/type's complete Machine Flock quota
   snapshot, removing groups absent from the response (including Argon after
   switching to Ultra). Signed-out and failed fetches preserve the cached snapshot.
+  The request uses the host and User-Agent of the agy CLI
+  ([Argon quota decision](../../../../.agents/notes/implemented/bug-fix/2026-10-20-antigravity-argon-quota.md)).
+  It reads the sign-in of the former `agy_acp_server`, not the agy CLI that sessions
+  now run ([agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md)).
 
 ## Resource discovery
 

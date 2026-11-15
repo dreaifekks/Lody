@@ -20,10 +20,15 @@ import {
 
 /**
  * LAN fork: Antigravity Auto Review, a permission mode Lody adds to the
- * `antigravity-acp` registry agent. `agy_acp_server` (1.4.x) offers only
+ * `antigravity-acp` registry agent. `agy_acp_server` (1.4.x, 1.5.0) offers only
  * `default` (every step asks), `auto_edit` (also approves edits outside the
  * workspace, unasked) and `yolo`; its terminal CLI's reviewer-backed Auto mode
  * is not exposed over ACP.
+ *
+ * The registry entry now launches the agy CLI itself (`antigravity acp`), which
+ * offers that Auto mode as `auto`. An agent that reports `auto` gets no added
+ * mode and no Lody review: `auto_review`, still stored in sessions and Roles,
+ * is sent to the agent as `auto`.
  *
  * This module sits on the ACP stream between `AgentClient` and the agent
  * process, so the rest of Lody sees an ordinary mode:
@@ -60,6 +65,8 @@ export type AntigravityAutoReviewOptions = {
 };
 
 const UNDERLYING_MODE_ID = 'default';
+/** The agy CLI's own reviewer-backed mode. */
+const NATIVE_AUTO_MODE_ID = 'auto';
 export const AUTO_REVIEW_TIMEOUT_MS = 15_000;
 /** Consecutive reviewer refusals (ask, error, timeout) in a turn before it stops reviewing. */
 export const AUTO_REVIEW_CIRCUIT_BREAKER_LIMIT = 3;
@@ -98,7 +105,7 @@ type SessionState = {
 
 type PendingRequest =
   | { kind: 'session'; roots: string[]; requestedMode: string | undefined; sessionId?: string }
-  | { kind: 'mode'; sessionId: string; target: string };
+  | { kind: 'mode'; sessionId: string; review: boolean };
 
 const textOf = (blocks: unknown): string =>
   Array.isArray(blocks)
@@ -110,6 +117,20 @@ const textOf = (blocks: unknown): string =>
         )
         .join('')
     : '';
+
+/** Mode ids in a session-start result, from both mode representations. */
+const reportedModeIds = (result: Json): unknown[] => [
+  ...(isRecord(result.modes) && Array.isArray(result.modes.availableModes)
+    ? result.modes.availableModes.map((mode: unknown) => (isRecord(mode) ? mode.id : undefined))
+    : []),
+  ...(Array.isArray(result.configOptions)
+    ? result.configOptions.flatMap((option: unknown) =>
+        isRecord(option) && option.category === 'mode' && Array.isArray(option.options)
+          ? option.options.map((entry: unknown) => (isRecord(entry) ? entry.value : undefined))
+          : []
+      )
+    : []),
+];
 
 /** Adds Auto Review after `auto_edit` in an agent-reported mode list or option list. */
 const withAutoReviewMode = <T>(entries: T[], make: () => T, idOf: (entry: T) => unknown): T[] => {
@@ -148,6 +169,8 @@ export function withAntigravityAutoReview(
   const sessions = new Map<string, SessionState>();
   const pending = new Map<string | number, PendingRequest>();
   let reviewer: AutoReviewer | null = null;
+  /** The agent reported its own `auto` mode; one process runs one binary for every session. */
+  let nativeAuto = false;
   let toAgent: TransformStreamDefaultController<AnyMessage> | null = null;
   let toClient: TransformStreamDefaultController<AnyMessage> | null = null;
 
@@ -204,7 +227,7 @@ export function withAntigravityAutoReview(
 
   /** Agent-reported mode state, with Auto Review added and reported as current while active. */
   const presentModes = (modes: unknown, state: SessionState | undefined): unknown => {
-    if (!isRecord(modes) || !Array.isArray(modes.availableModes)) return modes;
+    if (nativeAuto || !isRecord(modes) || !Array.isArray(modes.availableModes)) return modes;
     const availableModes = withAutoReviewMode(
       modes.availableModes as unknown[],
       () => ({ ...ANTIGRAVITY_AUTO_REVIEW_MODE }),
@@ -222,7 +245,7 @@ export function withAntigravityAutoReview(
     configOptions: unknown,
     state: SessionState | undefined
   ): unknown => {
-    if (!Array.isArray(configOptions)) return configOptions;
+    if (nativeAuto || !Array.isArray(configOptions)) return configOptions;
     return configOptions.map((option) => {
       if (!isRecord(option) || option.category !== 'mode' || !Array.isArray(option.options))
         return option;
@@ -282,7 +305,10 @@ export function withAntigravityAutoReview(
             ...lody,
             sessionConfig: {
               ...sessionConfig,
-              configOptionValues: { ...values, mode: UNDERLYING_MODE_ID },
+              configOptionValues: {
+                ...values,
+                mode: nativeAuto ? NATIVE_AUTO_MODE_ID : UNDERLYING_MODE_ID,
+              },
             },
           },
         },
@@ -323,11 +349,15 @@ export function withAntigravityAutoReview(
         const isMode = message.method === 'session/set_mode' || params.configId === 'mode';
         const target = message.method === 'session/set_mode' ? params.modeId : params.value;
         if (!sessionId || !isMode || typeof target !== 'string') return message;
-        if (id !== undefined && id !== null) pending.set(id, { kind: 'mode', sessionId, target });
-        if (target !== ANTIGRAVITY_AUTO_REVIEW_MODE_ID) return message;
+        const autoReview = target === ANTIGRAVITY_AUTO_REVIEW_MODE_ID;
+        if (id !== undefined && id !== null)
+          pending.set(id, { kind: 'mode', sessionId, review: autoReview && !nativeAuto });
+        if (!autoReview) return message;
+        // An agent with its own Auto mode runs Auto Review there; Lody reviews nothing.
+        const sent = nativeAuto ? NATIVE_AUTO_MODE_ID : UNDERLYING_MODE_ID;
         return message.method === 'session/set_mode'
-          ? { ...message, params: { ...params, modeId: UNDERLYING_MODE_ID } }
-          : { ...message, params: { ...params, value: UNDERLYING_MODE_ID } };
+          ? { ...message, params: { ...params, modeId: sent } }
+          : { ...message, params: { ...params, value: sent } };
       }
       case 'session/prompt': {
         if (typeof params.sessionId !== 'string') return message;
@@ -642,16 +672,17 @@ export function withAntigravityAutoReview(
     }
     const result = message.result;
     if (tracked.kind === 'session') {
+      if (reportedModeIds(result).includes(NATIVE_AUTO_MODE_ID)) nativeAuto = true;
       const sessionId = typeof result.sessionId === 'string' ? result.sessionId : tracked.sessionId;
       const state = sessionId ? stateFor(sessionId, tracked.roots) : undefined;
       if (state && tracked.requestedMode !== undefined) {
-        setActive(state, tracked.requestedMode === ANTIGRAVITY_AUTO_REVIEW_MODE_ID);
+        setActive(state, tracked.requestedMode === ANTIGRAVITY_AUTO_REVIEW_MODE_ID && !nativeAuto);
       }
       send(toClient, { ...message, result: presentResult(result, state) });
       return;
     }
     const state = stateFor(tracked.sessionId);
-    setActive(state, tracked.target === ANTIGRAVITY_AUTO_REVIEW_MODE_ID);
+    setActive(state, tracked.review);
     send(toClient, { ...message, result: presentResult(result, state) });
   };
 

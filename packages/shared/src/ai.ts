@@ -43,16 +43,18 @@ export type CliType = BuiltinCliType;
 /** Registry provider whose subscription quota the daemon reads itself; no Lody adapter reports it. */
 export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
 /**
- * LAN fork: a mode Lody adds to Antigravity's own three. The agent runs in its
- * `default` mode and the CLI reviews each permission request before asking the
- * user (apps/cli/src/agent/antigravity-auto-review.ts).
+ * LAN fork: a mode Lody adds to an Antigravity server without its own Auto
+ * mode. The agent runs in its `default` mode and the CLI reviews each permission
+ * request before asking the user. Where the agent offers `auto` (the agy CLI),
+ * this id stands for that mode (apps/cli/src/agent/antigravity-auto-review.ts).
  */
 export const ANTIGRAVITY_AUTO_REVIEW_MODE_ID = 'auto_review';
 /**
  * Agent-config env key that opts an Antigravity provider into Claude/GPT models.
- * The ACP server lists them only to clients that name themselves Zed, so the
- * daemon sends `clientInfo.name = 'zed'` while this is `'1'`. That is a client
- * identity Lody does not own: the owner accepts the account risk in Settings.
+ * The former registry server (`agy_acp_server`) listed them only to clients that
+ * name themselves Zed, so the daemon sends `clientInfo.name = 'zed'` while this is
+ * `'1'`. That is a client identity Lody does not own: the owner accepts the account
+ * risk in Settings. The agy CLI's ACP server lists them to every client.
  */
 export const ANTIGRAVITY_THIRD_PARTY_MODELS_ENV = 'LODY_ANTIGRAVITY_THIRD_PARTY_MODELS';
 
@@ -107,13 +109,21 @@ const BUILTIN_ACP_TITLE_OWNERSHIP: Record<BuiltinAgentType, 'none' | 'untagged'>
   sorbet: 'none',
 };
 
+/**
+ * LAN fork: the registry's Google Antigravity runs `antigravity acp` (the agy CLI),
+ * which titles each conversation itself in the prompt's language. An isolated title
+ * session would be one more agy conversation, with the user's plugin hooks running
+ * on it.
+ */
 const builtinAcpTitleOwnership = (
   cliType: AgentConfigCliType | null | undefined,
   agentType: AgentType | null | undefined
 ): 'none' | 'untagged' =>
   cliType === 'builtin' && agentType && isBuiltinAgentType(agentType)
     ? BUILTIN_ACP_TITLE_OWNERSHIP[agentType]
-    : 'none';
+    : cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE
+      ? 'untagged'
+      : 'none';
 
 /**
  * Except for builtin Codex, advertised ownership or legacy builtin identity means Lody never
@@ -1010,6 +1020,8 @@ export function classifyPermissionModeFace(modeId: string | null | undefined): P
     case 'default':
       return { kind: 'hidden' };
     case 'acceptEdits':
+    // The agy CLI (Google Antigravity's registry runtime in the LAN fork).
+    case 'accept-edits':
       return { kind: 'accept-edits', tone: 'neutral', render: 'icon' };
     case 'plan':
       return { kind: 'plan', tone: 'neutral', render: 'icon' };
