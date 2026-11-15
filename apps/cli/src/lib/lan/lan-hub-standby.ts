@@ -30,6 +30,7 @@ import {
 } from './hub-handover';
 import { getDefaultLanHubDataDir, isLanHubServerInstalled, readLanHubToken } from './hub-server';
 import { pullLanHubSnapshot, readKeptLanHubSnapshot } from './hub-snapshot';
+import { reclaimLanHubStreams } from './hub-storage';
 import { hostLan, pickLanHostAddress } from './lan-host';
 import {
   askLanHubPeer,
@@ -103,6 +104,7 @@ export async function promoteToLanHub(options: {
   dataDir?: string;
   /** This machine's copy of the hub's credentials, for what the standby copy lacks. */
   credentials?: string;
+  log?: (line: string) => void;
 }): Promise<string> {
   const dataDir = options.dataDir ?? getDefaultLanHubDataDir();
   const existing = readLanHubToken(dataDir);
@@ -114,6 +116,10 @@ export async function promoteToLanHub(options: {
   if (options.credentials) fillMissingLanHubCredentials(dataDir, options.credentials);
   prepareLanHubFailover(dataDir);
   writeLanHubTerm(dataDir, options.term);
+  // Here and not when the hub starts: the copy keeps what snapshots replaced
+  // since the hub last started, and deleting it there would take from the
+  // time the takeover waits for the hub to answer.
+  reclaimLanHubStreams(dataDir, options.log);
 
   const host = pickLanHostAddress(os.networkInterfaces());
   if (!host) throw new Error('This machine has no private address to host the hub on');
@@ -381,6 +387,7 @@ export class LanHubStandby {
       copy,
       term,
       credentials: getLanCredentialsDirectory(hub.id, this.options.dataDir),
+      log: (line) => this.options.logger.info(line),
       announce: async (url) => {
         const location = { url, term };
         // Before anything else: once this machine follows, nothing here knows the old address.

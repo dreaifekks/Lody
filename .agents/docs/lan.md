@@ -24,7 +24,7 @@ each topic; the invariants stay in the scoped `AGENTS.md` files they link to.
 | Files          | `apps/cli/src/lib/lan/lan-files.ts`, `lan-file-handoff.ts`                                  | A message's files reach the machine that runs its session, and a desktop reads a member's files in parts, both directly              |
 | Folders        | `apps/cli/src/lib/lan/lan-ssh.ts`, `packages/shared/src/lan-ssh.ts`                         | Where the SSH server of a machine answers, so an editor on another member opens a folder of it                                       |
 | Machines       | `apps/cli/src/lib/lan/lan-members.ts`, `lan-fleet-control.ts`                               | What a machine says about itself, the list of machines, and requests between members                                                 |
-| Storage        | `apps/cli/src/lib/lan/hub-storage.ts`                                                       | Deletes the entries a snapshot replaced in the transaction that records it, and once what earlier builds kept                        |
+| Storage        | `apps/cli/src/lib/lan/hub-storage.ts`                                                       | Deletes the entries snapshots replaced, only while no Streams server has the database open                                           |
 | Standby        | `apps/cli/src/lib/lan/lan-hub-standby.ts`, `hub-snapshot.ts`, `hub-failover.ts`             | Keeps a copy of the hub on another server and starts a hub from it when the hub stays away                                           |
 | Moves told     | `apps/cli/src/lib/lan/lan-hub-moved.ts`                                                     | Each member's hook after its hub moved, and the alert the new host sends to the phones                                               |
 | Requests       | `apps/cli/src/lib/lan/lan-control-channel.ts`                                               | A request of one member to another and its answer, over the connection terminals use                                                 |
@@ -99,7 +99,7 @@ that workspace back instead of creating an empty one.
 | [Folders in an editor](lan-folders.md)                            | Opening another member's folder in an editor over SSH                                        |
 | [Machines](lan-machines.md)                                       | Machine metadata, the machine list, requests between members, following a change             |
 | [Updates, hosting and releases](lan-releases.md)                  | Self-update of services and desktops, `lody lan up`, fork builds, tags and signing           |
-| [Moving the hub, standby and failover](lan-host.md)               | Take-over, the standby copy and its epochs, what the hub keeps of its streams                |
+| [Moving the hub, standby and failover](lan-host.md)               | Take-over and its pointer, the standby copy and its epochs, what the hub keeps               |
 | [GitHub and credentials](lan-credentials.md)                      | The host's GitHub token, the MCP environment table, Settings > GitHub, copies, push fallback |
 | [Shared conversations](lan-sharing.md)                            | Publishing, storage, the reader listener, and shares following the hub                       |
 | [Usage and Prompt Shortcuts](lan-usage-and-shortcuts.md)          | The per-machine usage ledger and the usage page; shortcuts synced through the hub            |

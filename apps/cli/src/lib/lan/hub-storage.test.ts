@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -33,10 +34,12 @@ describe('what a hub keeps of its streams', () => {
     return { dataDir, log, start };
   };
 
+  const streamUrl = (hub: LanHubServer, suffix = '') =>
+    `${hub.url}/ds/lody/${encodeURIComponent(STREAM)}${suffix}`;
+
   const client = (hub: LanHubServer) => {
-    const streamPath = `/ds/lody/${encodeURIComponent(STREAM)}`;
     const send = (method: string, suffix = '', body?: Buffer) =>
-      fetch(`${hub.url}${streamPath}${suffix}`, {
+      fetch(streamUrl(hub, suffix), {
         method,
         headers: {
           Authorization: `Bearer ${hub.token}`,
@@ -54,18 +57,43 @@ describe('what a hub keeps of its streams', () => {
       },
       snapshot: (at: number, body: Buffer) => send('PUT', `/snapshot/${offset(at)}`, body),
       read: (from: number) => send('GET', `?offset=${offset(from)}`),
-      bootstrap: () => send('GET', '/bootstrap'),
     };
   };
+
+  /** A bootstrap whose reader stops after the first bytes, and reads the rest when asked. */
+  const pausedBootstrap = (hub: LanHubServer) =>
+    new Promise<{ snapshotOffset: unknown; rest: () => Promise<Buffer> }>((resolve, reject) => {
+      const request = http.get(
+        streamUrl(hub, '/bootstrap'),
+        { headers: { Authorization: `Bearer ${hub.token}` } },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.once('data', (chunk: Buffer) => {
+            response.pause();
+            chunks.push(chunk);
+            resolve({
+              snapshotOffset: response.headers['stream-snapshot-offset'],
+              rest: () =>
+                new Promise<Buffer>((done, fail) => {
+                  response.on('data', (more: Buffer) => chunks.push(more));
+                  response.once('end', () => done(Buffer.concat(chunks)));
+                  response.once('error', fail);
+                  response.resume();
+                }),
+            });
+          });
+        }
+      );
+      request.once('error', reject);
+    });
 
   const entriesOf = (dataDir: string) => {
     const database = new Database(path.join(dataDir, 'streams.sqlite'), { readonly: true });
     try {
       return database
-        .prepare(
-          'SELECT start_offset AS start, end_offset AS end FROM entries ORDER BY start_offset'
-        )
-        .all() as Array<{ start: number; end: number }>;
+        .prepare('SELECT end_offset AS end FROM entries ORDER BY start_offset')
+        .all()
+        .map((row) => (row as { end: number }).end);
     } finally {
       database.close();
     }
@@ -83,77 +111,73 @@ describe('what a hub keeps of its streams', () => {
     }
   };
 
-  it('deletes the entries a snapshot replaces, and serves what follows it as before', async () => {
-    const { dataDir, start } = setUp();
+  /** A stopped hub whose one stream holds `count` entries of 64 KB and a snapshot after `replaced` of them. */
+  const stoppedWithReplaced = async (count: number, replaced: number) => {
+    const setup = setUp();
+    const hub = await setup.start();
+    const stream = client(hub);
+    expect((await stream.create()).status).toBe(201);
+    const ends: number[] = [];
+    for (let i = 0; i < count; i += 1) {
+      ends.push(await stream.append(Buffer.alloc(64 * 1024, i)));
+    }
+    const at = ends[replaced] ?? 0;
+    expect((await stream.snapshot(at, Buffer.from('snapshot'))).status).toBe(204);
+    // Nothing is deleted while the hub serves.
+    expect(entriesOf(setup.dataDir)).toEqual(ends);
+    await hub.close();
+    return { ...setup, ends, at, before: databaseBytes(setup.dataDir) };
+  };
+
+  it('sends a bootstrap every entry after its snapshot, though a newer snapshot arrives while it sends', async () => {
+    const { start } = setUp();
     const hub = await start();
     const stream = client(hub);
     expect((await stream.create()).status).toBe(201);
     const ends: number[] = [];
-    for (const letter of 'abcde') ends.push(await stream.append(Buffer.alloc(100, letter)));
-    const at = ends[2] ?? 0;
+    for (const letter of 'abcd') ends.push(await stream.append(Buffer.alloc(100, letter)));
+    // Far more than the sockets between the server and the reader hold: the
+    // server is still sending it when the reader stops reading.
+    const snapshot = Buffer.alloc(64 * 1024 * 1024, 's');
+    expect((await stream.snapshot(ends[0] ?? 0, snapshot)).status).toBe(204);
 
-    expect((await stream.snapshot(at, Buffer.from('snapshot'))).status).toBe(204);
-    // The entry that ends at the snapshot stays: offsets are checked against stored edges.
-    expect(entriesOf(dataDir)).toEqual([
-      { start: ends[1], end: at },
-      { start: at, end: ends[3] },
-      { start: ends[3], end: ends[4] },
-    ]);
+    const bootstrap = await pausedBootstrap(hub);
+    expect(bootstrap.snapshotOffset).toBe(offset(ends[0] ?? 0));
+    // Another member records a newer snapshot meanwhile.
+    expect((await stream.snapshot(ends[2] ?? 0, Buffer.from('newer'))).status).toBe(204);
 
-    const read = await stream.read(at);
-    expect(read.status).toBe(200);
-    expect(Buffer.from(await read.arrayBuffer())).toEqual(
-      Buffer.concat([Buffer.alloc(100, 'd'), Buffer.alloc(100, 'e')])
-    );
-    const bootstrap = await stream.bootstrap();
-    expect(bootstrap.headers.get('stream-snapshot-offset')).toBe(offset(at));
-    const parts = Buffer.from(await bootstrap.arrayBuffer()).toString('latin1');
-    expect(parts).toContain('snapshot');
-    expect(parts).not.toContain('c'.repeat(100));
-    expect(parts).toContain('d'.repeat(100));
-    expect((await stream.read(ends[0] ?? 0)).status).toBe(410);
-
-    // Again at the same offset, as a second member that saw the same tail does.
-    expect((await stream.snapshot(at, Buffer.from('snapshot again'))).status).toBe(204);
-    // Behind the kept entry nothing is stored to start from any more.
-    expect((await stream.snapshot(ends[0] ?? 0, Buffer.from('older'))).status).toBe(400);
-    expect((await stream.read(at)).status).toBe(200);
-    expect((await stream.append(Buffer.alloc(100, 'f'))) - at).toBe(300);
+    const body = await bootstrap.rest();
+    expect(body.length).toBeGreaterThan(snapshot.length);
+    expect(body.includes(Buffer.alloc(100, 'a'))).toBe(false);
+    for (const letter of 'bcd') expect(body.includes(Buffer.alloc(100, letter))).toBe(true);
   }, 30_000);
 
-  it('starts on a database that kept what snapshots replaced by deleting it and shrinking the file', async () => {
-    const { dataDir, log, start } = setUp();
-    const first = await start();
-    const stream = client(first);
-    expect((await stream.create()).status).toBe(201);
-    // Recorded the way a hub of an earlier build did, without the trigger.
-    const database = new Database(path.join(dataDir, 'streams.sqlite'));
-    database.exec('DROP TRIGGER lody_trim_replaced_entries');
-    database.close();
-    const ends: number[] = [];
-    for (let i = 0; i < 40; i += 1) ends.push(await stream.append(Buffer.alloc(64 * 1024, i)));
-    const at = ends[37] ?? 0;
-    expect((await stream.snapshot(at, Buffer.from('snapshot'))).status).toBe(204);
-    expect(entriesOf(dataDir)).toHaveLength(40);
-    await first.close();
-    const before = databaseBytes(dataDir);
+  it('deletes on start what snapshots replaced and gives a quarter or more back to the file system', async () => {
+    const { dataDir, log, start, ends, at, before } = await stoppedWithReplaced(40, 37);
 
-    const second = await start();
-    expect(entriesOf(dataDir).map((entry) => entry.end)).toEqual(ends.slice(37));
+    const hub = await start();
+    // The entry that ends at the snapshot stays: offsets are checked against stored edges.
+    expect(entriesOf(dataDir)).toEqual(ends.slice(37));
     expect(fs.statSync(path.join(dataDir, 'streams.sqlite')).size).toBeLessThan(before / 4);
-    expect(
-      log.some((line) =>
-        line.startsWith('[storage] Deleted what snapshots replaced in 1 stream(s)')
-      )
-    ).toBe(true);
-    const read = await client(second).read(at);
+    expect(log).toContainEqual(
+      expect.stringMatching(/^\[storage\] Deleted 37 entries that snapshots replaced: /u)
+    );
+    const read = await client(hub).read(at);
     expect(Buffer.from(await read.arrayBuffer())).toEqual(
       Buffer.concat([Buffer.alloc(64 * 1024, 38), Buffer.alloc(64 * 1024, 39)])
     );
+  }, 30_000);
 
-    // The trigger is back: the next snapshot trims without another start.
-    const next = await client(second).append(Buffer.alloc(100, 'z'));
-    expect((await client(second).snapshot(next, Buffer.from('later'))).status).toBe(204);
-    expect(entriesOf(dataDir).map((entry) => entry.end)).toEqual([next]);
+  it('leaves less than a quarter free for the server to reuse instead of rewriting the file', async () => {
+    const { dataDir, log, start, ends, before } = await stoppedWithReplaced(40, 4);
+
+    await start();
+    expect(entriesOf(dataDir)).toEqual(ends.slice(4));
+    expect(fs.statSync(path.join(dataDir, 'streams.sqlite')).size).toBe(before);
+    expect(log).toContainEqual(
+      expect.stringContaining(
+        `[storage] Deleted 4 entries that snapshots replaced: ${before} -> ${before} bytes in `
+      )
+    );
   }, 30_000);
 });

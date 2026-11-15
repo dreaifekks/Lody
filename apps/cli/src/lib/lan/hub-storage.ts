@@ -3,68 +3,58 @@
 // The Streams server records a snapshot of a stream by moving the stream's
 // earliest offset, and never deletes the entries before it. No reader reaches
 // them any more: the server answers a read from below the earliest offset
-// with 410, and a bootstrap sends the snapshot with the entries after it. The
-// hub adds a trigger that deletes them in the transaction recording the
-// snapshot. It keeps the entry that ends at the snapshot: the server records
-// a snapshot, or reads a JSON stream, only at an offset where a stored entry
-// starts or ends.
+// with 410, and a bootstrap sends the snapshot with the entries after it.
+// The hub deletes them only while no Streams server has the database open. A
+// bootstrap takes the snapshot, sends it, and only then reads the entries
+// after it; deleting while it sends would cut out entries it still owes when
+// another client records a newer snapshot meanwhile. The entry that ends at
+// the snapshot stays: the server records a snapshot, or reads a JSON stream,
+// only at an offset where a stored entry starts or ends.
 import fs from 'node:fs';
+import path from 'node:path';
 import Database from 'better-sqlite3';
 
-const TRIM_REPLACED_ENTRIES = `
-CREATE TRIGGER IF NOT EXISTS lody_trim_replaced_entries
-AFTER UPDATE OF earliest_offset ON streams
-BEGIN
-  DELETE FROM entries
-  WHERE stream_id_fk = NEW.id AND end_offset < NEW.earliest_offset;
-END`;
+const DATABASE_FILE_NAME = 'streams.sqlite';
 
-/** Every later snapshot deletes the entries it replaces. The server must have created its tables. */
-export function trimLanHubStreams(databasePath: string): void {
-  const database = new Database(databasePath, { fileMustExist: true });
-  try {
-    database.exec(TRIM_REPLACED_ENTRIES);
-  } finally {
-    database.close();
-  }
-}
-
-export type LanHubStreamsReclaim = {
-  /** Streams that still held entries a snapshot replaced. */
-  streams: number;
-  /** The size of the database, the part still in its write-ahead log included. */
-  bytesBefore: number;
-  /** The size of the file once the log is folded in. */
-  bytesAfter: number;
-};
+/** From this share of free pages on, the file is rewritten to give them back. */
+const VACUUM_FREE_SHARE = 0.25;
 
 /**
- * Deletes the entries snapshots replaced before the trigger existed, and gives
- * their space back to the file system. Runs while nothing else has the
- * database open: VACUUM rewrites the whole file.
+ * Deletes the entries the snapshots in a hub's data directory replaced. Runs
+ * while no Streams server has the database open. With a quarter of the file
+ * free or more, VACUUM gives the space back to the file system; less stays
+ * for the server to reuse.
  */
-export function reclaimLanHubStreams(databasePath: string): LanHubStreamsReclaim {
+export function reclaimLanHubStreams(dataDir: string, log?: (line: string) => void): void {
+  const databasePath = path.join(dataDir, DATABASE_FILE_NAME);
+  if (!fs.existsSync(databasePath)) return;
+  const started = Date.now();
   const database = new Database(databasePath, { fileMustExist: true });
-  let streams: number;
+  let deleted: number;
   let bytesBefore: number;
   try {
-    bytesBefore =
-      Number(database.pragma('page_count', { simple: true })) *
-      Number(database.pragma('page_size', { simple: true }));
-    database.exec(TRIM_REPLACED_ENTRIES);
-    // Setting the earliest offset again runs the trigger for that stream.
-    streams = database
+    const pageSize = Number(database.pragma('page_size', { simple: true }));
+    bytesBefore = Number(database.pragma('page_count', { simple: true })) * pageSize;
+    // Stream by stream through the end-offset index: a database with nothing
+    // to delete costs one probe per stream.
+    deleted = database
       .prepare(
-        `UPDATE streams SET earliest_offset = earliest_offset
-         WHERE EXISTS (
-           SELECT 1 FROM entries
-           WHERE stream_id_fk = streams.id AND end_offset < streams.earliest_offset
+        `DELETE FROM entries WHERE id IN (
+           SELECT entries.id FROM streams CROSS JOIN entries
+             ON entries.stream_id_fk = streams.id AND entries.end_offset < streams.earliest_offset
          )`
       )
       .run().changes;
-    if (streams > 0) database.exec('VACUUM');
+    const free = Number(database.pragma('freelist_count', { simple: true }));
+    const pages = Number(database.pragma('page_count', { simple: true }));
+    if (free >= pages * VACUUM_FREE_SHARE) database.exec('VACUUM');
   } finally {
     database.close();
   }
-  return { streams, bytesBefore, bytesAfter: fs.statSync(databasePath).size };
+  const bytesAfter = fs.statSync(databasePath).size;
+  if (deleted === 0 && bytesAfter === bytesBefore) return;
+  log?.(
+    `[storage] Deleted ${deleted} entries that snapshots replaced: ` +
+      `${bytesBefore} -> ${bytesAfter} bytes in ${Date.now() - started} ms.`
+  );
 }

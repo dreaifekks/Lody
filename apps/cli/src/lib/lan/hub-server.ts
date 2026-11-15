@@ -40,7 +40,7 @@ import {
   LanHubSnapshotRequestSchema,
   writeLanHubSnapshot,
 } from './hub-snapshot';
-import { reclaimLanHubStreams, trimLanHubStreams } from './hub-storage';
+import { reclaimLanHubStreams } from './hub-storage';
 
 /**
  * Where a hub serves shared conversations unless told otherwise. Not the port
@@ -277,17 +277,7 @@ async function startStreamsServer(options: {
 }): Promise<LanHubUpstream> {
   const loroCli = resolveLoroCli();
   ensureSqliteBinding(loroCli.manifestPath);
-  const databasePath = path.join(options.dataDir, DATABASE_FILE_NAME);
-  if (fs.existsSync(databasePath)) {
-    const started = Date.now();
-    const reclaimed = reclaimLanHubStreams(databasePath);
-    if (reclaimed.streams > 0) {
-      options.log?.(
-        `[storage] Deleted what snapshots replaced in ${reclaimed.streams} stream(s): ` +
-          `${reclaimed.bytesBefore} -> ${reclaimed.bytesAfter} bytes in ${Date.now() - started} ms.`
-      );
-    }
-  }
+  reclaimLanHubStreams(options.dataDir, options.log);
   const handle = startProcessLegacy(
     {
       command: process.execPath,
@@ -315,8 +305,6 @@ async function startStreamsServer(options: {
   const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
   try {
     const port = await waitForUpstreamPort(child);
-    // A database the server just created has its tables only now.
-    trimLanHubStreams(databasePath);
     return { port, exited, stop: () => handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 }) };
   } catch (error) {
     await handle.terminate({ graceMs: 3_000, killWaitMs: 3_000 });

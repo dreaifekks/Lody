@@ -111,22 +111,28 @@ JSON streams, the short-lived request streams, keep their offsets.
 The Streams server records a snapshot of a stream by moving the stream's
 earliest offset; it never deletes the entries before it. No reader reaches them
 any more: a read from below the earliest offset is answered with 410, and a
-bootstrap sends the snapshot with the entries after it. The hub adds the
-trigger `lody_trim_replaced_entries` to the database (`hub-storage.ts`), which
-deletes them in the transaction that records the snapshot. It keeps the entry
-that ends at the snapshot, because the server records a snapshot, or reads a
-JSON stream, only at an offset where a stored entry starts or ends. A snapshot
-older than the one recorded, behind that kept entry, is refused with 400; the
-client that raced another one to the snapshot logs its failed upload, and the
-newer snapshot stays.
+bootstrap sends the snapshot with the entries after it. The hub deletes them
+(`hub-storage.ts`) only while no Streams server has the database open: before
+it starts one, and before a standby starts a hub from its copy, so that the
+deletion does not use up the 30 seconds the takeover waits for that hub. It
+keeps the entry that ends at the snapshot, because the server records a
+snapshot, or reads a JSON stream, only at an offset where a stored entry starts
+or ends.
 
-Before it starts the Streams server, the hub deletes what snapshots replaced
-before the trigger existed and VACUUMs the database. This runs once, on the
-first start of a build with the trigger, and on a hub started from a copy taken
-before it: a 2 GB database took 16 to 25 seconds on a small NVMe server and
-came out at half the size, while the hub did not answer. Later starts find
-nothing to delete and skip it. Space the trigger frees goes to SQLite's free
-list and is reused, so the file stops growing for it but does not shrink.
+It does not delete while serving. A bootstrap takes the snapshot, sends it, and
+reads the entries after it only once the snapshot is out. When another client
+records a newer snapshot meanwhile, as a member does while a slow reader
+receives a large one, entries deleted with it would be missing from that
+bootstrap, which would still answer 200 and claim the stream's end
+(`hub-storage.test.ts` holds a bootstrap open while that happens). The server
+could delete them itself once a bootstrap reads its snapshot and the entries
+after it in one view.
+
+Once a quarter of the file or more is free, the hub VACUUMs it; less stays on
+SQLite's free list for the server to reuse. A 2 GB database that had kept seven
+weeks of replaced entries took 13 seconds on a small NVMe server to delete them
+and VACUUM, and came out at half the size; the hub does not answer meanwhile.
+A start that finds nothing to delete costs a few milliseconds.
 
 ## Telling what is outside Lody
 
@@ -169,10 +175,11 @@ edit and is not told.
 
 - The hub is a development server on SQLite: one node, no replication. Back up
   its data directory.
-- A standby that takes over from a copy taken before the trigger existed runs
-  the one-time cleanup before its hub answers, and the takeover waits only 30
-  seconds for that. Once the hub ran a build with the trigger, the next copy the
-  standby pulls is already clean.
+- Between starts, the entries that snapshots replace accumulate again: a hub
+  that runs for weeks grows by them until it starts next. `lody lan up` and
+  `lody lan take-over` delete them inside the 30 seconds they wait for the hub.
+  A take-over that runs out leaves the LAN with the former host, which deletes
+  them before it serves again, so the next take-over is quick.
 - Nothing removes the streams of archived or deleted sessions from the hub.
   Their snapshots and the entries after them stay, as do the file index streams
   of their worktrees; those expire 180 days after they were created when the
