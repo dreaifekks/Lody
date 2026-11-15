@@ -279,6 +279,10 @@ import {
 } from './machine-lifecycle';
 import { resolveRegisteredMachineName } from './machine-name';
 import { formatErrorMessage } from '@/utils/format-error';
+import {
+  backfillArchivedSessionStreams,
+  compactArchivedSessionStreams,
+} from './archived-session-streams';
 import { readGhAuthToken } from '@/lib/lan/lan-agent-github';
 import { lanAlertProjectId } from '@/lib/lan/lan-push-protocol';
 import { LiveActivityDetailTracker } from './live-activity-detail';
@@ -4261,6 +4265,7 @@ export class MessageHandler {
     // This prevents dispatch from racing ahead of local session startup prerequisites.
     this.setupSessionLifecycleWatchers();
     this.startWorktreeGc();
+    this.startArchivedStreamsBackfill();
     this.startInterruptedSessionSync();
     this.startAntigravityQuota();
     void this.machineFlockCommandWatcher.start();
@@ -4747,6 +4752,26 @@ export class MessageHandler {
       });
   }
 
+  /** Archiving compacts a Session's streams; this does it once for those archived before. */
+  private startArchivedStreamsBackfill(): void {
+    if (this.cloudPort.streamsTokens === null) return;
+    void this.workspaceDocument
+      .waitForInitialMetaSync()
+      .then(async (completed) => {
+        if (!completed) return;
+        await backfillArchivedSessionStreams({
+          manager: this.workspaceDocument,
+          workspaceId: this.workspaceId,
+          machineId: this.machineId,
+          listSessions: () => listAliveSessionMetas(this.workspaceDocument),
+          logger: this.logger,
+        });
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(`[archived-streams] Backfill failed: ${formatErrorMessage(error)}`);
+      });
+  }
+
   private startWorktreeGc(): void {
     if (this.worktreeGcTimer) {
       return;
@@ -4865,6 +4890,8 @@ export class MessageHandler {
       this.archiveInFlight.delete(sessionId);
     }
     void this.worktreeGc.schedule();
+    if (this.cloudPort.streamsTokens !== null)
+      void compactArchivedSessionStreams(this.workspaceDocument, sessionId, this.logger);
   }
 
   /**

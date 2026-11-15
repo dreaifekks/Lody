@@ -128,6 +128,18 @@ bootstrap, which would still answer 200 and claim the stream's end
 could delete them itself once a bootstrap reads its snapshot and the entries
 after it in one view.
 
+A member records a snapshot of a stream only once enough was written to it
+since the last one, so a Session archived before that would keep every entry
+it wrote. The agent service that ran an archived Session therefore records one
+of its Session doc and of its file index as soon as the archive reaches it
+(`compactArchivedSessionStreams` in `apps/cli/src/lib/loro/doc.ts`, through
+`uploadDocSnapshot` of the fork's `loro-repo` patch), and the hub deletes what
+it replaced when it next starts. A file index that never had a row, or whose
+stream expired, is skipped, as joining its room would create the stream again.
+For the Sessions archived before this, each agent service does the same once
+per workspace replica, four at a time, and writes `archived-streams-compacted`
+beside the replica when none failed (`archived-session-streams.ts`).
+
 Once a quarter of the file or more is free, the hub VACUUMs it; less stays on
 SQLite's free list for the server to reuse. A 2 GB database that had kept seven
 weeks of replaced entries took 13 seconds on a small NVMe server to delete them
@@ -181,9 +193,10 @@ edit and is not told.
   A take-over that runs out leaves the LAN with the former host, which deletes
   them before it serves again, so the next take-over is quick.
 - Nothing removes the streams of archived or deleted sessions from the hub.
-  Their snapshots and the entries after them stay, as do the file index streams
-  of their worktrees; those expire 180 days after they were created when the
-  agent service created them, and never when a desktop did.
+  An archived Session keeps one snapshot per stream and what was written after
+  it; a deleted one keeps everything, as does one archived while its agent
+  service had no hub. File index streams expire 180 days after they were
+  created when the agent service created them, and never when a desktop did.
 - A credential cannot be rotated in place. Host a new LAN and move.
 - Only a server with a systemd user session takes a LAN over, as only one hosts
   it. A failover loses what the lost hub alone had: what was written after the
