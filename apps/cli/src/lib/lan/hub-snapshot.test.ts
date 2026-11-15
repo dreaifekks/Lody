@@ -107,6 +107,16 @@ describe('a standby copy of a hub', () => {
       copy.close();
     }
   };
+  /** The image the hub sends now: a backup of its database is the same bytes every time. */
+  const imageOf = async () => {
+    const file = path.join(root, `image-${crypto.randomUUID()}.sqlite`);
+    await database.backup(file);
+    try {
+      return fs.readFileSync(file);
+    } finally {
+      fs.rmSync(file);
+    }
+  };
 
   it('copies the whole hub once, and afterwards only what changed', async () => {
     const first = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
@@ -122,8 +132,39 @@ describe('a standby copy of a hub', () => {
     expect(second.received).toBeLessThan(second.blocks.length / 2);
     const current = readKeptLanHubSnapshot(standbyDir)?.path ?? '';
     expect(fs.statSync(path.join(current, 'streams.sqlite')).ino).toBe(inode);
-    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(database.serialize());
+    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(await imageOf());
     expect(rowsOf(current)).toBe(205);
+    expect(fs.existsSync(path.join(hubDir, '.standby-copy'))).toBe(false);
+  });
+
+  it('copies one moment of the hub while the hub keeps writing', async () => {
+    // Several backup steps' worth of pages, so writes land between steps.
+    append(4000);
+    const before = rowsOf(hubDir);
+    let writing = true;
+    let written = 0;
+    const insert = database.prepare('insert into entries (body) values (?)');
+    const write = () => {
+      if (!writing) return;
+      insert.run(Buffer.alloc(2048, 7));
+      written += 1;
+      setImmediate(write);
+    };
+    setImmediate(write);
+    await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
+    writing = false;
+
+    const current = readKeptLanHubSnapshot(standbyDir)?.path ?? '';
+    const copied = rowsOf(current);
+    expect(written).toBeGreaterThan(0);
+    expect(copied).toBeGreaterThanOrEqual(before);
+    expect(copied).toBeLessThan(before + written);
+    const copy = new Database(path.join(current, 'streams.sqlite'), { readonly: true });
+    try {
+      expect(copy.pragma('integrity_check', { simple: true })).toBe('ok');
+    } finally {
+      copy.close();
+    }
   });
 
   it('keeps the last good copy when a copy arrives damaged', async () => {
@@ -198,7 +239,7 @@ describe('a standby copy of a hub', () => {
         );
         expect(Math.max(...counts.flat())).toBeLessThanOrEqual(5);
         expect(descriptors()).toEqual(before);
-        expect(fs.readdirSync(hubDir).filter((name) => name.startsWith('.snapshot-'))).toEqual([]);
+        expect(fs.existsSync(path.join(hubDir, '.standby-copy'))).toBe(false);
       }
       database.close();
       expect(descriptors()).toEqual([]);
@@ -358,7 +399,7 @@ describe('a standby copy of a hub', () => {
     const currentFile = path.join(standbyDir, 'current', 'streams.sqlite');
     const oldImage = fs.readFileSync(currentFile);
     append(5);
-    const newImage = database.serialize();
+    const newImage = await imageOf();
     const boundaries: string[] = [];
     const reads: Array<{ valid: boolean; range: boolean }> = [];
     const createReadStream = fs.createReadStream;
@@ -499,7 +540,7 @@ describe('a standby copy of a hub', () => {
     const second = await pullLanHubSnapshot({ hub, directory: standbyDir, fetch: hubFetch() });
     expect(second.sizeBytes).toBeLessThan(first.sizeBytes);
     const current = readKeptLanHubSnapshot(standbyDir)?.path ?? '';
-    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(database.serialize());
+    expect(fs.readFileSync(path.join(current, 'streams.sqlite'))).toEqual(await imageOf());
     expect(rowsOf(current)).toBe(5);
   });
 

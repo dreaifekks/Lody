@@ -1,13 +1,13 @@
 // A copy of a running hub's data that a standby keeps to take over with. The
-// hub serializes a consistent database image in memory and sends only changed
-// blocks. The standby stages and checks them before patching its database.
+// hub copies a consistent database image to disk beside its database and sends
+// only changed blocks. The standby stages and checks them before patching its
+// database.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, type Writable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
-import { setImmediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { z } from 'zod';
@@ -19,6 +19,10 @@ export const LAN_HUB_SNAPSHOT_PATH = '/lan/snapshot';
 export const LAN_HUB_SNAPSHOT_BLOCK_BYTES = 64 * 1024;
 
 const DATABASE_FILE_NAME = 'streams.sqlite';
+/** Where the hub keeps the image it sends while a standby takes it. */
+const COPY_DIRECTORY_NAME = '.standby-copy';
+/** Pages one backup step copies: a few milliseconds of the hub's event loop. */
+const COPY_PAGES_PER_STEP = 1024;
 /** What travels beside the database: everything a hub keeps except the database itself. */
 const SIDE_FILES = LAN_HUB_HANDOVER_FILES.filter(
   (name) => !name.startsWith(DATABASE_FILE_NAME)
@@ -98,16 +102,28 @@ export async function hashLanHubBlocks(
   return blocks;
 }
 
-function serializeDatabase(source: string): Buffer {
+/**
+ * Copies the database page by page into `target`. The read transaction held on
+ * the source keeps every backup step on one snapshot: the hub's writes
+ * meanwhile neither restart the copy nor mix two moments into it, and no step
+ * holds the event loop for long. Without it, a hub that writes every few
+ * seconds restarts the copy before it ever finishes.
+ */
+async function copyDatabase(source: string, target: string): Promise<void> {
   const database = new Database(source, { readonly: true, fileMustExist: true });
   try {
-    return database.serialize();
+    database.exec('BEGIN');
+    database.prepare('SELECT count(*) FROM sqlite_schema').get();
+    await database.backup(target, { progress: () => COPY_PAGES_PER_STEP });
   } finally {
     database.close();
   }
 }
 
-/** Sends a consistent in-memory image and side files through one owned pipeline. */
+/**
+ * Sends a consistent image and side files through one owned pipeline. The
+ * image goes through a file on disk: no more than a block of it is in memory.
+ */
 export async function writeLanHubSnapshot(options: {
   dataDir: string;
   have: readonly string[];
@@ -117,27 +133,39 @@ export async function writeLanHubSnapshot(options: {
 }): Promise<{ sizeBytes: number; blocks: number; sent: number }> {
   const blockBytes = options.blockBytes ?? LAN_HUB_SNAPSHOT_BLOCK_BYTES;
   const result = { sizeBytes: 0, blocks: 0, sent: 0 };
+  const directory = path.join(options.dataDir, COPY_DIRECTORY_NAME);
   async function* chunks(): AsyncGenerator<Buffer> {
     const takenAt = (options.now ?? (() => new Date()))().toISOString();
-    const copy = serializeDatabase(path.join(options.dataDir, DATABASE_FILE_NAME));
-    const blocks: string[] = [];
-    for (let start = 0; start < copy.length; start += blockBytes) {
-      blocks.push(
-        crypto
-          .createHash('sha256')
-          .update(copy.subarray(start, start + blockBytes))
-          .digest('hex')
-      );
-      if (blocks.length % 256 === 0) await setImmediate();
-    }
-    result.sizeBytes = copy.length;
-    result.blocks = blocks.length;
-    yield line({ type: 'snapshot', takenAt, sizeBytes: copy.length, blockBytes, blocks });
-    for (const [index, block] of blocks.entries()) {
-      if (options.have[index] === block) continue;
-      yield line({ type: 'block', index });
-      yield copy.subarray(index * blockBytes, (index + 1) * blockBytes);
-      result.sent += 1;
+    const copy = path.join(directory, DATABASE_FILE_NAME);
+    // What a hub that stopped in the middle of a copy left behind.
+    await fs.promises.rm(directory, { recursive: true, force: true });
+    await fs.promises.mkdir(directory, { mode: 0o700 });
+    try {
+      await copyDatabase(path.join(options.dataDir, DATABASE_FILE_NAME), copy);
+      const blocks = await hashLanHubBlocks(copy, blockBytes);
+      const { size } = await fs.promises.stat(copy);
+      result.sizeBytes = size;
+      result.blocks = blocks.length;
+      yield line({ type: 'snapshot', takenAt, sizeBytes: size, blockBytes, blocks });
+      const handle = await fs.promises.open(copy, 'r');
+      try {
+        for (const [index, block] of blocks.entries()) {
+          if (options.have[index] === block) continue;
+          const { buffer, bytesRead } = await handle.read(
+            Buffer.allocUnsafe(blockBytes),
+            0,
+            blockBytes,
+            index * blockBytes
+          );
+          yield line({ type: 'block', index });
+          yield buffer.subarray(0, bytesRead);
+          result.sent += 1;
+        }
+      } finally {
+        await handle.close();
+      }
+    } finally {
+      await fs.promises.rm(directory, { recursive: true, force: true });
     }
     for (const name of SIDE_FILES) {
       const filePath = path.join(options.dataDir, name);
