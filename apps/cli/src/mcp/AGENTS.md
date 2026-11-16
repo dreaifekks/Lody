@@ -109,6 +109,8 @@ Parent rules apply; see [README](README.md).
   and Machine RPC state. Remote Sessions use [transient reads](../lib/loro/AGENTS.md);
   one unreadable item must not fail others. Follow [Operation rules](../orchestration/AGENTS.md).
 
+- LAN history uses the bound local machine-access check across owned members; hosted grants never replace it.
+
 - `session_history` uses `SessionData.history.readVisiblePage`, never getHistory.
   Limits count displayable turns; cursors retain raw positions through hidden/empty rows.
   hasMore follows raw rows, so scan-budget exhaustion cannot claim completion.

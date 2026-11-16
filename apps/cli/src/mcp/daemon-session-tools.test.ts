@@ -1141,6 +1141,52 @@ describe('daemon-hosted Session tools in the cloud composition', () => {
   const callTool = (name: string, args: Record<string, unknown>) =>
     runWithDaemonWorkspace(daemon, () => executeDaemonSessionTool(context(), name, args));
 
+  it('reads history of an authorized LAN member and refuses another owner or requester', async () => {
+    vi.mocked(cloudCliPort.canReadSessionForCliRequester).mockImplementation(async () => {
+      throw new Error('LAN history must not ask the cloud');
+    });
+    const remoteSessionId = await createRemoteSession();
+    const remoteMachineId = 'synthetic-other-machine' as MachineId;
+    const backend = await createSessionBackend(
+      await manager.getOrCreateSessionDoc(remoteSessionId)
+    );
+    await backend.appendHistoryTurn({
+      id: 'lan-history',
+      role: 'user',
+      timestamp: '2026-11-16T00:00:00Z',
+      items: [{ type: 'text', text: 'Synthetic LAN history sentinel' }],
+      fileDiff: [],
+    } as never);
+    const environment = createEnvironment();
+    environment.host.remote = {
+      isOnline: async () => true,
+      withClient: async () => {
+        throw new Error('History uses its scoped replica');
+      },
+    };
+    const read = () =>
+      runWithSessionCommandEnvironment(environment, () =>
+        executeDaemonSessionTool(context(), 'lody_session_history', { sessionId: remoteSessionId })
+      );
+    const allowed = await read();
+    expect(allowed.isError, JSON.stringify(allowed)).not.toBe(true);
+    expect(allowed.content[0]?.text).toContain('Synthetic LAN history sentinel');
+    await manager.repo.upsertDocMeta(getMachineRoomId(remoteMachineId), {
+      ownerUserId: 'another-owner',
+    });
+    const refusedOwner = await read();
+    expect(refusedOwner.isError).toBe(true);
+    expect(refusedOwner.content[0]?.text).toContain('SESSION_HISTORY_DENIED');
+    expect(refusedOwner.content[0]?.text).not.toContain('Synthetic LAN history sentinel');
+    await manager.repo.upsertDocMeta(getMachineRoomId(remoteMachineId), { ownerUserId });
+    const invoke = environment.host.readInvocation;
+    environment.host.readInvocation = (id) => ({
+      ...invoke(id),
+      requesterUserId: 'another-requester',
+    });
+    await expect(read()).rejects.toThrow('active local user Turn');
+  });
+
   it("reads another Machine's Sessions without keeping their rooms joined", async () => {
     // #2194: these reads joined other Machines' Session rooms for the life of
     // the daemon, so a room that never synced kept retrying forever.

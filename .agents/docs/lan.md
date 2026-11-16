@@ -64,6 +64,10 @@ the workspace switcher of the sidebar. The name of a LAN and the route slug
 derived from it belong to the installation: two machines may call the same LAN
 differently.
 
+Session history reads use the bound local command environment's workspace, user
+and registered-machine ownership checks, including other members. Hosted Session
+sharing grants do not replace that LAN authorization.
+
 The machine is the same in every LAN. Its id is the one in the data directory.
 Its name is the host name without the domain of the network it happens to be
 on, unless one was chosen with `lody lan name` or in Settings; a chosen name

@@ -2635,6 +2635,7 @@ const buildSessionHistory = async (input: SessionHistoryToolInput): Promise<unkn
         machineId: session.machineId,
         requesterUserId: requester.userId,
       });
+      const localEnvironment = getSessionCommandEnvironment();
       const allowed = manager.isEncryptedWorkspace()
         ? await manager.authorizeEncryptedSessionRead({
             machineId: session.machineId,
@@ -2646,8 +2647,16 @@ const buildSessionHistory = async (input: SessionHistoryToolInput): Promise<unkn
           })
         : nativeOwner !== undefined
           ? nativeOwner
-          : getSessionCommandEnvironment() !== undefined
-            ? requester.userId === auth.userId && session.machineId === auth.machineId
+          : localEnvironment
+            ? (
+                await localEnvironment.checkMachineAccess({
+                  workspaceId: workspace.id as WorkspaceId,
+                  machineId: session.machineId,
+                  requesterUserId: requester.userId,
+                  localProjectId:
+                    session.project?.kind === 'local' ? session.project.localProjectId : undefined,
+                })
+              ).allowed
             : await canReadSessionForCliRequester({
                 token: auth.token,
                 authBaseUrl: LODY_AUTH_URL,
