@@ -1,5 +1,5 @@
 diff --git a/src/AcpAgentRouter.ts b/src/AcpAgentRouter.ts
-index 75416a5..e86e493 100644
+index 960cab2..d1adc51 100644
 --- a/src/AcpAgentRouter.ts
 +++ b/src/AcpAgentRouter.ts
 @@ -1,6 +1,7 @@
@@ -10,7 +10,7 @@ index 75416a5..e86e493 100644
  import type {CodexAcpServer} from "./CodexAcpServer";
  import {type AcpClientConnection, AcpV2Connection} from "./ACPSessionConnection";
  import packageJson from "../package.json";
-@@ -226,5 +227,7 @@ function createRouter(
+@@ -263,5 +264,7 @@ function createRouter(
          .onRequest(SESSION_LIST_SUBSCRIBE_METHOD, sessionListSubscriptionParamsParser, (ctx) => getAgent().sessionIndex.subscribeList(ctx.params))
          .onRequest(SESSION_LIST_UNSUBSCRIBE_METHOD, sessionListSubscriptionParamsParser, (ctx) => getAgent().sessionIndex.unsubscribeList(ctx.params));
  
@@ -20,10 +20,10 @@ index 75416a5..e86e493 100644
 +        .withV2(registerVoiceRequests(v2Agent, getAgent));
  }
 diff --git a/src/AcpExtensions.ts b/src/AcpExtensions.ts
-index 39a26f6..67ed84f 100644
+index 8dc4375..d17bbb8 100644
 --- a/src/AcpExtensions.ts
 +++ b/src/AcpExtensions.ts
-@@ -83,6 +83,7 @@ export const CODEX_LODY_CAPABILITIES = {
+@@ -86,6 +86,7 @@ export const CODEX_LODY_CAPABILITIES = {
      compaction: {version: 1},
      sessionHistory: {version: 1},
      worktreeProject: {version: 1},
@@ -32,26 +32,25 @@ index 39a26f6..67ed84f 100644
  export function getLodyForkTurnId(meta: unknown): string | null {
      if (typeof meta !== "object" || meta === null) return null;
 diff --git a/src/CodexAcpServer.ts b/src/CodexAcpServer.ts
-index 4fedf94..b67fe6e 100644
+index 95e8557..d123545 100644
 --- a/src/CodexAcpServer.ts
 +++ b/src/CodexAcpServer.ts
 @@ -1,3 +1,4 @@
 +import {CodexVoiceSessions, VOICE_EVENT_METHOD} from "./VoiceExtension";
+ import {publishLodySessionMetadata} from "./AcpExtensions";
  import {clientSupportsNotices} from "./SessionNotice";
  import {GOAL_EXTENSION_VERSION, GOAL_CONTROL_ACTIONS} from "./GoalExtension";
- import * as acp from "@agentclientprotocol/sdk/unstable";
-@@ -506,6 +507,8 @@ export interface CodexProcessState {
+@@ -520,6 +521,7 @@ export interface CodexProcessState {
  
  export class CodexAcpServer {
      private codexAcpClient: CodexAcpClient;
-+    /** Experimental realtime voice; independent of ACP sessions. */
 +    readonly voice: CodexVoiceSessions;
      private readonly connection: AcpClientConnection;
      private readonly mcpServerSignIn: McpServerSignIn;
-     private readonly reportingConnection: ToolCallReportingConnection;
-@@ -637,6 +640,10 @@ export class CodexAcpServer {
-             () => this.capabilities,
+     private readonly clientDelivery: AcpClientDelivery;
+@@ -659,6 +661,10 @@ export class CodexAcpServer {
              (sessionId) => this.sessions.has(sessionId) && !this.sessionIsClosing(sessionId),
+             (sessionId, signal) => this.clientDelivery.waitForSessionSetup(sessionId, signal),
          );
 +        this.voice = new CodexVoiceSessions(
 +            () => this.codexAcpClient.appServerClient,
@@ -60,7 +59,7 @@ index 4fedf94..b67fe6e 100644
          this.defaultAuthRequest = defaultAuthRequest ?? null;
          this.codexProcessState = codexProcessState ?? null;
          this.captureStderr();
-@@ -2368,6 +2375,7 @@ export class CodexAcpServer {
+@@ -2502,6 +2508,7 @@ export class CodexAcpServer {
                  session.asyncTasks.prepareForAppServerReplacement();
              }
              await this.finishAllAsyncTasks("stopped", "before the provider restart");
@@ -69,10 +68,10 @@ index 4fedf94..b67fe6e 100644
              // Captured before the swap: draining its per-session queues below (after the process
              // it wraps has already exited) is how a turn left running on the old client gets
 diff --git a/src/CodexAppServerClient.ts b/src/CodexAppServerClient.ts
-index 21ec4cd..1a7aa54 100644
+index b8041f8..cc6c57f 100644
 --- a/src/CodexAppServerClient.ts
 +++ b/src/CodexAppServerClient.ts
-@@ -1013,6 +1013,15 @@ export class CodexAppServerClient {
+@@ -1040,6 +1040,15 @@ export class CodexAppServerClient {
          this.notificationHandlers.set(sessionId, callback);
      }
  
@@ -520,10 +519,10 @@ index 0000000..2594427
 +}
 diff --git a/src/__tests__/VoiceExtension.test.ts b/src/__tests__/VoiceExtension.test.ts
 new file mode 100644
-index 0000000..a7882df
+index 0000000..32c571e
 --- /dev/null
 +++ b/src/__tests__/VoiceExtension.test.ts
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,499 @@
 +import {existsSync} from "node:fs";
 +import * as acp from "@agentclientprotocol/sdk/unstable";
 +import * as acpV2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
@@ -651,6 +650,9 @@ index 0000000..a7882df
 +                            info: {name: "voice-test", version: "1"},
 +                            capabilities: {},
 +                        }),
++                        observeInitializeResponse() {},
++                        observeSessionSetupResponses() { return () => {}; },
++                        afterInitializeResponse() {},
 +                        voice: sessions,
 +                        sessionIndex: {dispose() {}},
 +                    }) as unknown as CodexAcpServer,

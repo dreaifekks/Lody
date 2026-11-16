@@ -1,47 +1,95 @@
 diff --git a/AGENTS.md b/AGENTS.md
-index 611b262..3f0aa22 100644
+index 175d58c..0966144 100644
 --- a/AGENTS.md
 +++ b/AGENTS.md
-@@ -16,27 +16,29 @@
-
- - Keep edits consistent with existing formatting.
- - When adding env/config knobs, document them in `readme-dev.md`.
+@@ -1,59 +1,37 @@
+-# Repository Guidelines
++# Adapter rules
+ 
+-## Pull Requests
+-
+-- Always open pull requests against the `LodyAI` organization repository
+-  (`LodyAI/acp-extension-codex`), not a personal fork.
++PRs target `LodyAI/acp-extension-codex`.
+ 
+ ## Project Structure
+ 
+ - `src/` — ACP server implementation. Entry point: `src/index.ts`.
+ - `src/__tests__/` — Vitest suite (behavior-focused tests around ACP/Codex events).
+ - `src/app-server/` — generated Codex app-server API types (regenerate via `npm run generate-types`).
+-- `dist/bin/` — release-ready single-file executables and `*.zip` archives.
+-
+-## Coding Style
+-
+-- Keep edits consistent with existing formatting.
+-- When adding env/config knobs, document them in `readme-dev.md`.
 -- Managed-profile process tokens identify independent native uses, not exclusive leases.
 -  Write only the matching host-owned record's proof and remove the token from native env.
 -  Never restrict same-profile concurrency or implement credential refresh in the adapter.
-+- Managed-profile tokens identify independent uses, not exclusive leases. Write only
-+  matching host-owned proofs and remove tokens from native env. Never restrict profile
-+  concurrency or refresh credentials in the adapter.
- - Classify managed ChatGPT refresh failures on new, resume, fork, and stable load without
-   logging out; mark only reused-token contention. Legacy load retains its original error path.
- - Lody may launch the adapter from an Electron or daemon process with no Windows console.
-   Set `windowsHide: true` on every adapter-owned console-subsystem child process spawn;
-   `ELECTRON_RUN_AS_NODE` is a separate runtime-mode concern.
+-- Classify managed ChatGPT refresh failures on new, resume, fork, and stable load without
+-  logging out; mark only reused-token contention. Legacy load retains its original error path.
+-- Lody may launch the adapter from an Electron or daemon process with no Windows console.
+-  Set `windowsHide: true` on every adapter-owned console-subsystem child process spawn;
+-  `ELECTRON_RUN_AS_NODE` is a separate runtime-mode concern.
 -- The adapter serves ACP v1 and v2. A change that is not meant for one protocol version only must work correctly in both.
+-- Return `null` for "looked it up, found nothing". Use `undefined` for optional parameters and `?:` properties. For state that is not set yet, follow the surrounding type (`SessionState` uses `| null`).
+-- Treat an incoming `null` in an optional field like an absent value (ACP allows `_meta: null`).
 -- When updating discriminated-union/event `switch` statements, do not add a trailing fallback like `return null` only to satisfy TypeScript.
 -- Handle each variant with an explicit `case`; if intentionally ignored, use an explicit no-op case.
 -- Code comments should be concise and in plain language; avoid verbosity and overly specific detail.
-+- Support ACP v1 and v2 unless a change explicitly targets one version.
-+- Handle each union/event switch variant explicitly, including ignored no-op cases;
-+  never add a trailing fallback solely to satisfy TypeScript.
-+- Keep comments concise and plain.
-
- ## Testing Guidelines
-
- - Tests live under `src/__tests__/` and use Vitest.
- - Favor event-driven assertions (see `src/__tests__/CodexACPAgent/*`).
- - Prefer snapshot-based tests using `toMatchFileSnapshot()` over inline assertions.
+-- When adding env/config knobs, document them in `readme-dev.md`.
+-
+-## Architecture & Design Fit
+-
+-- Before coding, read the code the change plugs into and find the module that owns the state or concept. Build on that module, not beside it.
+-- Prefer extending an existing mechanism over adding a new one, even if it takes a small refactor (moving a helper, generalizing a function). Add a parallel path, special case, or flag only when the existing structure can't support the change.
+-- Before writing new logic, check whether it already exists in sibling handlers of the same flow, in the other protocol version's handler, or in helpers that already work with the same data. Reuse or extend it instead of adding a second version.
+-- Put shared logic in the module that owns the concept, not in one caller or an unrelated file. The same goes for guards, filters and cleanup, so every caller gets them. If guards, flags or fallbacks pile up in one place, restructure instead of adding another.
+-- If a result is meant to match another request's output, reuse that request's logic.
+-- The adapter serves ACP v1 and v2. A change that is not meant for one protocol version only must work correctly in both. v2 handlers convert the request to v1 types and reuse the v1 logic; keep v2-only differences in the conversion.
+-- New optional request fields and `_meta` keys must not reject requests that were valid before.
+-- If a workaround or new path is unavoidable (e.g. a Codex limitation), say why in a short code comment and in the PR description.
+-
+-## Testing Guidelines
+-
+-- Tests live under `src/__tests__/` and use Vitest.
+-- Favor event-driven assertions (see `src/__tests__/CodexACPAgent/*`).
+-- Prefer snapshot-based tests using `toMatchFileSnapshot()` over inline assertions.
 -- When snapshot response data drifts, prefer replacing that response payload with a stable placeholder over asserting fragile fields (except for 'model/list').
-+- Replace drifting snapshot payloads with stable placeholders rather than fragile fields,
-+  except for `model/list`.
- - Focus on behavior and outputs rather than implementation details.
+-- Focus on behavior and outputs rather than implementation details.
 -- Cover both ACP v1 and v2 when a change affects what a client receives (updates, responses, replay). A change to internal logic only does not need its tests duplicated per version.
-+- Test client-visible updates/responses/replay on v1 and v2; internal-only tests need
-+  no version duplication.
- - Use `/run-codex` skill (`.claude/skills/run-codex/`) to test with real Codex and observe actual events.
-
+-- Before adding a test, search for existing tests of the same API and scenario. Don't add cases that take the same code path. Tests that differ only in input belong in one `it.each`. Don't repeat a unit test's assertion in a wire/router test unless the wire level checks something more.
+-- For each behavior the docs promise, including what is omitted or rejected, have a test that would fail if it broke.
+-- Use `/run-codex` skill (`.claude/skills/run-codex/`) to test with real Codex and observe actual events.
++- `dist/bin/` — release executables and ZIPs.
++
++## Implementation and tests
++
++- Follow surrounding formatting; document environment/configuration knobs in `readme-dev.md`.
++- Managed-profile tokens identify independent uses, never exclusive leases. Write only
++  matching host-owned proofs; remove tokens from child env. Never restrict concurrent
++  profile use or refresh credentials. Classify refresh failures on new/resume/fork/load;
++  mark only reused-token contention, without logout. Legacy load keeps its error path.
++- Every console child spawn sets `windowsHide: true`; `ELECTRON_RUN_AS_NODE` is separate.
++- Use null for a completed lookup with no result, undefined for optional parameters,
++  and the surrounding state convention. Incoming optional null means absent.
++- Handle every union/event switch variant explicitly, including no-op cases.
++  Never add a fallback just to satisfy TypeScript. Keep comments concise and concrete.
++- Read the owning module before coding. Extend existing mechanisms and put shared rules
++  with their owner. Reuse rules across live/history and sibling handlers; avoid parallel
++  fallbacks. Explain unavoidable provider workarounds in code and the PR.
++- Preserve ACP v1/v2 behavior. v2 converts to v1 and reuses its logic; keep v2 differences
++  in conversion. New optional fields and metadata must accept previously valid requests.
++- Tests live in `src/__tests__/`. Use event-driven observable behavior and snapshots
++  (`toMatchFileSnapshot`). Stabilize drifting payloads except model/list.
++- Cover client-visible changes on both protocol versions; internal-only tests need no
++  duplication. Search existing coverage; combine equivalent inputs with `it.each`.
++  Every documented behavior needs a regression test. Wire tests must add boundary coverage.
++- Use `/run-codex` (`.claude/skills/run-codex/`) for authorized real-provider tests.
+ 
  ## Docs
-@@ -87,25 +89,18 @@
+ 
+@@ -104,25 +82,18 @@
    session. Agent message updates expose their Codex turn id as `_meta.lody.turnId`;
    `_meta.lody.forkAtTurn.turnId` is passed directly to `thread/fork.lastTurnId`. Do not maintain
    a message-id mapping or emulate fork by replaying source history.

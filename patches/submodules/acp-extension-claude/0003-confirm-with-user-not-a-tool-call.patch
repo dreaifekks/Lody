@@ -1,16 +1,8 @@
 diff --git a/src/acp-agent.ts b/src/acp-agent.ts
-index a4e655e..3a1a39a 100644
+index a807e4c..5be9457 100644
 --- a/src/acp-agent.ts
 +++ b/src/acp-agent.ts
-@@ -8848,11 +8848,15 @@ export class ClaudeAcpAgent {
-     }
-     session.emittedToolCalls.add(toolCallId);
-     // SandboxNetworkAccess is a permission-only callback, not an executing
--    // tool: the SDK does not send a tool_result for its synthetic id.
-+    // tool: the SDK does not send a tool_result for its synthetic id. The same
-+    // holds for a question Claude Code asks through AskUserQuestion with a
-+    // `confirm_<uuid>` id (its confirmWithUser, e.g. after a safeguards flag):
-+    // nothing ran, so the turn must not end as "without returning results".
+@@ -11058,7 +11058,8 @@ export class ClaudeAcpAgent {
      if (
        !parentToolUseId &&
        notificationSessionId === sessionId &&
@@ -20,7 +12,7 @@ index a4e655e..3a1a39a 100644
      ) {
        recordForegroundToolCall(session, toolCallId);
      }
-@@ -11443,6 +11447,9 @@ function shouldEmitToolCall(toolName: string): boolean {
+@@ -14595,6 +14596,9 @@ function recordToolCallParent(session: Session, toolCallId: string, parentToolUs
  
  const MAX_DISPATCHED_TOOL_CALLS = 1000;
  
@@ -31,10 +23,10 @@ index a4e655e..3a1a39a 100644
  function recordDispatchedToolCall(session: Session, toolCallId: string): void {
    const calls = (session.dispatchedToolCalls ??= new Set());
 diff --git a/src/tests/incomplete-tools.test.ts b/src/tests/incomplete-tools.test.ts
-index a480dc1..6251211 100644
+index be13d4b..fc84faf 100644
 --- a/src/tests/incomplete-tools.test.ts
 +++ b/src/tests/incomplete-tools.test.ts
-@@ -90,6 +90,16 @@ describe("incomplete foreground tools", () => {
+@@ -172,6 +172,16 @@ describe("incomplete foreground tools", () => {
      expect(updates).toContainEqual(expect.objectContaining({ toolCallId, status: "failed" }));
    });
  
@@ -51,7 +43,7 @@ index a480dc1..6251211 100644
    it("allows a completed tool with a late PostToolUse hook", async () => {
      const { prompt, logError } = createTestSession(completedToolMessages);
  
-@@ -309,6 +319,36 @@ async function* permissionOnlyToolMessages(input: Pushable<any>, agent: ClaudeAc
+@@ -1429,6 +1439,36 @@ async function* permissionOnlyToolMessages(input: Pushable<any>, agent: ClaudeAc
    yield successfulResultMessage();
  }
  
