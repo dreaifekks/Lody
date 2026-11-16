@@ -1257,9 +1257,10 @@ describe('local platform zero-cloud integration', () => {
       ]);
       expect(chatted.userTurnId).not.toBe(created.userTurnId);
 
+      await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), { titleSource: 'draft' });
       await run({ command: 'rename', sessionId, title: 'Renamed' });
       expect(await run({ command: 'show', sessionId })).toMatchObject({
-        session: { id: sessionId, title: 'Renamed' },
+        session: { id: sessionId, title: 'Renamed', titleSource: 'user' },
         historyCount: 2,
       });
       // Nothing runs, so the machine answers that it has no turn to stop.

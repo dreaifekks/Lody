@@ -172,6 +172,7 @@ export async function executeTerminalCommand(
       await resolveSessionMetaOrThrow(manager, sessionId);
       await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
         title: command.title,
+        titleSource: 'user',
       } satisfies Partial<SessionMeta>);
       await ensureWorkspaceMetaSynced(manager, `session.rename:${sessionId}`);
       return { sessionId, title: command.title };
