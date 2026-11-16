@@ -74,6 +74,8 @@ content cannot grant access outside those roots. Generated files outside the
 workspace therefore remain local-only. The existing `localAttachmentDownload`
 capability gates the download request extension. Downloading does not upload,
 rewrite or register the attachment. Offline and unavailable files report errors.
+The local-platform exception uses existing LAN file authority without hosted path or
+subscription restrictions; see [LAN boundaries](lan.md#upstream-daemon-attachment-and-preview-boundaries).
 
 ## Existing transferred attachments
 

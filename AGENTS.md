@@ -45,7 +45,7 @@ Search notes before reversing decisions. Topic triggers also bind outside caller
   at finish; inspect SHA-protected changes before confirming. Checks and translations
   prove neither correctness nor approval. Follow [maintenance](.agents/README.md).
 - Consolidate PR decisions, evidence and limits under [submission rules](.agents/AGENTS.md#documentation-at-submission).
-- Binding rules stay in the nearest `AGENTS.md`, below 8 KiB and its
+- Binding rules stay in the nearest `AGENTS.md`, within its
   [word ceiling](.agents/README.md#word-ceilings). New scopes need a `CLAUDE.md` symlink.
   Relocate topics rather than fragment them; explanations belong in docs/notes.
 

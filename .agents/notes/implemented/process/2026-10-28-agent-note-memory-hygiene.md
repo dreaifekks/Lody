@@ -159,3 +159,14 @@ whether a supersession search was thorough, and a link proves only that an owner
 names the note, not that its sentence is accurate. The 1143 existing active notes are not
 pruned by this change; that is a separate, topic-by-topic application of the
 archive skill. This note archives the trigger note it replaces.
+
+## LAN fork adoption
+
+The LAN fork uses this word-budget policy too, without a separate byte ceiling.
+Keeping the old byte gate beside upstream's word budgets repeatedly forced merge
+resolutions to shorten upstream instructions; the 0.112.0 review found lost
+schedule identity and session-access constraints. The fork therefore follows
+upstream #2004 and restores those constraints in their original wording. A byte
+gate is rejected because it makes every upstream sync repeat that loss-prone
+compression. Exceeding a word budget still follows the relocation and justified
+manifest-override policy above; dropping upstream constraints is not a remedy.

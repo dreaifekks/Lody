@@ -220,6 +220,7 @@ dev number. A desktop switches between the two in Settings > LAN. Upstream's own
 
 - `apps/cli` — Connect machines and run coding agents; `src/lib/lan` holds the hub and the LAN features
 - `apps/electron` — Desktop app
+- [`apps/mobile`](apps/mobile/README.md) — New native iOS and Android clients
 - `packages/components` — Shared workspace UI
 - `packages/ui` — Base UI primitives and StyleX design tokens
 - `packages/platform` — Platform capabilities and integrations
@@ -231,6 +232,7 @@ dev number. A desktop switches between the two in Settings > LAN. Upstream's own
 - `packages/e2ee-lab` — Local adversarial consumers and persistence probes for `@lody/e2ee-core`
 - `packages/turn-diff-store` — Local content-addressed turn snapshots
 - `packages/loro-streams-rpc` — RPC over Loro Streams
+- `packages/iroh-native` — Native iroh transport for encrypted-workspace RPC ([rules](packages/iroh-native/AGENTS.md))
 - `packages/acp-extension-{core,kimi,pi}` — ACP extension submodule workspaces
 - `packages/lan-share-reader` — The page readers of a LAN's shared conversations open
 - `scripts/lan` — Install scripts published with each release

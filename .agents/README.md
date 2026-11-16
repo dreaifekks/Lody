@@ -54,7 +54,8 @@ These measurements are diagnostic, not an additional approval or size gate.
 
 [`scripts/docs/agents-budgets.json`](../scripts/docs/agents-budgets.json) holds a
 default word ceiling for every `AGENTS.md` and per-file overrides. The check fails
-a file above its ceiling and warns from 90% of it. When the gate goes red, in order:
+a file above its ceiling and warns from 90% of it. The LAN fork has no separate
+byte limit; [fork adoption rationale](notes/implemented/process/2026-10-28-agent-note-memory-hygiene.md#lan-fork-adoption). When the gate goes red, in order:
 
 1. **Relocate** a topic that belongs in a child scope, a README, `.agents/docs/`
    or a note, leaving the one-line rule and a link.

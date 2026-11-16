@@ -13,7 +13,8 @@ Read [README](README.md) and these rules.
 - `?tab` owns selection, never mirrored state. Shared closure may select a neighbour
   or draft. Close writes only `isTabClosed`; reopen clears it without unarchiving.
 - Read [Cmd/Ctrl+W rules](../../lib/commands/AGENTS.md).
-- Change owner writes `SessionMeta.userId`, independently of sharing/visibility.
+- `Change owner` writes the OWNER `SessionMeta.userId`, never sharing;
+  candidates need machine/project access.
 
 ## [Shell](../../../../../.agents/docs/sessions-side-panel.md)
 
@@ -35,9 +36,11 @@ Read [README](README.md) and these rules.
   cannot open private LAN; only the address bar may.
 - Preload one bounded frame after live confirmation. Require atomic moves, no
   polling and cleanup that remains safe after Browser takeover.
-- Static HTML uses policy-owned `srcdoc`. Scripts require credentialless and
-  `allow-scripts`; otherwise strip navigation and use an empty sandbox. Never preview
-  truncated text. Static frames die with their tab.
+- Static HTML requires policy-owned `srcdoc`. Scripts follow
+  `getExecutableHtmlPreviewSupport()` plus `scriptsOptedIn` via
+  `useManagedPreviewFrame` only (see sessions-browser.md); else use
+  navigation-stripped HTML with an empty sandbox.
+  Never preview truncated text; static frames die with their tab.
 - Encrypted remote controls require protected host features/verified write role,
   never ordinary proofs. Disclose plaintext tunnel bytes.
 - Comments use `runtime.writer.mutatePreviewVisualComments`, never `setState`.
@@ -50,9 +53,7 @@ Read [README](README.md) and these rules.
   error/React stacks. Read receipts require `isVisible`, not mounting.
 - `useSessionActions` checks current Repo metadata for all affected
   target, including contained/opened sessions, before effects.
-- Encrypted history uses bound document access, never wider execution indexes.
-  Unavailable targets mount only document readers, without probes/RPC. Read the
-  [boundary](../../../../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#member-visibility-a4).
+- Read-only sessions require authoritative root grants matching the current Meta machine. Mount only the independent reader, preserving preferences, Markdown and references. Never expose machine controls or management. [Boundary](../../../../../specs/session-access.md).
 - Window-top headers use shared drag regions, exempting controls.
 - Retain question drafts through navigation/IME Enter and show failures.
 - Copy uses `buildConversationMarkdown`, never `buildReplayPromptFromHistory`.

@@ -13,7 +13,9 @@ recovery page may invoke only
 product IPC authority. Public browser views and preview frames have no product
 IPC authority. Launch requests carry only a launcher id and absolute target path;
 main resolves built-ins and natively approved, main-stored custom commands. Never
-accept command specifications from a launch or probe request.
+accept command specifications from a launch or probe request. In the LAN fork,
+only built-in editor CLIs also accept an `sshDestination` validated by
+`parseSshDestination`; main still constructs every command.
 Default-application opening accepts only known document suffixes or ordinary
 folders and opens the policy-checked real path. Unknown file types return
 `unsupported_file_type`; Reveal and configured editors remain available. On macOS,

@@ -1656,3 +1656,50 @@ it('keeps a cold metadata failure retryable without changing the Schedule', asyn
   await expect(executeScheduleCommand(h.context, command)).resolves.toMatchObject({ ok: true });
   expect((await h.repository.read('schedule'))?.definition.enabled).toBe(false);
 });
+
+it.each(['requesterSessionId', 'LODY_AGENT_SESSION_ID'])(
+  'restricts commands with inherited %s before any schedule mutation',
+  async (variable) => {
+    const h = await fixture();
+    const requester = variable === 'requesterSessionId' ? ('session' as never) : undefined;
+    if (variable === 'LODY_AGENT_SESSION_ID') vi.stubEnv(variable, 'session');
+    h.context.requesterSessionId = scheduleRequesterSessionId(requester);
+    const d = await h.repository.read('schedule');
+    if (!d) throw new Error('missing schedule');
+    const draft = {
+      misfirePolicy: d.definition.misfirePolicy,
+      overlapPolicy: d.definition.overlapPolicy,
+      retryPolicy: d.definition.retryPolicy,
+      title: d.definition.title,
+      machineId: d.definition.machineId,
+      trigger: d.definition.trigger,
+      agent: d.definition.agent,
+      prompt: d.prompt,
+    };
+    for (const command of [
+      { action: 'create', scheduleId: 'new', draft, requestId: 'create' },
+      {
+        action: 'edit',
+        scheduleId: 'schedule',
+        draft: { ...draft, prompt: 'edited' },
+        requestId: 'edit',
+      },
+      { action: 'resume', scheduleId: 'schedule', requestId: 'resume' },
+      { action: 'run', scheduleId: 'schedule', requestId: 'run' },
+      { action: 'delete', scheduleId: 'schedule' },
+    ] as ScheduleCommand[]) {
+      await expect(executeScheduleCommand(h.context, command)).rejects.toThrow('human');
+      await expect(
+        sendScheduleCommand(command, { requesterSessionId: h.context.requesterSessionId })
+      ).rejects.toThrow('human');
+    }
+    expect(await h.repository.read('schedule')).toEqual(d);
+    await executeScheduleCommand(h.context, {
+      action: 'pause',
+      scheduleId: 'schedule',
+      requestId: 'pause-env',
+    });
+    expect((await h.repository.read('schedule'))?.definition.enabled).toBe(false);
+    expect(h.history()).toHaveLength(1);
+  }
+);

@@ -46,6 +46,11 @@
   permission tier; unknown requires a person. Human CLI has no Agent tier cap.
   Retry interval rules use the landed request anchor, preserving requestId replay.
   Record requesterSessionId and one idempotent system notice per Agent write.
+  Only the command client resolves `LODY_AGENT_SESSION_ID`
+  from Agent/script children; human desktop terminals clear that marker. The
+  service uses only the explicit requester and waits for workspace metadata before
+  cloud Session-owner checks. Daemon environment never supplies request identity.
+  These restrictions do not isolate arbitrary shell access.
 - Proposals use validated named rules, never cron, and take effect only after human
   confirmation. Repeated requestIds report the card outcome. Ask when prompt, rule or
   destination is unclear. Keep guidance aligned with the card.

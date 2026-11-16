@@ -128,7 +128,7 @@ checks validate maintenance tooling, not product behavior or human review qualit
 Watch inventories exclude symlinks consistently. Blob-based diff removes the dependency
 on PR commit reachability. Topic errors remain visible beside healthy records. The gate
 checks repository-wide Markdown links (including archives), bilingual Status agreement,
-and the 8 KiB instruction limit. Strict fields and traceable scope references catch
+and the instruction word budgets. Strict fields and traceable scope references catch
 configuration mistakes. Reviewed retirement retains the record while ending freshness
 checks, and requires removing its live code markers.
 

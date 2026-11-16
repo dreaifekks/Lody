@@ -15,12 +15,19 @@
 
 - Reconcile with four global slots, filling free slots independently. Follow README bounds; no per-trigger scans/throttles. Close dead turns. Acknowledge empty queues only with causal proof.
 - Promotion preserves frozen fields and removes input only after history+activation succeed. Queue/history dispatch share normalized config; JS undefined fields cannot invalidate unchanged encrypted inputs. Hold missing metadata as unknown in the TTL-bounded RPC stash until metadata or a definitive verdict arrives. Subscribe before Doc Room join/sync; never dispatch from the RPC handler. History sync is the durable fallback.
-- Missing-history recovery writes permanent lastMissingHistoryUserMsgId and chat_failed, never lastHandledUserMsgId. Retire terminal stale activation to settledActivationUserMsgId; never claim that marker or rewrite latestUserMsgId. Report settled only with none remaining.
+- Missing-history recovery never advances `lastHandledUserMsgId`: retain failed IDs in
+  `missingHistoryUserMsgIds`, read legacy acknowledgements, and surface `chat_failed`.
+- Retire a terminal stale activation into `settledActivationUserMsgId`; never claim the
+  marker or rewrite `latestUserMsgId`, and report settled only if none survives.
 - Late history never replays; recovery sends anew. Use last rows by id; stop no-progress repairs. Only hasPendingUserTurnActivation decides pending work, never pointer comparisons. Keep Stop data in control docs, pointers in meta. Never scan old docs or change presence owned by ../lib/loro/session-active-presence.ts.
-- Encrypted `queuedInput` requires its signed original or local receipt to start;
-  machine signatures do not establish authorship. Only the owner principal may
-  use the machine account as requester.
-- Encrypted requesters come from verified signers; authorize locally. Row `userId` is display only.
+- Encrypted promotion marks the row `queuedInput` and copies the queue item's signed
+  `e2eeIntent`; start verifies that signature, never the row's writer, and encrypted rows
+  take their resume target from Session metadata. An encrypted start runs only its signed
+  input config, never the row's unsigned items. Only the owner principal may name the
+  machine account as requester
+  ([evidence](../../../../.agents/notes/implemented/architecture/2026-11-10-e2ee-signed-execution-intent.md)).
+- Encrypted requesters come from the verified signer; access is decided locally; row
+  `userId` is display only ([decision](../../../../.agents/notes/implemented/bug-fix/2026-11-06-e2ee-verified-requester.md)).
 
 ## Execution
 
