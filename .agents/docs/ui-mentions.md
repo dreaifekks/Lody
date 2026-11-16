@@ -33,7 +33,7 @@ lives in its `README.md`.
 slot. Its sources follow the task's project (or destination chat's project) and
 selected Agent. Saving runs `useMentionPromptExpansion` before handing the prompt
 to the schedule repository, so the stored string contains durable Session links,
-Role instructions and Skill paths instead of display tokens. Reopening shows that
+Role references and Skill paths instead of display tokens. Reopening shows that
 stored text; schedule documents do not persist composer ranges or transcript spans.
 
 ## Menu placement
@@ -205,28 +205,23 @@ wrong surface.
 ## Agent Roles
 
 Role visibility and selection follow [the Role mention Spec](../../specs/agent-role-mentions.md).
-The list is the composer's own Role menu: one flat entry per instance group (an
-alias, or an agent family without one), the composer's machine first and the
-others naming their machine, written `@<Role>` or, where the Role has several
-groups, `@<Role>:<group>`. The composer's machine is preferred, never required: a
-mention starts a new Session, so an entry elsewhere expands too, and a token or
-a bare `@<Role>` resolves the way a bare Role does over MCP — first group, this
-machine first. A range names an instance; when it cannot run, another of its
-group stands in. A token two entries produce stays text even while one cannot
-run, and the agent hint is left off an entry already titled by its agent.
-`@<Role>@<machine>` and `@<entry token>@<machine>` pin a machine's instance
-instead: the term after the second `@` filters by machine and lists only
-pinned rows, one per group there, because naming a machine asks for that
-machine even where the group's own row already runs on it. A pinned range
-carries `pinned:<instance id>`, so expansion can tell it from a group range and
-never stands another instance in. `@` rather than a space separates the machine
+The list is the composer's own Role menu, with one entry per stable target. A
+mention is a reference, not an instruction to create a Session; the user's words
+choose its use. A selected target expands to
+`[Agent Role: <name> · <target> (agentRoleId: <id>, agentRoleInstanceId: <instance-id>)]`.
+A reference without a fixed target uses `[Agent Role: <name> (agentRoleId: <id>)]`.
+`@Role@machine` filters targets on that machine and preserves the selected target id.
+Existing instance-id and `pinned:<instance-id>` ranges still resolve exactly;
+renaming labels never retargets a committed range. Ambiguous text and unavailable
+or deleted targets stay plain text, with no replacement chosen by availability.
+`@` rather than a space separates the machine
 because a space closes every mention menu; the input reads an `@` glued to a
 run that `@` opened as part of that query (`findQueryTriggerIndex`), which
 also keeps `@node_modules/@types` one path query. Only `@` repeats this way:
 `/a/b` and `$a$b` still read from their last trigger. The menu keeps entries that are loading or unavailable, with
 an explanation below the name. They follow available matches and cannot be
 selected. Hydration and before-send expansion independently reject those rows,
-so showing a stale Role never creates a new dispatch instruction.
+so a stale Role never expands to a usable reference.
 
 A Role mention borrows the session mention's shape with a different payload. The
 emoji replaces the category glyph because the category header already says these
@@ -244,8 +239,7 @@ real message with "please enter something to discuss" rather than dropping one
 chip.
 
 `agent_role` is the one kind the copy button collapses back to its label: the
-rewritten region is an instruction addressed to this agent and means nothing
-pasted elsewhere, while the chip on screen says `@Reviewer`.
+rewritten region is a workspace-catalog reference rather than portable prose, while the chip on screen says `@Reviewer`.
 
 The Role's own pane replaced the neutral detail rows because a Role is one object
 with one reading — which agent, which machine, which values it pins, and its

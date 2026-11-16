@@ -118,6 +118,10 @@ true })`. The fetch timestamp rides on the cached entry (survives IndexedDB).
 
 ## Agent Roles
 
+- A Role mention is a reference, never an instruction to create a Session: the
+  user's words determine the action. Pinned references carry `agentRoleId` and
+  `agentRoleInstanceId`; an unpinned reference names only its Role.
+
 - Role and composer menus list every target separately. Each choice pins its stable
   id; unaliased targets display their Agent family. `@Role@machine` lists every
   target there. Hydration requires one match; no ordering/availability fallback.

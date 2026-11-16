@@ -41,8 +41,10 @@ The user fixes the pin by editing the Role; saved pins are never rewritten here.
 Text hydration resolves only a unique available match. Bare Role names, aliases
 or `@Role@machine` text that identifies several targets stays plain text, even
 when only one match is online. Deleted or unavailable pins remain plain text and
-produce no dispatch instruction. New instructions name the Role and stable target
-id; acceptance freezes the current target, shared prompt and revision.
+produce no expanded reference. Mentions are references, not dispatch instructions.
+Pinned references carry the Role and stable target id; unpinned references name
+only the Role. The user's words determine the action. If a Session is created,
+acceptance freezes the current target, shared prompt and revision.
 
 Unavailable/loading targets remain visible with their reason and cannot be
 selected. Readability preserves ownership and sharing rules. Dedicated Role menus

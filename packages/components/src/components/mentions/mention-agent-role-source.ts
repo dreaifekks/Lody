@@ -38,16 +38,15 @@ import {
  * character, so the text has to be something the user can read while the agent
  * receives something it can act on.
  *
- * What differs is what the rewrite produces. A session mention asks the agent to
- * read a history; a Role mention asks it to CREATE a Session, and the Role's
- * actual configuration is not in that instruction at all. The agent passes the
- * Role and instance ids back; the MCP create path resolves the current
+ * What differs is what the rewrite produces. A session mention refers to a
+ * history; a Role mention refers to a catalog target, and the Role's
+ * actual configuration is not in that reference. When asked to create a Session,
+ * the agent passes the Role and instance ids back; the MCP create path resolves the current
  * workspace row and freezes that instance when it accepts the Operation.
  *
- * The list is the composer's: one entry per instance group of every Role, the
+ * The list is the composer's: one entry per stable target of every Role, the
  * composer's machine first, exactly as its run-config menu lists them. A
- * mention starts a new Session, so an entry on another machine can be used
- * even where the composer's own conversation cannot move.
+ * reference may name a Role on another machine even where the composer's own conversation cannot move.
  *
  * A term naming a machine after `@` (`@ui@n1`) lists the instances on that
  * machine instead, every one PINNED: it runs that instance or nothing, never a
@@ -218,9 +217,11 @@ const findMentionTarget = (
  */
 export const buildAgentRoleMentionPrompt = (
   role: { id: string; name: string },
-  instance: { id: string; name: string }
+  instance?: { id: string; name: string }
 ): string =>
-  `use lody mcp to create a session with agent role[id: ${role.id}, instance: ${instance.id}, name: ${role.name} · ${instance.name}]`;
+  instance
+    ? `[Agent Role: ${role.name} · ${instance.name} (agentRoleId: ${role.id}, agentRoleInstanceId: ${instance.id})]`
+    : `[Agent Role: ${role.name} (agentRoleId: ${role.id})]`;
 
 export const buildAgentRoleMentionRewrites = (
   text: string,

@@ -192,7 +192,7 @@ const items = (...roles: AgentRole[]) => itemsWith(roles);
 /** What the menu lists without a machine in the term. */
 const listed = (list: readonly AgentRoleMentionItem[]) => list;
 
-/** The instruction for one instance, named by its group. */
+/** The reference for one instance, named by its group. */
 const promptFor = (entry: AgentRole, index = 0, name = 'Codex') =>
   buildAgentRoleMentionPrompt(entry, { id: getAgentRoleTargets(entry)[index]!.id, name });
 
@@ -416,11 +416,18 @@ describe('agent role menu rows', () => {
       cliType: 'builtin',
       machineId,
     } as AgentConfigMeta;
-    const list = itemsWith([stale], (entry) => resolveAgentRoleInstanceAvailability(entry, {
-      authorizedMachineIds: new Set([machineId]), onlineMachineIds: new Set([machineId]),
-      agentConfigMachineIds: new Map([[config.id, machineId]]), loadedAgentConfigMachineIds: new Set([machineId]),
-      runConfigCapability: createAgentRoleCapabilityResolver([config], new Map([[machineId, machine]])),
-    }));
+    const list = itemsWith([stale], (entry) =>
+      resolveAgentRoleInstanceAvailability(entry, {
+        authorizedMachineIds: new Set([machineId]),
+        onlineMachineIds: new Set([machineId]),
+        agentConfigMachineIds: new Map([[config.id, machineId]]),
+        loadedAgentConfigMachineIds: new Set([machineId]),
+        runConfigCapability: createAgentRoleCapabilityResolver(
+          [config],
+          new Map([[machineId, machine]])
+        ),
+      })
+    );
     const [candidate] = buildAgentRoleCandidates(list, '', undefined, ({ availability }) =>
       availability.kind === 'unavailable'
         ? AGENT_ROLE_UNAVAILABLE_REASON_KEYS[availability.reason]
@@ -489,6 +496,17 @@ describe('agent role menu rows', () => {
 });
 
 describe('agent role before-send expansion', () => {
+  it('uses literal Role references with stable target ids and no dispatch instruction', () => {
+    expect(
+      buildAgentRoleMentionPrompt(
+        { id: 'role-a', name: 'Reviewer' },
+        { id: 'target-b', name: 'Codex' }
+      )
+    ).toBe('[Agent Role: Reviewer · Codex (agentRoleId: role-a, agentRoleInstanceId: target-b)]');
+    expect(buildAgentRoleMentionPrompt({ id: 'role-a', name: 'Reviewer' })).toBe(
+      '[Agent Role: Reviewer (agentRoleId: role-a)]'
+    );
+  });
   const text = 'please @Code-Reviewer this diff';
   const mention = { start: 7, end: 21, kind: 'agent_role', value: 'role-1:machine-1' };
 
@@ -511,7 +529,7 @@ describe('agent role before-send expansion', () => {
     ]);
   });
 
-  it('carries no run configuration into the instruction', () => {
+  it('carries no run configuration into the reference', () => {
     const prompt = promptFor(role());
     expect(prompt).not.toContain('gpt-5.6');
     expect(prompt).not.toContain('thought_level');
