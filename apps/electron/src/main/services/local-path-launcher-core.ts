@@ -56,10 +56,12 @@ export function selectSafePathLauncherInput(
   platform: string,
   usesShell: (command: string) => boolean
 ): LaunchLocalPathInput | null {
-  if (platform !== 'win32' || input.kind === 'url' || !/[&|<>^%!"\r\n]/u.test(input.targetPath))
-    return input
+  if (platform !== 'win32' || input.kind === 'url') return input
+  const unsafe = /[&|<>^%!"\r\n]/u
   const candidates = [input.command, ...(input.fallbackCommands ?? [])].filter(
-    (candidate) => !usesShell(candidate.command)
+    (candidate) =>
+      !usesShell(candidate.command) ||
+      (!unsafe.test(input.targetPath) && !(candidate.args ?? []).some((arg) => unsafe.test(arg)))
   )
   if (candidates.length)
     return { ...input, command: candidates[0]!, fallbackCommands: candidates.slice(1) }

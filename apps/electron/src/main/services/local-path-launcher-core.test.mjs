@@ -291,6 +291,7 @@ void test('launcher commands come from main configuration and custom changes req
     },
     '../menu': { translateMenu: (_key, fallback) => fallback },
     '@lody/shared/path-launchers': builders,
+    '@lody/shared/lan-ssh': await import('@lody/shared/lan-ssh'),
     '@lody/shared/electron-ipc': ipc,
     'node:path': new Proxy(
       {},
@@ -350,6 +351,25 @@ void test('launcher commands come from main configuration and custom changes req
   assert.equal(built.command.args[1], request.targetPath)
   assert.equal(exports.resolvePathLauncher({ ...request, launcherId: 'sh' }), null)
   assert.equal(exports.resolvePathLauncher({ ...request, launcherId: 'custom:editor' }), null)
+  for (const host of ['box:dev', 'box+dev']) {
+    assert.equal(
+      exports.resolvePathLauncher({ ...request, launcherId: 'zed', sshDestination: { host } }),
+      null
+    )
+  }
+  assert.equal(
+    exports.resolvePathLauncher({
+      ...request,
+      launcherId: 'zed',
+      targetPath: 'relative/path',
+      sshDestination: { host: 'box' }
+    }),
+    null
+  )
+  assert.notEqual(
+    exports.resolvePathLauncher({ ...request, launcherId: 'zed', sshDestination: { host: 'box' } }),
+    null
+  )
   const custom = { id: 'editor', label: 'My editor', commandTemplate: 'code-insiders "{path}"' }
   assert.equal((await exports.approvePathLauncher(custom, owner)).approved, false)
   assert.equal(launchers.length, 0)
@@ -393,6 +413,28 @@ void test('launcher commands come from main configuration and custom changes req
   assert.equal(started[0].command.endsWith('Code.exe'), true)
   assert.equal(started[0].options.shell, false)
   assert.deepEqual(started[0].args, ['-n', windowsRequest.targetPath])
+  assert.equal(
+    exports.resolvePathLauncher({
+      ...windowsRequest,
+      launcherId: 'zed',
+      sshDestination: { host: 'box' }
+    }),
+    null
+  )
+  const remote = exports.resolvePathLauncher({
+    ...request,
+    targetPath: '/srv/a b/c d',
+    sshDestination: { host: 'box' }
+  })
+  assert.notEqual(remote, null)
+  assert.equal(await exports.hasPathLauncher(remote), true)
+  assert.equal((await exports.launchLocalPath(remote)).launched, true)
+  assert.equal(started[1].command.endsWith('Code.exe'), true)
+  assert.equal(started[1].options.shell, false)
+  assert.equal(
+    started[1].args.some((arg) => arg.includes('%20')),
+    true
+  )
   const refused = await exports.launchLocalPath({
     kind: 'command',
     command: { command: 'only.cmd' },
@@ -458,4 +500,16 @@ void test('Windows metacharacter paths preserve native executables and URLs whil
       null
     )
   }
+})
+
+void test('filters percent-encoded shell arguments even when the raw path has no metacharacters', () => {
+  const input = {
+    kind: 'command',
+    command: { command: 'editor.cmd', args: ['vscode://ssh-remote+box/a%20b/c%20d'] },
+    targetPath: '/srv/repo'
+  }
+  assert.equal(
+    selectSafePathLauncherInput(input, 'win32', (cmd) => cmd.endsWith('.cmd')),
+    null
+  )
 })

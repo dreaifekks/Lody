@@ -1,3 +1,4 @@
+import { isSshUrlHost } from '@lody/shared/lan-ssh'
 import { constants as fsConstants } from 'node:fs'
 import { access, stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -8,6 +9,7 @@ import {
   buildPathLauncherLaunchInput,
   buildRemotePathLauncherLaunchInput,
   canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
   validateCustomPathLauncherCommandTemplate,
   type BuiltinPathLauncherId
 } from '@lody/shared/path-launchers'
@@ -329,7 +331,12 @@ export function resolvePathLauncher(request: PathLauncherRequest): LaunchLocalPa
         id: request.launcherId as BuiltinPathLauncherId,
         label: request.launcherId
       }
-      if (!canLaunchRemotePath(launcher)) return null
+      if (
+        !canLaunchRemotePath(launcher) ||
+        !request.targetPath.startsWith('/') ||
+        (remotePathLauncherTakesUrlHost(launcher) && !isSshUrlHost(request.sshDestination.host))
+      )
+        return null
       return buildRemotePathLauncherLaunchInput(
         launcher,
         request.targetPath,
