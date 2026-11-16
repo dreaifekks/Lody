@@ -207,6 +207,7 @@ function SupportedSchedulesWorkspace({
   const runtime =
     scope.enabled && scope.workspaceId === activeRuntime?.workspaceId ? activeRuntime : null;
   const user = useAtomValue(userAtom);
+  const teamSharingAvailable = useAppCapability('teamSharing');
   const { members } = useWorkspaceMembers();
   const slug = useAtomValue(currentWorkspaceSlugAtom);
   const navigate = useNavigate();
@@ -642,6 +643,7 @@ function SupportedSchedulesWorkspace({
   const list = (
     <ScheduleListView
       currentUserId={user?.id}
+      showOwners={teamSharingAvailable}
       {...registry}
       board={!!board}
       rows={rows}

@@ -450,7 +450,7 @@ type RowHandlers = {
 };
 
 type Entry = {
-  owner: string;
+  owner?: string;
   row: ScheduleRegistryRow;
   runtime?: ScheduleRuntimeRow;
   context?: ScheduleRowContext;
@@ -706,13 +706,17 @@ function ScheduleListRow({
         </span>
         <span {...stylex.props(styles.summary)}>
           <span {...stylex.props(styles.summaryPart)}>{frequency}</span>
-          <span {...stylex.props(styles.separator)}>·</span>
-          <span
-            {...stylex.props(styles.summaryPart)}
-            title={t('schedules.owner.label', 'Owner: {{name}}', { name: entry.owner })}
-          >
-            {entry.owner}
-          </span>
+          {entry.owner !== undefined ? (
+            <>
+              <span {...stylex.props(styles.separator)}>·</span>
+              <span
+                {...stylex.props(styles.summaryPart)}
+                title={t('schedules.owner.label', 'Owner: {{name}}', { name: entry.owner })}
+              >
+                {entry.owner}
+              </span>
+            </>
+          ) : null}
           {context?.chat ? (
             <span {...stylex.props(styles.narrowOnly)}>
               <span {...stylex.props(styles.separator)}>·</span>
@@ -905,8 +909,10 @@ export function ScheduleListView({
   now = getServerNow(),
   viewerTimeZone,
   currentUserId,
+  showOwners = true,
 }: {
   currentUserId?: string;
+  showOwners?: boolean;
   rows: ScheduleRegistryRow[];
   runtimes: ScheduleRuntimeRow[];
   ready: boolean;
@@ -987,8 +993,9 @@ export function ScheduleListView({
     const runtime = runtimeOf(row);
     const context = contextForRow?.(row);
     return {
-      owner:
-        row.ownerId === currentUserId
+      owner: !showOwners
+        ? undefined
+        : row.ownerId === currentUserId
           ? t('schedules.owner.you', 'You')
           : (context?.owner ?? row.ownerId),
       row,
@@ -1045,13 +1052,15 @@ export function ScheduleListView({
     .filter(
       (entry) =>
         nameOf(entry.row).toLowerCase().includes(query) &&
-        matchesOwner(entry, currentUserId ? ownerFilter : 'all') &&
+        matchesOwner(entry, showOwners && currentUserId ? ownerFilter : 'all') &&
         matchesProject(entry, project) &&
         matchesStatus(entry, statusFilter)
     )
     .sort((a, b) => compare(a, b) || nameOf(a.row).localeCompare(nameOf(b.row)));
   const filtering =
-    project.kind !== 'all' || statusFilter !== 'all' || (!!currentUserId && ownerFilter !== 'all');
+    project.kind !== 'all' ||
+    statusFilter !== 'all' ||
+    (showOwners && !!currentUserId && ownerFilter !== 'all');
 
   const projectOptions = [
     {
@@ -1241,7 +1250,7 @@ export function ScheduleListView({
                 role="toolbar"
                 aria-label={t('schedules.filter.label', 'Filter and sort')}
               >
-                {currentUserId ? (
+                {showOwners && currentUserId ? (
                   <FilterMenu
                     label={t('schedules.filter.owner', 'Owner')}
                     icon={<UserRound {...stylex.props(styles.mutedIcon)} aria-hidden="true" />}

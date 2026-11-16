@@ -278,6 +278,24 @@ describe('schedule list rows', () => {
       (row) => row.querySelector('button span:nth-child(2)')?.textContent
     );
 
+  it('hides owner metadata and filtering on a single-user platform without filtering away rows', () => {
+    renderList({
+      rows: [manual, { ...pending, ownerId: 'raw-lan-owner' }],
+      currentUserId: 'owner',
+      showOwners: false,
+      initialFilters: { owner: 'others' },
+    });
+    expect(titles()).toHaveLength(2);
+    expect(container.querySelector('[title^="Owner:"]')).toBeNull();
+    expect(container.textContent).not.toContain('raw-lan-owner');
+    expect(container.textContent).not.toContain('You');
+    expect(
+      [...container.querySelectorAll('button')].some((button) =>
+        button.textContent?.includes('Owner')
+      )
+    ).toBe(false);
+  });
+
   it('filters ownership across tasks and messages, composes with project, and clears filters', () => {
     const teammateTask = { ...blocked, ownerId: 'teammate' };
     const teammateMessage = { ...pending, ownerId: 'teammate' };
