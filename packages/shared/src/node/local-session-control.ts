@@ -744,16 +744,7 @@ export function isLocalSessionControlRequest(value: unknown): value is LocalSess
       typeof value.machineId === 'string' &&
       typeof value.sessionId === 'string' &&
       isOptionalString(value.workspaceId) &&
-      isStringList(value.paths, { min: 1, max: SESSION_FILE_MAX_COUNT })
-    );
-  }
-
-  if (value.type === 'session/file-send-local') {
-    return (
-      typeof value.machineId === 'string' &&
-      typeof value.sessionId === 'string' &&
-      isOptionalString(value.workspaceId) &&
-      isOptionalString(value.targetMachineId) &&
+      (value.type !== 'session/file-send-local' || isOptionalString(value.targetMachineId)) &&
       isStringList(value.paths, { min: 1, max: SESSION_FILE_MAX_COUNT })
     );
   }

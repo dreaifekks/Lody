@@ -387,3 +387,19 @@ it('carries local-only attachment preparation through both native validators', (
     ).toBe(false);
   }
 });
+
+it.each([isLocalSessionControlRequest, isLocalSessionControlRequestCjs])(
+  'checks the LAN upload target in both local-control entry points',
+  (validate) => {
+    const request = {
+      type: 'session/file-send-local',
+      machineId: 'machine',
+      workspaceId: 'workspace',
+      sessionId: 'session',
+      paths: ['/tmp/synthetic.txt'],
+      targetMachineId: 'member-b',
+    };
+    expect(validate(request)).toBe(true);
+    expect(validate({ ...request, targetMachineId: 42 })).toBe(false);
+  }
+);
