@@ -3,7 +3,14 @@ import { E2eeDeviceRevokedError, E2eeMemberRemovedError } from './e2ee-cloud-err
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { readFile, mkdtemp, rm, readdir, writeFile } from 'node:fs/promises'
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto'
+import {
+  createCipheriv,
+  createDecipheriv,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign
+} from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -32,6 +39,7 @@ import { makeOfflineAuthIdentityCache } from '../auth-storage.ts'
 import * as electronIpc from '../../../../../packages/shared/src/electron-ipc.ts'
 import { isIpcInvokeChannel } from '../../preload/ipc-invoke-policy.ts'
 import * as memberJoining from './e2ee-member-join.mts'
+import { memberOfferSigningBytes } from '@lody/e2ee-client/member'
 import { PersonalPairingOfferSchema } from './e2ee-personal-pairing.mts'
 import { desktopE2eeFailure, rememberDesktopE2eeFailure } from './e2ee-diagnostics.mts'
 import { createDesktopQuitBarrier, drainMainProcessQuitResources } from './desktop-shutdown.ts'
@@ -77,16 +85,21 @@ async function load(relative, dependencies, console = globalThis.console, env = 
                   ? { PersonalPairingOfferSchema }
                   : id === '../../services/e2ee-account-pairing-host.mjs'
                     ? { makeDesktopAccountPairingHost }
-                    : id === '../../services/e2ee-client-loss-probe'
-                      ? // Production default: the E2E probe is disabled and forwards work.
-                        { observeClientLossOperation: (_kind, _workspace, _sender, work) => work() }
-                      : require(id)
+                    : id === '../../services/e2ee-recovery-vault.mjs' ||
+                        id === '../../services/e2ee-passkey-macos.mjs'
+                      ? {}
+                      : id === '../../services/e2ee-client-loss-probe'
+                        ? // Production default: the E2E probe is disabled and forwards work.
+                          {
+                            observeClientLossOperation: (_kind, _workspace, _sender, work) => work()
+                          }
+                        : require(id)
     }
   )
   return exports
 }
 async function account(options = {}) {
-  const identity = { userId: 'account', generation: 1 }
+  const identity = { userId: 'acc1', generation: 1 }
   let identityListener = () => {}
   const auth = {
     subscribeCachedSessionIdentity: (listener) => {
@@ -94,7 +107,8 @@ async function account(options = {}) {
       return () => {}
     },
     getCachedSessionIdentity: () => ({ ...identity }),
-    getBootstrapSession: () => new Promise(() => {})
+    getBootstrapSession: () => new Promise(() => {}),
+    ...options.auth
   }
   const warnings = []
   const api = await load(
@@ -171,7 +185,7 @@ void test('passive account inspection never reopens an absent or closed owner', 
         }
       })
   })
-  const inspect = () => api.inspectDesktopE2eeCachedState('account', 'team', 'machine')
+  const inspect = () => api.inspectDesktopE2eeCachedState('acc1', 'team', 'machine')
   assert.equal((await inspect()).ownerPresent, false)
   assert.deepEqual([leases, custody, hosts], [0, 0, 0])
   await api.withDesktopE2eeAccount(
@@ -261,8 +275,8 @@ void test('in-place and subframe navigation retain the ledger lease; document na
   }
   const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
     '../ipc-service-deps': { getIpcServiceDeps: () => ({}) },
+    '../product-window-ipc-service': { ProductWindowIpcService: class {} },
     'electron-ipc-decorator': {
-      IpcService: class {},
       IpcMethod: () => (_target, _name, descriptor) => descriptor,
       getIpcContext: () => ({ event: { sender } })
     },
@@ -295,7 +309,7 @@ void test('uncertain admission preserves append and reconciliation failures, the
   const submitted = []
   let committed = false
   const owner = {
-    accountId: 'account',
+    accountId: 'acc1',
     bootstrap: { deviceCredential: () => Effect.succeed('synthetic-credential') },
     readers: new Map([['workspace', new Set([sender.id])]]),
     host: {
@@ -325,8 +339,8 @@ void test('uncertain admission preserves append and reconciliation failures, the
           }
         })
       },
+      '../product-window-ipc-service': { ProductWindowIpcService: class {} },
       'electron-ipc-decorator': {
-        IpcService: class {},
         IpcMethod: () => (_target, _name, descriptor) => descriptor,
         getIpcContext: () => ({ event: { sender } })
       },
@@ -335,7 +349,7 @@ void test('uncertain admission preserves append and reconciliation failures, the
       '../../services/e2ee-account-runtime': {
         withDesktopE2eeAccount: (work) => Effect.runPromise(work(owner)),
         desktopE2eeCloudClient: async () => ({
-          accountId: 'account',
+          accountId: 'acc1',
           client: {
             appendRecord: (value) => {
               submitted.push(structuredClone(value))
@@ -497,7 +511,7 @@ void test('cached identity admits offline work and replaces or closes owners on 
         owner.accountId
       )
     ),
-    'account'
+    'acc1'
   )
   identity.userId = 'second'
   identity.generation++
@@ -589,10 +603,7 @@ void test('only unavailable custody exposes the availability fallback code', asy
   const original = new Error('synthetic private native failure')
   for (const [source, operation] of [
     ['account-operation', () => native.api.withDesktopE2eeAccount(() => Effect.fail(original))],
-    [
-      'runtime-operation',
-      () => native.api.runDesktopE2eeOperation('account', Effect.fail(original))
-    ]
+    ['runtime-operation', () => native.api.runDesktopE2eeOperation('acc1', Effect.fail(original))]
   ]) {
     await assert.rejects(operation(), (error) => {
       assert.equal(error.message, 'e2ee_host_operation_failed')
@@ -614,7 +625,7 @@ void test('confirmed identity reopens offline after restart, matches bearer or c
   })
   let cookie = 'better-auth.session_token=synthetic-token'
   let cookieUnavailable = false
-  let response = { data: { user: { id: 'account' }, session: { token: 'synthetic-token' } } }
+  let response = { data: { user: { id: 'acc1' }, session: { token: 'synthetic-token' } } }
   let offline = false
   const { AuthService } = await load(
     './auth-service.ts',
@@ -652,35 +663,32 @@ void test('confirmed identity reopens offline after restart, matches bearer or c
   // New service has no resolved session or auth request. The disk binding has
   // no timestamp and survives any wall-clock change, including an eight-day gap.
   const reopened = new AuthService()
-  assert.equal(reopened.getCachedSessionIdentity().userId, 'account')
+  assert.equal(reopened.getCachedSessionIdentity().userId, 'acc1')
   assert.equal(reopened.getCachedSessionIdentity().source, 'offline')
   const bearer = (token) => ({ fetchOptions: { headers: { Authorization: `Bearer ${token}` } } })
   assert.equal(reopened.getCachedSessionIdentity(bearer('wrong-token')).userId, null)
   cookie = ''
   const bearerOnly = new AuthService()
   assert.equal(bearerOnly.getCachedSessionIdentity().userId, null)
-  assert.equal(bearerOnly.getCachedSessionIdentity(bearer('synthetic-token')).userId, 'account')
-  assert.equal(bearerOnly.getCachedSessionIdentity().userId, 'account')
+  assert.equal(bearerOnly.getCachedSessionIdentity(bearer('synthetic-token')).userId, 'acc1')
+  assert.equal(bearerOnly.getCachedSessionIdentity().userId, 'acc1')
   cookieUnavailable = true
-  assert.equal(bearerOnly.getCachedSessionIdentity().userId, 'account')
-  assert.equal(
-    new AuthService().getCachedSessionIdentity(bearer('synthetic-token')).userId,
-    'account'
-  )
+  assert.equal(bearerOnly.getCachedSessionIdentity().userId, 'acc1')
+  assert.equal(new AuthService().getCachedSessionIdentity(bearer('synthetic-token')).userId, 'acc1')
   cookieUnavailable = false
   const observed = []
   bearerOnly.subscribeCachedSessionIdentity(() =>
     observed.push(bearerOnly.getCachedSessionIdentity().userId)
   )
   offline = false
-  response = { data: { user: { id: 'other-account' }, session: { token: 'other-token' } } }
+  response = { data: { user: { id: 'acc2' }, session: { token: 'other-token' } } }
   await bearerOnly.getSession()
-  assert.deepEqual(observed, ['other-account'])
+  assert.deepEqual(observed, ['acc2'])
   offline = true
   await bearerOnly.getSession()
-  assert.deepEqual(observed, ['other-account'])
+  assert.deepEqual(observed, ['acc2'])
   await bearerOnly.signOut()
-  assert.deepEqual(observed, ['other-account', null])
+  assert.deepEqual(observed, ['acc2', null])
   assert.equal(new AuthService().getCachedSessionIdentity(bearer('other-token')).userId, null)
 })
 
@@ -716,7 +724,7 @@ async function personalJoinFixture(t) {
     for (const owner of owners) await owner.close()
     await rm(directory, { recursive: true, force: true })
   })
-  const accountId = 'synthetic-personal-account'
+  const accountId = 'acc3'
   const workspaceId = 'synthetic-personal-workspace'
   const wrapping = Buffer.alloc(32, 93)
   const safeStorage = {
@@ -825,7 +833,6 @@ async function personalJoinFixture(t) {
           safeStorage
         })
         const bootstrap = yield* makeDesktopE2eeBootstrap({ directory: path, accountId, custody })
-        yield* bootstrap.recordAccountIdentity({ accountId, cryptoUserId: 'aa'.repeat(32) })
         const host = yield* makeDesktopE2eeRuntimeHost({ directory: path, custody, bootstrap })
         return { custody, bootstrap, host }
       }).pipe(Effect.provideService(Scope.Scope, scope))
@@ -845,8 +852,8 @@ async function personalJoinFixture(t) {
         (removalFence ??= { owner, workspaceId, reason, completed: false })
     }
     const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
+      '../product-window-ipc-service': { ProductWindowIpcService: class {} },
       'electron-ipc-decorator': {
-        IpcService: class {},
         IpcMethod: () => (_t, _n, descriptor) => descriptor,
         getIpcContext: () => ({ event: { sender } })
       },
@@ -1158,7 +1165,7 @@ void test('cold renderer marker recovery reads the real IPC boundary without gra
   )
   assert.deepEqual([...owner.readers.get(f.workspaceId)], readers)
   await assert.rejects(
-    owner.ipc.readIdentity({ accountId: 'other-account', workspaceId: f.workspaceId }),
+    owner.ipc.readIdentity({ accountId: 'acc2', workspaceId: f.workspaceId }),
     /e2ee_account_mismatch/
   )
   assert.deepEqual([...owner.readers.get(f.workspaceId)], readers)
@@ -1316,75 +1323,18 @@ void test('confirmed cancellation survives real SQLite archival failure and the 
   )
 })
 
-for (const change of ['account switch', 'same-account logout/login'])
-  void test(`D03 registration waits outside the account lock and rejects a late response after ${change}`, async () => {
-    const entered = Promise.withResolvers()
-    const response = Promise.withResolvers()
-    let signatures = 0
-    let cached = 0
-    const { api, publishIdentity } = await account({
-      bootstrap: () =>
-        Effect.succeed({
-          creationNeedsAccountIdentity: () => Effect.succeed(true),
-          recordAccountIdentity: () =>
-            Effect.sync(() => {
-              cached++
-            }),
-          prepareCreation: () =>
-            Effect.sync(() => {
-              signatures++
-              return 'signed'
-            })
-        }),
-      cloud: () =>
-        Effect.succeed({
-          accountIdentity: () =>
-            Effect.promise(async () => {
-              entered.resolve()
-              return response.promise
-            })
-        })
-    })
-    const creation = api.prepareDesktopE2eeCreation({
-      accountId: 'account',
-      requestId: 'request-0123456789',
-      name: 'Synthetic',
-      slug: 'synthetic'
-    })
-    await entered.promise
-    assert.equal(
-      await api.withDesktopE2eeAccount((owner) => Effect.succeed(owner.accountId)),
-      'account'
-    )
-    if (change === 'account switch') publishIdentity('other-account')
-    else {
-      publishIdentity(null)
-      publishIdentity('account')
-    }
-    response.resolve({ accountId: 'account', cryptoUserId: 'aa'.repeat(32) })
-    await assert.rejects(creation, /e2ee_/)
-    assert.equal(signatures, 0)
-    assert.equal(cached, 0)
-    assert.equal(
-      await api.withDesktopE2eeAccount((owner) => Effect.succeed(owner.accountId)),
-      change === 'account switch' ? 'other-account' : 'account'
-    )
-    await api.closeDesktopE2eeAccount()
-  })
-
-void test('D03 exact signed retry and registered local identity do not acquire a cloud client', async () => {
+void test('creation signing and exact retry do not acquire a cloud client', async () => {
   const original = Object.freeze({ genesisRecordHex: 'synthetic-original' })
   const { api } = await account({
     bootstrap: () =>
       Effect.succeed({
-        creationNeedsAccountIdentity: () => Effect.succeed(false),
         prepareCreation: () => Effect.succeed(original)
       }),
     cloud: () => Effect.die(new Error('unexpected cloud call'))
   })
   assert.equal(
     await api.prepareDesktopE2eeCreation({
-      accountId: 'account',
+      accountId: 'acc1',
       requestId: 'request-0123456789',
       name: 'Synthetic',
       slug: 'synthetic'
@@ -1659,11 +1609,7 @@ async function nativeAccountFixture(t, storage = identityStorage, clock) {
     custody: (path) => makeDesktopE2eeCustody({ directory: path, platform: 'linux', safeStorage }),
     bootstrap: makeDesktopE2eeBootstrap,
     host: makeDesktopE2eeRuntimeHost,
-    cloud: () =>
-      Effect.succeed({
-        accountIdentity: () =>
-          Effect.succeed({ accountId: 'account', cryptoUserId: 'aa'.repeat(32) })
-      })
+    cloud: () => Effect.succeed({})
   })
   t.after(async () => {
     await native.api.closeDesktopE2eeAccount()
@@ -1682,10 +1628,6 @@ async function createAccountWorkspace(api, workspaceId) {
   return api.withDesktopE2eeAccount(
     (owner) =>
       Effect.gen(function* () {
-        yield* owner.bootstrap.recordAccountIdentity({
-          accountId: owner.accountId,
-          cryptoUserId: 'aa'.repeat(32)
-        })
         const creation = yield* owner.bootstrap.prepareCreation({
           accountId: owner.accountId,
           requestId: `creation-${workspaceId}-request`,
@@ -1714,7 +1656,7 @@ void test('isolated desktop workspace reset archives real custody and journals, 
   const { api, setLocked } = await nativeAccountFixture(t)
   const create = (workspaceId) => createAccountWorkspace(api, workspaceId)
   const intent = {
-    accountId: 'account',
+    accountId: 'acc1',
     requestId: 'synthetic-creation-request',
     name: 'Created',
     slug: 'created'
@@ -1811,10 +1753,10 @@ for (const phase of ['queued', 'draining'])
       void test(`confirmed ${scope} reset rejects ${change} while ${phase}`, async (t) => {
         const { api, identity } = await nativeAccountFixture(t)
         const first = await createAccountWorkspace(api, 'workspace')
-        identity.userId = 'other-account'
+        identity.userId = 'acc2'
         identity.generation++
         const other = await createAccountWorkspace(api, 'workspace')
-        identity.userId = 'account'
+        identity.userId = 'acc1'
         identity.generation++
         await api.withDesktopE2eeAccount(() => Effect.void, 'workspace')
         const original = await readFile(join(first.directory, 'creations.sqlite'))
@@ -1843,7 +1785,7 @@ for (const phase of ['queued', 'draining'])
           /e2ee_account_unavailable/
         )
         if (phase === 'draining') await entered.promise
-        if (change === 'account switch') identity.userId = 'other-account'
+        if (change === 'account switch') identity.userId = 'acc2'
         identity.generation++
         finish.resolve()
         await blocker
@@ -1864,8 +1806,8 @@ void test('workspace-scoped cold identity IPC composes with isolated custody wit
   })
   const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
     '../ipc-service-deps': { getIpcServiceDeps: () => ({}) },
+    '../product-window-ipc-service': { ProductWindowIpcService: class {} },
     'electron-ipc-decorator': {
-      IpcService: class {},
       IpcMethod: () => (_target, _name, descriptor) => descriptor,
       getIpcContext: () => ({ event: { sender } })
     },
@@ -1874,7 +1816,7 @@ void test('workspace-scoped cold identity IPC composes with isolated custody wit
     '../../services/e2ee-account-runtime': {
       ...api,
       desktopE2eeCloudClient: async () => ({
-        accountId: 'account',
+        accountId: 'acc1',
         client: {
           history: () =>
             Effect.succeed({
@@ -1910,17 +1852,14 @@ void test('workspace-scoped cold identity IPC composes with isolated custody wit
   })
   const ipc = new E2eeIpc()
   assert.deepEqual(
-    { ...(await ipc.readIdentity({ accountId: 'account', workspaceId: 'workspace' })) },
+    { ...(await ipc.readIdentity({ accountId: 'acc1', workspaceId: 'workspace' })) },
     {
       workspaceId: 'workspace',
       genesisHash: first.creation.genesisHashHex
     }
   )
   await assert.rejects(ipc.status('workspace'), /e2ee_/)
-  await assert.rejects(
-    ipc.readIdentity({ accountId: 'other-account', workspaceId: 'workspace' }),
-    /e2ee_/
-  )
+  await assert.rejects(ipc.readIdentity({ accountId: 'acc2', workspaceId: 'workspace' }), /e2ee_/)
   assert.equal(
     await api.withDesktopE2eeAccount(
       (owner) => Effect.succeed(owner.readers.has('workspace')),
@@ -1939,7 +1878,7 @@ void test('workspace-scoped cold identity IPC composes with isolated custody wit
   assert.equal(management.devices.find((entry) => entry.self).key, first.signingPublicKey)
   await ipc.updateKeys('workspace')
   await ipc.revokeDevice('workspace', sibling.signingPublicKey)
-  await ipc.readIdentity({ accountId: 'account', workspaceId: 'workspace' })
+  await ipc.readIdentity({ accountId: 'acc1', workspaceId: 'workspace' })
   assert.equal((await ipc.status('workspace')).genesisHash, first.creation.genesisHashHex)
   await ipc.close('workspace')
 })
@@ -1962,8 +1901,8 @@ void test('real preload bridge admits only confirmed trusted reset IPC and archi
         }
       })
     },
+    '../product-window-ipc-service': { ProductWindowIpcService: class {} },
     'electron-ipc-decorator': {
-      IpcService: class {},
       IpcMethod: () => (_target, _name, descriptor) => descriptor,
       getIpcContext: () => ({ event: { sender } })
     },
@@ -2072,8 +2011,8 @@ void test('prepareDispatch confirms access loss after its reader closes through 
         send: () => {}
       })
       const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
+        '../product-window-ipc-service': { ProductWindowIpcService: class {} },
         'electron-ipc-decorator': {
-          IpcService: class {},
           IpcMethod: () => (_target, _name, descriptor) => descriptor,
           getIpcContext: () => ({ event: { sender } })
         },
@@ -2088,7 +2027,7 @@ void test('prepareDispatch confirms access loss after its reader closes through 
         '../../services/e2ee-account-runtime': {
           ...api,
           desktopE2eeCloudClient: async () => ({
-            accountId: 'account',
+            accountId: 'acc1',
             client: {
               contentStreamsToken: ({ workspaceId, credential }) =>
                 Effect.gen(function* () {
@@ -2096,7 +2035,7 @@ void test('prepareDispatch confirms access loss after its reader closes through 
                   assert.equal(credential, retainedCredential)
                   // Response delivery is explicit; no clock or scheduler race.
                   if (name === 'account-switch') {
-                    identity.userId = 'other-account'
+                    identity.userId = 'acc2'
                     identity.generation++
                   }
                   if (name.startsWith('credential-change')) {
@@ -2205,7 +2144,7 @@ void test('prepareDispatch confirms access loss after its reader closes through 
           await readFile(join(first.directory, 'creations.sqlite')),
           replacementBytes ?? original
         )
-        identity.userId = 'account'
+        identity.userId = 'acc1'
         identity.generation++
         const cached = await api.withDesktopE2eeAccount(
           (owner) => owner.host.inspectCachedState('workspace', 'synthetic-machine'),
@@ -2316,8 +2255,8 @@ void test('prepareDispatch isolates JWT, transport and parse failures from crede
           const { E2eeIpc } = await load(
             '../ipc/services/e2ee-ipc.ts',
             {
+              '../product-window-ipc-service': { ProductWindowIpcService: class {} },
               'electron-ipc-decorator': {
-                IpcService: class {},
                 IpcMethod: () => (_target, _name, descriptor) => descriptor,
                 getIpcContext: () => ({ event: { sender } })
               },
@@ -2344,7 +2283,7 @@ void test('prepareDispatch isolates JWT, transport and parse failures from crede
                     cleanupDone.resolve()
                   }
                 },
-                desktopE2eeCloudClient: async () => ({ accountId: 'account', client })
+                desktopE2eeCloudClient: async () => ({ accountId: 'acc1', client })
               }
             },
             { ...console, warn: (...args) => diagnostics.push(args) }
@@ -2556,8 +2495,8 @@ void test('a live reader is cut at prepareDispatch after server-side access loss
       })
       const server = { lost: false, checks: 0 }
       const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
+        '../product-window-ipc-service': { ProductWindowIpcService: class {} },
         'electron-ipc-decorator': {
-          IpcService: class {},
           IpcMethod: () => (_target, _name, descriptor) => descriptor,
           getIpcContext: () => ({ event: { sender } })
         },
@@ -2572,7 +2511,7 @@ void test('a live reader is cut at prepareDispatch after server-side access loss
         '../../services/e2ee-account-runtime': {
           ...api,
           desktopE2eeCloudClient: async () => ({
-            accountId: 'account',
+            accountId: 'acc1',
             client: {
               contentStreamsToken: () => {
                 server.checks += 1
@@ -2661,7 +2600,7 @@ void test('a live reader is cut at prepareDispatch after server-side access loss
         new RegExp(`^Error: e2ee_${reason}$`)
       )
       assert.equal(
-        api.countDesktopE2eeReaders('account', 'workspace', sender.id),
+        api.countDesktopE2eeReaders('acc1', 'workspace', sender.id),
         0,
         'the original reader is closed'
       )
@@ -2712,8 +2651,8 @@ void test('dispatch confirmation fences its reader and bounds only the waiter', 
       })
       let activeSender = sender
       const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
+        '../product-window-ipc-service': { ProductWindowIpcService: class {} },
         'electron-ipc-decorator': {
-          IpcService: class {},
           IpcMethod: () => (_t, _n, d) => d,
           getIpcContext: () => ({ event: { sender: activeSender } })
         },
@@ -2738,7 +2677,7 @@ void test('dispatch confirmation fences its reader and bounds only the waiter', 
             return value
           },
           desktopE2eeCloudClient: async () => ({
-            accountId: 'account',
+            accountId: 'acc1',
             client: {
               contentStreamsToken: () =>
                 Effect.gen(function* () {
@@ -2797,7 +2736,7 @@ void test('dispatch confirmation fences its reader and bounds only the waiter', 
       const dispatch = ipc.prepareDispatch('workspace', 'machine', {
         sessionId: 'session',
         userTurnId: 'turn',
-        userId: 'account',
+        userId: 'acc1',
         timestamp: new Date(0).toISOString(),
         inputConfig: {}
       })
@@ -2826,7 +2765,7 @@ void test('dispatch confirmation fences its reader and bounds only the waiter', 
         await ipc.open('workspace')
       }
       if (scenario === 'account-switch' || scenario === 'reauthenticated') {
-        publishIdentity(scenario === 'account-switch' ? 'other-account' : 'account')
+        publishIdentity(scenario === 'account-switch' ? 'acc2' : 'acc1')
         await api.closeDesktopE2eeAccount()
       }
       if (scenario === 'loss-during-binding-read') {
@@ -2898,8 +2837,8 @@ void test('30ms local dispatch stays fast with an 800ms credential reply', async
   })
   let waiterSettled = false
   const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
+    '../product-window-ipc-service': { ProductWindowIpcService: class {} },
     'electron-ipc-decorator': {
-      IpcService: class {},
       IpcMethod: () => (_t, _n, d) => d,
       getIpcContext: () => ({ event: { sender } })
     },
@@ -2920,7 +2859,7 @@ void test('30ms local dispatch stays fast with an 800ms credential reply', async
         return value
       },
       desktopE2eeCloudClient: async () => ({
-        accountId: 'account',
+        accountId: 'acc1',
         client: {
           contentStreamsToken: () =>
             Effect.gen(function* () {
@@ -2947,7 +2886,7 @@ void test('30ms local dispatch stays fast with an 800ms credential reply', async
   const input = {
     sessionId: 'session',
     userTurnId: 'turn',
-    userId: 'account',
+    userId: 'acc1',
     timestamp: new Date(0).toISOString(),
     inputConfig: {}
   }
@@ -3215,7 +3154,7 @@ void test('automatic removal retries the exclusive native identity lease and pre
   )
   await Effect.runPromise(drain)
   await assert.rejects(
-    api.cleanupRemovedDesktopWorkspace({ accountId: 'account', workspaceId: 'removed' }),
+    api.cleanupRemovedDesktopWorkspace({ accountId: 'acc1', workspaceId: 'removed' }),
     /e2ee_identity-busy/
   )
   const original = join(
@@ -3226,7 +3165,7 @@ void test('automatic removal retries the exclusive native identity lease and pre
   assert.ok((await readFile(original)).length > 0)
   await Effect.runPromise(Scope.close(scope, Exit.void))
   assert.equal(
-    await api.cleanupRemovedDesktopWorkspace({ accountId: 'account', workspaceId: 'removed' }),
+    await api.cleanupRemovedDesktopWorkspace({ accountId: 'acc1', workspaceId: 'removed' }),
     true
   )
   await assert.rejects(readFile(original), (error) => error.code === 'ENOENT')
@@ -3276,7 +3215,7 @@ void test('slow terminal deletion fences only that workspace and never holds the
   )
   await Effect.runPromise(drain)
   const removal = api.cleanupRemovedDesktopWorkspace({
-    accountId: 'account',
+    accountId: 'acc1',
     workspaceId: 'removed'
   })
   try {
@@ -3310,8 +3249,8 @@ void test('remote commands use workspace custody and never create an account con
     '../ipc/services/e2ee-ipc.ts',
     {
       '../ipc-service-deps': { getIpcServiceDeps: () => ({}) },
+      '../product-window-ipc-service': { ProductWindowIpcService: class {} },
       'electron-ipc-decorator': {
-        IpcService: class {},
         IpcMethod: () => (_target, _name, descriptor) => descriptor,
         getIpcContext: () => ({ event: { sender } })
       },
@@ -3320,7 +3259,7 @@ void test('remote commands use workspace custody and never create an account con
       '../../services/e2ee-account-runtime': {
         ...api,
         desktopE2eeCloudClient: async () => ({
-          accountId: 'account',
+          accountId: 'acc1',
           client: {
             machineBegin: ({ workspaceId, offer }) =>
               Effect.sync(() => {
@@ -3506,8 +3445,8 @@ async function memberIpcFixture(options = {}) {
   }
   const { E2eeIpc } = await load('../ipc/services/e2ee-ipc.ts', {
     effect: { Effect },
+    '../product-window-ipc-service': { ProductWindowIpcService: class {} },
     'electron-ipc-decorator': {
-      IpcService: class {},
       IpcMethod: () => (_t, _n, d) => d,
       getIpcContext: () => ({ event: { sender } })
     },
@@ -3635,6 +3574,472 @@ const approvalRequest = '55'.repeat(16)
 // IPC results come from the service's separate VM realm.
 const plain = (value) => JSON.parse(JSON.stringify(value))
 const approvalDevice = '77'.repeat(32)
+const personalApprovalRequest = 'personal-device-12345678-1234-1234-1234-123456789abc'
+/** Real personal approval IPC over a controlled cloud and native-host boundary. */
+async function personalApprovalFixture({
+  confirmed = true,
+  publish = true,
+  publication,
+  invitationGate,
+  invitationGates,
+  prepareGate,
+  local = { hasCurrentKey: true },
+  receive,
+  distribution,
+  appendReceiptLost = false
+} = {}) {
+  const session = '44'.repeat(16)
+  let committed = false
+  let ingested = false
+  let published = false
+  let publicationAttempted = false
+  const writes = new Map()
+  const f = await memberIpcFixture({
+    realRefresh: true,
+    client: {
+      joinReadRequest: () => Effect.succeed({ requestHex: 'abcd', status: 'pending' }),
+      appendRecord: (pending) =>
+        Effect.sync(() => {
+          const original = writes.get(pending.requestId)
+          if (original) assert.deepEqual(plain(pending), original)
+          else writes.set(pending.requestId, plain(pending))
+          committed = true
+          if (appendReceiptLost) throw new Error('synthetic append response lost')
+        }),
+      history: () =>
+        Effect.succeed({ checkpoint: {}, nextCursor: null, admission: committed && confirmed }),
+      joinPublish: () =>
+        Effect.promise(async () => {
+          assert.equal(ingested, true, 'only a locally verified admission may publish')
+          publicationAttempted = true
+          publication?.entered.resolve()
+          if (publication) await publication.release.promise
+          if (!publish) throw new Error('synthetic publication unavailable')
+          published = true
+        })
+    },
+    host: {
+      previewPersonalAdmission: () =>
+        Effect.succeed({ pairingSessionId: session, signingPublicKey: approvalDevice }),
+      preparePersonalAdmission: () =>
+        Effect.promise(async () => {
+          if (prepareGate) {
+            prepareGate.entered.resolve()
+            await prepareGate.release.promise
+          }
+          return { requestId: personalApprovalRequest, recordHex: 'ab' }
+        }),
+      ingestLedgerRecords: (_workspace, page) =>
+        Effect.sync(() => {
+          if (page.admission) ingested = true
+        }),
+      personalInvitation: (workspaceId) =>
+        Effect.promise(async () => {
+          if (!ingested) throw new Error('e2ee_local-evidence-conflict')
+          const gate =
+            invitationGates?.get(workspaceId) ??
+            (workspaceId === 'team' ? invitationGate : undefined)
+          if (gate) {
+            gate.entered.resolve()
+            await gate.release.promise
+          }
+          return { invitationHex: 'cafe' }
+        }),
+      status: () => Effect.succeed({ hasCurrentKey: local.hasCurrentKey }),
+      ...(receive ? { receiveKeys: receive } : {}),
+      ...(distribution ? { distributeKeys: distribution } : {}),
+      keyDeliveryTarget: (_workspace, device) =>
+        Effect.succeed(ingested && device === approvalDevice),
+      keyDeliveryEvidence: () => Effect.succeed('delivered'),
+      ...(!confirmed ? { keyRound: () => Effect.void } : {})
+    }
+  })
+  return {
+    ...f,
+    session,
+    published: () => published,
+    publicationAttempted: () => publicationAttempted,
+    committed: () => committed,
+    writes
+  }
+}
+for (const publish of [true, false])
+  void test(`personal approval publishes before a blocked key round; publication succeeds: ${publish}`, async () => {
+    const f = await personalApprovalFixture({ publish })
+    const approval = f.ipc.approvePersonalJoin('team', f.session)
+    try {
+      await f.keyEntered.promise
+      // The old full-refresh sequence reaches this gate before it can publish.
+      assert.equal(f.publicationAttempted(), true)
+      assert.equal(f.published(), publish)
+      assert.deepEqual(plain(await approval), { admitted: true, invitationPublished: publish })
+      assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivering')
+      // Closing the approving window cannot abandon a committed device's delivery.
+      f.owner().readers.get('team').delete(1)
+      assert.deepEqual(f.closed, [])
+    } finally {
+      f.keyGate.resolve()
+      await approval.catch(() => {})
+      await f.ipc.keyDeliveryIdle('A', 'team')
+    }
+    assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivered')
+    assert.deepEqual(f.closed, ['original-A'])
+  })
+void test('personal approval cannot publish or start delivery before ledger confirmation', async () => {
+  const f = await personalApprovalFixture({ confirmed: false })
+  try {
+    await assert.rejects(f.ipc.approvePersonalJoin('team', f.session), /e2ee_append_unconfirmed/)
+    assert.equal(f.published(), false)
+    assert.equal(keyDeliveryState(f, personalApprovalRequest), null)
+  } finally {
+    f.keyGate.resolve()
+    await f.ipc.keyDeliveryIdle('A', 'team')
+  }
+})
+void test('a late personal invitation publication cannot restart delivery after workspace reset', async () => {
+  const publication = { entered: deferredMember(), release: deferredMember() }
+  const f = await personalApprovalFixture({ publication })
+  const approval = f.ipc.approvePersonalJoin('team', f.session)
+  let delivery
+  try {
+    await publication.entered.promise
+    await f.keyEntered.promise
+    delivery = f.ipc.keyDeliveryIdle('A', 'team')
+    await f.ipc
+      .resetIdentity({ workspaceId: 'team', resetId: randomUUID(), confirm: true })
+      .catch(() => {})
+    f.keyGate.resolve()
+    await delivery
+    publication.release.resolve()
+    await assert.rejects(approval, /e2ee_account_mismatch/)
+    assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+  } finally {
+    f.keyGate.resolve()
+    publication.release.resolve()
+    await approval.catch(() => {})
+    await delivery
+  }
+})
+for (const change of [
+  'workspace-reset',
+  'account-reset',
+  'same-account-login',
+  'signed-out',
+  'different-account',
+  'same-account-owner'
+])
+  void test(`pending personal invitation is invalidated by ${change} before delivery registration`, async () => {
+    const invitationGate = { entered: deferredMember(), release: deferredMember() }
+    const f = await personalApprovalFixture({ invitationGate })
+    const approval = f.ipc.approvePersonalJoin('team', f.session)
+    const outcome = approval.then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    try {
+      await invitationGate.entered.promise
+      if (change.endsWith('reset')) {
+        await f.ipc
+          .resetIdentity({
+            ...(change === 'workspace-reset' ? { workspaceId: 'team' } : {}),
+            resetId: randomUUID(),
+            confirm: true
+          })
+          .catch(() => {})
+      } else if (change === 'same-account-owner') {
+        f.setOwner(f.makeOwner('A', 'replacement-A'))
+      } else {
+        f.identity.userId = undefined
+        f.identity.generation += 1
+        f.identity.userId =
+          change === 'signed-out' ? undefined : change === 'different-account' ? 'B' : 'A'
+        f.identity.generation += 1
+      }
+      invitationGate.release.resolve()
+      const result = await outcome
+      assert.ok(result.error, 'the old approval cannot authorize work under a later identity')
+      assert.equal(f.published(), false)
+      assert.equal(f.committed(), true)
+      assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+      assert.equal(f.ipc.personalApprovals.size, 0)
+    } finally {
+      invitationGate.release.resolve()
+      f.keyGate.resolve()
+      await outcome
+      await f.ipc.keyDeliveryIdle('A', 'team')
+    }
+  })
+for (const resetScope of ['workspace', 'account'])
+  void test(`${resetScope} reset fences the correct concurrent personal approvals`, async () => {
+    const team = { entered: deferredMember(), release: deferredMember() }
+    const other = { entered: deferredMember(), release: deferredMember() }
+    const f = await personalApprovalFixture({
+      invitationGates: new Map([
+        ['team', team],
+        ['other', other]
+      ])
+    })
+    f.owner().readers.set('other', new Map([[1, 1]]))
+    const first = f.ipc.approvePersonalJoin('team', f.session).then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    let second
+    try {
+      await team.entered.promise
+      second = f.ipc.approvePersonalJoin('other', f.session).then(
+        (value) => ({ value }),
+        (error) => ({ error })
+      )
+      await other.entered.promise
+      await f.ipc
+        .resetIdentity({
+          ...(resetScope === 'workspace' ? { workspaceId: 'team' } : {}),
+          resetId: randomUUID(),
+          confirm: true
+        })
+        .catch(() => {})
+      other.release.resolve()
+      const result = await second
+      team.release.resolve()
+      assert.ok((await first).error)
+      assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+      if (resetScope === 'account') {
+        assert.ok(result.error)
+        assert.equal(f.ipc.keyDeliveries.has('A\nother'), false)
+      } else {
+        assert.deepEqual(plain(result.value), { admitted: true, invitationPublished: true })
+        await f.keyEntered.promise
+        f.keyGate.resolve()
+        await f.ipc.keyDeliveryIdle('A', 'other')
+        assert.equal(
+          f.ipc.keyDeliveries.get('A\nother').requests.get(personalApprovalRequest).state,
+          'delivered'
+        )
+      }
+      assert.equal(f.ipc.personalApprovals.size, 0)
+    } finally {
+      team.release.resolve()
+      other.release.resolve()
+      f.keyGate.resolve()
+      await first
+      await second
+      await f.ipc.keyDeliveryIdle('A', 'other')
+    }
+  })
+void test('a control-only personal approver receives its missing current key before distributing without blocking admission', async () => {
+  const local = { hasCurrentKey: false }
+  const received = deferredMember(),
+    release = deferredMember()
+  let receiving = false
+  const f = await personalApprovalFixture({
+    local,
+    receive: () =>
+      Effect.promise(async () => {
+        receiving = true
+        received.resolve()
+        await release.promise
+        local.hasCurrentKey = true
+      }),
+    distribution: () => Effect.sync(() => assert.equal(local.hasCurrentKey, true))
+  })
+  try {
+    assert.deepEqual(plain(await f.ipc.approvePersonalJoin('team', f.session)), {
+      admitted: true,
+      invitationPublished: true
+    })
+    await Promise.race([received.promise, f.ipc.keyDeliveryIdle('A', 'team')])
+    assert.equal(receiving, true)
+    assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivering')
+  } finally {
+    release.resolve()
+    await f.ipc.keyDeliveryIdle('A', 'team')
+  }
+  assert.equal(local.hasCurrentKey, true)
+  assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivered')
+})
+void test('personal key failures keep admission, exhaust bounded backoff, and accept the original personal-device retry id', async () => {
+  const local = { hasCurrentKey: false }
+  let outage = true,
+    now = 1_800_000_000_000
+  const f = await personalApprovalFixture({
+    local,
+    receive: () =>
+      Effect.suspend(() => {
+        if (outage) return Effect.fail(new Error('e2ee_management_retry'))
+        local.hasCurrentKey = true
+        return Effect.void
+      }),
+    distribution: () => Effect.sync(() => assert.equal(local.hasCurrentKey, true))
+  })
+  const clock = fakeKeyDeliveryTimers()
+  f.ipc.keyDeliveryTimers = clock.timers
+  f.ipc.keyDeliveryNow = () => now
+  assert.deepEqual(plain(await f.ipc.approvePersonalJoin('team', f.session)), {
+    admitted: true,
+    invitationPublished: true
+  })
+  for (let retry = 0; retry <= 8; retry++) {
+    await f.ipc.keyDeliveryIdle('A', 'team')
+    assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'failed')
+    assert.equal(f.committed(), true)
+    if (retry === 8) {
+      assert.deepEqual(clock.pending, [])
+      break
+    }
+    const timer = clock.pending.shift()
+    assert.equal(timer.ms, Math.min(10_000 * 2 ** retry, 300_000))
+    now += timer.ms
+    timer.run()
+  }
+  outage = false
+  const retried = plain(await f.ipc.retryMemberKeyDelivery('team', personalApprovalRequest))
+  assert.equal(retried.requestId, personalApprovalRequest)
+  await f.ipc.keyDeliveryIdle('A', 'team')
+  assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivered')
+  assert.equal(local.hasCurrentKey, true)
+  assert.deepEqual(clock.pending, [])
+})
+for (const Terminal of [E2eeDeviceRevokedError, E2eeMemberRemovedError])
+  void test(`personal delivery ends without retry when local key receipt reports ${Terminal.name}`, async () => {
+    const f = await personalApprovalFixture({
+      local: { hasCurrentKey: false },
+      receive: () => Effect.fail(new Terminal()),
+      distribution: () => Effect.die(new Error('must not distribute after terminal access loss'))
+    })
+    const clock = fakeKeyDeliveryTimers()
+    f.ipc.keyDeliveryTimers = clock.timers
+    assert.deepEqual(plain(await f.ipc.approvePersonalJoin('team', f.session)), {
+      admitted: true,
+      invitationPublished: true
+    })
+    await f.ipc.keyDeliveryIdle('A', 'team')
+    assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+    assert.equal(f.committed(), true)
+    assert.deepEqual(clock.pending, [])
+  })
+void test('main retries a personal delivery after an outage and installs the local key without a page or poll', async () => {
+  const local = { hasCurrentKey: false }
+  let outage = true
+  const f = await personalApprovalFixture({
+    local,
+    receive: () =>
+      Effect.suspend(() => {
+        if (outage) return Effect.fail(new Error('e2ee_management_retry'))
+        local.hasCurrentKey = true
+        return Effect.void
+      }),
+    distribution: () => Effect.sync(() => assert.equal(local.hasCurrentKey, true))
+  })
+  const clock = fakeKeyDeliveryTimers()
+  f.ipc.keyDeliveryTimers = clock.timers
+  f.ipc.keyDeliveryNow = () => 1_800_000_000_000
+  await f.ipc.approvePersonalJoin('team', f.session)
+  await f.ipc.keyDeliveryIdle('A', 'team')
+  assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'failed')
+  outage = false
+  clock.pending.shift().run()
+  await f.ipc.keyDeliveryIdle('A', 'team')
+  assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'delivered')
+  assert.equal(local.hasCurrentKey, true)
+  assert.deepEqual(clock.pending, [])
+})
+void test('personal approval reconciles an unknown append result and retries publication with the same admission original', async () => {
+  const f = await personalApprovalFixture({ appendReceiptLost: true, publish: false })
+  try {
+    const expected = { admitted: true, invitationPublished: false }
+    assert.deepEqual(plain(await f.ipc.approvePersonalJoin('team', f.session)), expected)
+    assert.deepEqual(plain(await f.ipc.approvePersonalJoin('team', f.session)), expected)
+    assert.equal(f.committed(), true)
+    assert.deepEqual(
+      [...f.writes],
+      [[personalApprovalRequest, { requestId: personalApprovalRequest, recordHex: 'ab' }]]
+    )
+  } finally {
+    f.keyGate.resolve()
+    await f.ipc.keyDeliveryIdle('A', 'team')
+  }
+})
+void test('reset while native admission preparation is pending prevents any later cloud append', async () => {
+  const prepareGate = { entered: deferredMember(), release: deferredMember() }
+  const f = await personalApprovalFixture({ prepareGate })
+  const approval = f.ipc.approvePersonalJoin('team', f.session)
+  const outcome = approval.then(
+    (value) => ({ value }),
+    (error) => ({ error })
+  )
+  try {
+    await prepareGate.entered.promise
+    await f.ipc
+      .resetIdentity({ workspaceId: 'team', resetId: randomUUID(), confirm: true })
+      .catch(() => {})
+    prepareGate.release.resolve()
+    assert.ok((await outcome).error)
+    assert.equal(f.committed(), false)
+    assert.equal(f.writes.size, 0)
+    assert.equal(f.published(), false)
+    assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+  } finally {
+    prepareGate.release.resolve()
+    f.keyGate.resolve()
+    await outcome
+    await f.ipc.keyDeliveryIdle('A', 'team')
+  }
+})
+void test('a personal delivery retry cannot cross a same-account logout and login generation', async () => {
+  let outage = true
+  const delivered = []
+  const f = await personalApprovalFixture({
+    distribution: () =>
+      Effect.sync(() => {
+        if (outage) throw new Error('e2ee_management_retry')
+        delivered.push(f.identity.generation)
+      })
+  })
+  const clock = fakeKeyDeliveryTimers()
+  f.ipc.keyDeliveryTimers = clock.timers
+  await f.ipc.approvePersonalJoin('team', f.session)
+  await f.ipc.keyDeliveryIdle('A', 'team')
+  assert.equal(keyDeliveryState(f, personalApprovalRequest).state, 'failed')
+  f.identity.userId = undefined
+  f.identity.generation++
+  f.identity.userId = 'A'
+  f.identity.generation++
+  outage = false
+  clock.pending.shift().run()
+  await f.ipc.keyDeliveryIdle('A', 'team')
+  assert.deepEqual(delivered, [])
+  assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+  assert.deepEqual(clock.pending, [])
+})
+void test('a personal delivery registered before publication retires after same-account re-login', async () => {
+  const publication = { entered: deferredMember(), release: deferredMember() }
+  const f = await personalApprovalFixture({ publication })
+  const approval = f.ipc.approvePersonalJoin('team', f.session).then(
+    (value) => ({ value }),
+    (error) => ({ error })
+  )
+  let delivery
+  try {
+    await publication.entered.promise
+    await f.keyEntered.promise
+    delivery = f.ipc.keyDeliveryIdle('A', 'team')
+    f.identity.userId = undefined
+    f.identity.generation++
+    f.identity.userId = 'A'
+    f.identity.generation++
+    publication.release.resolve()
+    assert.ok((await approval).error)
+    f.keyGate.resolve()
+    await delivery
+    assert.equal(f.ipc.keyDeliveries.has('A\nteam'), false)
+  } finally {
+    publication.release.resolve()
+    f.keyGate.resolve()
+    await approval
+    await delivery
+  }
+})
 /** Mirrors runDesktopE2eeOperation's public projection: only top-level typed access loss
  * and allow-listed codes survive; nested key-round causes become a generic failure. */
 const projectNativeFailure = (error) =>
@@ -4193,7 +4598,7 @@ async function accountPairingFixture(t, options = {}) {
   // Real custody, bootstrap, ledger hosts and SQLite journals on both devices; the
   // cloud is an in-memory relay plus the approver's own ledger as the history source.
   const f = await personalJoinFixture(t)
-  const approver = await f.open('approver')
+  const approver = await f.open('apprvr')
   await approver.create()
   const newDevice = await f.open('new-device')
   const { genesisHash } = await Effect.runPromise(approver.host.status(f.workspaceId))
@@ -4234,8 +4639,6 @@ async function accountPairingFixture(t, options = {}) {
           history: () => (request) => Effect.promise(() => ledgerPage(request))
         }
       }),
-    accountIdentity: () =>
-      Effect.succeed({ accountId: approver.accountId, cryptoUserId: 'aa'.repeat(32) }),
     history: (request) => Effect.promise(() => ledgerPage(request)),
     appendRecord: (request) =>
       Effect.promise(async () => {
@@ -4716,6 +5119,7 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
   const owner = await nativeAccountFixture(t)
   const member = await nativeAccountFixture(t)
   member.identity.userId = 'member'
+  member.identity.userId = 'member'
   const created = await createAccountWorkspace(owner.api, 'team')
   const hexOf = (bytes) => Buffer.from(bytes).toString('hex')
   const genesisHash = created.creation.genesisHashHex
@@ -4800,17 +5204,24 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
     readGroup: (key) => Effect.succeed(groups.get(key.recordHash) ?? null),
     deleteGroup: () => Effect.void
   })
-  const offer = await owner.api.withDesktopE2eeAccount(
-    (account) => account.host.memberOffer('team', 'email', 9_000_000_000_000),
-    'team',
-    false
-  )
+  // The relay keeps each invitation it was given and returns it with the request it answers.
+  const offers = new Map()
+  const invite = async () => {
+    const minted = await owner.api.withDesktopE2eeAccount(
+      (account) => account.host.memberOffer('team', 'email', 9_000_000_000_000),
+      'team',
+      false
+    )
+    offers.set(minted.token, minted)
+    return minted
+  }
+  const offer = await invite()
   const ownerPort = await port(offer.endorser)
   let memberPort
   const relayed = (device, name, value) =>
     Effect.andThen(latency(name, { device }), Effect.sync(value))
   const ownerCloud = {
-    accountId: 'account',
+    accountId: 'acc1',
     client: {
       memberPending: () =>
         relayed('owner', 'memberPending', () => ({
@@ -4857,12 +5268,10 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
       staging
     }
   }
-  const memberCloudFor = (accountId, cryptoUserId, mailboxPort) => ({
+  const memberCloudFor = (accountId, mailboxPort) => ({
     accountId,
     client: {
-      accountIdentity: () =>
-        relayed('member', 'accountIdentity', () => ({ accountId, cryptoUserId })),
-      memberSubmit: ({ keyPackageHex }) =>
+      memberSubmit: ({ token, keyPackageHex }) =>
         relayed('member', 'memberSubmit', () => {
           const proof = memberJoining.decodeMemberKeyPackage(keyPackageHex)
           const requestId = hexOf(proof.request.requestId.toBytes())
@@ -4875,7 +5284,8 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
             requestId,
             source: 'email',
             state: 'pending',
-            expiresAt: 9_000_000_000_000
+            expiresAt: 9_000_000_000_000,
+            offer: offers.get(token)
           }
           requests.set(requestId, request)
           return { ...request }
@@ -4891,13 +5301,16 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
       // Credential-bound: the typed result that authorizes local cleanup.
       contentStreamsToken: () =>
         relay.memberRemoved
-          ? Effect.fail(new E2eeMemberRemovedError())
+          ? Effect.suspend(() => {
+              relay.onRemovalConfirmed?.()
+              return Effect.fail(new E2eeMemberRemovedError())
+            })
           : relayed('member', 'contentStreamsToken', () => ({ token: 't' })),
       mailbox: () => mailboxPort(),
       staging
     }
   })
-  const memberCloud = memberCloudFor('member', 'bb'.repeat(32), () => memberPort)
+  const memberCloud = memberCloudFor('member', () => memberPort)
   const ipc = async (fixture, cloud, id) => {
     const sender = Object.assign(new EventEmitter(), {
       id,
@@ -4912,8 +5325,8 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
             authService: { getCachedSessionIdentity: () => ({ ...fixture.identity }) }
           })
         },
+        '../product-window-ipc-service': { ProductWindowIpcService: class {} },
         'electron-ipc-decorator': {
-          IpcService: class {},
           IpcMethod: () => (_target, _name, descriptor) => descriptor,
           getIpcContext: () => ({ event: { sender } })
         },
@@ -4937,6 +5350,9 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
     joiner,
     ownerApi: owner.api,
     memberApi: member.api,
+    memberIdentity: member.identity,
+    memberDirectory: member.directory,
+    setMemberLocked: member.setLocked,
     relay,
     logs,
     async submit() {
@@ -4944,17 +5360,22 @@ async function twoDeviceMemberJoin(t, { latency = () => Effect.void } = {}) {
       memberPort = await port(submitted.signingPublicKey)
       return submitted
     },
-    /** Another account's member, joining through the same relay. */
-    async addMember(accountId, cryptoUserId, senderId) {
+    invite,
+    offers,
+    requests,
+    records,
+    /** Another account's member, joining through the same relay with its own invitation
+     * unless `invitation` names one. */
+    async addMember(accountId, senderId, invitation) {
       const fixture = await nativeAccountFixture(t)
       fixture.identity.userId = accountId
       let ownPort
       const other = await ipc(
         fixture,
-        memberCloudFor(accountId, cryptoUserId, () => ownPort),
+        memberCloudFor(accountId, () => ownPort),
         senderId
       )
-      const submitted = await other.prepareMemberJoin(offer)
+      const submitted = await other.prepareMemberJoin(invitation ?? (await invite()))
       ownPort = await port(submitted.signingPublicKey)
       return { ipc: other, submitted }
     }
@@ -4981,7 +5402,7 @@ void test(
     const submitted = await f.submit()
     await f.approver.memberJoinRequests('team')
     await f.approver.approveMemberJoin('team', submitted.requestId, 'automatic')
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     assert.equal((await f.joiner.claimMemberJoin('team', submitted.requestId)).ready, true)
     const trail = f.logs.map(([event, fields]) => `${event}:${fields.state}:${fields.phase ?? ''}`)
     assert.deepEqual(trail, [
@@ -4995,10 +5416,128 @@ void test(
   }
 )
 
+/** An invitation the relay signs with a key of its own, as a forging relay would. */
+const relaySignedOffer = (genuine, changes = {}) => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const endorser = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex')
+  const unsigned = { ...genuine, ...changes, endorser }
+  delete unsigned.signature
+  const signature = sign(null, memberOfferSigningBytes(unsigned), privateKey).toString('hex')
+  return { ...unsigned, signature }
+}
+void test(
+  'a relay-forged email request is never admitted unattended and waits for explicit approval',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const submitted = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    const stored = f.requests.get(submitted.requestId)
+    const genuine = stored.offer
+    const before = f.records.length
+    // `source: 'email'` alone, an invitation signed by the relay's own key, and a genuine
+    // signature over different pins: none is an invitation this approver can verify.
+    for (const [forged, refusal] of [
+      [undefined, /e2ee_member_invitation_invalid/],
+      // Verifies under the relay's own key, which the ledger never admitted.
+      [relaySignedOffer(genuine), /e2ee_member_invitation_endorser_ineligible/],
+      [{ ...genuine, expiresAt: genuine.expiresAt - 1 }, /e2ee_member_invitation_invalid/]
+    ]) {
+      stored.offer = forged
+      await assert.rejects(
+        f.approver.approveMemberJoin('team', submitted.requestId, 'automatic'),
+        refusal
+      )
+      assert.equal(f.records.length, before)
+    }
+    // The applicant stays listed, and an administrator's explicit approval still admits it.
+    assert.equal(
+      JSON.stringify(
+        (await f.approver.memberJoinRequests('team')).items.map((item) => item.requestId)
+      ),
+      JSON.stringify([submitted.requestId])
+    )
+    assert.equal(
+      (await f.approver.approveMemberJoin('team', submitted.requestId, 'explicit')).admitted,
+      true
+    )
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+  }
+)
+void test(
+  'an email invitation admits one applicant: another account presenting its token is refused as used',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const first = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', first.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    const before = f.records.length
+    // The relay replays the same invitation for another account's keys.
+    const other = await f.addMember('thr', 3, f.offer)
+    assert.equal(other.submitted.requestId, first.requestId)
+    await assert.rejects(
+      f.approver.approveMemberJoin('team', other.submitted.requestId, 'automatic'),
+      /e2ee_member_invitation_used/
+    )
+    assert.equal(f.records.length, before)
+  }
+)
+void test(
+  'invitations from an admin who was later demoted are no longer admitted unattended',
+  { timeout: 40_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const admin = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', admin.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', admin.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    await f.approver.setMemberRole('team', admin.requestId, 'admin')
+    await f.joiner.open('team')
+    await f.joiner.refresh('team', { installKeys: false })
+    const mint = async () => {
+      const minted = await f.memberApi.withDesktopE2eeAccount(
+        (account) => account.host.memberOffer('team', 'email', 9_000_000_000_000),
+        'team',
+        false
+      )
+      f.offers.set(minted.token, minted)
+      return minted
+    }
+    const early = await mint()
+    const late = await mint()
+    // While the endorser is an admin its invitation is admitted unattended.
+    const accepted = await f.addMember('acc3', 3, early)
+    await f.approver.memberJoinRequests('team')
+    assert.equal(
+      (await f.approver.approveMemberJoin('team', accepted.submitted.requestId, 'automatic'))
+        .admitted,
+      true
+    )
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    await f.approver.setMemberRole('team', admin.requestId, 'member')
+    const waiting = await f.addMember('acc4', 4, late)
+    // Listed and pinned like any applicant: only the endorser's current role refuses it.
+    await f.approver.memberJoinRequests('team')
+    const before = f.records.length
+    await assert.rejects(
+      f.approver.approveMemberJoin('team', waiting.submitted.requestId, 'automatic'),
+      /e2ee_member_invitation_endorser_ineligible/
+    )
+    assert.equal(f.records.length, before)
+  }
+)
+
 const e2eeIpcDependencies = (runtime, sender, recordMethod = () => {}) => ({
   '../ipc-service-deps': { getIpcServiceDeps: () => ({ cliService: {} }) },
+  '../product-window-ipc-service': { ProductWindowIpcService: class {} },
   'electron-ipc-decorator': {
-    IpcService: class {},
     IpcMethod: () => (_target, name, descriptor) => {
       recordMethod(name)
       return descriptor
@@ -5051,7 +5590,6 @@ async function newDesktopAccountPairing(t, pairingSubmit) {
   }
   const desktop = await nativeAccountFixture(t)
   const client = {
-    accountIdentity: () => Effect.succeed({ accountId: 'account', cryptoUserId: 'aa'.repeat(32) }),
     history: () => Effect.promise(ledgerPage),
     pairingSubmit,
     pairingClaim: () => Effect.succeed({ status: 'pending', approvals: [] })
@@ -5066,7 +5604,7 @@ async function newDesktopAccountPairing(t, pairingSubmit) {
     e2eeIpcDependencies(
       {
         ...desktop.api,
-        desktopE2eeCloudClient: async () => ({ accountId: 'account', client }),
+        desktopE2eeCloudClient: async () => ({ accountId: 'acc1', client }),
         desktopAccountPairingDatabase: (accountId) =>
           join(desktop.directory, `account-pairing-${accountId}.sqlite`)
       },
@@ -5153,7 +5691,7 @@ void test(
     assert.equal((await f.joiner.claimMemberJoin('team', submitted.requestId)).ready, false)
     const missed = calls.member.length
     held.resolve()
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     calls.member = []
     assert.equal((await f.joiner.claimMemberJoin('team', submitted.requestId)).ready, true)
     const installing = claimCalls(calls.member)
@@ -5252,7 +5790,7 @@ async function rotatedTeam(t, latency) {
   const joined = async (joiner, submitted, accountId) => {
     await f.approver.memberJoinRequests('team')
     await f.approver.approveMemberJoin('team', submitted.requestId, 'automatic')
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     let claimed = await joiner.claimMemberJoin('team', submitted.requestId)
     for (let attempt = 0; !claimed.ready && attempt < 3; attempt++)
       claimed = await joiner.claimMemberJoin('team', submitted.requestId)
@@ -5262,7 +5800,7 @@ async function rotatedTeam(t, latency) {
   await joined(f.joiner, await f.submit(), 'member')
   const others = []
   for (const [index, name] of ['m2', 'm3', 'm4', 'm5', 'm6'].entries()) {
-    const other = await f.addMember(name, `${index + 1}${index + 1}`.repeat(32), 10 + index)
+    const other = await f.addMember(name, 10 + index)
     await joined(other.ipc, other.submitted, name)
     others.push(other)
   }
@@ -5345,13 +5883,13 @@ void test(
     const release = held
     held = undefined
     release.resolve()
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     // Before the member's next claim, another member joins and is removed, and the
     // required rotation publishes epoch 1.
-    const other = await f.addMember('other', 'cc'.repeat(32), 3)
+    const other = await f.addMember('thr', 3)
     await f.approver.memberJoinRequests('team')
     await f.approver.approveMemberJoin('team', other.submitted.requestId, 'automatic')
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     await f.approver.removeMember('team', other.submitted.requestId)
     await f.approver.updateKeys('team')
     const epoch = async (api) =>
@@ -5414,7 +5952,7 @@ void test(
     assert.equal((await f.joiner.claimMemberJoin('team', submitted.requestId)).ready, false)
     held.resolve()
     held = undefined
-    await f.approver.keyDeliveryIdle('account', 'team')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
     // The member is removed before its next claim; only its credential can confirm it.
     f.relay.memberRemoved = true
     await assert.rejects(
@@ -5425,3 +5963,267 @@ void test(
     await assert.rejects(f.joiner.open('team'), /e2ee_member_removed/)
   }
 )
+void test(
+  'a member whose retained join predates signed invitations still reopens its workspace',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const submitted = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', submitted.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', submitted.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    // The join was retained by a build that wrote invitations without an endorsement.
+    const find = async (directory) => {
+      for (const entry of await readdir(directory, { withFileTypes: true, recursive: true }))
+        if (entry.isFile() && entry.name === 'creations.sqlite')
+          return join(entry.parentPath, entry.name)
+      return null
+    }
+    const path = await find(f.memberDirectory)
+    assert.ok(path)
+    const db = new DatabaseSync(path)
+    try {
+      const row = db
+        .prepare('SELECT offer,history FROM member_joins WHERE workspace_id=?')
+        .get('team')
+      assert.ok(row.history)
+      const { signature, ...unsigned } = JSON.parse(row.offer)
+      assert.ok(signature)
+      db.prepare('UPDATE member_joins SET offer=? WHERE workspace_id=?').run(
+        JSON.stringify(unsigned),
+        'team'
+      )
+    } finally {
+      db.close()
+    }
+    const creation = await f.memberApi.withDesktopE2eeAccount(
+      (account) => account.bootstrap.creationFor('team'),
+      'team',
+      false
+    )
+    assert.equal(creation.genesisHash, f.offer.genesisHash)
+  }
+)
+void test(
+  'a removed member that has not yet observed its removal can submit a new invitation',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const first = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', first.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', first.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    // An administrator removes the member and invites it again. The member opens the new
+    // invitation before any refresh or token request has told this device of the removal.
+    f.relay.memberRemoved = true
+    const again = await f.ownerApi.withDesktopE2eeAccount(
+      (account) => account.host.memberOffer('team', 'link', 9_000_000_000_000),
+      'team',
+      false
+    )
+    assert.notEqual(JSON.stringify(again), JSON.stringify(f.offer))
+    const second = await f.joiner.prepareMemberJoin(again)
+    assert.notEqual(second.requestId, first.requestId)
+    assert.notEqual(second.signingPublicKey, first.signingPublicKey)
+    await assert.rejects(f.joiner.open('team'), /e2ee_member_removed/)
+    // The new request is the retained pending join; the removed one no longer refuses it.
+    assert.equal(
+      JSON.stringify(await f.joiner.pendingMemberJoin('team')),
+      JSON.stringify({ offer: again, requestId: second.requestId })
+    )
+  }
+)
+void test(
+  'a removed member whose local erase failed can accept a new invitation once the fault clears',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const first = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', first.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', first.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    f.relay.memberRemoved = true
+    // The OS key store becomes unavailable just as the removal is confirmed, so the
+    // receipt is recorded but the local erase that follows it fails.
+    f.relay.onRemovalConfirmed = () => {
+      f.relay.onRemovalConfirmed = undefined
+      f.setMemberLocked(true)
+    }
+    const again = await f.ownerApi.withDesktopE2eeAccount(
+      (account) => account.host.memberOffer('team', 'link', 9_000_000_000_000),
+      'team',
+      false
+    )
+    await assert.rejects(f.joiner.prepareMemberJoin(again))
+    // Once the key store is back, accepting the same invitation finishes the erase and joins.
+    f.setMemberLocked(false)
+    const second = await f.joiner.prepareMemberJoin(again)
+    assert.notEqual(second.requestId, first.requestId)
+    assert.equal(
+      JSON.stringify(await f.joiner.pendingMemberJoin('team')),
+      JSON.stringify({ offer: again, requestId: second.requestId })
+    )
+  }
+)
+void test(
+  'a sign-in change while a removed join is cleaned up refuses the new invitation',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const first = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', first.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', first.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    f.relay.memberRemoved = true
+    // The same account signs in again while the confirmed removal is being cleaned up.
+    f.relay.onRemovalConfirmed = () => {
+      f.memberIdentity.generation = (f.memberIdentity.generation ?? 0) + 1
+    }
+    const again = await f.ownerApi.withDesktopE2eeAccount(
+      (account) => account.host.memberOffer('team', 'link', 9_000_000_000_000),
+      'team',
+      false
+    )
+    await assert.rejects(f.joiner.prepareMemberJoin(again), /^Error: e2ee_host_operation_failed$/)
+    f.relay.onRemovalConfirmed = undefined
+    // The removal still ends the old workspace, but no request was made for the new sign-in.
+    await assert.rejects(f.joiner.open('team'), /e2ee_member_removed/)
+    assert.equal(await f.joiner.pendingMemberJoin('team'), null)
+  }
+)
+void test(
+  'a current member refuses another invitation and keeps its workspace',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await twoDeviceMemberJoin(t)
+    await f.approver.open('team')
+    const first = await f.submit()
+    await f.approver.memberJoinRequests('team')
+    await f.approver.approveMemberJoin('team', first.requestId, 'automatic')
+    await f.approver.keyDeliveryIdle('acc1', 'team')
+    assert.equal((await f.joiner.claimMemberJoin('team', first.requestId)).ready, true)
+    await f.joiner.memberSettleIdle('member', 'team')
+    const again = await f.ownerApi.withDesktopE2eeAccount(
+      (account) => account.host.memberOffer('team', 'link', 9_000_000_000_000),
+      'team',
+      false
+    )
+    await assert.rejects(f.joiner.prepareMemberJoin(again), /^Error: e2ee_conflict$/)
+    assert.equal((await f.joiner.open('team')).hasCurrentKey, true)
+  }
+)
+
+/** A sign-in server that answers only when told to: each call stays pending until its
+ * caller cancels it or the test answers it. */
+function slowSignIn() {
+  const pending = new Set()
+  return {
+    pending,
+    convexToken: (_options, signal) =>
+      new Promise((resolve, reject) => {
+        const call = { resolve }
+        pending.add(call)
+        signal?.addEventListener(
+          'abort',
+          () => {
+            pending.delete(call)
+            reject(signal.reason)
+          },
+          { once: true }
+        )
+      }),
+    answerAll: () => {
+      for (const call of pending) call.resolve({ data: { token: 'synthetic-auth-jwt' } })
+      pending.clear()
+    }
+  }
+}
+/** The account's own cloud client against one synthetic history endpoint. */
+async function slowSignInAccount(t, signIn) {
+  const directory = await mkdtemp(join(tmpdir(), 'desktop-slow-sign-in-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const { api } = await account({
+    directory,
+    auth: { convexToken: signIn.convexToken },
+    cloud: (input) =>
+      makeE2eeCloudClient({
+        ...input,
+        deploymentUrl: 'https://synthetic.convex.cloud',
+        fetch: async () =>
+          Response.json({
+            status: 'success',
+            value: {
+              workspaceId: 'workspace',
+              genesisHash: '11'.repeat(32),
+              checkpoint: { headHash: '11'.repeat(32), length: 1 },
+              startIndex: 1,
+              recordsHex: [],
+              position: 'p1:workspace:1:synthetic',
+              nextCursor: null
+            }
+          })
+      })
+  })
+  t.after(() => api.closeDesktopE2eeAccount())
+  return api
+}
+const settle = async (until) => {
+  for (let turn = 0; turn < 200 && !until(); turn++)
+    await new Promise((resolve) => setImmediate(resolve))
+}
+void test('quitting ends a request waiting on a slow sign-in token within the quit budget', async (t) => {
+  // Injected clock: the 15 s quit budget and the 30 s request deadline only pass when ticked.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const signIn = slowSignIn()
+  const api = await slowSignInAccount(t, signIn)
+  const { client } = await api.desktopE2eeCloudClient()
+  // Stands in for a key round's history read; the host's close awaits that round.
+  const round = Effect.runPromiseExit(client.history({ workspaceId: 'workspace' }))
+  await settle(() => signIn.pending.size === 1)
+  assert.equal(signIn.pending.size, 1)
+  let finished = false
+  const drained = drainMainProcessQuitResources(
+    [
+      {
+        name: 'e2ee',
+        close: async () => {
+          await api.closeDesktopE2eeAccount({ quit: true })
+          await round
+        }
+      }
+    ],
+    15_000
+  ).finally(() => {
+    finished = true
+  })
+  await settle(() => finished)
+  t.mock.timers.tick(15_000)
+  assert.deepEqual(await drained, [])
+  // Cancelling the quit left no token request behind.
+  assert.equal(signIn.pending.size, 0)
+  assert.equal(Exit.isFailure(await round), true)
+})
+void test('a slow sign-in token still completes a request when nothing is quitting', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const signIn = slowSignIn()
+  const api = await slowSignInAccount(t, signIn)
+  const { client } = await api.desktopE2eeCloudClient()
+  const read = Effect.runPromise(client.history({ workspaceId: 'workspace' }))
+  await settle(() => signIn.pending.size === 1)
+  // Slower than the quit budget, inside the request's own deadline.
+  t.mock.timers.tick(20_000)
+  signIn.answerAll()
+  assert.equal((await read).position, 'p1:workspace:1:synthetic')
+})

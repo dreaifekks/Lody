@@ -132,4 +132,13 @@ describe('AgentRoleDetailPane', () => {
     const guessed = await render({ role: fable(true), agentConfig: claude, machine: null });
     expect(guessed.textContent).not.toContain(unsupported);
   });
+
+  it('marks the retired model pin so the fix is obvious', async () => {
+    const retired = await render({
+      availability: { kind: 'unavailable', reason: 'model_unavailable' },
+    });
+    expect(retired.querySelector('dd')?.className).toContain('text-status-warning');
+    const fine = await render({ availability: { kind: 'available' } });
+    expect(fine.querySelector('dd')?.className).not.toContain('text-status-warning');
+  });
 });

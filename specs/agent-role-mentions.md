@@ -28,6 +28,15 @@ A machine query such as `@review@server` lists every matching target there. Each
 menu choice pins the stable target id. Existing instance-id and `pinned:<id>`
 ranges still name exactly that target, including its run configuration and memory.
 Renaming labels does not retarget a committed range.
+The Role menu lists every Role readable in the current workspace, including
+unavailable and loading Roles. It preserves ownership and sharing permissions;
+it does not expose another user's private Roles. Available search matches come
+first, followed by disabled matches. Disabled rows explain their state below
+the name: checking availability, machine inaccessible/offline, binding missing
+or mismatched, or a pinned model or permission mode the bound agent no longer
+offers. Only a runtime probe of that exact agent that lists models or modes can
+report a retired pin; static defaults or an empty probe leave the Role available.
+The user fixes the pin by editing the Role; saved pins are never rewritten here.
 
 Text hydration resolves only a unique available match. Bare Role names, aliases
 or `@Role@machine` text that identifies several targets stays plain text, even
@@ -50,5 +59,7 @@ and [target model](agent-role-machine-targets.md).
 - [Discovery, hydration and expansion](../packages/components/src/components/mentions/mention-agent-role-source.ts)
 - [Candidate mapping](../packages/components/src/components/mentions/mention-registry.ts)
 - [Composer target menu](../packages/components/src/lib/composer-agent-roles.ts)
+- [Menu rows](../packages/components/src/components/mentions/mention-two-level-menu.tsx)
+- [Retired pin rule](../packages/shared/src/agent-role.ts)
 - [Behavior tests](../packages/components/tests/agent-role-mention-source.test.ts)
 - [Selection tests](../packages/components/tests/mention-two-level-menu.test.tsx)

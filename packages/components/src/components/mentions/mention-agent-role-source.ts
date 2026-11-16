@@ -208,7 +208,8 @@ const findMentionTarget = (
 // ---------------------------------------------------------------------------
 
 /**
- * The instruction the current agent receives in place of the chip.
+ * The reference the current agent receives in place of the chip. It names the
+ * Role, not an action: the user's own words say what to do with it.
  *
  * Carries the Role and instance ids and nothing else that matters: the
  * machine, agent config, model, reasoning, and prompt prefix come from the

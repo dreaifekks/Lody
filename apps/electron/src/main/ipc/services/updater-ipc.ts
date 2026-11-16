@@ -1,9 +1,10 @@
-import { IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { IpcMethod } from 'electron-ipc-decorator'
 import type { CheckForElectronUpdateResult } from '@lody/shared/electron-ipc'
 import { LanReleaseChannelSchema } from '@lody/shared/lan-release'
+import { ProductWindowIpcService } from '../product-window-ipc-service'
 import { getIpcServiceDeps } from '../ipc-service-deps'
 
-export class UpdaterIpc extends IpcService {
+export class UpdaterIpc extends ProductWindowIpcService {
   static override readonly groupName = 'updater'
 
   @IpcMethod()

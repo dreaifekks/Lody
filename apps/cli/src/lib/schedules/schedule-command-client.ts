@@ -8,8 +8,16 @@ import {
   resolveWorkspaceOrThrow,
   withWorkspaceManager,
 } from '../command-runtime';
-import { executeScheduleCommand } from './schedule-command-service';
+import { assertScheduleCommandAllowed, executeScheduleCommand } from './schedule-command-service';
 import { LODY_AUTH_URL } from '@/utils/const';
+
+/** Only Agent children carry this marker; human terminals also have LODY_SESSION_ID. */
+export function scheduleRequesterSessionId(
+  explicit?: SessionId,
+  env: NodeJS.ProcessEnv = process.env
+): SessionId | undefined {
+  return explicit || (env.LODY_AGENT_SESSION_ID as SessionId | undefined) || undefined;
+}
 
 export async function sendScheduleCommand(
   command: ScheduleCommand,
@@ -19,6 +27,15 @@ export async function sendScheduleCommand(
     requesterPermissionTier?: ResolvedPermissionTier;
   } = {}
 ): Promise<unknown> {
+  options = {
+    ...options,
+    requesterSessionId: scheduleRequesterSessionId(options.requesterSessionId),
+  };
+  assertScheduleCommandAllowed(
+    command,
+    options.requesterSessionId,
+    options.requesterPermissionTier
+  );
   if (LODY_AUTH_URL) {
     const auth = getAuthContextOrThrow('schedule');
     const workspace = await resolveWorkspaceOrThrow(auth, options.workspace);
@@ -67,6 +84,8 @@ export async function sendDaemonScheduleCommand(
     requesterPermissionTier?: ResolvedPermissionTier;
   }
 ): Promise<unknown> {
+  target = { ...target, requesterSessionId: scheduleRequesterSessionId(target.requesterSessionId) };
+  assertScheduleCommandAllowed(command, target.requesterSessionId, target.requesterPermissionTier);
   const response = await Effect.runPromise(
     makeLocalControlClientAuto({ socketPath: target.socketPath })
       .scheduleControl({

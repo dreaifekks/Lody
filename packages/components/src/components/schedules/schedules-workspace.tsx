@@ -1,3 +1,4 @@
+import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
 import { ScheduleMentionForm } from './schedule-mention-form';
 import { useWorkspaceFeature } from '@/hooks/use-workspace-feature';
 import { WorkspaceFeatureNotice } from '@/components/workspace-feature-notice';
@@ -206,6 +207,7 @@ function SupportedSchedulesWorkspace({
   const runtime =
     scope.enabled && scope.workspaceId === activeRuntime?.workspaceId ? activeRuntime : null;
   const user = useAtomValue(userAtom);
+  const { members } = useWorkspaceMembers();
   const slug = useAtomValue(currentWorkspaceSlugAtom);
   const navigate = useNavigate();
   const setReturnTab = useSetAtom(mobileHomeReturnTabAtom);
@@ -260,6 +262,7 @@ function SupportedSchedulesWorkspace({
       runtime
         ? new ScheduleRepository(runtime.repo, runtime.workspaceId, {
             protectedContent: runtime.contentMode === 'e2ee',
+            signDeclaration: runtime.signScheduleDeclaration,
           })
         : null,
     [runtime]
@@ -431,6 +434,7 @@ function SupportedSchedulesWorkspace({
     };
   };
   const contextForRow = (item: ScheduleRegistryRow): ScheduleRowContext => ({
+    owner: members.find((member) => member.userId === item.ownerId)?.name ?? item.ownerId,
     machine: machines.get(item.machineId as never)?.name ?? item.machineId,
     timeZone: machines.get(item.machineId as never)?.timeZone,
     agent:
@@ -637,6 +641,7 @@ function SupportedSchedulesWorkspace({
   );
   const list = (
     <ScheduleListView
+      currentUserId={user?.id}
       {...registry}
       board={!!board}
       rows={rows}
@@ -1000,6 +1005,7 @@ function ScheduleEditor({
         () =>
           new ScheduleRepository(runtime.repo, runtime.workspaceId, {
             protectedContent: runtime.contentMode === 'e2ee',
+            signDeclaration: runtime.signScheduleDeclaration,
           }).save({
             ...identity,
             actorId: user.id,

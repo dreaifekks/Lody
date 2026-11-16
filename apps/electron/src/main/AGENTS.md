@@ -35,8 +35,12 @@ On cross-channel lease conflicts, hand channel-neutral `session`, `chat/new` or
 quit. ACK only after binding its launch handler; refused startup rejects handoff.
 Never hand off auth/cloud callbacks or load credentials/business modules.
 
-`desktop-log.ts` synchronously writes main console/lifecycle and CLI supervision to
-the CLI daily log. Never persist credentials or spawn arguments; redaction is only a backstop. See the [tracing decision](../../../../.agents/notes/implemented/feature/2026-09-25-daily-log-crash-and-stall-tracing.md).
+Main-process `console` output, lifecycle, and embedded-CLI supervision reach the
+CLI daily log through `desktop-log.ts`; write synchronously, never persist
+credentials (redaction is only a backstop), and trace CLI spawns without their
+arguments. See the [tracing decision](../../../../.agents/notes/implemented/feature/2026-09-25-daily-log-crash-and-stall-tracing.md).
+URL diagnostics retain fixed route names and structural metadata only; arbitrary
+URL components and parameter names do not belong in diagnostics.
 
 ## Prepared windows
 
@@ -101,11 +105,18 @@ isolated platform run.
 granting no renderer reader/status/content capability. Preserve existing readers and
 release cold temporary hosts before replying. `status` requires a window reader.
 
-`services/e2ee-member-join.mts` retains exact KeyPackages/signed admissions before
-I/O. Unknown outcomes never replace them; verify competing ledger bytes or terminal
-server reservation before retirement. New accounts replay genuine history from their
-retained genesis; server labels cannot establish native identity. [Decision](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md).
-Approval, including account pairing, never awaits a key round: `E2eeIpc` owns later delivery and retries it from
+The post-MVP recovery vault (`services/e2ee-recovery-vault.mts`) stays off unless
+main starts with `LODY_E2EE_RECOVERY_VAULT=on`; the renderer switch alone never enables it.
+Main owns the recovery file dialogs and bytes, writes the file only to the user's
+chosen path, and returns outcomes or `e2ee_recovery_*` codes, never file contents.
+Its account journal holds pins and intents only. Proposal: [recovery vault](../../../../specs/e2ee/recovery-vault.md).
+
+Team-member joining uses `services/e2ee-member-join.mts`: retain exact KeyPackages
+and every signed admission before I/O. Unknown outcomes cannot replace them;
+verify competing ledger bytes or a terminal server reservation before retirement.
+New accounts replay genuine history from their independently retained genesis;
+server labels never establish native identity. [Decision](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md).
+Approval, including account-pairing approval, never awaits a key round: `E2eeIpc` owns later delivery and retries it from
 a bounded main-owned due timer and due polls ([delivery](../../../../.agents/notes/proposed/feature/2026-10-28-e2ee-team-joining-native.md#key-delivery-after-admission)).
 
 Removal erases `member_joins` and `personal_join_histories`. All three join installs

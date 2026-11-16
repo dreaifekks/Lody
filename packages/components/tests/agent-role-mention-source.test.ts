@@ -19,9 +19,14 @@ import {
   type AgentRoleInstanceId,
   type LocalProjectId,
   type MachineId,
+  type MachineViewMeta,
   type WorkspaceId,
 } from '@lody/shared';
 import { buildAgentRoleCandidates } from '../src/components/mentions/mention-registry';
+import {
+  AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
+  createAgentRoleCapabilityResolver,
+} from '../src/lib/composer-agent-roles';
 import {
   AgentRoleMentionMachineContext,
   buildAgentRoleMentionItems,
@@ -381,11 +386,58 @@ describe('agent role menu rows', () => {
       agentConfig: agentConfigFor('config-1'),
       machine: { name: 'Studio' },
       machineName: 'devnuc',
+      availability: { kind: 'available' },
     });
     expect(candidate?.detail?.rows).toBeUndefined();
     // No badges at all: every Role the menu offers is one this user may run, so
     // visibility changes nothing about accepting it.
     expect(candidate?.detail?.badges).toBeUndefined();
+  });
+
+  it('explains and blocks a Role whose agent retired its pinned model', () => {
+    const stale = role({ runConfig: { modelId: 'model-old' } });
+    const machine = {
+      name: 'MacBook',
+      acpCapabilities: {
+        'config-1': {
+          agentType: 'codex',
+          cliType: 'builtin',
+          provenance: 'runtime',
+          models: [{ modelId: 'model-new', name: 'New' }],
+          modes: [],
+          fetchedAt: 1,
+        },
+      },
+    } as unknown as MachineViewMeta;
+    const config = {
+      id: 'config-1',
+      name: 'Codex',
+      agentType: 'codex',
+      cliType: 'builtin',
+      machineId,
+    } as AgentConfigMeta;
+    const list = itemsWith([stale], (entry) => resolveAgentRoleInstanceAvailability(entry, {
+      authorizedMachineIds: new Set([machineId]), onlineMachineIds: new Set([machineId]),
+      agentConfigMachineIds: new Map([[config.id, machineId]]), loadedAgentConfigMachineIds: new Set([machineId]),
+      runConfigCapability: createAgentRoleCapabilityResolver([config], new Map([[machineId, machine]])),
+    }));
+    const [candidate] = buildAgentRoleCandidates(list, '', undefined, ({ availability }) =>
+      availability.kind === 'unavailable'
+        ? AGENT_ROLE_UNAVAILABLE_REASON_KEYS[availability.reason]
+        : undefined
+    );
+    expect(candidate).toMatchObject({
+      disabled: true,
+      subtitle: 'settings.agentRoles.unavailable.modelUnavailable',
+      subtitleTone: 'warning',
+    });
+    expect(
+      buildAgentRoleMentionRewrites(
+        '@Code-Reviewer',
+        [{ start: 0, end: 14, kind: 'agent_role', value: 'role-1' }],
+        list
+      )
+    ).toEqual([]);
   });
 
   it.each([{ kind: 'unknown' }, { kind: 'unavailable', reason: 'machine_offline' }] as const)(
@@ -440,7 +492,7 @@ describe('agent role before-send expansion', () => {
   const text = 'please @Code-Reviewer this diff';
   const mention = { start: 7, end: 21, kind: 'agent_role', value: 'role-1:machine-1' };
 
-  it('rewrites the range into an id-bearing instruction and keeps the chip label', () => {
+  it('rewrites the range into an id-bearing reference and keeps the chip label', () => {
     const expanded = applyTextRewrites(
       text,
       buildAgentRoleMentionRewrites(text, [mention], items(role()))

@@ -1,6 +1,9 @@
 import { isBoardSession } from '../boards/board-threads';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { buildAgentRoleFormValueFromRunConfig, type AgentRoleInstanceId } from '@lody/shared';
+import { buildDaemonInstallCommands } from '@/lib/daemon-installation';
+import { useMySessionScope } from '@/hooks/use-visible-session-metas';
+import { isSessionInMyScope } from '@/lib/session-visibility';
 import { McpDefaultsRecovery } from './mcp-defaults-recovery';
 import {
   useLegacyWorkspaceMutation,
@@ -9,7 +12,7 @@ import {
 import { useLegacyWorkspaceQueryStatus } from '@/hooks/use-workspace-feature';
 import { E2eeLocalAgentApproval } from '../e2ee-local-agent-approval';
 import { useProviderQuotaRefresh } from '@/hooks/use-provider-quota-refresh';
-import { getAgentRoleTargets, getSessionGroupTitle } from '@lody/shared';
+import { getAgentRoleTargets } from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
 import {
@@ -457,6 +460,12 @@ import {
   getChatLandingVisibleComposerStatus,
   isChatLandingMachineReachable,
 } from './chat-landing-derived';
+import {
+  type ComposerInputElement,
+  getComposerSelection,
+  getComposerText,
+  setComposerSelection,
+} from '@/ui/mention/composer-input';
 
 interface ChatLandingProps {
   /** Committed mobile session surface; route completion alone is not presentation. */
@@ -696,6 +705,7 @@ function WorkspaceChatLanding({
   const [machinePairing, setMachinePairing] = useState<{
     requestId: string;
     command: string;
+    windowsCommand: string;
     expiresAt: number;
   } | null>(null);
   const machinePairingSuccessNotifiedRef = useRef<string | null>(null);
@@ -731,6 +741,7 @@ function WorkspaceChatLanding({
     cloudOperations.localProjects.setLocalProjectSharedWithTeam
   );
   const cachedRepositories = useAtomValue(workspaceReposCacheAtomFamily(workspaceId));
+  const { currentUserId: myAccountId } = useMySessionScope();
   const visibleMachineIndex = useVisibleMachineMetas({
     machineFlockFamilies: CHAT_LANDING_MACHINE_FLOCK_FAMILIES,
   });
@@ -750,14 +761,18 @@ function WorkspaceChatLanding({
     isLoading: visibleLocalProjectsLoading,
   } = visibleLocalProjects;
   const getProjectShareErrorMessage = useConvexErrorMessage();
-  const { sessions: visibleActiveSessions, allActiveSessions: visibleAllActiveSessions } =
-    useVisibleSessionMetas();
+  const {
+    sessions: visibleActiveSessions,
+    allActiveSessions: visibleAllActiveSessions,
+    historyOnlySessionIds: activeReadOnlyIds,
+  } = useVisibleSessionMetas();
   useReportVisibleSessionsForEagerSync(
     'chat-landing',
     visibleActiveSessions,
     visibleAllActiveSessions
   );
-  const { archivedSessions: visibleArchivedSessions } = useVisibleArchivedSessionMetas();
+  const { archivedSessions: visibleArchivedSessions, historyOnlySessionIds: archivedReadOnlyIds } =
+    useVisibleArchivedSessionMetas();
   const showProjectSharing =
     legacyQueriesEnabled &&
     shouldShowSessionSharing({
@@ -1284,7 +1299,7 @@ function WorkspaceChatLanding({
   const [loadingLocalGitState, setLoadingLocalGitState] = useState(false);
 
   // ── Common refs ──
-  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const promptTextareaRef = useRef<ComposerInputElement>(null);
   // Scope root for the keyboard-nav controller (arrow roving over the desktop landing's
   // config + composer column). Mobile/touch keeps native focus behavior.
   const keyboardNavRef = useRef<HTMLDivElement>(null);
@@ -1516,9 +1531,11 @@ function WorkspaceChatLanding({
         return false;
       }
 
-      const currentValue = promptTextareaRef.current?.value ?? prompt;
-      const selectionStart = promptTextareaRef.current?.selectionStart ?? null;
-      const selectionEnd = promptTextareaRef.current?.selectionEnd ?? null;
+      const promptInput = promptTextareaRef.current;
+      const currentValue = promptInput ? getComposerText(promptInput) : prompt;
+      const promptSelection = promptInput ? getComposerSelection(promptInput) : null;
+      const selectionStart = promptSelection?.start ?? null;
+      const selectionEnd = promptSelection?.end ?? null;
       const result = insertPastedTextDraft({
         currentValue,
         pastedText: normalizedText,
@@ -1554,7 +1571,7 @@ function WorkspaceChatLanding({
 
       requestAnimationFrame(() => {
         promptTextareaRef.current?.focus();
-        promptTextareaRef.current?.setSelectionRange(result.draft.end, result.draft.end);
+        setComposerSelection(promptTextareaRef.current, result.draft.end, result.draft.end);
       });
 
       return true;
@@ -2282,7 +2299,7 @@ function WorkspaceChatLanding({
     }
     setMachinePairing({
       requestId: result.value.request.id,
-      command: `npx lody@latest daemon start --auth ${result.value.token}`,
+      ...buildDaemonInstallCommands({ auth: result.value.token }),
       expiresAt: result.value.request.expiresAt,
     });
   }, [authToken, workspaceId]);
@@ -2985,7 +3002,7 @@ function WorkspaceChatLanding({
     contextType === 'local' ? handleSelectedLocalBranchChange : setSelectedBranch;
 
   // ── Prompt keydown ──
-  const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handlePromptKeyDown = (event: KeyboardEvent<ComposerInputElement>) => {
     if (event.key !== 'Enter' || isImeComposingKeyboardEvent(event)) return;
     if (
       !shouldSubmitOnEnterForMobileKeyboardAction({
@@ -3028,7 +3045,7 @@ function WorkspaceChatLanding({
     [addFileAttachments, addFiles, t]
   );
   const handlePromptPaste = useCallback(
-    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    (event: ClipboardEvent<ComposerInputElement>) => {
       const text = event.clipboardData.getData('text/plain');
 
       const pastedTextFile = text && isPastedTextTooLarge(text) ? createPastedTextFile(text) : null;
@@ -5026,7 +5043,6 @@ function WorkspaceChatLanding({
      grouping logic uses). Cap at 200. */
   const boardsEnabled = useAtomValue(boardEnabledAtom);
   const mobileHomeChats = useMemo<MobileConversationItem[]>(() => {
-    const myUserId = userId ?? null;
     /* `sessionListAtom` and `archivedSessionListAtom` live in
        different jotai atoms (see `atoms/doc-meta.ts`) — the active
        list excludes archived items and vice versa. Pick the right
@@ -5050,9 +5066,8 @@ function WorkspaceChatLanding({
     };
     return sourceSessions
       .filter((session) => {
-        // A Board's conversations live in the Board; the drawer's Boards section lists it.
         if (isBoardSession(session, boardsEnabled)) return false;
-        if (chatScope === 'my' && myUserId && session.userId !== myUserId) return false;
+        if (chatScope === 'my' && !isSessionInMyScope(session, myAccountId)) return false;
         if (chatExcludedMachines.has(session.machineId)) return false;
         return true;
       })
@@ -5110,7 +5125,7 @@ function WorkspaceChatLanding({
         }
         return {
           id: session.id,
-          title: getSessionGroupTitle(session) || t('sessions.untitled', 'Untitled session'),
+          title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
           kind,
           branchName: session.branchName?.trim() || null,
           prNumber: prInfo.number,
@@ -5132,6 +5147,7 @@ function WorkspaceChatLanding({
           isOffline: !isOnline,
           hasUnreadMessages: activity.hasUnreadMessages,
           isPinned: Boolean(session.isPinned),
+          readOnly: activeReadOnlyIds.has(session.id) || archivedReadOnlyIds.has(session.id),
           machineId: session.machineId,
           /* Provenance for the list's opened-by tree. TWO fields, never
              merged: the precise opener drives navigation, the row id drives
@@ -5189,10 +5205,13 @@ function WorkspaceChatLanding({
     chatExcludedRepos,
     chatExcludedRunning,
     chatScope,
+    myAccountId,
     mobileChildSessionsByParent,
     mobileOpenerRowResolver,
     liveSessionStatuses,
     mobileHomeShowArchived,
+    activeReadOnlyIds,
+    archivedReadOnlyIds,
     onlineMachineIds,
     showProjectSharing,
     t,
@@ -5405,6 +5424,7 @@ function WorkspaceChatLanding({
     chatExcludedRepos,
     chatExcludedRunning,
     chatScope,
+    myAccountId,
     chatViewMode,
     mobileHomeMachines,
     mobileSheetRecency,
@@ -5957,7 +5977,6 @@ function WorkspaceChatLanding({
      the list it's given. */
   const mobileProjectConversations = useMemo<MobileConversationItem[]>(() => {
     if (!mobileProjectContext) return [];
-    const myUserId = userId ?? null;
     /* See mobileHomeChats: archived sessions live in a separate atom,
        not in `visibleSessions`. Pick the right source so the toggle
        actually surfaces items instead of always rendering empty. */
@@ -5978,7 +5997,7 @@ function WorkspaceChatLanding({
       return activity;
     };
     const projectScopedSessions = sourceSessions.filter((session) => {
-      if (chatScope === 'my' && myUserId && session.userId !== myUserId) return false;
+      if (chatScope === 'my' && !isSessionInMyScope(session, myAccountId)) return false;
       if (mobileProjectContext.kind === 'local') {
         if (session.machineId !== mobileProjectContext.machineId) return false;
         const key = getSessionLocalProjectKey(session);
@@ -6029,7 +6048,7 @@ function WorkspaceChatLanding({
         }
         return {
           id: session.id,
-          title: getSessionGroupTitle(session) || t('sessions.untitled', 'Untitled session'),
+          title: session.title?.trim() || t('sessions.untitled', 'Untitled session'),
           kind,
           branchName: session.branchName?.trim() || null,
           prNumber: prInfo.number,
@@ -6051,6 +6070,7 @@ function WorkspaceChatLanding({
           isOffline: !isOnline,
           hasUnreadMessages: activity.hasUnreadMessages,
           isPinned: Boolean(session.isPinned),
+          readOnly: activeReadOnlyIds.has(session.id) || archivedReadOnlyIds.has(session.id),
           machineId: session.machineId,
           /* See the home Chat-tab builder: precise opener for navigation, row
              id for nesting. An opener outside this project simply leaves the
@@ -6073,11 +6093,14 @@ function WorkspaceChatLanding({
       });
   }, [
     chatScope,
+    myAccountId,
     mobileChildSessionsByParent,
     mobileOpenerRowResolver,
     liveSessionStatuses,
     mobileProjectContext,
     mobileProjectShowArchived,
+    activeReadOnlyIds,
+    archivedReadOnlyIds,
     onlineMachineIds,
     t,
     teamMembersByUserId,
@@ -6212,6 +6235,7 @@ function WorkspaceChatLanding({
     chatExcludedPr,
     chatExcludedRunning,
     chatScope,
+    myAccountId,
     mobileHomeMachines,
     mobileProjectContext,
     setChatExcludedMachines,
@@ -6990,7 +7014,7 @@ function WorkspaceChatLanding({
             clearChatFilters: t('chat.mobileHome.clearFilters', '清除所有过滤'),
             /* First-run guide (no machines + no chats): the user installed
                the mobile app before ever connecting a computer, so walk them
-               through the two ways to connect one — the `lody daemon start`
+               through the two ways to connect one — the standalone installer
                one-liner on any machine, or the desktop app on their computer.
                The mobile app can't run agents itself — and the phone never
                opens the download page: both CTAs hand the command/link to the
@@ -7003,12 +7027,12 @@ function WorkspaceChatLanding({
               ),
               commandHeading: t(
                 'chat.mobileHome.onboarding.commandHeading',
-                'One command — on any machine'
+                'One command — macOS / Linux'
               ),
-              command: 'npx lody daemon start',
+              command: buildDaemonInstallCommands().command,
               commandHint: t(
                 'chat.mobileHome.onboarding.commandHint',
-                'Run it on a server, VM, or your own computer (Node.js 22.23.4+ (22.x), 24.22.1+ (24.x), or 26.12.1+ (26.x)). It signs the machine into your account — a machine without a browser prints a link you can open on this phone.'
+                'Run the installer on a macOS/Linux server, VM, or computer. Node.js is included. It prints a sign-in link you can open on this phone.'
               ),
               copyCommandLabel: t('chat.mobileHome.onboarding.copyCommand', 'Copy command'),
               shareCommandLabel: t('chat.mobileHome.onboarding.shareCommand', 'Send to computer'),
@@ -7196,7 +7220,7 @@ function WorkspaceChatLanding({
             buttonClassName="h-8 w-8"
             iconClassName="h-4 w-4"
             onDictationStart={() => {
-              landingDictationBaseRef.current = promptTextareaRef.current?.value ?? prompt;
+              landingDictationBaseRef.current = promptTextareaRef.current ? getComposerText(promptTextareaRef.current) : prompt;
             }}
             onDictationText={(text) => {
               const base = landingDictationBaseRef.current;
@@ -7266,6 +7290,9 @@ function WorkspaceChatLanding({
         machineId={pairedMachineId}
         machineName={observedMachinePairing?.machineName}
         command={machinePairingStatus === 'pending' ? (machinePairing?.command ?? null) : null}
+        windowsCommand={
+          machinePairingStatus === 'pending' ? (machinePairing?.windowsCommand ?? null) : null
+        }
         expiresAt={machinePairing?.expiresAt ?? null}
         creating={machinePairingCreating}
         createError={machinePairingCreateError}

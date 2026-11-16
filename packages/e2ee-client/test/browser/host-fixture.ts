@@ -14,7 +14,14 @@ import {
   Duration,
 } from 'effect';
 import { importBrowserDevice, type BrowserDevice } from '@lody/e2ee-core/adapters/browser-crypto';
-import { verifyWorkspaceInvitationSnapshot } from '@lody/e2ee-core';
+import {
+  verifyWorkspaceInvitationSnapshot,
+  RecoveryVaults,
+  makeWorkspaceRecovery,
+  memoryRecoveryEpochKeys,
+} from '@lody/e2ee-core';
+import { RecoveryVaultStore, RecoveryVaultLocalStore } from '@lody/e2ee-core/services';
+import { accountUserId } from '@lody/e2ee-core/protocol';
 import { makePortableAccountPairingApprover } from '../../src/account-requester';
 import { decodePersonalInvitation } from '../../src/pairing';
 import {
@@ -36,6 +43,8 @@ import {
   verifyLedger,
   signLedgerSnapshot,
   prepareLedgerCommand,
+  prepareJoinRequest,
+  signDeviceCredentialBinding,
   prepareDeviceAdmission,
   signLedgerRecord,
   prepareEpochEnvelope,
@@ -50,6 +59,7 @@ import {
   sealHistoryPacket,
   getCommittedEpochStagingKey,
   type EpochStagedGroup,
+  envelopeRouting,
 } from '@lody/e2ee-core/protocol';
 import {
   DeviceIdentity,
@@ -71,6 +81,8 @@ import {
 import {
   makeOwnedPersonalDeviceHost,
   makePersonalWorkspaceRuntime,
+  personalRuntimeRecovery,
+  personalRuntimeAccountRequester,
   type PersonalHostPorts,
   PersonalMachineSharing,
   PersonalCloseIncomplete,
@@ -89,6 +101,29 @@ import type { E2eeWorkspaceRuntime } from '@lody/platform';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { LedgerFeedError } from '@lody/e2ee-core';
 import { toHex, fromHex } from '../../src/bytes';
+
+// Synthetic native iroh port: records what the portable host hands it.
+const irohFixture = {
+  openedKey: undefined as string | undefined,
+  handedSeed: undefined as Uint8Array | undefined,
+  targets: [] as string[],
+  connected: false,
+  requests: [] as string[],
+  machine: undefined as string | undefined,
+  // Explicit signals for holding the native open in flight.
+  gate: undefined as Promise<void> | undefined,
+  release: undefined as (() => void) | undefined,
+  entered: undefined as (() => void) | undefined,
+  closed: 0,
+};
+import {
+  decodeMemberKeyPackage,
+  emailMemberRequestId,
+  encodeMemberKeyPackage,
+  memberPairingOffer,
+  signMemberOffer,
+} from '../../src/member';
+import type { E2eeMemberOffer, E2eeMemberRequest } from '@lody/cloud-api';
 let runtimePorts: Layer.Layer<PersonalHostPorts, unknown>;
 let runtime: E2eeWorkspaceRuntime;
 let runtimeAccount = 'account';
@@ -119,16 +154,32 @@ let offer: PersonalPairingOffer,
   mode: 'create-or-open' | 'open-existing',
   events: string[] = [],
   // Envelopes this device stored for other devices; refused attempts are kept too.
-  putAttempts: { id: string; frame: string; stored: boolean }[] = [],
+  putAttempts: { id: string; frame: string; recipient: string; stored: boolean }[] = [],
   refusePuts = false,
-  // The one recipient whose slot reflects stores made from `watchedFrom` on; every other
-  // slot keeps reporting an installed key.
-  watchedRecipient: string | undefined,
+  // The recipients whose slots reflect their own stores made from `watchedFrom` on;
+  // every other slot keeps reporting an installed key.
+  watched = new Set<string>(),
   watchedFrom = 0,
+  // Backoffs the runtime's member key delivery waited; `holdDeliveryRetry` never ends one.
+  deliverySleeps: number[] = [],
+  holdDeliveryRetry = false,
+  putMark = 0,
+  // The open's background key round waits on this gate; diagnostics it reported.
+  openRoundSleeps: number[] = [],
+  openRoundGate: Promise<void> = new Promise(() => {}),
+  releaseOpenRound: () => void = () => {},
+  runtimeDiagnostics: string[] = [],
   failKeys = false,
   foreign = false;
 let databasePrefix = 'personal';
 const FIXED_NOW = 1_800_000_000_000;
+/** A complete composer input: members sign only inputs whose agent is chosen. */
+const syntheticComposerInput = (text: string) => ({
+  prompt: text,
+  inputBlocks: [{ type: 'text', text }],
+  cliType: 'builtin',
+  agentType: 'codex',
+});
 let fixedClock: Clock.Clock;
 let graceElapsed = 0;
 let controlledClock:
@@ -146,6 +197,106 @@ let failStaging = false;
 let oldSession: typeof session;
 let otherSession: typeof session;
 let trackNextReader = false;
+/** The synthetic member relay: one waiting applicant at a time, plus a call log. */
+let memberRelay: {
+  item?: E2eeMemberRequest;
+  others: E2eeMemberRequest[];
+  /** What the relay answers when asked for the listed item, if it lies. */
+  readAs?: E2eeMemberRequest;
+  calls: string[];
+  /** Joining side: every key package this account submitted, in order. */
+  submitted?: string[];
+  /** The relay reports `committed` before the ledger shows the admission. */
+  claimLies?: boolean;
+  /** Request ids an approver rejected. */
+  rejected?: Set<string>;
+  /** The latest invitation this device endorsed, as the relay stored it. */
+  invitation?: E2eeMemberOffer;
+  invitedEmail?: string;
+} = { calls: [], others: [] };
+let loseNextAppendReply = false;
+/** The relay authenticates the admitted device's own credential, as the real one does. */
+function memberRelayAccess(access: { workspaceId: string; credential: string }) {
+  const claim = decodePersonalRequest(localStorage.getItem('last-request')!);
+  if (
+    access.workspaceId !== offer.workspaceId ||
+    toHex(sha256(fromHex(access.credential))) !== claim.credentialHash
+  )
+    throw new Error('wrong device credential');
+}
+/** What the relay records for a submitted key package; `committed` follows the ledger
+ * unless the relay is set to claim it early. */
+function memberRequestFor(keyPackageHex: string, accountId: string): E2eeMemberRequest {
+  const { request } = decodeMemberKeyPackage(keyPackageHex);
+  const signingPublicKey = toHex(request.signingPublicKey.toBytes());
+  const admitted = view().inspectState().devices.has(signingPublicKey);
+  return {
+    id: 'relay-join',
+    workspaceId: offer.workspaceId,
+    accountId,
+    keyPackageHex,
+    signingPublicKey,
+    requestId: toHex(request.requestId.toBytes()),
+    source: 'link',
+    state:
+      admitted || memberRelay.claimLies
+        ? 'committed'
+        : memberRelay.rejected?.has(toHex(request.requestId.toBytes()))
+          ? 'rejected'
+          : 'pending',
+    expiresAt: request.expiresAt ?? 0,
+    offer: joinInvite,
+  };
+}
+/** A synthetic joining device's public key package, signed by its own fresh key. With an
+ * email invitation its request id is the one that invitation derives. */
+const memberApplicant = (seed: number, requestByte: number, email?: E2eeMemberOffer) =>
+  Effect.gen(function* () {
+    const genesis = Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash)));
+    const applicant = yield* importBrowserDevice({
+      signingPrivate: new Uint8Array(32).fill(seed),
+      encryptionPrivate: new Uint8Array(32).fill(seed + 1),
+    }).pipe(Scope.provide(scope));
+    const request = yield* prepareJoinRequest({
+      genesis,
+      requestId: Result.getOrThrow(
+        Bytes.requestId(
+          email
+            ? fromHex(emailMemberRequestId(email.workspaceId, email.token))
+            : new Uint8Array(16).fill(requestByte)
+        )
+      ),
+      userId: Result.getOrThrow(Bytes.userId(new Uint8Array(32).fill(seed + 2))),
+      encryptionPublicKey: applicant.enc,
+      expiresAt: FIXED_NOW + 3_600_000,
+      signer: applicant,
+    });
+    const credentialHash = toHex(sha256(new Uint8Array(32).fill(seed + 3)));
+    const binding = yield* signDeviceCredentialBinding({
+      genesis,
+      pairingSessionId: request.requestId.toBytes(),
+      signingPublicKey: applicant.publicKey,
+      credentialHash: fromHex(credentialHash),
+      signer: applicant,
+    });
+    const keyPackageHex = encodeMemberKeyPackage({
+      request,
+      credentialHash,
+      bindingSignature: binding.toBytes(),
+    });
+    return {
+      id: 'relay-' + requestByte,
+      workspaceId: offer.workspaceId,
+      accountId: 'applicant-account',
+      keyPackageHex,
+      signingPublicKey: toHex(applicant.publicKey.toBytes()),
+      requestId: toHex(request.requestId.toBytes()),
+      source: email ? ('email' as const) : ('link' as const),
+      state: 'pending' as const,
+      expiresAt: FIXED_NOW + 3_600_000,
+      offer: email ?? memberRelay.invitation!,
+    } satisfies E2eeMemberRequest;
+  });
 let releasedReaders: { device: string; phase: string }[] = [];
 let loseBegin = false,
   holdBegin = false,
@@ -164,7 +315,9 @@ const retain = () => localStorage.setItem('remote-records', JSON.stringify(recor
 export async function boot(
   input: typeof mode = 'create-or-open',
   controlledClose = false,
-  prefix = 'personal'
+  prefix = 'personal',
+  recoveryAccount?: string,
+  genesisAccount = recoveryAccount
 ) {
   graceElapsed = 0;
   databasePrefix = prefix;
@@ -172,8 +325,16 @@ export async function boot(
   events = [];
   putAttempts = [];
   refusePuts = false;
-  watchedRecipient = undefined;
+  watched = new Set();
   watchedFrom = 0;
+  deliverySleeps = [];
+  holdDeliveryRetry = false;
+  putMark = 0;
+  openRoundSleeps = [];
+  openRoundGate = new Promise((resolve) => {
+    releaseOpenRound = resolve;
+  });
+  runtimeDiagnostics = [];
   session = undefined;
   await Effect.runPromise(
     Effect.gen(function* () {
@@ -242,7 +403,9 @@ export async function boot(
         encryptionPublicKey: owner.enc,
         initialKey: key,
         membershipId: Result.getOrThrow(Bytes.membershipId(new Uint8Array(16).fill(10))),
-        userId: Result.getOrThrow(Bytes.userId(new Uint8Array(32).fill(8))),
+        userId: genesisAccount
+          ? Result.getOrThrow(accountUserId(genesisAccount))
+          : Result.getOrThrow(Bytes.userId(new Uint8Array(32).fill(8))),
       });
       offer = {
         version: 1,
@@ -259,18 +422,108 @@ export async function boot(
       const ws = Layer.succeed(WorkspaceScope, { genesis: genesis.genesis });
       const options = {
         databaseName: `${databasePrefix}-ledger`,
-        accountId: 'account',
+        accountId: recoveryAccount ?? 'account',
         workspaceId: offer.workspaceId,
         mode,
       };
       const base = Layer.mergeAll(
         indexedDbClientStores(options),
         indexedDbClientInstallationStore({ ...options, databaseName: `${databasePrefix}-custody` }),
-        browserClientWriter({ accountId: 'account', workspaceId: offer.workspaceId })
+        browserClientWriter({
+          accountId: recoveryAccount ?? 'account',
+          workspaceId: offer.workspaceId,
+          // Controlled-close boots move every timer by hand; their in-tab calls keep the
+          // no-wait conflict, so only the close budget waits on the injected clock.
+          ...(controlledClose ? { queueTimeout: 0 } : {}),
+        })
       ).pipe(Layer.provide(ws));
       const platform = PersonalHostPlatform.of({
-        scope: { accountId: 'account', workspaceId: offer.workspaceId, genesis: genesis.genesis },
+        scope: {
+          accountId: recoveryAccount ?? 'account',
+          workspaceId: offer.workspaceId,
+          genesis: genesis.genesis,
+        },
         protection: 'web-crypto',
+        members: {
+          createInvitation: (access, input) =>
+            Effect.gen(function* () {
+              memberRelayAccess(access);
+              memberRelay.calls.push('invite:' + input.offer.mode);
+              // Like the relay: inviting an email that already has a pending invitation
+              // re-sends that one and answers with it.
+              if (input.email !== undefined && input.email === memberRelay.invitedEmail)
+                return { offer: memberRelay.invitation! };
+              memberRelay.invitation = input.offer;
+              memberRelay.invitedEmail = input.email;
+              return { offer: input.offer };
+            }),
+          pending: (access) =>
+            Effect.sync(() => {
+              memberRelayAccess(access);
+              memberRelay.calls.push('pending');
+              const item = memberRelay.item;
+              return {
+                invitations: [],
+                items: [...(item ? [item] : []), ...memberRelay.others].map((entry) => ({
+                  ...entry,
+                  applicantName: 'Riley',
+                  applicantEmail: 'r@example.test',
+                })),
+                hasMore: false,
+                seatPreview: null as never,
+              };
+            }),
+          read: (access, requestId) =>
+            Effect.sync(() => {
+              memberRelayAccess(access);
+              memberRelay.calls.push('read');
+              const listed = [memberRelay.item!, ...memberRelay.others].find(
+                (entry) => entry.requestId === requestId
+              );
+              if (!listed) throw new Error('unknown request');
+              const item =
+                memberRelay.readAs && listed === memberRelay.item
+                  ? { ...memberRelay.readAs, requestId }
+                  : listed;
+              const admitted = view().inspectState().devices.has(item.signingPublicKey);
+              return { ...item, state: admitted ? ('committed' as const) : item.state };
+            }),
+          reject: (access) =>
+            Effect.sync(() => {
+              memberRelayAccess(access);
+              return { state: 'rejected' as const };
+            }),
+          revoke: (access) =>
+            Effect.sync(() => {
+              memberRelayAccess(access);
+              return { revoked: true as const };
+            }),
+          submit: (input) =>
+            Effect.sync(() => {
+              (memberRelay.submitted ??= []).push(input.keyPackageHex);
+              return memberRequestFor(input.keyPackageHex, recoveryAccount ?? 'account');
+            }),
+          claim: (input) =>
+            Effect.sync(() => {
+              const keyPackageHex = (memberRelay.submitted ?? []).find(
+                (hex) =>
+                  toHex(decodeMemberKeyPackage(hex).request.requestId.toBytes()) === input.requestId
+              );
+              if (!keyPackageHex || input.workspaceId !== offer.workspaceId)
+                throw new Error('unknown request');
+              return memberRequestFor(keyPackageHex, recoveryAccount ?? 'account');
+            }),
+          retire: (input) =>
+            Effect.sync(() => {
+              memberRelay.calls.push('retire');
+              // Like the real relay: only an ended request is cancelled; a live one stays.
+              const state = memberRequestFor(
+                input.keyPackageHex,
+                recoveryAccount ?? 'account'
+              ).state;
+              return { state: state === 'rejected' ? ('cancelled' as const) : state };
+            }),
+        },
         contentToken: (binding, credential, request) =>
           Effect.gen(function* () {
             const current = view();
@@ -354,10 +607,24 @@ export async function boot(
                   }),
                 appendCas: (_anchor, expected, record) =>
                   Effect.gen(function* () {
+                    if (localStorage.getItem('quota-once') === '1') {
+                      localStorage.removeItem('quota-once');
+                      return yield* new LedgerLogError({
+                        reason: 'self-service-rate-limited',
+                        retryAt: 3600000,
+                      });
+                    }
                     if (expected.length !== records.length || !expected.head.equals(view().head))
                       return yield* new LedgerLogError({});
                     records.push(new Uint8Array(record));
                     retain();
+                    if (loseNextAppendReply) {
+                      // The record landed; only its reply is lost on the way back.
+                      loseNextAppendReply = false;
+                      return yield* new LedgerLogError({
+                        cause: new Error('synthetic lost reply'),
+                      });
+                    }
                     return undefined;
                   }),
               });
@@ -388,8 +655,10 @@ export async function boot(
                   ...slot,
                   revision: 0,
                   status:
-                    slot.recipient !== watchedRecipient ||
-                    putAttempts.slice(watchedFrom).some((item) => item.stored)
+                    !watched.has(slot.recipient) ||
+                    putAttempts
+                      .slice(watchedFrom)
+                      .some((item) => item.stored && item.recipient === slot.recipient)
                       ? ('InstallationReported' as const)
                       : ('NeedsEnvelope' as const),
                 }),
@@ -406,7 +675,11 @@ export async function boot(
                   events.push('fetch');
                   const current = view(),
                     target = current.inspectState().devices.get(toHex(binding.device.toBytes()));
-                  if (!target || epoch > 0) return { items: [], next: null };
+                  if (
+                    !target ||
+                    (epoch > 0 && !(epoch === 1 && localStorage.getItem('current-mailbox') === '1'))
+                  )
+                    return { items: [], next: null };
                   const prepared = yield* prepareEpochEnvelope({
                     context: {
                       genesis: binding.genesis,
@@ -414,7 +687,10 @@ export async function boot(
                       sender: owner.publicKey,
                       recipient: binding.device,
                     },
-                    key,
+                    key:
+                      epoch === 1
+                        ? Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x72)))
+                        : key,
                     signer: owner,
                     ledger: () => Effect.succeed(current),
                   });
@@ -448,7 +724,12 @@ export async function boot(
                 }),
               put: (id, frame) =>
                 Effect.suspend(() => {
-                  putAttempts.push({ id, frame: toHex(frame), stored: !refusePuts });
+                  putAttempts.push({
+                    id,
+                    frame: toHex(frame),
+                    recipient: Result.getOrThrow(envelopeRouting(frame)).recipient,
+                    stored: !refusePuts,
+                  });
                   if (refusePuts)
                     return Effect.fail(
                       new BackendError({
@@ -468,7 +749,11 @@ export async function boot(
                 ),
             }),
             Layer.succeed(EpochStagingStore, {
-              stageGroup: () => Effect.void,
+              // A key update this device publishes stages its group here and reads it back.
+              stageGroup: (group) =>
+                Effect.sync(() => {
+                  stagedGroup = group;
+                }),
               readGroup: () =>
                 Effect.gen(function* () {
                   if (failStaging) {
@@ -497,10 +782,55 @@ export async function boot(
           }),
         rpc: (binding) =>
           indexedDbClientRpcOriginals({ databaseName: `${databasePrefix}-custody`, binding, mode }),
+        iroh: {
+          open: async (seed) => {
+            irohFixture.entered?.();
+            if (irohFixture.gate) await irohFixture.gate;
+            // Derive the public key the native endpoint would use from this exact seed.
+            irohFixture.openedKey = await Effect.runPromise(
+              Effect.scoped(
+                Effect.map(
+                  importBrowserDevice({
+                    signingPrivate: new Uint8Array(seed),
+                    encryptionPrivate: new Uint8Array(32).fill(7),
+                  }),
+                  (derived) => toHex(derived.publicKey.toBytes())
+                )
+              )
+            );
+            irohFixture.handedSeed = seed;
+            return {
+              connectionPath: async () => (irohFixture.connected ? 'direct' : 'none'),
+              hasConnection: async (id) => {
+                irohFixture.targets.push(id);
+                return irohFixture.connected;
+              },
+              warm: async () => {
+                irohFixture.connected = true;
+              },
+              call: async (_id, request) => {
+                irohFixture.requests.push(new TextDecoder().decode(request));
+                const envelope = JSON.parse(new TextDecoder().decode(request)) as { id: string };
+                const replies = [
+                  new TextEncoder().encode(
+                    JSON.stringify({ id: envelope.id, frame: 'cd'.repeat(150) })
+                  ),
+                ];
+                return {
+                  nextReply: async () => replies.shift() ?? null,
+                  cancel: () => {},
+                };
+              },
+              close: async () => {
+                irohFixture.closed++;
+              },
+            };
+          },
+        },
         drainOld: () => (session ? session.close() : Effect.void),
       });
       const remote = PersonalHostRemote.of({
-        accountId: 'account',
+        accountId: recoveryAccount ?? 'account',
         ...(localStorage.getItem('qualify-approval-history')
           ? {
               history: (_credential: Uint8Array) =>
@@ -564,7 +894,7 @@ export async function boot(
                 : null;
             return {
               version: 1,
-              accountId: foreign ? 'foreign' : 'account',
+              accountId: foreign ? 'foreign' : (recoveryAccount ?? 'account'),
               workspaceId: offer.workspaceId,
               genesisHash: offer.genesisHash,
               pairingSessionId: request.pairingSessionId,
@@ -943,7 +1273,7 @@ export async function invoke(action: string) {
             // device in the background. The first store is refused; the approver's own due
             // retry stores the journaled envelope under the same id, with no other call.
             refusePuts = true;
-            watchedRecipient = toHex(fresh.publicKey.toBytes());
+            watched = new Set([toHex(fresh.publicKey.toBytes())]);
             watchedFrom = putAttempts.length;
             if (!workspace!.deliverKeys) return { delivery: 'not-scheduled' };
             yield* workspace!.deliverKeys(fresh.publicKey.toBytes(), signed.requestId);
@@ -1099,6 +1429,8 @@ export async function invoke(action: string) {
             );
             records.push(yield* signLedgerRecord(proposal, owner));
             retain();
+            if (machineId === 'fixture-machine')
+              irohFixture.machine = toHex(machine.publicKey.toBytes());
             return true;
           }
           case 'rpc':
@@ -1108,7 +1440,9 @@ export async function invoke(action: string) {
               userTurnId: 'synthetic-turn',
               userId: 'synthetic-user',
               timestamp: new Date(FIXED_NOW).toISOString(),
-              inputConfig: action === 'rpcChanged' ? { changed: true } : {},
+              // `rpcChanged` names no agent, so it is not a member's input and is never signed.
+              inputConfig:
+                action === 'rpcChanged' ? { changed: true } : syntheticComposerInput('synthetic'),
             });
           case 'candidate':
             return yield* host.prepare({ ...offer, pairingSessionId: '22'.repeat(16) }, true);
@@ -1144,6 +1478,62 @@ export async function invoke(action: string) {
             records.push(
               yield* signLedgerRecord(Result.getOrThrow(prepareLedgerRecord(view(), body)), owner)
             );
+            retain();
+            return true;
+          }
+          case 'quotaThenGovern': {
+            localStorage.setItem('quota-once', '1');
+            const refused = yield* Effect.result(
+              session!.execute({ _tag: 'RevokeDevice', target: session!.binding.device })
+            );
+            const result = yield* session!.execute({
+              _tag: 'DeclareCapabilities',
+              capabilities: [1],
+            });
+            yield* session!.acknowledge(result);
+            return {
+              refusal: Result.isFailure(refused)
+                ? (refused.failure as { reason?: string }).reason
+                : null,
+              outcome: result.outcome,
+            };
+          }
+          case 'currentMailbox':
+            localStorage.setItem('current-mailbox', '1');
+            return true;
+          case 'abandonRemote': {
+            const genesis = Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash)));
+            const next = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x73)));
+            const operations = [
+              [9, [2]],
+              [
+                11,
+                2,
+                Result.getOrThrow(commitEpochKey(genesis, 2, next)).toBytes(),
+                0,
+                Result.getOrThrow(
+                  sealHistoryPacket({
+                    genesis,
+                    epoch: 2,
+                    baseEpoch: 0,
+                    currentKey: next,
+                    previousKey: key,
+                  })
+                ),
+              ],
+            ];
+            for (const operation of operations) {
+              const body = Result.getOrThrow(
+                encodeCbor([
+                  view().head.toBytes(),
+                  owner.publicKey.toBytes(),
+                  operation as import('@lody/e2ee-core/protocol').CborValue,
+                ])
+              );
+              records.push(
+                yield* signLedgerRecord(Result.getOrThrow(prepareLedgerRecord(view(), body)), owner)
+              );
+            }
             retain();
             return true;
           }
@@ -1330,7 +1720,11 @@ export async function bootRuntime(withSharing = false) {
                               .credentialHash
                         )
                           return yield* Effect.fail(new Error('wrong sharing assembly binding'));
-                        let state = { sharedWithTeam: false, projects: [] as readonly string[] };
+                        let state: import('@lody/e2ee-core/protocol').MachineSharingState = {
+                          sharedWithTeam: false,
+                          projects: [],
+                          sessions: [],
+                        };
                         const read = Effect.fnUntraced(function* (machineId: string) {
                           const policyLedger = yield* ledger.current(),
                             machines = [...policyLedger.inspectState().devices].filter(
@@ -1402,6 +1796,29 @@ export async function bootRuntime(withSharing = false) {
                 .slice(checked.historyStart, checked.length)
                 .map((record, index) => ({ position: checked.historyStart + index, record }))
         ),
+      // The open's background round waits until a test releases it; it never runs by time.
+      openKeyRound: {
+        sleep: (ms) =>
+          Effect.suspend(() => {
+            openRoundSleeps.push(ms);
+            return Effect.promise(() => openRoundGate);
+          }),
+      },
+      diagnostics: (scope) => {
+        runtimeDiagnostics.push(scope);
+      },
+      // Only the injected backoff moves: the mailbox recovers while the retry waits.
+      keyDeliveryRetry: {
+        sleep: (ms) =>
+          Effect.suspend(() => {
+            deliverySleeps.push(ms);
+            return holdDeliveryRetry
+              ? Effect.never
+              : Effect.sync(() => {
+                  refusePuts = false;
+                });
+          }),
+      },
       run: async (program) => {
         if (executorOverride) return await executorOverride(program);
         const exit = await Effect.runPromiseExit(
@@ -1420,10 +1837,176 @@ const runtimeContext = {
 } as const;
 let heldApproval: Awaited<ReturnType<NonNullable<typeof runtime.accountApproval>>> | undefined;
 let approvalReleaseResult: Promise<{ state: string; code?: string }> | undefined;
+/**
+ * The shared UI's schedule save through this real portable runtime: the content bridge
+ * hands the host the document, and the host signs its declaration. Absent support is a
+ * result, so the caller sees why a save cannot be signed.
+ */
+export async function runtimeSignDeclaration(
+  document: Parameters<NonNullable<E2eeWorkspaceRuntime['signScheduleDeclaration']>>[1],
+  manualRunKey?: string
+) {
+  try {
+    if (!runtime.signScheduleDeclaration) return { ok: false, reason: 'unsupported' };
+    return {
+      ok: true,
+      value: await runtime.signScheduleDeclaration(offer.workspaceId, document, manualRunKey),
+    };
+  } catch (error) {
+    const e = error as { code?: unknown; reason?: unknown; message?: unknown };
+    return { ok: false, reason: e.code ?? e.reason ?? e.message };
+  }
+}
+
+/** A teammate's portable runtime joining from a link invitation the genesis owner
+ * endorsed. Call after `boot` with this account as the device account. */
+let joiner: E2eeWorkspaceRuntime;
+let joinInvite: import('@lody/cloud-api').E2eeMemberOffer;
+let retainedJoin: PersonalPairingOffer;
+export async function bootJoiner(accountId: string) {
+  memberRelay = { calls: [], others: [] };
+  // Retained without an endorsement, as builds before signed invitations wrote it: joining
+  // never relies on the signature, so such a join stays preparable and claimable.
+  joinInvite = {
+    version: 1,
+    workspaceId: offer.workspaceId,
+    genesisHash: offer.genesisHash,
+    genesisRecordHex: offer.genesisRecordHex,
+    endorser: toHex(owner.publicKey.toBytes()),
+    token: 'cd'.repeat(32),
+    mode: 'link',
+    expiresAt: FIXED_NOW + 3_600_000,
+  };
+  // The application retains the derived identity offer before preparing the join.
+  retainedJoin = memberPairingOffer(accountId, joinInvite);
+  joiner = await Effect.runPromise(
+    makePersonalWorkspaceRuntime({
+      accountId,
+      workspaceId: offer.workspaceId,
+      genesisHash: offer.genesisHash,
+      ports: runtimePorts,
+      retainedOffer: () => Effect.sync(() => retainedJoin),
+      account: () => Effect.succeed({ userId: accountId, source: 'network' as const }),
+      ledgerRecords: () =>
+        Effect.succeed(records.map((record, position) => ({ record, position }))),
+      run: (program) =>
+        Effect.runPromise(program.pipe(Effect.provideService(Clock.Clock, fixedClock))),
+    }).pipe(Scope.provide(scope), Effect.provideService(Clock.Clock, fixedClock))
+  );
+}
+/** The joined member's schedule save through its own portable runtime. */
+export async function joinerSignDeclaration(
+  document: Parameters<NonNullable<E2eeWorkspaceRuntime['signScheduleDeclaration']>>[1],
+  manualRunKey?: string
+) {
+  try {
+    if (!joiner.signScheduleDeclaration) return { ok: false, reason: 'unsupported' };
+    return {
+      ok: true,
+      value: await joiner.signScheduleDeclaration(offer.workspaceId, document, manualRunKey),
+    };
+  } catch (error) {
+    const e = error as { code?: unknown; reason?: unknown; message?: unknown };
+    return { ok: false, reason: e.code ?? e.reason ?? e.message };
+  }
+}
+export async function joinInvoke(action: string, accountId: string) {
+  try {
+    let value: unknown;
+    switch (action) {
+      case 'prepare':
+        value = await joiner.prepareMemberJoin!(joinInvite);
+        break;
+      case 'pending':
+        value = await joiner.pendingMemberJoin!(offer.workspaceId);
+        break;
+      case 'claim': {
+        const pending = await joiner.pendingMemberJoin!(offer.workspaceId);
+        value = await joiner.claimMemberJoin!(offer.workspaceId, pending!.requestId!);
+        break;
+      }
+      case 'submitted':
+        value = memberRelay.submitted ?? [];
+        break;
+      case 'relayClaimsEarly':
+        memberRelay.claimLies = true;
+        value = true;
+        break;
+      case 'relayRejects': {
+        const { request } = decodeMemberKeyPackage(memberRelay.submitted!.at(-1)!);
+        (memberRelay.rejected ??= new Set()).add(toHex(request.requestId.toBytes()));
+        value = true;
+        break;
+      }
+      case 'secondInvite':
+        // A new link from the admin; the application re-pins its derived identity offer.
+        joinInvite = { ...joinInvite, token: 'ef'.repeat(32) };
+        retainedJoin = memberPairingOffer(accountId, joinInvite);
+        value = true;
+        break;
+      case 'retires':
+        value = memberRelay.calls.filter((call) => call === 'retire').length;
+        break;
+      case 'signingKey':
+        value = toHex(
+          decodeMemberKeyPackage(memberRelay.submitted!.at(-1)!).request.signingPublicKey.toBytes()
+        );
+        break;
+      case 'relayHonest':
+        memberRelay.claimLies = false;
+        value = true;
+        break;
+      case 'ownerAdmits': {
+        // The genesis owner signs the real AdmitMember for exactly the submitted package.
+        const { request } = decodeMemberKeyPackage(memberRelay.submitted!.at(-1)!);
+        const proposal = Result.getOrThrow(
+          prepareLedgerCommand(view(), owner.publicKey, {
+            _tag: 'AdmitMember',
+            membershipId: Result.getOrThrow(Bytes.membershipId(request.requestId.toBytes())),
+            request,
+          })
+        );
+        records.push(await Effect.runPromise(signLedgerRecord(proposal, owner)));
+        retain();
+        value = records.length;
+        break;
+      }
+      case 'status':
+        value = await joiner.status(offer.workspaceId);
+        break;
+      case 'open': {
+        const status = await joiner.open(offer.workspaceId, undefined, accountId);
+        value = {
+          deviceKind: status.deviceKind,
+          memberRole: status.memberRole,
+          membershipId: status.membershipId,
+        };
+        break;
+      }
+      default:
+        throw new Error('unknown join action ' + action);
+    }
+    return { ok: true as const, value };
+  } catch (error) {
+    const e = error as { code?: unknown; reason?: unknown; message?: unknown };
+    return { ok: false as const, reason: e.code ?? e.reason ?? e.message };
+  }
+}
 export async function runtimeInvoke(action: string) {
   try {
     let value: unknown;
     switch (action) {
+      case 'accountRequester': {
+        const exposed = (
+          runtime as typeof runtime & {
+            accountRequester: NonNullable<ReturnType<typeof personalRuntimeAccountRequester>>;
+          }
+        ).accountRequester;
+        if (!exposed || exposed !== personalRuntimeAccountRequester(runtime))
+          throw new Error('requester must borrow the guarded runtime owner');
+        value = await Effect.runPromise(exposed.pendingPersonalJoin());
+        break;
+      }
       case 'observeCheckpoint':
         value = {
           genesisHash: offer.genesisHash,
@@ -1518,8 +2101,56 @@ export async function runtimeInvoke(action: string) {
       case 'ledger':
         value = await runtime.ledgerView(offer.workspaceId);
         break;
+      case 'irohPath':
+        value = await runtime.irohPath!(offer.workspaceId, 'fixture-machine');
+        break;
+      case 'irohReady':
+        value = await runtime.irohReady!(offer.workspaceId, 'fixture-machine');
+        break;
+      case 'irohCall':
+        value = await runtime.irohCall!(
+          offer.workspaceId,
+          'fixture-machine',
+          { id: '11'.repeat(16), frame: 'ab'.repeat(200) },
+          1000
+        );
+        break;
+      case 'irohCloseDuringOpen': {
+        // Session closes while the first native open is still in flight.
+        irohFixture.closed = 0;
+        irohFixture.gate = new Promise((resolve) => (irohFixture.release = resolve));
+        const entered = new Promise<void>((resolve) => (irohFixture.entered = resolve));
+        const ready = runtime.irohReady!(offer.workspaceId, 'fixture-machine').then(
+          () => 'ready',
+          () => 'failed'
+        );
+        await entered;
+        let closeSettled = false;
+        const closing = runtime
+          .close(offer.workspaceId, 'account', runtimeLease)
+          .finally(() => (closeSettled = true));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const beforeRelease = { closeSettled, closed: irohFixture.closed };
+        irohFixture.release!();
+        await closing;
+        await ready;
+        irohFixture.gate = undefined;
+        irohFixture.entered = undefined;
+        value = { beforeRelease, closed: irohFixture.closed };
+        break;
+      }
+      case 'irohEvidence':
+        value = {
+          opener: irohFixture.openedKey,
+          device: (await runtime.status(offer.workspaceId)).signingPublicKey,
+          seedWiped: !!irohFixture.handedSeed?.every((byte) => byte === 0),
+          targets: [...new Set(irohFixture.targets)],
+          machine: irohFixture.machine,
+        };
+        break;
       case 'capabilities':
         value = {
+          iroh: !!runtime.irohReady && !!runtime.irohCall,
           rpc: !!runtime.prepareDispatch,
           sharing: !!runtime.readMachineSharing,
           manager: !!runtime.managementState,
@@ -1625,13 +2256,192 @@ export async function runtimeInvoke(action: string) {
       case 'forbiddenRole':
         value = await runtime.setMemberRole!(offer.workspaceId, '0a'.repeat(16), 'admin');
         break;
+      case 'forbiddenTransfer':
+        value = await runtime.transferOwnership!(offer.workspaceId, '0a'.repeat(16));
+        break;
+      case 'memberInvite':
+        value = (
+          await runtime.createMemberInvitation!({ workspaceId: offer.workspaceId, mode: 'link' })
+        ).mode;
+        break;
+      case 'memberApplicant':
+        memberRelay.item = await Effect.runPromise(memberApplicant(41, 0x51));
+        value = memberRelay.item.requestId;
+        break;
+      case 'memberSwap': {
+        // Same request id, a different device: what a relay could try after the preview.
+        const other = await Effect.runPromise(memberApplicant(61, 0x51));
+        memberRelay.item = { ...memberRelay.item!, keyPackageHex: other.keyPackageHex };
+        value = true;
+        break;
+      }
+      case 'memberRestore':
+        memberRelay.item = await Effect.runPromise(memberApplicant(41, 0x51));
+        value = true;
+        break;
+      case 'memberList':
+        value = (await runtime.memberJoinRequests!(offer.workspaceId)).items.map(
+          (item) => item.requestId
+        );
+        break;
+      case 'memberApprove':
+        value = await runtime.approveMemberJoin!(
+          offer.workspaceId,
+          memberRelay.item!.requestId,
+          'explicit'
+        );
+        break;
+      case 'memberAutomatic':
+        value = await runtime.approveMemberJoin!(
+          offer.workspaceId,
+          memberRelay.item!.requestId,
+          'automatic'
+        );
+        break;
+      case 'memberEmailInvite':
+        value = (
+          await runtime.createMemberInvitation!({
+            workspaceId: offer.workspaceId,
+            mode: 'email',
+            email: 'r@example.test',
+          })
+        ).mode;
+        break;
+      case 'memberEmailReinvite':
+        value = (
+          await runtime.createMemberInvitation!({
+            workspaceId: offer.workspaceId,
+            mode: 'email',
+            email: 'r@example.test',
+          })
+        ).token;
+        break;
+      case 'memberInvitationToken':
+        value = memberRelay.invitation!.token;
+        break;
+      case 'memberEmailApplicant':
+        memberRelay.item = await Effect.runPromise(memberApplicant(91, 0, memberRelay.invitation!));
+        value = memberRelay.item.requestId;
+        break;
+      case 'memberRelaySignedInvitation': {
+        // The relay endorses the same pins with a key of its own.
+        const relayKey = await Effect.runPromise(
+          importBrowserDevice({
+            signingPrivate: new Uint8Array(32).fill(97),
+            encryptionPrivate: new Uint8Array(32).fill(98),
+          }).pipe(Scope.provide(scope))
+        );
+        const { signature: _genuine, ...pins } = memberRelay.invitation!;
+        memberRelay.item = {
+          ...memberRelay.item!,
+          offer: await Effect.runPromise(
+            signMemberOffer({ ...pins, endorser: toHex(relayKey.publicKey.toBytes()) }, relayKey)
+          ),
+        };
+        value = true;
+        break;
+      }
+      case 'memberAlteredInvitation':
+        // A genuine signature over different pins (here, a later expiry).
+        memberRelay.item = {
+          ...memberRelay.item!,
+          offer: { ...memberRelay.invitation!, expiresAt: memberRelay.invitation!.expiresAt + 1 },
+        };
+        value = true;
+        break;
+      case 'memberGenuineInvitation':
+        memberRelay.item = { ...memberRelay.item!, offer: memberRelay.invitation! };
+        value = true;
+        break;
+      case 'memberReplayInvitation':
+        // Another device presents the same, already admitted email invitation.
+        memberRelay.item = await Effect.runPromise(memberApplicant(93, 0, memberRelay.invitation!));
+        value = memberRelay.item.requestId;
+        break;
+      case 'memberSecondApplicant':
+        memberRelay.others = [await Effect.runPromise(memberApplicant(71, 0x52))];
+        value = memberRelay.others[0]!.requestId;
+        break;
+      case 'memberReadSecondAsFirst':
+        // Asked for the first request, the relay answers with the second's package.
+        memberRelay.readAs = memberRelay.others[0];
+        value = true;
+        break;
+      case 'memberReadHonest':
+        memberRelay.readAs = undefined;
+        value = true;
+        break;
+      case 'memberSecondAdmitted':
+        value = view().inspectState().devices.has(memberRelay.others[0]!.signingPublicKey);
+        break;
+      case 'memberLoseReply':
+        loseNextAppendReply = true;
+        localStorage.setItem('synthetic-offline', '1');
+        value = true;
+        break;
+      case 'memberOnline':
+        localStorage.removeItem('synthetic-offline');
+        value = true;
+        break;
+      case 'memberAdmitted':
+        value = view().inspectState().devices.has(memberRelay.item!.signingPublicKey);
+        break;
+      // The mailbox refuses every envelope; only the applicant's slot reports its stores.
+      case 'memberRefuseKeys':
+        refusePuts = true;
+        watched = new Set([memberRelay.item!.signingPublicKey]);
+        watchedFrom = putAttempts.length;
+        value = true;
+        break;
+      case 'memberHoldRetry':
+        holdDeliveryRetry = true;
+        value = true;
+        break;
+      case 'memberAcceptKeys':
+        refusePuts = false;
+        putMark = putAttempts.length;
+        value = true;
+        break;
+      case 'openRoundRelease':
+        releaseOpenRound();
+        value = true;
+        break;
+      case 'openRound':
+        value = { sleeps: openRoundSleeps, diagnostics: runtimeDiagnostics };
+        break;
+      // A further applicant; the earlier one stays admitted and is no longer listed.
+      case 'memberNextApplicant':
+        memberRelay.item = await Effect.runPromise(memberApplicant(43, 0x53));
+        watched.add(memberRelay.item.signingPublicKey);
+        value = memberRelay.item.requestId;
+        break;
+      case 'memberDeliveries':
+        value = {
+          items: (await runtime.memberKeyDeliveries!(offer.workspaceId)).items,
+          sleeps: deliverySleeps,
+          envelopes: putAttempts
+            .slice(watchedFrom)
+            .filter((item) => watched.has(item.recipient))
+            .map((item) => item.stored),
+          // Watched recipients whose envelope was stored since the mailbox accepted them.
+          storedSinceAccept: new Set(
+            putAttempts
+              .slice(putMark)
+              .filter((item) => item.stored && watched.has(item.recipient))
+              .map((item) => item.recipient)
+          ).size,
+        };
+        break;
+      case 'memberRecordCount':
+        value = view().length;
+        break;
       case 'rpc':
         value = await runtime.prepareDispatch!(offer.workspaceId, 'fixture-machine', {
           sessionId: 'synthetic-session',
           userTurnId: 'runtime-turn',
           userId: 'synthetic-user',
           timestamp: new Date(FIXED_NOW).toISOString(),
-          inputConfig: {},
+          inputConfig: syntheticComposerInput('synthetic'),
         });
         break;
       case 'startOpen':
@@ -1726,7 +2536,48 @@ export async function runtimeInvoke(action: string) {
       case 'closeWrongOwner':
         value = await runtime.close(offer.workspaceId, 'account', 'wrong-reader');
         break;
+      case 'updateKeys':
+        value = await runtime.updateKeys!(offer.workspaceId);
+        break;
+      case 'memberThirdApplicant':
+        memberRelay.item = await Effect.runPromise(memberApplicant(75, 0x54));
+        value = memberRelay.item.requestId;
+        break;
+      case 'memberRoles':
+        // Membership → role in the relay's genuine ledger.
+        value = Object.fromEntries(
+          [...view().inspectState().members].map(([id, member]) => [id, member.role])
+        );
+        break;
+      case 'ownerTransfersToFirstMember':
+        // The owner's desktop hands ownership to the 0x51 member, which makes this
+        // device's membership an administrator.
+        records.push(
+          await Effect.runPromise(
+            signLedgerRecord(
+              Result.getOrThrow(
+                prepareLedgerCommand(view(), owner.publicKey, {
+                  _tag: 'TransferOwner',
+                  successorMembershipId: Result.getOrThrow(
+                    Bytes.membershipId(new Uint8Array(16).fill(0x51))
+                  ),
+                })
+              ),
+              owner
+            )
+          )
+        );
+        retain();
+        value = true;
+        break;
       default:
+        if (action.startsWith('memberRemove:')) {
+          value = await runtime.removeMember!(
+            offer.workspaceId,
+            action.slice('memberRemove:'.length)
+          );
+          break;
+        }
         throw new Error('unknown runtime action');
     }
     return { ok: true, value };
@@ -1836,3 +2687,410 @@ export const runtimeReader = {
   status: () => runtime.status(offer.workspaceId),
   close: () => runtime.close(offer.workspaceId, 'account', runtimeLease),
 };
+
+/** Real vault/R crypto, recovered personal admission, protected keys and offline reopen.
+ * Remote maps are synthetic; custody/installation are actual browser IndexedDB. */
+export async function recoverBrowser(
+  options: {
+    blockedEpoch?: 'missing' | 'corrupt';
+    governance?: boolean;
+    wrongAccount?: boolean;
+    failInstall?: boolean;
+    resume?: boolean;
+    revokedRecovery?: boolean;
+    tamperedPackage?: boolean;
+    repair?: boolean;
+    revokePersonal?: boolean;
+    setup?: boolean;
+    runtime?: boolean;
+  } = {}
+) {
+  await boot('create-or-open', false, 'recovery', options.wrongAccount ? 'def' : 'abc', 'abc');
+  const entries = new Map<
+    string,
+    { readonly entryId: string; readonly revision: number; readonly body: Uint8Array }
+  >();
+  const journal = new Map<string, Uint8Array>();
+  let index: {
+    readonly entryId: string;
+    readonly revision: number;
+    readonly body: Uint8Array;
+  } | null = null;
+  const store: RecoveryVaultStore['Service'] = {
+    putImmutable: (_id, entry) =>
+      Effect.sync(() => {
+        entries.set(entry.entryId, entry);
+      }),
+    readEntry: (_id, id) => Effect.succeed(entries.get(id) ?? null),
+    readIndex: () => Effect.sync(() => index),
+    compareAndSwapIndex: (_id, _expected, next) =>
+      Effect.sync(() => {
+        index = next;
+        return 'Committed' as const;
+      }),
+    deleteUnreferenced: () => Effect.void,
+  };
+  const local: RecoveryVaultLocalStore['Service'] = {
+    read: (key) => Effect.sync(() => journal.get(key)?.slice() ?? null),
+    compareAndSwap: (key, expected, next) =>
+      Effect.sync(() => {
+        const old = journal.get(key) ?? null;
+        if (
+          (old === null) !== (expected === null) ||
+          (old && expected && toHex(old) !== toHex(expected))
+        )
+          return 'Conflict' as const;
+        journal.set(key, next.slice());
+        return 'Committed' as const;
+      }),
+    list: (prefix) =>
+      Effect.sync(() =>
+        [...journal]
+          .filter(([key]) => key.startsWith(prefix))
+          .map(([key, value]) => ({ key, value: value.slice() }))
+      ),
+  };
+  const layers = RecoveryVaults.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.succeed(RecoveryVaultStore, store),
+        Layer.succeed(RecoveryVaultLocalStore, local)
+      )
+    )
+  );
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const vault = (yield* (yield* RecoveryVaults).create({ locator: 'abc' })).vault;
+        const sourceKeys = memoryRecoveryEpochKeys();
+        yield* Effect.addFinalizer(() => Effect.sync(() => sourceKeys.dispose()));
+        yield* sourceKeys.saveAndReload(0, key);
+        let retainedEnvelope: { sender: Bytes.SigningPublicKey; frame: Uint8Array } | undefined;
+        const envelope: import('@lody/e2ee-core').WorkspaceRecoveryInput['fetchCurrentEnvelope'] = (
+          recipient,
+          _epoch,
+          identity,
+          credential
+        ) => {
+          if (options.blockedEpoch && view().inspectState().epoch.number > 0) {
+            credential.fill(0);
+            if (_epoch === 0) return Effect.succeed(retainedEnvelope!);
+            return Effect.succeed(
+              options.blockedEpoch === 'missing'
+                ? { pending: true as const }
+                : { sender: owner.publicKey, frame: new Uint8Array([1, 2, 3]) }
+            );
+          }
+          return prepareEpochEnvelope({
+            context: {
+              genesis: view().genesis,
+              epoch: Result.getOrThrow(Bytes.epochNumber(0)),
+              sender: owner.publicKey,
+              recipient,
+            },
+            key,
+            signer: owner,
+            ledger: () => Effect.succeed(view()),
+          }).pipe(
+            Effect.map((frame) => (retainedEnvelope = { sender: owner.publicKey, frame })),
+            Effect.ensuring(Effect.sync(() => credential.fill(0)))
+          );
+        };
+        const setup = yield* makeWorkspaceRecovery({
+          vault,
+          local,
+          genesis: view().genesis,
+          membershipId: Result.getOrThrow(Bytes.membershipId(fromHex(offer.membershipId))),
+          personalSigner: owner,
+          ledger: () => Effect.succeed(view()),
+          installed: sourceKeys,
+          trust: {
+            source: 'synthetic-owner',
+            genesisRecord: records[0],
+            head: toHex(view().head.toBytes()),
+            length: view().length,
+          },
+          fetchCurrentEnvelope: envelope,
+          submitOriginal: (record) =>
+            Effect.sync(() => {
+              records.push(record.slice());
+              retain();
+              return { outcome: 'Committed' as const, record: record.slice() };
+            }),
+        });
+        yield* setup.setup();
+        if (options.blockedEpoch) {
+          const next = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x72)));
+          const genesis = view().genesis;
+          const body = Result.getOrThrow(
+            encodeCbor([
+              view().head.toBytes(),
+              owner.publicKey.toBytes(),
+              [
+                7,
+                1,
+                Result.getOrThrow(commitEpochKey(genesis, 1, next)).toBytes(),
+                Result.getOrThrow(
+                  sealHistoryPacket({ genesis, epoch: 1, currentKey: next, previousKey: key })
+                ),
+              ],
+            ])
+          );
+          records.push(
+            yield* signLedgerRecord(Result.getOrThrow(prepareLedgerRecord(view(), body)), owner)
+          );
+          retain();
+        }
+        const reference = (yield* vault.readIndex()).value.entries[0];
+        if (options.revokedRecovery) {
+          const recovery = [...view().inspectState().devices].find(
+            ([, row]) => row.kind === 'recovery'
+          )![0];
+          const proposal = yield* Effect.fromResult(
+            prepareLedgerCommand(view(), owner.publicKey, {
+              _tag: 'RevokeDevice',
+              target: Result.getOrThrow(Bytes.signingPublicKey(fromHex(recovery))),
+            })
+          );
+          records.push(yield* signLedgerRecord(proposal, owner));
+          retain();
+        }
+        if (options.tamperedPackage) entries.get(reference.entryId)!.body[25] ^= 1;
+        const pages = () =>
+          Effect.succeed([
+            {
+              workspaceId: offer.workspaceId,
+              genesisHash: offer.genesisHash,
+              checkpoint: { length: view().length, headHash: toHex(view().head.toBytes()) },
+              startIndex: 0,
+              recordsHex: records.map(toHex),
+              position: 'recovery/full',
+              nextCursor: null,
+            },
+          ]);
+        failKeys = options.failInstall ?? false;
+        let recoveryRuntime: E2eeWorkspaceRuntime | undefined;
+        if (options.runtime) {
+          yield* host.close();
+          recoveryRuntime = yield* makePersonalWorkspaceRuntime({
+            accountId: 'abc',
+            workspaceId: offer.workspaceId,
+            genesisHash: offer.genesisHash,
+            ports: runtimePorts,
+            retainedOffer: () => Effect.succeed(offer),
+            account: () => Effect.succeed({ userId: 'abc', source: 'network' as const }),
+            ledgerRecords: () =>
+              Effect.succeed(records.map((record, position) => ({ record, position }))),
+            run: Effect.runPromise,
+          });
+        }
+        const restore = () =>
+          (recoveryRuntime
+            ? personalRuntimeRecovery(recoveryRuntime)!.restore
+            : host.restoreRecovery)({
+            vault,
+            local,
+            reference,
+            pages,
+            fetchCurrentEnvelope: envelope,
+            submitOriginalAsRecovery: (record, _identity, credential) =>
+              Effect.sync(() => {
+                credential.fill(0);
+                if (!records.some((old) => toHex(old) === toHex(record)))
+                  records.push(record.slice());
+                retain();
+                return { outcome: 'Committed' as const, record: record.slice() };
+              }),
+          });
+        let result = yield* Effect.result(restore());
+        const admittedCount = records.length;
+        if (Result.isFailure(result) && options.resume) {
+          failKeys = false;
+          result = yield* Effect.result(restore());
+        }
+        if (Result.isFailure(result))
+          return {
+            ok: false,
+            phase: (yield* Context.get(baseContext, ClientInstallationStore).read())?.phase ?? null,
+          };
+        offer = result.success.offer;
+        localStorage.setItem('recovery-offer', JSON.stringify(offer));
+        if (recoveryRuntime) {
+          const runtime = recoveryRuntime;
+          const readerA = yield* Effect.tryPromise(() =>
+            runtime.open(offer.workspaceId, undefined, 'abc', 'content-reader')
+          );
+          const readerB = yield* Effect.tryPromise(() =>
+            runtime.open(offer.workspaceId, undefined, 'abc', 'recovery-reader')
+          );
+          const before = yield* Effect.tryPromise(() => runtime.status(offer.workspaceId));
+          if (options.governance) {
+            yield* Effect.tryPromise(() =>
+              runtime.revokeDevice!(offer.workspaceId, toHex(owner.publicKey.toBytes()))
+            );
+            const selfKey = before.signingPublicKey!;
+            const denied = yield* Effect.result(
+              Effect.tryPromise(() => runtime.revokeDevice!(offer.workspaceId, selfKey))
+            );
+            const stillAdmitted = view().inspectState().devices.has(selfKey);
+            yield* Effect.tryPromise(() =>
+              runtime.revokeDevice!(offer.workspaceId, selfKey, { confirmedRecoveryOnly: true })
+            );
+            return {
+              ok: true,
+              guarded: Result.isFailure(denied) && stillAdmitted,
+              removed: !view().inspectState().devices.has(selfKey),
+            };
+          }
+
+          const backedUp = yield* personalRuntimeRecovery(runtime)!.setup({
+            vault,
+            local,
+            fetchCurrentEnvelope: envelope,
+            submitOriginal: (record) =>
+              Effect.sync(() => {
+                if (!records.some((old) => toHex(old) === toHex(record)))
+                  records.push(record.slice());
+                retain();
+                return { outcome: 'Committed' as const, record: record.slice() };
+              }),
+          });
+          yield* Effect.tryPromise(() =>
+            runtime.close(offer.workspaceId, 'abc', readerB.readerOwner)
+          );
+          const after = yield* Effect.tryPromise(() => runtime.status(offer.workspaceId));
+          const sealed = yield* Effect.tryPromise(() =>
+            runtime.seal(offer.workspaceId, {
+              epoch: 0,
+              room: { kind: 'doc', docId: 'retained-reader' },
+              context: runtimeContext,
+              plaintext: new TextEncoder().encode('content after recovery'),
+              additionalData: new Uint8Array(),
+            })
+          );
+          yield* Effect.tryPromise(() =>
+            runtime.close(offer.workspaceId, 'abc', readerA.readerOwner)
+          );
+          return {
+            ok: true,
+            outcome: result.success.outcome,
+            sealed: sealed.sealed.length > 64,
+            recoveryVerified: backedUp.recoverable,
+            sameIdentity: before.signingPublicKey === after.signingPublicKey,
+          };
+        }
+        session = yield* host.open(offer, false, true);
+        let recoveryVerified = false;
+        if (options.setup) {
+          const setupResult = yield* session.setupRecovery({
+            vault,
+            local,
+            fetchCurrentEnvelope: envelope,
+            submitOriginal: (record) =>
+              Effect.sync(() => {
+                if (!records.some((old) => toHex(old) === toHex(record)))
+                  records.push(record.slice());
+                retain();
+                return { outcome: 'Committed' as const, record: record.slice() };
+              }),
+          });
+          recoveryVerified = setupResult.recoverable;
+        }
+        if (options.repair) {
+          // No prior restore intent: model an identity admitted through ordinary pairing.
+          for (const name of journal.keys()) if (name.endsWith('/restore')) journal.delete(name);
+          yield* session.close();
+          session = undefined;
+          yield* Effect.tryPromise({
+            try: () =>
+              new Promise<void>((resolve, reject) => {
+                const request = indexedDB.open(`${databasePrefix}-custody`);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                  const db = request.result,
+                    tx = db.transaction('data', 'readwrite');
+                  const cursor = tx.objectStore('data').openCursor();
+                  cursor.onsuccess = () => {
+                    const row = cursor.result;
+                    if (!row) return;
+                    if (row.value.namespace === 'installed') row.delete();
+                    row.continue();
+                  };
+                  tx.oncomplete = () => {
+                    db.close();
+                    resolve();
+                  };
+                  tx.onabort = () => {
+                    db.close();
+                    reject(tx.error);
+                  };
+                };
+              }),
+            catch: (cause) => cause,
+          });
+          if (options.revokePersonal) {
+            const installed = yield* Context.get(baseContext, ClientInstallationStore).read();
+            const command = yield* Effect.fromResult(
+              prepareLedgerCommand(view(), owner.publicKey, {
+                _tag: 'RevokeDevice',
+                target: installed!.binding.device,
+              })
+            );
+            records.push(yield* signLedgerRecord(command, owner));
+            retain();
+          }
+          const repaired = yield* Effect.result(
+            host.restoreRecovery({
+              offer,
+              vault,
+              local,
+              reference,
+              pages,
+              fetchCurrentEnvelope: envelope,
+              submitOriginalAsRecovery: (record, _identity, credential) =>
+                Effect.sync(() => {
+                  credential.fill(0);
+                  if (!records.some((old) => toHex(old) === toHex(record)))
+                    records.push(record.slice());
+                  retain();
+                  return { outcome: 'Committed' as const, record: record.slice() };
+                }),
+            })
+          );
+          if (Result.isFailure(repaired)) return { ok: false };
+          if (repaired.success.offer.pairingSessionId !== offer.pairingSessionId)
+            throw new Error('replaced offer');
+          session = yield* host.open(offer, false, true);
+        }
+        const current = yield* session.ledgerState();
+        const document = yield* session.document('document:recovered', 'loro');
+        const frame = yield* document.seal({
+          context: {
+            protocol: 'loro-streams-crdt-payload-protection',
+            version: 2,
+            kind: 'update_batch',
+          },
+          plaintext: new TextEncoder().encode('recovered browser content'),
+          additionalData: () => new Uint8Array(),
+        });
+        return {
+          ok: true,
+          outcome: result.success.outcome,
+          partialEpochKey: result.success.partialEpochKey,
+          length: current.view.length,
+          sealed: frame.sealed.length > 64,
+          noDuplicateAdmission: records.length === admittedCount,
+          recoveryVerified,
+        };
+      }).pipe(Effect.provide(layers))
+    )
+  );
+}
+
+export async function reopenRecoveredBrowser() {
+  await stop();
+  await boot('open-existing', false, 'recovery', 'abc');
+  offer = JSON.parse(localStorage.getItem('recovery-offer')!);
+  session = await Effect.runPromise(host.open(offer, false, true));
+  return Effect.runPromise(session.status());
+}

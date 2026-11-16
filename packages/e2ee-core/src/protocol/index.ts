@@ -14,6 +14,8 @@
 // Foundation
 /** Validated, copy-owning protocol byte values and their parsers; parsing does not establish authority. */
 export * as Bytes from '../internal/foundation/bytes';
+/** The frozen, reversible mapping between account IDs and the ledger's 32-byte user IDs. */
+export { accountIdFromUserId, accountUserId } from '../internal/foundation/account-user-id';
 export {
   ValidationError,
   ContentError,
@@ -35,6 +37,12 @@ export {
   verifyDeviceCredentialBinding,
   type DeviceCredentialBinding,
 } from '../internal/foundation/device-credential-binding';
+export {
+  executionIntentBytes,
+  signExecutionIntent,
+  verifyExecutionIntent,
+  type ExecutionIntent,
+} from '../internal/foundation/execution-intent';
 
 // Content format and primitives
 export {
@@ -93,15 +101,12 @@ export {
   machineSharingDigest,
   sealMachineSharingPolicy,
   openMachineSharingPolicy,
-  readMachineSharingHistoryStep,
-  verifyMachineSharingHistoryStep,
   authorizeMachineExecution,
   type MachineSharingBinding,
   type MachineSharingState,
   type MachineSharingChange,
   type MachineSharingPolicy,
   type MachineSharingHead,
-  type MachineSharingHistoryStep,
   type VerifiedMachineSharingPolicy,
   type MachineExecutionDecision,
 } from '../internal/machine-sharing';
@@ -227,6 +232,10 @@ export {
   parseRecoveryFile,
   wipeRecoveryPackage,
   verifiedPasskeyPrf,
+  verifiedPasskeyRegistration,
+  vaultPrfInput,
+  passkeyUserHandle,
+  vaultIdFromPasskeyUserHandle,
   disposePrf,
   ownVaultCiphertext,
   vaultCiphertextDigest,
@@ -236,5 +245,6 @@ export {
   type RecoveryIdentity,
   type RecoveryPrivatePackage,
   type VerifiedPasskeyPrf,
+  type VerifiedPasskeyRegistration,
   type VaultCiphertext,
 } from '../internal/recovery';

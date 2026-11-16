@@ -15,6 +15,7 @@ import {
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleTarget,
+  type AgentRoleAvailability,
   type AgentRoleId,
   type MachineViewMeta,
 } from '@lody/shared';
@@ -48,6 +49,7 @@ export type AgentRoleDetailSubject = {
   machine?: Pick<MachineViewMeta, 'acpCapabilities'> | null;
   /** Where the instance runs, as the entry's title names a machine. */
   machineName?: string;
+  availability?: AgentRoleAvailability;
 };
 
 /**
@@ -68,6 +70,7 @@ export function AgentRoleDetailPane({
   agentConfig,
   machine,
   machineName,
+  availability,
   onEdit,
   className,
 }: AgentRoleDetailSubject & {
@@ -148,7 +151,10 @@ export function AgentRoleDetailPane({
     ? labelFor(permissionFace.options, permissionValue)
     : undefined;
   const permissionTone = classifyPermissionModeFace(permissionValue);
-  const permissionIsWarning = permissionTone.kind !== 'hidden' && permissionTone.tone === 'warning';
+  const unavailableReason = availability?.kind === 'unavailable' ? availability.reason : undefined;
+  const permissionIsWarning =
+    unavailableReason === 'mode_unavailable' ||
+    (permissionTone.kind !== 'hidden' && permissionTone.tone === 'warning');
 
   const thinkingSelector = thoughtLevelSelectors.find((selector) => selector.type === 'select');
   const thinkingValue = pinnedValue(thinkingSelector?.configId);
@@ -219,6 +225,7 @@ export function AgentRoleDetailPane({
                  (`claude-opus-5` vs `claude-sonnet-5`), so the START is what
                  gives way when the line runs out. */
               elide="start"
+              tone={unavailableReason === 'model_unavailable' ? 'warning' : undefined}
             />
           ) : null}
           {thinkingValue ? (

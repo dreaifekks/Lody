@@ -521,7 +521,11 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
       PS1: '',
       PROMPT_COMMAND: '',
       LODY_SESSION_ID: this.sessionId,
+      LODY_AGENT_SESSION_ID: this.sessionId,
       LODY_WORKSPACE_SESSION_ID: workspaceSessionId,
+      LODY_AGENT_ROLE_ID: this.config.agentRoleId || undefined,
+      LODY_PARENT_SESSION_ID: this.config.parentSessionId || undefined,
+      LODY_OPENED_BY_SESSION_ID: this.config.openedBySessionId || undefined,
     };
 
     // Same ENOENT trap as the ACP runner: overlay the login-shell env so a
@@ -701,7 +705,10 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
         this.logger.debug(
           `[${this.sessionId}] ACP agent process exited with code ${code} signal ${signal}`
         );
-        if (this.agentProcess === agentProcessHandle) this.agentProcess = null;
+        if (this.agentProcess === agentProcessHandle) {
+          this.agentProcess = null;
+          callbacks.onNativeWorkChanged?.(null);
+        }
         if (established)
           void this.cleanupExternalMcpServers(releaseMcp).catch(() => {
             this.logger.error(`[${this.sessionId}] MCP connection cleanup failed.`);
@@ -808,6 +815,14 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           onThreadGoalUpdated: callbacks.onThreadGoalUpdated,
           onThreadGoalCleared: callbacks.onThreadGoalCleared,
           onSessionTitleUpdate: callbacks.onSessionTitleUpdate,
+          onNativeWorkChanged: (work) => {
+            if (
+              usageState === 'active' &&
+              this.agentProcess === agentProcessHandle &&
+              this.agentClient === client
+            )
+              callbacks.onNativeWorkChanged?.(work);
+          },
           onAgentWarning: callbacks.onAgentWarning,
           loadExternalMcpServers: callbacks.loadExternalMcpServers,
           loadLodyAgentTools: callbacks.loadLodyAgentTools,
@@ -861,6 +876,8 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
       this.agentClient = client;
       this.acpCapabilities = acpCapabilities;
       usageState = 'active';
+      if (this.agentProcess === agentProcessHandle)
+        callbacks.onNativeWorkChanged?.(client.getNativeWork());
       for (const [usage, accountingId] of pendingUsage) {
         if (usage.sessionId === acpSessionId) callbacks.onUsageUpdate(usage, accountingId);
       }

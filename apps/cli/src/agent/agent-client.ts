@@ -1,3 +1,4 @@
+import { getCliNodeExecutable } from '@/lib/managed-daemon-release';
 import { daemonLossObserver } from '@/lib/e2ee/client-loss-observer';
 import type {
   LodyClientExtensionCapabilities,
@@ -53,7 +54,6 @@ import {
   parseDevinSubagentTaskMeta,
   type LodyAgentToolId,
 } from '@lody/shared';
-import { getLocalControlSocketPath } from '@lody/shared/node/local-ipc';
 import { getLodyMcpHttpEndpoint } from '@/mcp/lody-mcp-http-server';
 import {
   LODY_MCP_BOARD_ID_ENV,
@@ -613,6 +613,7 @@ export interface AgentClientOptions {
   onThreadGoalUpdated?(goal: SessionGoalContent): void;
   onThreadGoalCleared?(threadId: string): void;
   onSessionTitleUpdate?(title: string): void;
+  onNativeWorkChanged?(work: NativeAgentWork): void;
   onAgentWarning?(warning: AgentSessionWarning): void;
   /**
    * Starts loading the workspace MCP catalog. Invoked BEFORE `initialize`, so
@@ -769,7 +770,6 @@ export class AgentClient implements acp.Client {
       { name: 'LODY_MCP_SESSION_ID', value: this.options.sessionId },
       { name: 'LODY_MCP_WORKSPACE_ID', value: this.options.workspaceId },
       { name: 'LODY_MCP_MACHINE_ID', value: this.options.machineId },
-      { name: 'LODY_MCP_SOCKET_PATH', value: getLocalControlSocketPath() },
       { name: 'LODY_MCP_WORKDIR', value: workdir },
       ...(agentTools.length > 0
         ? [{ name: LODY_MCP_AGENT_TOOLS_ENV, value: agentTools.join(',') }]
@@ -780,6 +780,9 @@ export class AgentClient implements acp.Client {
     // invokes normal CLI services, so forward their public deployment endpoints
     // while keeping credentials out of the agent-visible server config.
     for (const [name, value] of [
+      ['LODY_PLATFORM', process.env.LODY_PLATFORM],
+      ['LODY_DATA_DIR', process.env.LODY_DATA_DIR],
+      ['LODY_MCP_SOCKET_PATH', process.env.LODY_MCP_SOCKET_PATH],
       ['LODY_AUTH_URL', LODY_AUTH_URL],
       ['LODY_AUTH_SITE_URL', LODY_AUTH_SITE_URL],
       ['LODY_SERVER_URL', LODY_SERVER_URL],
@@ -800,7 +803,7 @@ export class AgentClient implements acp.Client {
     return [
       {
         name: 'lody',
-        command: process.execPath,
+        command: getCliNodeExecutable(),
         args: [cliEntrypoint, '__internal', 'lody-mcp-server'],
         env,
       },
@@ -1684,7 +1687,10 @@ export class AgentClient implements acp.Client {
           this.acpSessionId !== null &&
           event.update.sessionId === this.acpSessionId
         ) {
+          const previous = this.getNativeWork();
           this.nativeActivity = event.update;
+          const current = this.getNativeWork();
+          if (previous !== current) this.options.onNativeWorkChanged?.(current);
         }
         return;
       case 'rateLimits':
@@ -2566,9 +2572,12 @@ export class AgentClient implements acp.Client {
   }
 
   adoptPreparedSession(sessionResponse: acp.NewSessionResponse): void {
+    const previousWork = this.getNativeWork();
     this.availableCommands = undefined;
     this.applySessionResponseState(sessionResponse);
     this.acpSessionId = sessionResponse.sessionId;
+    const currentWork = this.getNativeWork();
+    if (previousWork !== currentWork) this.options.onNativeWorkChanged?.(currentWork);
     this.devinSubagentTaskIds.clear();
     this.authenticationRequired = false;
     this.logger.debug(

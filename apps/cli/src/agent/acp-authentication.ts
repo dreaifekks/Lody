@@ -53,6 +53,7 @@ import { runNpxStartupWithRecovery } from './acp-npx-startup-policy';
 import { withLodyNpmCacheForNpx } from './npx-cache';
 import { withAcpSessionStartSlot } from './acp-session-start-gate';
 import { withLoopbackNoProxy } from '@lody/shared/proxy-env';
+import { scrubInheritedClaudeAuthEnv, shouldScrubClaudeAuthEnv } from './claude-env-conflict';
 import {
   mergeACPProcessEnv,
   mergeLoginShellEnv,
@@ -205,6 +206,7 @@ type ProbeBuiltinAuthenticationOptions = {
   runtimeOverrides?: BuiltinRuntimeOverrides;
   magpieGatewayUrl?: string;
   env?: NodeJS.ProcessEnv;
+  userExplicitEnv?: Record<string, string>;
   onManagedRuntimeProgress?: Parameters<
     typeof resolveBuiltinAuthenticationProcessLaunch
   >[0]['onManagedRuntimeProgress'];
@@ -387,8 +389,10 @@ function formatAuthenticationExitError(
 
 async function buildAuthenticationProcessEnv(options: {
   launch: ResolvedACPProcessLaunch;
+  cliType?: AgentConfigCliType;
   agentType: string;
   env?: NodeJS.ProcessEnv;
+  userExplicitEnv?: Record<string, string>;
   resolveLoginShellEnv: typeof getLoginShellEnvLegacy;
 }): Promise<NodeJS.ProcessEnv> {
   const loginShellEnv = await options.resolveLoginShellEnv();
@@ -398,12 +402,32 @@ async function buildAuthenticationProcessEnv(options: {
     NO_COLOR: '1',
   };
   delete baseEnv.FORCE_COLOR;
+  const shouldScrub =
+    options.cliType !== undefined
+      ? shouldScrubClaudeAuthEnv(options.cliType, options.agentType)
+      : options.agentType === 'claude';
+  const explicitEnv =
+    options.userExplicitEnv ??
+    (options.env
+      ? Object.fromEntries(
+          Object.entries(options.env).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string'
+          )
+        )
+      : undefined);
+  const scrubbedBaseEnv =
+    shouldScrub && explicitEnv ? scrubInheritedClaudeAuthEnv(baseEnv, explicitEnv) : baseEnv;
+  const withLoginShell = mergeLoginShellEnv(scrubbedBaseEnv, loginShellEnv);
+  const effectiveEnv =
+    shouldScrub && explicitEnv
+      ? scrubInheritedClaudeAuthEnv(withLoginShell, explicitEnv)
+      : withLoginShell;
   return withLoopbackNoProxy(
     withoutElectronBootstrapCredentials(
       withLodyNpmCacheForNpx(
         options.launch.command,
         withDefaultAcpPathEntries(
-          mergeACPProcessEnv(options.launch, mergeLoginShellEnv(baseEnv, loginShellEnv)),
+          mergeACPProcessEnv(options.launch, effectiveEnv),
           options.agentType
         )
       )
@@ -439,8 +463,10 @@ export async function probeBuiltinAuthentication(
 
   const env = await buildAuthenticationProcessEnv({
     launch,
+    cliType: options.cliType,
     agentType: options.agentType,
     env: options.env,
+    userExplicitEnv: options.userExplicitEnv,
     resolveLoginShellEnv: options.resolveLoginShellEnv ?? getLoginShellEnvLegacy,
   });
   options.signal?.throwIfAborted();
@@ -716,8 +742,10 @@ export class AcpAuthenticationManager {
 
       let env = await buildAuthenticationProcessEnv({
         launch,
+        cliType: options.cliType,
         agentType: options.agentType,
         env: options.env,
+        userExplicitEnv: options.env,
         resolveLoginShellEnv: this.resolveLoginShellEnv,
       });
       if (options.codexProfile) env = codexProfileEnvironment(options.codexProfile, env);
@@ -990,8 +1018,10 @@ export class AcpAuthenticationManager {
       launch,
       await buildAuthenticationProcessEnv({
         launch,
+        cliType: options.cliType,
         agentType: options.agentType,
         env: options.env,
+        userExplicitEnv: options.env,
         resolveLoginShellEnv: this.resolveLoginShellEnv,
       }),
       { logger: this.logger, signal: running.abortController.signal, cwd: process.cwd() }

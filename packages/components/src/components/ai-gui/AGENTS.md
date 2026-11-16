@@ -48,15 +48,23 @@ Ownership: [README.md](README.md).
 - A finished `shouldUseWorkedGroup` requires foldable work and visible final
   content outside `workBlockKeys`. A cancelled/interrupted or tool-only turn
   with no answer stays expanded; `message.finished` cannot prove completion
-  alone. Reopened entries clear `finished` and `endedAt`.
-- Thought/tool timelines are transparent, 13px and glyph-free, with verb labels.
-  Execute calls are not cards. Disclosure labels lead; chevrons trail (desktop:
-  hover-only, body type, no fill). Only DSH shows thoughts, using answer type and
-  secondary ink. Default thoughts open/tools closed; explicit toggles win. Footers show config.
-- Expanded steps use `ToolDetailSheet`: composer fill, card shadow, no duplicate
-  header, ordered sections, Shiki commands and ANSI output without command echoes.
-- Duration appears once: desktop folded header or footer after buttons; mobile
-  footer before buttons. Preserve `MOBILE_TURN_ACTION_LEADING_INSET_PX`.
+  alone. A reused entry reopening upstream
+  must clear `finished` and `endedAt` (see
+  `apps/cli/src/session/AGENTS.md`).
+- Thought/tool timelines are compact, transparent, 13px and glyph-free; verbs label
+  steps. Execute calls are not cards. Disclosure labels lead, chevrons trail
+  (desktop: hover-only, body type, no fill). Only builtin DSH shows thoughts:
+  separate thought and tool groups default closed; explicit toggles win.
+  DSH thought prose uses answer typography, secondary ink and shared work folding. Other providers
+  hide thoughts. Footers show config, not author identity.
+- An expanded tool step is ONE `ToolDetailSheet` (`tool-call-detail.tsx`): composer
+  fill + card shadow, no header restating the row, sections in content order. Only
+  the command is highlighted, via the Shiki worker; output stays ANSI text. Drop
+  text blocks that echo the command. [Note](../../../../../.agents/notes/implemented/feature/2026-09-26-tool-step-detail-sheet.md).
+- Duration has one owner: desktop uses `WorkedGroupHeader` for folded turns and
+  the footer after buttons otherwise; mobile always uses the footer before
+  buttons, and the worked header suppresses its copy. Preserve
+  `MOBILE_TURN_ACTION_LEADING_INSET_PX` so actions clear the edge-back strip.
   Mobile buttons rest hidden but the newest turn's; a tap reveals one message's.
 - Live status precedes a trailing subagent task summary, including when the turn
   has no footer.
@@ -93,9 +101,10 @@ Ownership: [README.md](README.md).
   hosts require CSS typed division. Stream engine: live turns only;
   remounts show existing text immediately and animate only additions.
 - Rendering and search share CJK emphasis rules.
-- Mermaid starts as a still preview, activates on click and never takes an
-  unmodified wheel. Deactivation preserves pan/zoom; activation adds no outline.
-  Follow the [inline contract](../../../../../specs/mermaid-inline-view.md).
+- A Mermaid diagram in a message is drawn inline, not as a card, and is a still
+  preview until a pointer click activates it. An unmodified wheel is NEVER taken
+  — activated or not. Deactivation preserves pan/zoom and activation adds no
+  outline; see the [inline view contract](../../../../../specs/mermaid-inline-view.md).
   `mermaid-diagram-viewer.tsx` stays the only full-screen surface, reached from
   the block's action bar. Invariants:
   [mermaid-diagram-rendering.md](mermaid-diagram-rendering.md).

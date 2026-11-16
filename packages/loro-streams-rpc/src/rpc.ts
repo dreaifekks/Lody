@@ -1,3 +1,4 @@
+import { ManagedDaemonUpgradeOptionsSchema, type ManagedDaemonUpgradeOptions } from '@lody/shared';
 import {
   CodeCollabOpenDiffManifestResponseSchema,
   CodeCollabReadBlobResponseSchema,
@@ -141,6 +142,8 @@ import type {
   SessionHistoryWriteResponse,
   FilePreviewV3Request,
   FilePreviewV3Response,
+  SessionDirectoryListRequest,
+  SessionDirectoryListResponse,
 } from '@lody/shared';
 import {
   AgentConfigIdSchema,
@@ -152,6 +155,7 @@ import {
   FilePreviewV3ErrorCodeSchema,
   FilePreviewV3ErrorSchema,
   FilePreviewV3ResponseSchema,
+  SessionDirectoryListResponseSchema,
   deriveCodeCollabV2ContentKeyBytes,
   deriveCodeCollabV2ContentKeyId,
   LocalProjectControlRequestSchema,
@@ -320,6 +324,8 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   // plain read and must never activate Code Collab on the machine.
   'file/preview',
   'file/download-chunk',
+  // One folder of the session's own workspace; same envelope and owner check as file/preview.
+  'file/list-dir',
   'session/cancel',
   'session/live-status',
   'session/withdraw-input',
@@ -369,7 +375,12 @@ const BaseRpcRequestSchema = z
 
 export const LoroMachineStatusRpcRequestSchema = BaseRpcRequestSchema.extend({
   method: z.literal('machine/status'),
-  params: z.object({ includeDisk: z.literal(true).optional() }).strict(),
+  params: z
+    .object({
+      includeDisk: z.literal(true).optional(),
+      includeDaemonUpdate: z.literal(true).optional(),
+    })
+    .strict(),
 }).strict();
 
 export const LoroMachinePreviewControlRpcRequestSchema = BaseRpcRequestSchema.extend({
@@ -409,6 +420,7 @@ export const LoroMachineRestartRpcRequestSchema = BaseRpcRequestSchema.extend({
   method: z.literal('machine/restart'),
   params: z
     .object({
+      restoreMachineId: z.string().trim().min(1).optional(),
       requesterUserId: z.string().trim().min(1),
       requestToken: z.string().trim().min(1),
       requestId: z.string().trim().min(1),
@@ -424,6 +436,7 @@ export const LoroMachineUpgradeRpcRequestSchema = BaseRpcRequestSchema.extend({
       requestToken: z.string().trim().min(1),
       requestId: z.string().trim().min(1),
       targetVersion: z.string().trim().min(1).optional(),
+      upgrade: ManagedDaemonUpgradeOptionsSchema.optional(),
     })
     .strict(),
 }).strict();
@@ -620,6 +633,11 @@ export const LoroFilePreviewRpcRequestSchema = BaseRpcRequestSchema.extend({
   params: CodeCollabV2RpcContentEnvelopeSchema,
 }).strict();
 
+export const LoroFileListDirRpcRequestSchema = BaseRpcRequestSchema.extend({
+  method: z.literal('file/list-dir'),
+  params: CodeCollabV2RpcContentEnvelopeSchema,
+}).strict();
+
 /**
  * Methods whose params/results travel inside the encrypted owner-session
  * envelope. Every encrypt, decrypt, and error-decode site must consult this —
@@ -631,6 +649,7 @@ export const isOwnerScopedEncryptedRpcMethod = (method: string): boolean =>
   method === 'session/automation-control' ||
   method === 'file/preview' ||
   method === 'file/download-chunk' ||
+  method === 'file/list-dir' ||
   method === 'session/history-read' ||
   method === 'session/history-watch' ||
   method === 'session/history-write';
@@ -769,12 +788,17 @@ export const LoroSessionHistoryWriteRpcRequestSchema = BaseRpcRequestSchema.exte
 }).strict();
 
 export const SessionHistoryReadRpcPayloadSchema = z
-  .object({ sessionId: SessionIdSchema, query: SessionHistoryReadQuerySchema })
+  .object({
+    sessionId: SessionIdSchema,
+    query: SessionHistoryReadQuerySchema,
+    readProof: z.string().min(1).max(8192).optional(),
+  })
   .strict();
 
 export const SessionHistoryWriteRpcPayloadSchema = z
   .object({
     sessionId: SessionIdSchema,
+    writeProof: z.string().min(1).max(8192).optional(),
     operation: SessionHistoryWriteOperationSchema,
     payload: z.record(z.string(), z.unknown()),
   })
@@ -902,6 +926,7 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroCodeCollabV2LspReferencesRpcRequestSchema,
   LoroFilePreviewRpcRequestSchema,
   LoroFileDownloadRpcRequestSchema,
+  LoroFileListDirRpcRequestSchema,
   LoroSessionCancelRpcRequestSchema,
   LoroSessionLiveStatusRpcRequestSchema,
   LoroSessionWithdrawInputRpcRequestSchema,
@@ -1749,6 +1774,7 @@ export type LoroMachineRpcResult =
   | CodeCollabV2Error
   | FilePreviewV3Response
   | FileDownloadResponse
+  | SessionDirectoryListResponse
   | MachineProviderRateLimitsRefreshResponse
   | MachineAcpCapabilitiesRefreshResponse
   | MachineAcpAuthenticateResponse
@@ -2082,7 +2108,7 @@ const toLegacyRpcErrorResponse = (
     return parsed.success ? parsed.data : { status: 'error', code: 'transient_io' };
   }
 
-  if (method === 'file/preview') {
+  if (method === 'file/preview' || method === 'file/list-dir') {
     const parsedData = FilePreviewV3ErrorSchema.safeParse(error.data);
     if (parsedData.success) {
       return {
@@ -2335,6 +2361,10 @@ const parseRpcSuccessResult = async (
     if (response.method === 'file/preview') {
       const previewParsed = FilePreviewV3ResponseSchema.safeParse(decrypted);
       return previewParsed.success ? previewParsed.data : null;
+    }
+    if (response.method === 'file/list-dir') {
+      const listParsed = SessionDirectoryListResponseSchema.safeParse(decrypted);
+      return listParsed.success ? listParsed.data : null;
     }
     if (
       response.method === 'code-collab/open-diff-manifest' ||
@@ -3076,11 +3106,15 @@ export class LoroStreamsMachineRpcClient {
     timeoutMs?: number;
     /** Only for daemons advertising `machineDiskStatus`; older ones reject it. */
     includeDisk?: boolean;
+    includeDaemonUpdate?: boolean;
   }): Promise<MachineStatusResponse | null> {
     return (await this.sendRequest({
       method: 'machine/status',
       timeoutMs: options?.timeoutMs ?? 30_000,
-      params: options?.includeDisk ? { includeDisk: true as const } : {},
+      params: {
+        ...(options?.includeDisk ? { includeDisk: true as const } : {}),
+        ...(options?.includeDaemonUpdate ? { includeDaemonUpdate: true as const } : {}),
+      },
     })) as MachineStatusResponse | null;
   }
 
@@ -3150,6 +3184,7 @@ export class LoroStreamsMachineRpcClient {
   }
 
   async requestMachineRestart(options: {
+    restoreMachineId?: string;
     requesterUserId: string;
     requestToken: string;
     requestId: string;
@@ -3162,6 +3197,7 @@ export class LoroStreamsMachineRpcClient {
         requesterUserId: options.requesterUserId,
         requestToken: options.requestToken,
         requestId: options.requestId,
+        ...(options.restoreMachineId ? { restoreMachineId: options.restoreMachineId } : {}),
       },
     })) as MachineRestartResponse | null;
   }
@@ -3171,16 +3207,18 @@ export class LoroStreamsMachineRpcClient {
     requestToken: string;
     requestId: string;
     targetVersion?: string;
+    upgrade?: ManagedDaemonUpgradeOptions;
     timeoutMs?: number;
   }): Promise<MachineUpgradeResponse | null> {
     return (await this.sendRequest({
       method: 'machine/upgrade',
-      timeoutMs: options.timeoutMs ?? 30_000,
+      timeoutMs: options.timeoutMs ?? (options.upgrade ? 12 * 60_000 : 30_000),
       params: {
         requesterUserId: options.requesterUserId,
         requestToken: options.requestToken,
         requestId: options.requestId,
         targetVersion: options.targetVersion,
+        upgrade: options.upgrade,
       },
     })) as MachineUpgradeResponse | null;
   }
@@ -3613,6 +3651,7 @@ export class LoroStreamsMachineRpcClient {
 
   async requestSessionHistoryRead(options: {
     sessionId: SessionId;
+    readProof?: string;
     query: SessionHistoryReadQuery;
     ownerSessionId?: string;
     timeoutMs?: number;
@@ -3622,12 +3661,18 @@ export class LoroStreamsMachineRpcClient {
         options.query.kind === 'watchChanges' ? 'session/history-watch' : 'session/history-read',
       timeoutMs: options.timeoutMs ?? (options.query.kind === 'watchChanges' ? 45_000 : 30_000),
       ownerSessionId: options.ownerSessionId ?? options.sessionId,
-      params: { sessionId: options.sessionId, query: options.query },
+      params: {
+        sessionId: options.sessionId,
+        query: options.query,
+        ...(options.readProof ? { readProof: options.readProof } : {}),
+      },
     })) as SessionHistoryRpcReadResponse | null;
   }
 
   async requestSessionHistoryWrite(options: {
     sessionId: SessionId;
+    writeProof?: string;
+    requestId?: string;
     ownerSessionId?: string;
     operation: SessionHistoryWriteOperation;
     payload: Record<string, unknown>;
@@ -3635,10 +3680,12 @@ export class LoroStreamsMachineRpcClient {
   }): Promise<SessionHistoryRpcWriteResponse | null> {
     return (await this.sendRequest({
       method: 'session/history-write',
+      requestId: options.requestId,
       timeoutMs: options.timeoutMs ?? 30_000,
       ownerSessionId: options.ownerSessionId ?? options.sessionId,
       params: {
         sessionId: options.sessionId,
+        ...(options.writeProof ? { writeProof: options.writeProof } : {}),
         operation: options.operation,
         payload: options.payload,
       },
@@ -3674,6 +3721,26 @@ export class LoroStreamsMachineRpcClient {
       ownerSessionId: ownerSessionId ?? options.sessionId,
       params,
     })) as FileDownloadResponse | null;
+  }
+
+  /** One folder of the session's own workspace (capability `sessionDirectoryListing`). */
+  async requestSessionDirectoryList(
+    options: Omit<SessionDirectoryListRequest, 'v'> & {
+      ownerSessionId?: string;
+      timeoutMs?: number;
+    }
+  ): Promise<SessionDirectoryListResponse | null> {
+    return (await this.sendRequest({
+      method: 'file/list-dir',
+      timeoutMs: options.timeoutMs ?? 30_000,
+      ownerSessionId: options.ownerSessionId ?? options.sessionId,
+      params: {
+        v: FILE_PREVIEW_PROTOCOL_VERSION,
+        sessionId: options.sessionId,
+        path: options.path,
+        ...(options.limit === undefined ? {} : { limit: options.limit }),
+      },
+    })) as SessionDirectoryListResponse | null;
   }
 
   async requestFilePreview(
@@ -4046,7 +4113,7 @@ export class LoroStreamsMachineRpcClient {
       | {
           method: 'machine/status';
           timeoutMs: number;
-          params: { includeDisk?: true };
+          params: { includeDisk?: true; includeDaemonUpdate?: true };
         }
       | {
           method: 'machine/preview-control' | 'machine/automation-control';
@@ -4077,6 +4144,7 @@ export class LoroStreamsMachineRpcClient {
             requestToken: string;
             requestId: string;
             targetVersion?: string;
+            upgrade?: ManagedDaemonUpgradeOptions;
           };
         }
       | {
@@ -4247,6 +4315,7 @@ export class LoroStreamsMachineRpcClient {
         }
       | {
           method: 'session/history-write';
+          requestId?: string;
           timeoutMs: number;
           ownerSessionId: string;
           params: {
@@ -4334,6 +4403,12 @@ export class LoroStreamsMachineRpcClient {
           params: FilePreviewV3Request;
         }
       | {
+          method: 'file/list-dir';
+          timeoutMs: number;
+          ownerSessionId: string;
+          params: SessionDirectoryListRequest;
+        }
+      | {
           method: 'session/automation-control';
           timeoutMs: number;
           ownerSessionId: string;
@@ -4419,7 +4494,10 @@ export class LoroStreamsMachineRpcClient {
       args.method === 'machine/acp-capabilities-refresh' ? args.signal : undefined;
     if (abortSignal?.aborted) return null;
 
-    const requestId = crypto.randomUUID();
+    const requestId =
+      args.method === 'session/history-write'
+        ? (args.requestId ?? crypto.randomUUID())
+        : crypto.randomUUID();
     const timeoutMs = Math.max(0, args.timeoutMs);
     const now = Math.round(this.options.now?.() ?? Date.now());
     const startedAtMs = Date.now();
@@ -4438,6 +4516,7 @@ export class LoroStreamsMachineRpcClient {
       args.method === 'code-collab/lsp-references' ||
       args.method === 'file/preview' ||
       args.method === 'file/download-chunk' ||
+      args.method === 'file/list-dir' ||
       args.method === 'session/history-read' ||
       args.method === 'session/history-watch' ||
       args.method === 'session/automation-control' ||
@@ -4595,7 +4674,7 @@ export class LoroStreamsMachineRpcClient {
           request = {
             ...envelope,
             method: args.method,
-            params: args.params.includeDisk ? { includeDisk: true } : {},
+            params: args.params,
           };
           break;
         case 'machine/preview-control':
@@ -4745,6 +4824,7 @@ export class LoroStreamsMachineRpcClient {
           break;
         case 'file/download-chunk':
         case 'file/preview':
+        case 'file/list-dir':
           request = {
             ...envelope,
             method: args.method,

@@ -11,6 +11,7 @@ import {
   getWorkspaceFlockDocId,
   isLoroRepoDocDeleted,
   ScheduleRepository,
+  ScheduledMessageSchema,
   scheduleDefinitionFingerprint,
   scheduleRegistryKeys,
   ScheduleRuntimeRowSchema,
@@ -296,7 +297,21 @@ export async function createScheduleWorkspace(args: {
         },
         target
       );
-      if (run.message) prepared = withScheduledMessageInput(prepared, run.message);
+      if (run.message) {
+        const inputBlocks = run.message.inputBlocks;
+        if (
+          inputBlocks.some(
+            (block) =>
+              block.type === 'local_attachment' &&
+              (workspace.contentMode === 'e2ee' || block.machineId !== run.machineId)
+          )
+        )
+          throw new Error('Local attachment belongs to another machine');
+        prepared = withScheduledMessageInput(
+          prepared,
+          ScheduledMessageSchema.parse({ ...run.message, inputBlocks })
+        );
+      }
       if (prepared.meta.machineId !== run.machineId || prepared.meta.userId !== auth.userId)
         throw new Error('Schedule target ownership changed');
       prepared.meta.scheduleId = run.scheduleId;

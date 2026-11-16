@@ -1,35 +1,154 @@
 # Machine E2EE
 
-- Lazily open machine custody; never probe keyrings on normal startup. On creation, test OS keystore read/write and pin OS/file protection. Reuse original selector/KEK; never re-probe/switch. Disclose file protection before consent. Core node-custody owns blobs. Ban personal management, private export, plaintext device files and silent keyring downgrade.
-- Require owner-only files/dirs and no symlinks. Batch Windows owner/DACL checks via official process Layer, never Unix bits. Resume first ACL setup only if custody is empty; otherwise validate. Use stdin secrets and a 10s keyring timeout. Confirm exit before fallback; retain failed owners. Bound async SQLite BUSY retries; ban keyring busy_timeout.
-- Keep open/status offline; cloud-cli-port owns cloud I/O. Distinguish history/pin damage; hints cannot reset trusted pins. Journal originals before feed/pin; after 64 records rebase Core pin first. Fail retired-cache cleanup closed.
-- Authorize all projects resolved/reached on the machine, beyond the request. Use [scope](../../../../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#project-scope-at-the-receiving-machine).
-- Require authenticated reads plus same membership or verified owner-signed machine/project policy in authorizeExecution. Keep RAM grants <15min from read start. Fence/clear grants before revocation drain; never network-retry it. Pin shared grants to policy-checked ledger generation; recheck signer/machine. Ingest invalidates isCurrent(). Claims record principal; history userId only displays. Sign member derivedFrom; keep same-machine member rights per [derive](../../../../../.agents/notes/proposed/architecture/2026-10-31-e2ee-shared-member-derivation.md).
-- Encrypt RPC/attachments/schedules before publication. Keep presence on shared minimal plaintext allowlists, ordinary adaptor and 90s TTL.
-- Disable encrypted Fleet PR pollers/hosted GitHub tokens. Use host git/gh, never decrypted repo names in the broker. Fleet/Lody/one-shot commands load workspace-legacy only for encryption; keep custody/Core off ordinary entry graphs.
-- Use realtime-journal.ts schema3; never migrate. Recover SQLite before empty-v0. Retire readable current keys before intact archive; refuse reset if unreadable. Ban auto-replace/GC/archive replay/import. Keep originals exact, outcomes first, ids independent and floors genesis/workspace-bound. Unknown forbids takeover.
-- Reject writes >10min ahead of authenticated now, not frame time; absent reference uses scoped max/reset. Share call locks, reset exclusively and retain locks on main-close failure. Bound permits/cleanup; journal replies before send; retry exactly.
-- Claim userTurnId across RPC/meta/history with verified signer/host authority, never UI account identity. Absent capability denies. Backfill absent origins until original expiry. Never substitute snapshot authors or retry uncertain ACP.
-- Scope journals to signing keys; retain evidence, never reuse old KEK blobs. Replacement hints need verified admission/install. Only activation/binding/device-original ENOENT allows pairing wait. Check originals before custody init; never probe keyrings from stale hints. Retry other errors through Fleet; never cache them as absence.
-- Join bounded credential/ledger authority checks to existing owner. Exact
-  member/device refusal stops it through a durable receipt; generic failure keeps
-  verified state. Inbound control requests checks; transient history retries at
-  1/5/30s without fencing seals. Token expiry and read-only probes never drive checks.
+`CLAUDE.md` aliases this; CLI rules apply.
+
+- Lazy machine-only; ordinary startup never probes keyring.
+- Creation probes OS keystore write/read; fixes OS/file protection permanently.
+  Reopen: original selector/KEK; no re-probe/switch.
+- File protection: owner-only dirs/files, no symlinks. Windows: owner/DACL via official
+  process Layer, never Unix mode bits.
+- Core node-custody owns blobs; no personal management, private exports/plaintext device files
+  or silent keyring downgrade.
+- Disclose file protection pre-approval.
+
+- Keyring: 10s timeout, stdin secrets; confirm termination before fallback, retain failed owners.
+- Batch Windows ACL checks; bound async SQLite BUSY retries. No blocking busy_timeout in keyring work.
+
+- Resume first Windows ACL setup only with empty custody; otherwise validate.
+- `runtime.ts` composes Feed/VerifiedLedger, installed keys and optional receiver.
+  Offline open/status; cloud I/O stays in cloud-cli-port.
+  Distinguish damaged history/pins; never reset trusted pins from remote hints.
+- Encrypted claims authorize every machine-resolved local project the turn reaches, never
+  the request alone. [Scope](../../../../../.agents/notes/proposed/architecture/2026-10-28-e2ee-machine-sharing.md#project-scope-at-the-receiving-machine).
+- Execution: `authorizeExecution`; same membership or verified owner-signed machine/project policy; authenticated read;
+  RAM-only <15min/read-start; [outage](../../../../../specs/e2ee/execution-freshness-outage.md). Credential revoke: fence/clear grants before drain,
+  never network-retry.
+  A shared grant pins the ledger generation after its policy check, then rechecks the
+  signer and machine against that ledger; a later ingest fails `isCurrent()`.
+  Claims record verified principals, never history `userId`. Signed `derivedFrom` names
+  the human root; member delegation stays on this machine and rechecks the root's rights.
+  Members share 20 durable reservations across restart/reset; Owners remain unbounded
+  ([derivation](../../../../../.agents/notes/implemented/architecture/2026-10-31-e2ee-shared-member-derivation.md)).
+  Origins bind signatures to content ([intent](../../../../../.agents/notes/implemented/architecture/2026-11-10-e2ee-signed-execution-intent.md)).
+- Retain originals before feed/pin. Pin before compaction, attempted every
+  64 records; its failures only warn. Retired cache cleanup must fail closed.
+- Iroh and Streams receivers share journal claims and live write completions, registered before
+  invocation. Only ownerless uncertain writes return errors; see [iroh rules](../../../../../packages/iroh-native/AGENTS.md).
+- Follow [Schedule rules](../schedules/AGENTS.md).
+- No plaintext RPC/attachments/schedules before encryption. Presence: shared minimal
+  plaintext publish/receive allowlists, ordinary adaptor/90s TTL.
+- `realtime-journal.ts`: schema 3/no migration; SQLite recovery before empty-v0 init.
+  Retire readable current keys before intact archive; unreadable keys refuse reset.
+  No auto-replace/GC/archive replay/import. Exact originals/first outcome;
+  uncertain=unknown/no takeover; independent IDs. Floors: genesis/workspace.
+  Feature writes reject local >10min ahead of authenticated now, never frame
+  time; no reference: current local time, no retained peak. Execution records (`expiresAt` 0) skip that clock. Reset: stop owners, archive/new ID;
+  keep control/retired IDs/intent. Shared calls/exclusive reset; keep locks on
+  failed main close. Bound permits/cleanup; reply before send; exact retries.
+  `agent-execution.ts`: userTurnId claim for RPC/Meta/history; verified signer + host
+  authority. UI accounts are display-only. No capability: deny.
+  Unreadable ledger: pending, rechecked on events. Missing or invalid intents refuse with
+  their reason; no time window. No snapshot-author
+  substitution or uncertain ACP retry.
+  [Recovery](../../../README.md#local-encrypted-execution-log-recovery).
+- `prepareCliE2eeMachineLegacy` binds the retained credential hash to the exact
+  desktop 16-byte pairing session via core's fixed v1 helper. Machine
+  possession binds strict UTF-8 machineId; activation matches the verified current
+  device and retained signed admission. Session
+  IDs stay outside possession and ledger records; old developer formats need recreation.
+  Local prepare/activate: OS-user socket; remote: signed offer/scoped port. Fleet checks account/workspace/genesis first.
+  Activation refreshes verified ledger/mailbox; ACK only an installed current key. Failure keeps pairing retryable.
+  The local catalog never refuses that check: a workspace it lacks or binds to another
+  genesis waits for the first authoritative list outcome (list, rejection, subscription
+  error or shutdown), then fails closed; a cached match proceeds offline
+  ([startup decision](../../../../../.agents/notes/implemented/bug-fix/2026-10-30-e2ee-pairing-first-workspace-list.md)).
+  A known-revoked identity (device receipt or exact `e2ee_device_revoked`) is archived
+  before a new offer; never offer a revoked key ([re-pairing](../../../../../.agents/notes/proposed/feature/2026-10-27-e2ee-remote-machine-pairing.md#re-pairing-a-revoked-machine)).
+  After admission, `lody machine pair` treats a missing key as a bounded wait for desktop
+  delivery, never as failure; other activation errors stay terminal
+  ([remote contract](../../../../../.agents/notes/proposed/feature/2026-10-27-e2ee-remote-machine-pairing.md)).
+
+- Staging read denial/I/O failure cannot block independently verified mailbox reception.
+- Retain already sealed old-epoch sends and historical reads. New seals use the verified current
+  epoch in core when installed. Only genuine absence permits the newest retained published key
+  within core’s durable fifteen-minute observation budget; exhaustion fails for retry.
+  Provider epoch hints are not encryption authority; rotationRequired alone is only a hint.
+  A rejected dispatch or feature request naming a newer epoch, or missing its current-epoch key,
+  signed by a current ledger device, joins
+  one bounded catch-up per verified ledger state, then reopens; the core guard still decides.
+  A joined older refresh that leaves the current key missing gets at most one additional
+  round through the same owner and wait budget. An unsuccessful refresh of an unchanged
+  ledger cools down; successful key installation must not cool down the next rotation.
+  Logs carry only both epochs.
+  [M3 selection](../../../../../.agents/notes/implemented/architecture/2026-10-27-e2ee-epoch-receive-barrier.md).
+- Prepared bindings cannot start content replicas. Activate only the native ledger/key
+  receiver: verify current installed key, close temporary owner, THEN write `activation.json`
+  before Fleet attaches rooms. Marker grants no authority; match genesis/device.
+  Activated workspaces reopen offline. Join identical per-workspace intents; Fleet shutdown
+  drains activation before cloud-port close.
+
+- Never register Fleet PR pollers for encrypted workspaces.
+- Encrypted cloud ports omit hosted GitHub tokens. SessionManager uses host git/gh
+  credentials; never send decrypted repository names through its credential broker.
+
+- Fleet/Lody/one-shot commands load `workspace-legacy` only in the encrypted branch.
+  Keep custody/core off the ordinary entry graph; CLI plus maps must fit the 2 GiB heap.
+
+- Runtime journals are signing-key-scoped: retain old evidence; never reuse old KEK blobs.
+  Hints follow replacements only after verified admission/install. Pairing waits raise
+  no startup issue/timer/global offline state. Activation binds the approved key,
+  drains other identities and retains its cleanup retry owner.
+- Only activation/binding/device-original ENOENT means pairing wait. Check originals
+  before custody init; stale hints never probe keyrings. Other errors retain Fleet
+  retry; never cache transient I/O as missing pairing.
+- Ingest failure fences new seals until verified refresh; keep the last verified view
+  and healthy readers. Retries double up to five minutes and never stop while open;
+  explicit refresh restarts the backoff. Seal may request retry but never await it in the SDK save queue.
+  Never skip rejected records or reset pins. Close cancels pending retry timers.
+- An encrypted workspace keeps one bounded background authority check: credential
+  plus verified-ledger refresh, joined to the existing single-flight owner. Exact
+  member/device refusal stops that owner through the durable receipt; a generic failure
+  keeps the last verified view. Inbound machine-control frames request it; transient
+  history retries double from 1 s to 5 min without fencing seals. Never depend on token expiry, and
+  keep the read-only client-loss probe from triggering I/O.
 
 ## Local machine pairing
 
-- Use Core v1 to bind kept credential hash to the exact 16-byte desktop pairing session. Bind possession to strict UTF-8 machineId; match activation to current verified device/signed admission. Exclude Session ids from possession/ledger; recreate old formats. Prepare/activate through OS-user sockets locally or signed offers/scoped ports remotely. Check account/workspace/genesis first.
-- Refresh verified ledger/mailbox; ACK installed current keys only. Retry failures. Check matching catalogs offline; absent/mismatched genesis awaits first authoritative list/rejection/subscription-error/shutdown, then fails closed per [startup](../../../../../.agents/notes/implemented/bug-fix/2026-10-30-e2ee-pairing-first-workspace-list.md).
-- Archive revoked identity (device receipt/exact e2ee_device_revoked) before offers; reject revoked keys. Bound admitted key waits; other activation errors terminate. Require workspace custody and scoped grants.
-- Prepared bindings cannot start content replicas. Activate native ledger/key reception only; verify current key, close temporary owner, write activation.json, then attach Fleet rooms. Match genesis/device; markers authorize nothing. Reopen offline after activation. Join identical workspace intents; drain activation before cloud-port close. Bind approved keys, drain other identities and own cleanup retries. Pairing waits raise no startup issue/timer/global offline state.
-- Persist immutable frontend/session proofs/admissions before keys. Verify full history/current same-member personal authority. Require consent for new sessions; keep signer/keys/credential. Reject late sessions; preflight latest before editing Fleet ownership. Publish ownership before originals and material/identity atomically. Take over same scope atomically: old creating=-1/new creating=1; retain bytes.
-- Match account/machine/workspace/genesis/member; superseded sessions cannot publish/retake. Reuse originals. Never replace missing devices with kept unpublished credentials. Replace lost published identities only through fresh explicit sessions with distinct signing-key credentials. Ledger-only owners cannot receive keys. Keep healthy same-identity owners; share only identical intents. Cancellation cannot prove settlement. Use [recovery](../../../../../.agents/notes/implemented/bug-fix/2026-10-27-e2ee-local-pairing-recovery.md).
+- `pairing-journal.ts` retains immutable frontend/session proofs and admissions before key
+  receipt. Verify full history and current same-member personal authority. New sessions
+  need consent; preserve signer/keys/credential. Preflight latest session before Fleet
+  ownership changes; reject late sessions.
+- Publish ownership before replacement originals; publish material/current identity atomically.
+  Same-scope takeover: atomic old creating=-1/new creating=1, retain bytes.
+  Match account/machine/workspace/genesis/member; superseded sessions cannot publish/retake.
+  Reuse originals. Unpublished generations with retained credentials cannot replace missing
+  devices; fresh explicit sessions may replace lost published identities with distinct
+  signing-key-scoped credentials. Ledger-only owners cannot receive keys. Same-identity
+  retries keep healthy owners; only identical intents share flights. Cancellation never
+  guesses remote settlement. See [recovery rationale](../../../../../.agents/notes/implemented/bug-fix/2026-10-27-e2ee-local-pairing-recovery.md).
+- Remote commands use workspace custody and scoped grants; see the
+  [remote contract](../../../../../.agents/notes/proposed/feature/2026-10-27-e2ee-remote-machine-pairing.md).
 
 ## Catalog and Fleet containment
 
-- Staging failures cannot block verified mailbox reception. Keep sealed old-epoch sends/history reads. Seal with Core's verified installed current epoch. Only absence permits newest kept published keys for Core's durable 15min observation budget; retry on exhaustion. Treat Provider epochs/rotationRequired only as hints.
-- For current-device-signed dispatch/feature rejection with newer epoch/missing current key, join one bounded catch-up per verified ledger state; Core guards reopen. Allow one extra same-owner/budget round if an older joined refresh still lacks the key. Cool down failed unchanged-ledger refresh only, never the rotation after key installation. Log only both epochs. Use [M3](../../../../../.agents/notes/implemented/architecture/2026-10-27-e2ee-epoch-receive-barrier.md).
-- Fence seals until verified refresh after ingest failure; keep verified views/healthy readers. Retry <=3 times per episode, renewed by explicit refresh. Seal may request retry, never await it in SDK save. Never skip rejected records/reset pins. Cancel retry timers on close.
-- Same-context creating=-1 means prepare-superseded; preserve other errors. Main archives matching all-null unsigned attempts only, before fresh consent; keep CLI originals. Do not cache unimplemented modes; export decrypts locally; export/sync include encrypted Schedules/Registry under the [CLI](../../../../../.agents/notes/implemented/bug-fix/2026-10-27-e2ee-cli-review-fixes.md).
-- Reset via same-user socket after stop/drain: require exclusive sibling lease, whole-dir archive, new id and fresh consent/KEK. Keep control/retired ids/intent; OS/unknown stays OS. Verify identity/persist receipt before removal releases custody. Drain execution/sync; erase only account/genesis/device content under identity lease/ pairing mutex. Retry busy cleanup before open, keep projects and rejoin with new member/keys.
-- Gate read-only client-loss-observer.ts on nonrelease opt-in plus LODY_E2E=1. Verify baseline requester against ledger; never refresh authority/stop owners. Track raw watcher/ACP promises past cancellation/map clearing; timeout is not drain.
+- Encrypted workspace catalog rules bind `../local-workspace-catalog.ts`; see
+  [lib rules](../AGENTS.md#encrypted-workspace-catalog).
+
+- Same-context `creating=-1` means `prepare-superseded`; other errors stay errors. Main
+  archives only the matching all-null unsigned attempt before fresh consent. Keep CLI originals.
+- A readable `binding.json` outranks listed mode: contradicting rows never start, relabel, revoke or rewrite cache; unreadable bindings block opens and retry (`retained-binding.ts`).
+- Never cache an unimplemented content mode. `export` decrypts locally; `export` and
+  `sync` include encrypted Schedule documents and Registry
+  ([note](../../../../../.agents/notes/implemented/bug-fix/2026-10-27-e2ee-cli-review-fixes.md)).
+
+- Reset: same-user socket; drain, exclusive sibling lease, archive whole dir;
+  fresh approval/KEK. OS/unknown stays OS.
+
+Member removal: verify identity/persist receipt before custody release. Drain execution/sync;
+erase only account/genesis/device content under identity lease/pairing mutex. Retry busy
+cleanup before open; preserve projects. Rejoin with new member/keys.
+
+- `client-loss-observer.ts` is read-only E2E diagnostics, requiring nonrelease build
+  opt-in and runtime `LODY_E2E=1`. Bind baseline requester identity to verified ledger
+  state; never refresh authority or stop owners for observation. Track raw watcher
+  and ACP promises after cancellation/map clearing; timeout never means drained.

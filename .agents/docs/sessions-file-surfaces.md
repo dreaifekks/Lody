@@ -243,6 +243,10 @@ narrow layouts keep the tab ([Article window](experimental.md#article-window)).
   its file actions. A player whose panel or tab leaves the screen is paused
   where it is (`active`), since the hidden panel stays mounted. Nothing is transcoded, and the renderer CSP must keep
   `media-src` open to `lody-resource:` and `blob:`.
+- Mobile session file viewers open read-only, including when a retained drawer
+  is reopened. The toolbar explicitly enables editing for writable files and can
+  return to read-only without discarding drafts; pending saves and conflicts stay
+  actionable in either mode. Desktop viewers retain their existing editing default.
 - Markdown file viewers copy the latest complete source text (including unsaved
   editor changes) from the top toolbar. On mobile, source mode uses the native
   text surface instead of Monaco so long-press keeps the OS selection menu;

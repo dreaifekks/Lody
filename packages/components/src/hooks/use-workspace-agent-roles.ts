@@ -25,6 +25,7 @@ import { useMachineFlockAgentConfigsForMachineIds } from '@/hooks/use-machine-fl
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import type { ComposerAgentRoleNames } from '@/lib/composer-agent-roles';
+import { createAgentRoleCapabilityResolver } from '@/lib/composer-agent-roles';
 import { deleteWorkspaceAgentRole, writeWorkspaceAgentRole } from '@/lib/workspace-catalog-write';
 
 export type WorkspaceAgentRolesSnapshot = {
@@ -128,6 +129,7 @@ export function useAgentRoleAvailability(
       onlineMachineIds,
       agentConfigMachineIds,
       loadedAgentConfigMachineIds: new Set(loadedMachineIds),
+      runConfigCapability: createAgentRoleCapabilityResolver(agentConfigs, machines),
     };
   }, [agentConfigs, loadedMachineIds, machines, onlineMachineIds]);
 

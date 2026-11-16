@@ -1,3 +1,4 @@
+import type { ManagedDaemonUpdateStatus, ManagedDaemonUpgradeOptions } from './daemon-update';
 import type { ProjectLocalMemberProbe, SessionProjectRun } from './workspace-project';
 import type {
   HostedConfigCategory,
@@ -275,6 +276,7 @@ export interface MachineStatusRequest {
   workspaceId: WorkspaceId;
   /** Only for daemons advertising `machineDiskStatus`. */
   includeDisk?: true;
+  includeDaemonUpdate?: true;
 }
 
 export type MachineLifecycleLaunchMode = 'daemon' | 'foreground' | 'electron' | 'unknown';
@@ -297,6 +299,7 @@ export interface MachineStatusResponse {
   /** Sent only when the request asked with `includeDisk`. */
   disk?: { totalGB: number; freeGB: number; usedPercent: number };
   lifecycle?: MachineLifecycleCapability;
+  daemonUpdate?: ManagedDaemonUpdateStatus | null;
   error?: string;
 }
 
@@ -335,6 +338,8 @@ export type MachineLifecycleDisposition =
 
 export interface MachineRestartRequest {
   type: 'machine/restart';
+  /** Restore an owned, retired installation identity before the next worker starts. */
+  restoreMachineId?: MachineId;
   machineId: MachineId;
   workspaceId: WorkspaceId;
   requesterUserId: string;
@@ -365,6 +370,7 @@ export interface MachineUpgradeRequest {
   requestId: string;
   /** Defaults to `latest`; exact semver-like versions are also accepted. */
   targetVersion?: string;
+  upgrade?: ManagedDaemonUpgradeOptions;
 }
 
 export interface MachineUpgradeResponse {
@@ -807,6 +813,37 @@ export interface SessionFileUploadResponse {
  *
  * Mirrors `SessionFileUploadRequest`; the only difference is the message type.
  */
+export type SessionImagePrepareLocalRequest = import('zod').infer<
+  typeof import('./message-schemas').SessionImagePrepareLocalRequestSchema
+>;
+export type SessionImagePrepareLocalResponse = import('zod').infer<
+  typeof import('./message-schemas').SessionImagePrepareLocalResponseSchema
+>;
+export type SessionImageResolveLocalRequest = import('zod').infer<
+  typeof import('./message-schemas').SessionImageResolveLocalRequestSchema
+>;
+export type SessionImageResolveLocalResponse = import('zod').infer<
+  typeof import('./message-schemas').SessionImageResolveLocalResponseSchema
+>;
+
+export type SessionAttachmentPrepareRequest = {
+  type: 'session/attachment-prepare';
+  machineId: MachineId;
+  workspaceId: WorkspaceId;
+  sessionId: SessionId;
+  path: string;
+  kind: 'file' | 'image';
+  fileName: string;
+  mimeType: string;
+};
+export type SessionAttachmentPrepareResponse = {
+  type: 'session/attachment-prepare_response';
+  sessionId: SessionId;
+  success: boolean;
+  error?: string;
+  attachment?: import('./ai').SessionLocalAttachment;
+};
+
 export interface SessionFileSendLocalRequest {
   type: 'session/file-send-local';
   machineId: MachineId;
@@ -1039,6 +1076,9 @@ export type LocalSessionControlRequest =
   | SessionFileUploadRequest
   | SessionFileSendLocalRequest
   | SessionFileReadLocalRequest
+  | SessionImagePrepareLocalRequest
+  | SessionImageResolveLocalRequest
+  | SessionAttachmentPrepareRequest
   | SessionHistoryReadRequest
   | SessionHistoryWriteRequest
   | PreviewCandidateReportRequest
@@ -1071,6 +1111,9 @@ export type LocalSessionControlResponse =
   | SessionFileUploadResponse
   | SessionFileSendLocalResponse
   | SessionFileReadLocalResponse
+  | SessionImagePrepareLocalResponse
+  | SessionImageResolveLocalResponse
+  | SessionAttachmentPrepareResponse
   | SessionHistoryReadResponse
   | SessionHistoryWriteResponse
   | PreviewCandidateReportResponse

@@ -115,7 +115,9 @@ readerLeases: preallocated-v1 接受 open 第四个参数中的唯一调用标�
 `personalLedgerControl({ approval })` 通过注入的 `LedgerFeedStore`、
 `LedgerPinStore`、`SubmissionJournal`、`LedgerLog`、`LedgerFeedSource`、
 `WorkspaceScope` 组合持久 `LedgerFeed`。feed/pin 使用稳定数据库，提交槽按身份实例
-独立。刷新有界，验证每条后缀后才持久化位置，不 reset 或 rebase 损坏行。
+独立。刷新有界，验证每条后缀后才持久化位置。feed 同时获得独立 pin 和数据源，
+旧格式或损坏缓存仅在完整重放证明最高检查点后才能重建；身份、pin 和未决日志
+保持不变，重建缓存不授予准入。
 
 显式 `prepare(offer, true)` 准备受保护替换候选，旧指针保持 current。第二个未决候选
 会被拒绝。替换打开要求桌面重新批准的完整历史，以及成功的 pin/origin 验证；之后才
@@ -177,3 +179,23 @@ receive/report/distribution 原件；共享有限维护流程只确认已观察�
 [已批准 custody Spec](../../specs/e2ee/client-custody.zh.md) 信任页面下发代码使用私钥。
 runtime 工厂是可选能力，其导出不启用任何产品组合。
 [所有权理由](../../.agents/notes/implemented/architecture/2026-10-16-e2ee-core-service-architecture.zh.md#个人设备产品组合)。
+
+## 保险库接纳
+
+host 的显式 `restoreRecovery` 命令先认证恢复包，再准备个人设备身份，核对钉住的
+创世与账号成员身份，沿用 R 接纳和持久原件。它重放签名历史，通过原有
+`InstalledEpochKeys` 承诺、保护与读回边界安装恢复出的不透明密钥。安装失败后沿用
+同一身份重试，不返回签名器、私钥、R 或 V。应用负责保险库会话、传输、账号守卫、
+入口 pin 和产品启用；恢复仍须显式选择，打开既有身份不会触发恢复。
+
+已获准的会话提供显式 `setupRecovery`：签名和已安装密钥留在会话内部，
+只有 core 的真实恢复测试通过才报告可恢复。`restoreRecovery` 可以接受原有
+offer，为仍有受保护设备身份、但工作区密钥丢失的设备补回密钥；包内安全信息
+仍须匹配，不替换设备身份。
+
+`personalRuntimeAccountRequester` 使用 runtime 原有 host 处理账号级配对，
+不会新建另一个所有者。平台可以通过可选的 `openBrowserUnlock` 提供隔离页面
+入口；此时共用配对页要求用户先确认这是自己的电脑，再创建请求。原有的其他
+设备批准入口仍保留，此回调不传递秘密。
+
+个人设备 session 的 `abandonEpoch(baseEpoch)` 调用同一 Owner 专属暂存发布流程；要求先声明能力 2，不依赖当前代钥。调用方负责证据展示与明确确认；原始记录重试和历史恢复沿用 core。

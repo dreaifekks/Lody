@@ -17,6 +17,9 @@ export function resolveLocalSessionControlTimeoutMs(message: LocalSessionControl
     case 'machine/acp-authenticate':
     case 'machine/acp-binary-install':
       return BINARY_INSTALL_TIMEOUT_MS
+    case 'session/image-prepare-local':
+    case 'session/attachment-prepare':
+      return FILE_SEND_TIMEOUT_MS
     case 'session/file-send-local':
     case 'session/file-read-local':
       return message.targetMachineId ? 900_000 : FILE_SEND_TIMEOUT_MS

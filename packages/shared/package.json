@@ -81,6 +81,7 @@
       "types": "./src/visual-annotation-inspector-global.ts",
       "import": "./src/visual-annotation-inspector-global.ts"
     },
+    "./path-launchers": "./src/path-launchers.ts",
     "./electron-ipc": {
       "types": "./src/electron-ipc.ts",
       "import": "./src/electron-ipc.ts",
@@ -232,7 +233,8 @@
       "import": "./src/local-loro-writer/legacy.ts"
     },
     "./e2ee-remote-pairing": "./src/e2ee-remote-pairing.ts",
-    "./e2ee-rpc": "./src/e2ee-rpc.ts"
+    "./e2ee-rpc": "./src/e2ee-rpc.ts",
+    "./e2ee-execution-intent": "./src/e2ee-execution-intent.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

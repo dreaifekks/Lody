@@ -97,6 +97,23 @@ const accountDirectory = (accountId: string) =>
 /** The account-wide pairing journal; it holds no secret and no private key. */
 export const desktopAccountPairingDatabase = (accountId: string) =>
   join(accountDirectory(accountId), 'account-pairing.sqlite')
+/** Whether this device has a completed identity for the workspace. An unfinished restore
+ * leaves a directory behind, so the directory alone does not count. */
+export const desktopE2eeHasWorkspaceIdentity = async (accountId: string, workspaceId: string) => {
+  if (!existsSync(identityDirectory(accountId, workspaceId))) return false
+  return withDesktopE2eeAccount(
+    (owner) =>
+      owner.bootstrap.creationFor(workspaceId).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false))
+      ),
+    workspaceId,
+    false
+  )
+}
+/** Account-scoped recovery-vault journal (pins and intents only, never secrets). */
+export const desktopE2eeRecoveryJournalPath = (accountId: string) =>
+  join(accountDirectory(accountId), 'recovery-vault.sqlite')
 type IdentityLocation = string | { requestId: string }
 function identityDirectory(accountId: string, location?: IdentityLocation) {
   const root = accountDirectory(accountId)
@@ -248,10 +265,50 @@ export function withDesktopE2eeAccount<A>(
                 )
                 const bootstrap = yield* makeDesktopE2eeBootstrap({ directory, accountId, custody })
                 const runtime = yield* Effect.promise(() => import('./e2ee-runtime.mjs'))
+                // Only cloud builds that carry relays load the iroh route at all.
+                const irohConfigModule =
+                  import.meta.env.VITE_LODY_PLATFORM === 'cloud' && import.meta.env.VITE_IROH_RELAYS
+                    ? yield* Effect.promise(() => import('./e2ee-iroh-config'))
+                    : undefined
+                const irohConfig = irohConfigModule?.desktopIrohConfig({
+                  packaged: app.isPackaged,
+                  resourcesPath: process.resourcesPath,
+                  appPath: app.getAppPath(),
+                  env: import.meta.env
+                })
+                const irohNative = irohConfig
+                  ? (yield* Effect.promise(() => import('./e2ee-iroh.mjs'))).loadIrohNative(
+                      irohConfig.file
+                    )
+                  : undefined
+                // Relays need the same proxy the embedded CLI receives: the inherited
+                // environment first, else the system proxy for the first relay URL.
+                const irohProxy = irohNative
+                  ? yield* Effect.promise(async () => {
+                      const { proxyUrlFromEnv } = await import('./e2ee-iroh-config')
+                      const inherited = proxyUrlFromEnv(process.env)
+                      if (inherited) return inherited
+                      const { resolveSystemProxyEnv } = await import('./system-proxy-env')
+                      return proxyUrlFromEnv(
+                        await resolveSystemProxyEnv(irohConfig!.relays.urls.slice(0, 1)).catch(
+                          () => ({})
+                        )
+                      )
+                    })
+                  : undefined
                 const host = yield* runtime.makeDesktopE2eeRuntimeHost({
                   directory,
                   custody,
-                  bootstrap
+                  bootstrap,
+                  ...(irohConfig && irohNative
+                    ? {
+                        iroh: {
+                          native: irohNative,
+                          relays: irohConfig.relays,
+                          ...(irohProxy ? { proxyUrl: irohProxy } : {})
+                        }
+                      }
+                    : {})
                 })
                 const owned: Account = {
                   accountId,
@@ -428,7 +485,9 @@ export async function desktopE2eeCloudClient(): Promise<{
         owner.cloud = yield* makeE2eeCloudClient({
           platformKind: 'cloud',
           deploymentUrl: import.meta.env.VITE_CONVEX_DEPLOY_URL ?? '',
-          convexToken: () => getIpcServiceDeps().authService.convexToken()
+          // The request's signal reaches the sign-in request itself: quitting or a host stop
+          // must not wait on a slow auth server, and no token request outlives it.
+          convexToken: (signal) => getIpcServiceDeps().authService.convexToken(undefined, signal)
         }).pipe(Scope.provide(owner.scope))
       }
       return { accountId: owner.accountId, client: owner.cloud }
@@ -436,12 +495,11 @@ export async function desktopE2eeCloudClient(): Promise<{
   )
 }
 
-/** New signatures need the account-global public ID; old originals and existing
- * workspaces remain local. No network work is admitted under the account lock. */
+/** Signing and retrying a creation stay local; the account lock admits no network work. */
 export async function prepareDesktopE2eeCreation(input: DesktopE2eeCreationIntent) {
   const auth = getIpcServiceDeps().authService
   const identity = auth.getCachedSessionIdentity()
-  const needsIdentity = await withDesktopE2eeAccount(
+  await withDesktopE2eeAccount(
     (owner) =>
       Effect.gen(function* () {
         if (owner.accountId !== input.accountId)
@@ -467,27 +525,9 @@ export async function prepareDesktopE2eeCreation(input: DesktopE2eeCreationInten
           if (origin.genesisHash !== receipt.genesisHash)
             return yield* Effect.fail(accountFailure('identity-lost'))
         }
-        return yield* owner.bootstrap.creationNeedsAccountIdentity(input)
       }),
     { requestId: input.requestId }
   )
-  if (needsIdentity) {
-    const cloud = await desktopE2eeCloudClient()
-    if (cloud.accountId !== input.accountId) throw new Error('e2ee_account_mismatch')
-    const registered = await Effect.runPromise(cloud.client.accountIdentity())
-    await withDesktopE2eeAccount(
-      (owner) => {
-        const latest = auth.getCachedSessionIdentity()
-        return owner.accountId === input.accountId &&
-          registered.accountId === input.accountId &&
-          latest.userId === identity.userId &&
-          latest.generation === identity.generation
-          ? owner.bootstrap.recordAccountIdentity(registered)
-          : Effect.fail(new Error('e2ee_account_mismatch'))
-      },
-      { requestId: input.requestId }
-    )
-  }
   return withDesktopE2eeAccount(
     (owner) => {
       const latest = auth.getCachedSessionIdentity()
@@ -773,6 +813,11 @@ function publicE2eeFailure(error: unknown): Error {
     'pairing-expired',
     'pairing-used',
     'member_removed',
+    'member_invitation_invalid',
+    'member_invitation_endorser_ineligible',
+    'member_invitation_expired',
+    'member_invitation_mismatch',
+    'member_invitation_used',
     'device_revoked',
     'conflict',
     'local-evidence-conflict',

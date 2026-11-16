@@ -1,3 +1,4 @@
+import { parseSshDestination, type SshDestination } from './lan-ssh';
 import { z } from 'zod';
 import type {
   LocalProjectControlRequest,
@@ -179,18 +180,26 @@ export const LaunchLocalPathInputSchema = z.discriminatedUnion('kind', [
 
 export type LaunchLocalPathInput = z.infer<typeof LaunchLocalPathInputSchema>;
 
+export const PathLauncherRequestSchema = z
+  .object({
+    launcherId: z.string().trim().min(1).max(200),
+    targetPath: LocalPathLauncherStringSchema,
+    targetKind: z.enum(['file', 'directory']).default('directory'),
+    sshDestination: z.custom<SshDestination>((value) => parseSshDestination(value) !== null).optional(),
+  })
+  .strict();
+export type PathLauncherRequest = z.infer<typeof PathLauncherRequestSchema>;
+export const CustomPathLauncherApprovalSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80),
+    label: z.string().trim().min(1).max(48),
+    commandTemplate: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type CustomPathLauncherApproval = z.infer<typeof CustomPathLauncherApprovalSchema>;
 export const PathLauncherProbeSchema = z
   .object({
-    launchers: z
-      .array(
-        z
-          .object({
-            launcherId: z.string().trim().min(1).max(200),
-            input: LaunchLocalPathInputSchema,
-          })
-          .strict()
-      )
-      .max(30),
+    launchers: z.array(PathLauncherRequestSchema).max(30),
   })
   .strict();
 
@@ -323,6 +332,20 @@ export const CliRuntimeStateSchema = z
           .optional(),
       })
       .strict()
+      .optional(),
+    /** Encrypted workspaces whose execution relies on the backend-outage window of
+     * specs/e2ee/execution-freshness-outage.md, keyed by workspace ID. Wall-clock ends
+     * of the window from the last successful ledger read; display only, never authority. */
+    e2eeAccessWindows: z
+      .record(
+        z.string().min(1),
+        z
+          .object({
+            executionUntilMs: z.number().int().nonnegative(),
+            readUntilMs: z.number().int().nonnegative(),
+          })
+          .strict()
+      )
       .optional(),
     machineId: z.string().min(1).optional(),
     pid: z.number().int(),

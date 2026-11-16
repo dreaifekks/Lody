@@ -17,7 +17,8 @@ Ancestor rules apply. Edit `AGENTS.md`.
 - Full-width sidebar stays mounted/inert with scroll; Cmd+B animates content width
   (zero for reduced motion); pause hidden eager-sync/keyboard-nav. Compact/settings
   remounts restore scroll. Compact nav is modal: inert content, restore focus,
-  nested Escape first. [Spec](../../../../specs/desktop-windows.md).
+  nested Escape first. [Spec](../../../../specs/desktop-windows.md). It opens only once
+  the synced compact state agrees, and a close that never finishes is unmounted.
 - Every list uses `lib/session-opened-by-tree.ts`; keyboard navigation uses
   `sidebar-navigation-model.ts`.
 - `openedBySessionId` identifies the precise opener; `openedByRowSessionId` its row.
@@ -64,6 +65,7 @@ Ancestor rules apply. Edit `AGENTS.md`.
 ## Entry points, drafts, and layout
 
 - iOS divisions separate workspace panes; never save the temporary sidebar width. [Decision](../../../../.agents/notes/implemented/bug-fix/2026-10-28-ios-vertical-division.md).
+- Keep the touch resize grip and narrower navigation sidebar minimum scoped to wide mobile Web layouts.
 - The window is `bg-sidebar`; pages use one inset `WorkspaceCard`. Keep the sidebar on the
   window, never as a floating surface. See [layout docs](../../../../.agents/docs/components-package.md).
 - `handleSendDraft` in `sessions/session-detail.tsx` uses ordinary `startSession`
@@ -87,13 +89,13 @@ Ancestor rules apply. Edit `AGENTS.md`.
 
 ## Conversation access
 
-- `session-sharing.tsx` owns one desktop team/web access control: team visibility
-  selects menu/button, public status selects label, and the audience strip shows
-  access. Disable unavailable audiences with reasons. Never add narrowing, tabs,
-  search or a second badge. Paths/base branch remain in `⋯`. Closed headers read
-  only the `useSessionShareStatus` row (`unknown` means unshared). Inline/dialog
-  editors reuse one keyed publisher; publishing keeps the panel open.
-  [Contract](../../../../.agents/notes/implemented/feature/2026-09-14-session-header-share-control.md).
+- `session-sharing.tsx` owns the shared header control. Its button states Private,
+  Team read-only or Team can edit. The panel offers Private and Team read-only;
+  shared-machine editing links to machine settings. Only the machine owner can
+  change session access; other members see disabled choices with a reason.
+  Public links remain a separate section and a busy publisher keeps the panel open.
+  Authoritative access comes through the platform `sessionAccess` port, never
+  SessionMeta. [Contract](../../../../specs/session-access.md).
 
 ## Local projects
 

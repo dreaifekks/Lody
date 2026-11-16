@@ -1,5 +1,7 @@
 import { BOARD_DOC_PREFIX } from './board-repository';
 export * from './board-repository';
+export * from './daemon-release';
+export * from './daemon-update';
 import {
   LORO_CODE_COLLAB_FILE_INDEX_STREAM_SEGMENT,
   LORO_CODE_COLLAB_FILE_INDEX_SIGNAL_STREAM_SEGMENT,
@@ -64,6 +66,7 @@ export * from './schedule-recurrence';
 export * from './schedule-registry';
 export * from './schedule-schema';
 export * from './schedule-authorization';
+export * from './e2ee-execution-intent';
 export * from './schedule-repository';
 export * from './schedule-proposal-target';
 export * from './cron-next-fire';
@@ -546,3 +549,9 @@ export * from './encrypted-attachment';
 export * from './device-preview';
 
 export * from './android-emulator';
+
+export {
+  isContainedSession,
+  sessionHistoryWriteIntentDigest,
+  type SessionAccessRecord,
+} from './session-access';

@@ -24,7 +24,12 @@
 
 ## Execution
 
-- Gate LIST writes on user-entry sync (`turn-history-gate.ts`, 20s), never status/meta.
+- Machine identity recovery seals actual Turn admission before restart. Recheck after
+  pre-owner awaits; sealed requests retain pending history and Inbox inputs without
+  marking them handled, failed or canceled. Registered Turns block recovery even
+  before presence publication.
+- Gate LIST writes on user-entry sync (`turn-history-gate.ts`, 20s), including pre-open
+  writes, never status/meta. Timeout preserves live metadata creation; disposal aborts it and releases waiters.
 - Goals obey [this contract](../../../../specs/session-goal-control.md).
 - Stop ends steer waits, not the owner fiber. Reuse an Agent only after raw ACP drains or termination is confirmed. Failed release detaches that Agent, returns its slot and reports bounded background cleanup; the next input creates a new ACP. Follow [Inbox admission](../orchestration/AGENTS.md) with fixed execution ids. Assistant ids use userTurnId; invocation owns source/requester/config and is replaced by steer.
 

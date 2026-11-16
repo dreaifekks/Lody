@@ -3,6 +3,7 @@ import {
   MachineSharingError,
   type SharingRemote
 } from '@lody/e2ee-machine-sharing'
+import { openSqliteMachineSharingStore } from '@lody/e2ee-machine-sharing/sqlite'
 import { makeDesktopRemotePairing } from './e2ee-remote-pairing.mjs'
 import { EpochCandidateStore, SubmissionJournal } from '@lody/e2ee-core/services'
 import {
@@ -30,9 +31,13 @@ import {
   InstalledEpochKeys,
   InstalledKeyError,
   LedgerFeed,
-  VerifiedLedger
+  VerifiedLedger,
+  abandonWorkspaceRecovery,
+  makeWorkspaceRecovery,
+  type WorkspaceRecoveryInput
 } from '@lody/e2ee-core'
 import {
+  epochHistoryPacket,
   Bytes,
   ContentError,
   LedgerError,
@@ -47,6 +52,7 @@ import {
   getCommittedEpochStagingKey,
   verifyLedgerEffect,
   extendLedgerEffect,
+  signExecutionIntent,
   type RetainedLedgerState
 } from '@lody/e2ee-core/protocol'
 import {
@@ -77,7 +83,15 @@ import {
   makeRealtimeContentBinding
 } from '@lody/e2ee-core/adapters/loro-streams'
 import { makeE2eeRpcNative, E2eeRpcOriginals } from '@lody/loro-streams-rpc/e2ee-native'
+import type { E2eeIntentSigningRequest } from '@lody/loro-streams-rpc/e2ee-client'
+import { makeDesktopIrohClient, type DesktopIrohClient } from './e2ee-iroh.mjs'
+import type { IrohNative } from '@lody/iroh-native'
 import type { E2eeDispatchInput } from '@lody/shared/e2ee-rpc'
+import {
+  encodeE2eeIntentRecord,
+  scheduleDeclarationSubject
+} from '@lody/shared/e2ee-execution-intent'
+import type { ScheduleDocument } from '@lody/shared'
 import { encryptedWorkspaceRoom } from '@lody/shared/workspace-streams-content'
 type E2eeWorkspaceHistoryPage = Parameters<E2eeWorkspaceRuntime['ingestLedgerRecords']>[1]
 import type { E2eeRuntimeLedgerView, E2eeRuntimeStatus } from '@lody/platform'
@@ -110,6 +124,11 @@ export class DesktopE2eeRuntimeError extends Data.TaggedError('DesktopE2eeRuntim
     | 'sharing_storage'
     | 'invalid-ledger'
     | 'member_removed'
+    | 'member_invitation_invalid'
+    | 'member_invitation_endorser_ineligible'
+    | 'member_invitation_expired'
+    | 'member_invitation_mismatch'
+    | 'member_invitation_used'
     | 'device_revoked'
     | 'missing-binding'
     | 'conflict'
@@ -179,6 +198,15 @@ const boundary = <A, E, R>(work: Effect.Effect<A, E, R>) =>
       if (reason === 'key-update-required') return fail('key-update-required')
       if (reason === 'missing-binding') return fail('missing-binding')
       if (reason === 'conflict') return fail('conflict')
+      // Automatic-admission refusals keep their precise code for the administrator.
+      if (
+        reason === 'member_invitation_invalid' ||
+        reason === 'member_invitation_endorser_ineligible' ||
+        reason === 'member_invitation_expired' ||
+        reason === 'member_invitation_mismatch' ||
+        reason === 'member_invitation_used'
+      )
+        return fail(reason)
       if (reason === 'invalid-input') return fail('invalid-input')
       return fail(
         reason === 'local-evidence-conflict' || reason === 'rollback'
@@ -220,18 +248,49 @@ type HistoryRow = { position: number; record: Uint8Array; locator: string | null
 /** One account's lazy workspace runtimes. The caller Scope owns custody/bootstrap;
  * close this host first. Every admitted native operation settles before stores close.
  */
+/** The platform ports of one workspace's recovery; the host adds identity and ledger. */
+export type DesktopWorkspaceRecoveryPorts = Pick<
+  WorkspaceRecoveryInput,
+  'vault' | 'local' | 'submitOriginal' | 'fetchCurrentEnvelope'
+>
+
 export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open')(
   function* (options: {
     readonly directory: string
     readonly removeObsoleteCache?: typeof unlink
     readonly custody: DesktopE2eeCustody
     readonly bootstrap: Effect.Success<ReturnType<typeof makeDesktopE2eeBootstrap>>
+    /** Optional iroh route for encrypted RPC; absent keeps Streams RPC only. */
+    readonly iroh?: {
+      readonly native: IrohNative
+      readonly relays: import('@lody/platform').E2eeIrohRelays
+      readonly proxyUrl?: string
+    }
   }) {
     const serial = yield* Semaphore.make(1)
     let stopping = false
     const entries = new Map<
       string,
       {
+        installRecoveredKeys: (
+          recovered: readonly (readonly [number, Bytes.EpochKey])[]
+        ) => Effect.Effect<void, unknown>
+        recoveryOwner: (
+          ports: DesktopWorkspaceRecoveryPorts
+        ) => Effect.Effect<
+          Effect.Success<ReturnType<typeof makeWorkspaceRecovery>>,
+          unknown,
+          Scope.Scope
+        >
+        abandonRecovery: (
+          ports: Pick<DesktopWorkspaceRecoveryPorts, 'local' | 'submitOriginal'> & {
+            readonly vaultId: string
+          }
+        ) => Effect.Effect<
+          Effect.Success<ReturnType<typeof abandonWorkspaceRecovery>>,
+          unknown,
+          Scope.Scope
+        >
         manage: (
           command: DesktopE2eeManagementCommand,
           ports: (signal: AbortSignal) => DesktopE2eeManagementRemote
@@ -274,6 +333,9 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
         ) => Effect.Effect<void, unknown>
         sharing: Effect.Success<ReturnType<typeof makeLazyMachineSharingHost>>
         rpc: ReturnType<typeof makeE2eeRpcNative>
+        /** This device's execution intent signature over one already-computed subject. */
+        signIntent: (request: E2eeIntentSigningRequest) => Effect.Effect<Uint8Array, unknown>
+        iroh: DesktopIrohClient | undefined
         ingest: (page: E2eeWorkspaceHistoryPage) => Effect.Effect<E2eeRuntimeStatus, unknown>
       }
     >()
@@ -1076,7 +1138,7 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
         }, Effect.uninterruptible)
         const history = Context.get(historyContext, InstalledEpochHistory)
         const sharing = yield* makeLazyMachineSharingHost({
-          filename: join(directory, 'machine-sharing.sqlite'),
+          store: openSqliteMachineSharingStore(join(directory, 'machine-sharing.sqlite')),
           admissionHistory: (view) =>
             sql(() =>
               rows()
@@ -1093,11 +1155,16 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           refreshLedger: () => Effect.void
         })
         sharingOwner = sharing
+        const signIntent = (request: E2eeIntentSigningRequest) =>
+          signExecutionIntent({ ...request, genesis, signer: device }).pipe(
+            Effect.map((signature) => signature.toBytes())
+          )
         const rpc = makeE2eeRpcNative({
           workspaceId,
           requesterDevice: hex(device.publicKey.toBytes()),
           originals: new E2eeRpcOriginals(join(directory, 'rpc-originals.sqlite')),
           ledger: () => verified.current(),
+          signIntent,
           binding: (resource) =>
             makeRealtimeContentBinding({
               genesis,
@@ -1108,6 +1175,17 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             })
         })
         yield* Effect.addFinalizer(() => rpc.close().pipe(Effect.orDie))
+        // Lives with this entry (its reader leases); the endpoint opens on first use.
+        const iroh = options.iroh
+          ? yield* makeDesktopIrohClient({
+              native: options.iroh.native,
+              relays: options.iroh.relays,
+              ...(options.iroh.proxyUrl ? { proxyUrl: options.iroh.proxyUrl } : {}),
+              withSeed: (open) =>
+                options.custody.withTransportSeed(genesis, device.publicKey, open),
+              ledger: () => verified.current()
+            })
+          : undefined
         const bindings = new Map<
           string,
           Effect.Success<ReturnType<typeof makeStreamsUpdateBinding>>
@@ -1245,6 +1323,8 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
               candidate >= 0;
               candidate -= 1
             ) {
+              const packet = epochHistoryPacket(state.view, candidate)
+              if (Result.isFailure(packet) || packet.success.abandoned) continue
               const older = yield* Effect.result(keys.check(candidate))
               if (Result.isSuccess(older)) {
                 writeEpoch = candidate
@@ -1403,14 +1483,25 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             minimumPin = { head: view.head, length: view.length }
           }
           if (!pending((yield* feed.current()).view) && length - compactedAt >= 64) {
-            const origin = yield* feed
-              .rebase()
-              .pipe(Effect.provideService(VerifiedLedger, verified))
-            yield* sql(() =>
-              db
-                .prepare('UPDATE cache SET origin=? WHERE id=1')
-                .run(JSON.stringify(savedOrigin(origin.state, origin.offset)))
+            const compacted = yield* Effect.result(
+              Effect.gen(function* () {
+                const origin = yield* feed
+                  .rebase()
+                  .pipe(Effect.provideService(VerifiedLedger, verified))
+                yield* sql(() =>
+                  db
+                    .prepare('UPDATE cache SET origin=? WHERE id=1')
+                    .run(JSON.stringify(savedOrigin(origin.state, origin.offset)))
+                )
+              })
             )
+            if (Result.isFailure(compacted)) {
+              yield* Effect.sync(() =>
+                console.warn('[E2EE] Ledger compaction pending', {
+                  code: 'e2ee_ledger_compaction_pending'
+                })
+              ).pipe(Effect.ignoreCause)
+            }
             compactedAt = length
           }
           return yield* status()
@@ -1444,6 +1535,18 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             devices: [...state.devices].map(([key, entry]) => ({
               key,
               kind: entry.kind,
+              recoveryDeviceAvailable: [...state.devices.values()].some(
+                (other) =>
+                  other.kind === 'recovery' && other.membershipId.equals(entry.membershipId)
+              ),
+              requiresRecoveryConfirmation:
+                entry.kind === 'personal' &&
+                ![...state.devices.entries()].some(
+                  ([otherKey, other]) =>
+                    otherKey !== key &&
+                    other.kind === 'personal' &&
+                    other.membershipId.equals(entry.membershipId)
+                ),
               machineId: entry.machineId ?? null,
               self: key === ownKey,
               mayRevoke: Result.isSuccess(
@@ -1532,7 +1635,53 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           )
           return yield* result
         })
+        /** Bind recovery to this workspace's verified ledger, signer and installed keys.
+         * The trust checkpoint comes from the ledger this device has verified. */
+        const recoveryOwner = Effect.fnUntraced(function* (ports: DesktopWorkspaceRecoveryPorts) {
+          const view = (yield* feed.current()).view
+          const self = view.inspectState().devices.get(hex(device.publicKey.toBytes()))
+          if (!self) return yield* fail('device_revoked')
+          return yield* makeWorkspaceRecovery({
+            ...ports,
+            genesis,
+            membershipId: self.membershipId,
+            personalSigner: device,
+            ledger: () => feed.current().pipe(Effect.map((current) => current.view)),
+            installed: keys,
+            trust: {
+              source: 'desktop verified ledger',
+              genesisRecord: creation.record,
+              head: hex(view.head.toBytes()),
+              length: view.length
+            }
+          })
+        })
+        const abandonRecovery = Effect.fnUntraced(function* (
+          ports: Pick<DesktopWorkspaceRecoveryPorts, 'local' | 'submitOriginal'> & {
+            readonly vaultId: string
+          }
+        ) {
+          const view = (yield* feed.current()).view
+          const self = view.inspectState().devices.get(hex(device.publicKey.toBytes()))
+          if (!self) return yield* fail('device_revoked')
+          return yield* abandonWorkspaceRecovery({
+            ...ports,
+            genesis,
+            membershipId: self.membershipId,
+            personalSigner: device,
+            ledger: () => feed.current().pipe(Effect.map((current) => current.view)),
+            genesisRecord: creation.record
+          })
+        })
+        const installRecoveredKeys = Effect.fnUntraced(function* (
+          recovered: readonly (readonly [number, Bytes.EpochKey])[]
+        ) {
+          for (const [epoch, key] of recovered) yield* keys.saveAndReload(epoch, key)
+        })
         return {
+          installRecoveredKeys,
+          recoveryOwner,
+          abandonRecovery,
           manage,
           managementState,
           scope,
@@ -1547,6 +1696,8 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
           seal,
           openContent,
           rpc,
+          signIntent,
+          iroh,
           sharing,
           refreshSharingLedger: refreshManagementHistory,
           // Same selection as KeyDistributor: an admitted device of an active member.
@@ -1780,10 +1931,14 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             entry.memberApprovals.offer(mode, expiresAt)
           )
         ),
-      prepareMemberAdmission: (workspaceId: string, keyPackageHex: string) =>
+      prepareMemberAdmission: (
+        workspaceId: string,
+        keyPackageHex: string,
+        automatic?: { offer: unknown; now: number }
+      ) =>
         run(
           Effect.flatMap(openWorkspace(workspaceId), (entry) =>
-            entry.memberApprovals.prepare(keyPackageHex)
+            entry.memberApprovals.prepare(keyPackageHex, automatic)
           )
         ),
       inspectMemberAdmission: (workspaceId: string, keyPackageHex: string) =>
@@ -1970,6 +2125,32 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             withSharingHistory(entry, workspaceId, remote, readHistory)
           )
         ).pipe(boundary),
+      /** Sign one schedule declaration. The host computes the definition fingerprint
+       * from the document itself; the renderer never supplies a digest or signer. */
+      signScheduleDeclaration: (
+        workspaceId: string,
+        document: Pick<ScheduleDocument, 'definition' | 'prompt' | 'message'>,
+        manualRunKey?: string
+      ) =>
+        Effect.flatMap(run(openWorkspace(workspaceId)), (entry) =>
+          Effect.gen(function* () {
+            const subject = yield* Effect.try({
+              try: () => scheduleDeclarationSubject(document, manualRunKey),
+              catch: () => fail('invalid-input')
+            })
+            const signature = yield* entry.signIntent({
+              ...subject,
+              workspaceId,
+              contentDigest: Uint8Array.from(Buffer.from(subject.contentDigest, 'hex'))
+            })
+            const status = yield* entry.status()
+            return encodeE2eeIntentRecord({
+              kind: subject.kind,
+              signer: Uint8Array.from(Buffer.from(status.signingPublicKey ?? '', 'hex')),
+              signature
+            })
+          })
+        ).pipe(boundary),
       prepareDispatch: (
         workspaceId: string,
         targetMachineId: string,
@@ -2035,6 +2216,25 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
             entry.rpc.acceptResponse(targetMachineId, input, frameHex)
           )
         ),
+      /**
+       * Resolves the machine's iroh route under the host lock without any network
+       * wait. Callers run the route's `ready`/`call` after releasing every lock.
+       */
+      irohPeek: (workspaceId: string, targetMachineId: string) =>
+        run(
+          Effect.gen(function* () {
+            const entry = entries.get(workspaceId)
+            return entry?.iroh ? yield* entry.iroh.peek(targetMachineId) : undefined
+          })
+        ),
+      irohPrepare: (workspaceId: string, targetMachineId: string) =>
+        run(
+          Effect.flatMap(openWorkspace(workspaceId), (entry) =>
+            entry.iroh
+              ? entry.iroh.prepare(targetMachineId)
+              : Effect.fail(new Error('iroh_unavailable'))
+          )
+        ),
       ledgerView: (workspaceId: string) =>
         run(Effect.flatMap(openWorkspace(workspaceId), (entry) => entry.ledgerView())),
       /** Whether this device's verified ledger makes `device` a key distribution target. */
@@ -2073,6 +2273,33 @@ export const makeDesktopE2eeRuntimeHost = Effect.fn('DesktopE2eeRuntimeHost.open
                     ),
                     Effect.catch(() => Effect.succeed('e2ee_key_status_unavailable'))
                   )
+        ),
+      /** Default-off: install the keys a restore read through R into this device. */
+      installRecoveredKeys: (
+        workspaceId: string,
+        recovered: readonly (readonly [number, Bytes.EpochKey])[]
+      ) =>
+        run(openWorkspace(workspaceId)).pipe(
+          Effect.flatMap((entry) => entry.installRecoveredKeys(recovered))
+        ),
+      /** Default-off: a recovery owner for one workspace, in the caller's Scope. */
+      workspaceRecovery: (workspaceId: string, ports: DesktopWorkspaceRecoveryPorts) =>
+        run(openWorkspace(workspaceId)).pipe(Effect.flatMap((entry) => entry.recoveryOwner(ports))),
+      workspaceRecoveryAbandon: (
+        workspaceId: string,
+        ports: Pick<DesktopWorkspaceRecoveryPorts, 'local' | 'submitOriginal'> & {
+          readonly vaultId: string
+        }
+      ) =>
+        run(openWorkspace(workspaceId)).pipe(
+          Effect.flatMap((entry) => entry.abandonRecovery(ports))
+        ),
+      refreshWorkspaceLedger: (
+        workspaceId: string,
+        history: DesktopE2eeManagementRemote['history']
+      ) =>
+        run(openWorkspace(workspaceId)).pipe(
+          Effect.flatMap((entry) => entry.refreshSharingLedger(history))
         ),
       ingestLedgerRecords: (workspaceId: string, page: E2eeWorkspaceHistoryPage) =>
         run(

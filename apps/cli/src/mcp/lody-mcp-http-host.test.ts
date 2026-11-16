@@ -1,4 +1,7 @@
 import type { ScheduleCommand } from '@lody/shared';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type http from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Logger } from '@/utils/logger';
@@ -191,6 +194,34 @@ describe('MCP HTTP host wire behavior', () => {
       expect(JSON.stringify(help.inputSchema)).toContain(
         'Do not omit: some Role creates otherwise default to a Tab'
       );
+    }
+  );
+
+  it.each([undefined, '/synthetic/explicit.sock'])(
+    'accepts HTTP MCP context without daemon metadata on Windows (override=%s)',
+    async (override) => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-mcp-http-direct-'));
+      vi.stubEnv('LODY_DATA_DIR', directory);
+      vi.stubEnv('LODY_MCP_SOCKET_PATH', override ?? '');
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        daemon.call.mockImplementation(async () => ({
+          ok: true,
+          result: { context: __lodyMcpServerInternals.getSessionContext() },
+        }));
+        const response = await callTool('2026-07-28', 'session-direct', 'lody_schedule_list', {});
+        expect(response.status).toBe(200);
+        const payload = await response.json();
+        expect(payload.result.isError).not.toBe(true);
+        const result = JSON.parse(payload.result.content[0].text);
+        expect(result.context.sessionId).toBe('session-direct');
+        expect(result.context.localControlSocketPath).toBe(override);
+      } finally {
+        if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+        vi.unstubAllEnvs();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
     }
   );
 

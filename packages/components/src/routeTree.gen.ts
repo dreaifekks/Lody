@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root';
 import { Route as ResetPasswordRouteImport } from './routes/reset-password';
+import { Route as RecoveryRouteImport } from './routes/recovery';
 import { Route as OnboardingRouteImport } from './routes/onboarding';
 import { Route as NotFoundRouteImport } from './routes/notFound';
 import { Route as LoginRouteImport } from './routes/login';
@@ -22,6 +23,7 @@ import { Route as WorkspaceNameRouteImport } from './routes/$workspaceName';
 import { Route as IndexRouteImport } from './routes/index';
 import { Route as WorkspaceNameIndexRouteImport } from './routes/$workspaceName/index';
 import { Route as WorkspaceCreateRouteImport } from './routes/workspace/create';
+import { Route as SettingsGithubRouteImport } from './routes/settings.github';
 import { Route as JoinTokenRouteImport } from './routes/join/$token';
 import { Route as InviteInvitationIdRouteImport } from './routes/invite/$invitationId';
 import { Route as DesktopGithubInstallRouteImport } from './routes/desktop/github-install';
@@ -70,6 +72,11 @@ import { Route as WorkspaceNameAuthLocalMachineIdLocalProjectIdRouteImport } fro
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
   id: '/reset-password',
   path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any);
+const RecoveryRoute = RecoveryRouteImport.update({
+  id: '/recovery',
+  path: '/recovery',
   getParentRoute: () => rootRouteImport,
 } as any);
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -130,6 +137,11 @@ const WorkspaceNameIndexRoute = WorkspaceNameIndexRouteImport.update({
 const WorkspaceCreateRoute = WorkspaceCreateRouteImport.update({
   id: '/workspace/create',
   path: '/workspace/create',
+  getParentRoute: () => rootRouteImport,
+} as any);
+const SettingsGithubRoute = SettingsGithubRouteImport.update({
+  id: '/settings/github',
+  path: '/settings/github',
   getParentRoute: () => rootRouteImport,
 } as any);
 const JoinTokenRoute = JoinTokenRouteImport.update({
@@ -375,11 +387,13 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute;
   '/notFound': typeof NotFoundRoute;
   '/onboarding': typeof OnboardingRoute;
+  '/recovery': typeof RecoveryRoute;
   '/reset-password': typeof ResetPasswordRoute;
   '/desktop/checkout-return': typeof DesktopCheckoutReturnRoute;
   '/desktop/github-install': typeof DesktopGithubInstallRoute;
   '/invite/$invitationId': typeof InviteInvitationIdRoute;
   '/join/$token': typeof JoinTokenRoute;
+  '/settings/github': typeof SettingsGithubRoute;
   '/workspace/create': typeof WorkspaceCreateRoute;
   '/$workspaceName/': typeof WorkspaceNameIndexRoute;
   '/$workspaceName/archive': typeof WorkspaceNameAuthArchiveRoute;
@@ -432,12 +446,14 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute;
   '/notFound': typeof NotFoundRoute;
   '/onboarding': typeof OnboardingRoute;
+  '/recovery': typeof RecoveryRoute;
   '/reset-password': typeof ResetPasswordRoute;
   '/$workspaceName': typeof WorkspaceNameIndexRoute;
   '/desktop/checkout-return': typeof DesktopCheckoutReturnRoute;
   '/desktop/github-install': typeof DesktopGithubInstallRoute;
   '/invite/$invitationId': typeof InviteInvitationIdRoute;
   '/join/$token': typeof JoinTokenRoute;
+  '/settings/github': typeof SettingsGithubRoute;
   '/workspace/create': typeof WorkspaceCreateRoute;
   '/$workspaceName/archive': typeof WorkspaceNameAuthArchiveRoute;
   '/$workspaceName/chat': typeof WorkspaceNameAuthChatRoute;
@@ -488,12 +504,14 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute;
   '/notFound': typeof NotFoundRoute;
   '/onboarding': typeof OnboardingRoute;
+  '/recovery': typeof RecoveryRoute;
   '/reset-password': typeof ResetPasswordRoute;
   '/$workspaceName/_auth': typeof WorkspaceNameAuthRouteWithChildren;
   '/desktop/checkout-return': typeof DesktopCheckoutReturnRoute;
   '/desktop/github-install': typeof DesktopGithubInstallRoute;
   '/invite/$invitationId': typeof InviteInvitationIdRoute;
   '/join/$token': typeof JoinTokenRoute;
+  '/settings/github': typeof SettingsGithubRoute;
   '/workspace/create': typeof WorkspaceCreateRoute;
   '/$workspaceName/': typeof WorkspaceNameIndexRoute;
   '/$workspaceName/_auth/archive': typeof WorkspaceNameAuthArchiveRoute;
@@ -549,11 +567,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/notFound'
     | '/onboarding'
+    | '/recovery'
     | '/reset-password'
     | '/desktop/checkout-return'
     | '/desktop/github-install'
     | '/invite/$invitationId'
     | '/join/$token'
+    | '/settings/github'
     | '/workspace/create'
     | '/$workspaceName/'
     | '/$workspaceName/archive'
@@ -606,12 +626,14 @@ export interface FileRouteTypes {
     | '/login'
     | '/notFound'
     | '/onboarding'
+    | '/recovery'
     | '/reset-password'
     | '/$workspaceName'
     | '/desktop/checkout-return'
     | '/desktop/github-install'
     | '/invite/$invitationId'
     | '/join/$token'
+    | '/settings/github'
     | '/workspace/create'
     | '/$workspaceName/archive'
     | '/$workspaceName/chat'
@@ -661,12 +683,14 @@ export interface FileRouteTypes {
     | '/login'
     | '/notFound'
     | '/onboarding'
+    | '/recovery'
     | '/reset-password'
     | '/$workspaceName/_auth'
     | '/desktop/checkout-return'
     | '/desktop/github-install'
     | '/invite/$invitationId'
     | '/join/$token'
+    | '/settings/github'
     | '/workspace/create'
     | '/$workspaceName/'
     | '/$workspaceName/_auth/archive'
@@ -721,11 +745,13 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute;
   NotFoundRoute: typeof NotFoundRoute;
   OnboardingRoute: typeof OnboardingRoute;
+  RecoveryRoute: typeof RecoveryRoute;
   ResetPasswordRoute: typeof ResetPasswordRoute;
   DesktopCheckoutReturnRoute: typeof DesktopCheckoutReturnRoute;
   DesktopGithubInstallRoute: typeof DesktopGithubInstallRoute;
   InviteInvitationIdRoute: typeof InviteInvitationIdRoute;
   JoinTokenRoute: typeof JoinTokenRoute;
+  SettingsGithubRoute: typeof SettingsGithubRoute;
   WorkspaceCreateRoute: typeof WorkspaceCreateRoute;
   WorkspaceE2eeWorkspaceIdRoute: typeof WorkspaceE2eeWorkspaceIdRoute;
 }
@@ -737,6 +763,13 @@ declare module '@tanstack/react-router' {
       path: '/reset-password';
       fullPath: '/reset-password';
       preLoaderRoute: typeof ResetPasswordRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    '/recovery': {
+      id: '/recovery';
+      path: '/recovery';
+      fullPath: '/recovery';
+      preLoaderRoute: typeof RecoveryRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     '/onboarding': {
@@ -821,6 +854,13 @@ declare module '@tanstack/react-router' {
       path: '/workspace/create';
       fullPath: '/workspace/create';
       preLoaderRoute: typeof WorkspaceCreateRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    '/settings/github': {
+      id: '/settings/github';
+      path: '/settings/github';
+      fullPath: '/settings/github';
+      preLoaderRoute: typeof SettingsGithubRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     '/join/$token': {
@@ -1285,11 +1325,13 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   NotFoundRoute: NotFoundRoute,
   OnboardingRoute: OnboardingRoute,
+  RecoveryRoute: RecoveryRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   DesktopCheckoutReturnRoute: DesktopCheckoutReturnRoute,
   DesktopGithubInstallRoute: DesktopGithubInstallRoute,
   InviteInvitationIdRoute: InviteInvitationIdRoute,
   JoinTokenRoute: JoinTokenRoute,
+  SettingsGithubRoute: SettingsGithubRoute,
   WorkspaceCreateRoute: WorkspaceCreateRoute,
   WorkspaceE2eeWorkspaceIdRoute: WorkspaceE2eeWorkspaceIdRoute,
 };

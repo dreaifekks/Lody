@@ -86,6 +86,7 @@ describe('Chat-only schedule handoff', () => {
     const metas = new Map<string, SessionMeta>();
     const mirrors = new Map<string, Mirror<typeof sessionDocSchema>>();
     const manager = {
+      isEncryptedWorkspace: () => false,
       repo: {
         getDocMeta: async (id: string) => (metas.has(id) ? { meta: metas.get(id) } : undefined),
         upsertDocMeta: async (id: string, patch: Partial<SessionMeta>) => {
@@ -231,7 +232,9 @@ describe('Chat-only schedule handoff', () => {
       dispatch: (prepared) => commitPreparedSessionDispatch(manager, prepared),
       isFinished: async () => false,
       publish: async () => {},
-      onError: () => {},
+      onError: (error) => {
+        throw error;
+      },
     };
 
     const engine = new ScheduleEngine(ports);
@@ -294,6 +297,7 @@ describe('Owned-chat schedule handoff', () => {
     const metas = new Map<string, SessionMeta>();
     const mirrors = new Map<string, Mirror<typeof sessionDocSchema>>();
     const manager = {
+      isEncryptedWorkspace: () => false,
       repo: {
         getDocMeta: async (id: string) => (metas.has(id) ? { meta: metas.get(id) } : undefined),
         upsertDocMeta: async (id: string, patch: Partial<SessionMeta>) => {
@@ -301,6 +305,7 @@ describe('Owned-chat schedule handoff', () => {
         },
         flush: async () => {},
       },
+      isEncryptedWorkspace: () => false,
       getOrCreateSessionDoc: async (id: string) => {
         if (!mirrors.has(id))
           mirrors.set(
@@ -374,7 +379,9 @@ describe('Owned-chat schedule handoff', () => {
       // The chat is idle between runs, so the second run may be handed off.
       isFinished: async () => true,
       publish: async () => {},
-      onError: () => {},
+      onError: (error) => {
+        throw error;
+      },
     };
     const engine = new ScheduleEngine(ports);
     try {

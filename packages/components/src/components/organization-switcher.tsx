@@ -148,8 +148,13 @@ function CloudOrganizationSwitcher() {
                     size="large"
                   />
                   <div className="flex flex-col items-start">
-                    <span className="text-lg font-semibold truncate max-w-[120px]">
-                      {activeOrganization.name}
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-lg font-semibold truncate max-w-[120px]">
+                        {activeOrganization.name}
+                      </span>
+                      {isListedEncryptedWorkspace(activeOrganization) ? (
+                        <EncryptedWorkspaceMark />
+                      ) : null}
                     </span>
                   </div>
                   <div className="flex items-center gap-1 pl-2">
@@ -184,8 +189,13 @@ function CloudOrganizationSwitcher() {
                   size="large"
                 />
                 <div className="flex flex-col items-start">
-                  <span className="text-lg font-semibold truncate max-w-[120px]">
-                    {activeOrganization.name}
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-lg font-semibold truncate max-w-[120px]">
+                      {activeOrganization.name}
+                    </span>
+                    {isListedEncryptedWorkspace(activeOrganization) ? (
+                      <EncryptedWorkspaceMark />
+                    ) : null}
                   </span>
                 </div>
                 <div className="flex items-center gap-1 pl-2">

@@ -1,6 +1,10 @@
 import { sharingReplySchemas } from '@lody/e2ee-machine-sharing/schemas';
 import { StreamsClient } from '@loro-dev/streams-client';
-import { CloudE2eeMemberRemoved, CloudE2eeDeviceRevoked } from './cloud-e2ee-errors';
+import {
+  CloudE2eeMemberRemoved,
+  CloudE2eeDeviceRevoked,
+  ledgerReadFailure,
+} from './cloud-e2ee-errors';
 import { Effect } from 'effect';
 import { SessionAttachmentTransfer } from './session-attachment-transfer';
 import { getCliPlatformKind } from './cli-platform';
@@ -66,6 +70,58 @@ export interface CloudCliPortOptions {
   /** Optional operator mirror; the public artifact channel is the default. */
   runtimeArtifactsBaseUrl?: string;
   logger: Logger;
+}
+
+/** Source CLI credential stays on HTTPS; relay only this exact-session read proof. */
+export async function mintCliSessionHistoryReadProof(options: {
+  token: string;
+  authBaseUrl?: string;
+  authSiteUrl?: string;
+  logger: Logger;
+  workspaceId: string;
+  machineId: string;
+  sessionId: string;
+  sourceMachineId: string;
+  rootSessionId: string;
+  sessionOwnerUserId?: string;
+  localProjectId?: string;
+  requester?: { userId: string; machineId: string };
+  edit?: boolean;
+  requestId?: string;
+  intentDigest?: string;
+}): Promise<string> {
+  if (!options.authBaseUrl) throw new Error('Cloud history authorization is unavailable');
+  const response = await getCliHttpFetch({ logger: options.logger })(
+    new URL(
+      options.edit
+        ? '/api/session-history/request-edit-token-cli'
+        : '/api/session-history/request-token-cli',
+      options.authSiteUrl?.trim() || deriveConvexSiteUrl(options.authBaseUrl)
+    ),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.token}` },
+      body: JSON.stringify({
+        workspaceId: options.workspaceId,
+        machineId: options.machineId,
+        sessionId: options.sessionId,
+        sourceMachineId: options.sourceMachineId,
+        rootSessionId: options.rootSessionId,
+        sessionOwnerUserId: options.sessionOwnerUserId,
+        localProjectId: options.localProjectId,
+        ...(options.requester ? { requester: options.requester } : {}),
+        ...(options.edit
+          ? { requestId: options.requestId, intentDigest: options.intentDigest }
+          : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    }
+  );
+  if (!response.ok) throw new Error('Session history authorization was refused.');
+  return z
+    .object({ requestToken: z.string().min(1).max(8192) })
+    .strict()
+    .parse(await response.json()).requestToken;
 }
 
 export function createCloudSessionSharingPort(options: {
@@ -186,15 +242,44 @@ export function createCloudStreamsTokenPort(options: {
 
 /** Device routes are lazy: constructing the ordinary cloud port never opens
  * custody, obtains a device token, or touches the operating system keyring. */
+/**
+ * Lody iroh relays from the official build composition (`LODY_IROH_RELAYS`, a
+ * comma-separated list of https URLs, and `LODY_IROH_RELAY_TOKEN`). Malformed or
+ * absent configuration means no iroh route; it is never fetched from the backend.
+ */
+export function irohRelaysFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+): CloudE2eePort['irohRelays'] {
+  const urls = (env.LODY_IROH_RELAYS ?? '')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean);
+  if (urls.length === 0 || urls.length > 16) return undefined;
+  for (const url of urls) {
+    try {
+      if (new URL(url).protocol !== 'https:') return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const token = env.LODY_IROH_RELAY_TOKEN?.trim();
+  return Object.freeze({ urls: Object.freeze(urls), ...(token ? { token } : {}) });
+}
+
 export function createCloudE2eePort(
   options: Pick<CloudCliPortOptions, 'authBaseUrl' | 'logger'> & { token?: string }
 ): CloudE2eePort {
+  const irohRelays = irohRelaysFromEnv();
   const authBaseUrl = normalizeBaseUrl(options.authBaseUrl);
   const fetchImpl = getCliHttpFetch({ logger: options.logger });
-  const client = (signal: AbortSignal) =>
+  const client = (signal: AbortSignal, onStatus?: (status: number) => void) =>
     new ConvexHttpClient(authBaseUrl, {
       logger: false,
-      fetch: (input, init) => fetchImpl(input, { ...init, signal }),
+      fetch: async (input, init) => {
+        const response = await fetchImpl(input, { ...init, signal });
+        onStatus?.(response.status);
+        return response;
+      },
     });
   const tokenSchema = z.object({
     token: z.string().min(1),
@@ -231,6 +316,7 @@ export function createCloudE2eePort(
     }
   };
   return {
+    ...(irohRelays ? { irohRelays } : {}),
     machineSharing: {
       readHead: async (input) =>
         sharingReplySchemas.readHead.parse(
@@ -300,15 +386,22 @@ export function createCloudE2eePort(
       };
     },
     getHistory: async (input) => {
+      let status: number | undefined;
       try {
         return e2eeHistoryPageSchema.parse(
-          await client(AbortSignal.timeout(30_000)).action(api.e2eeWorkspaces.history, {
+          await client(AbortSignal.timeout(30_000), (value) => {
+            status = value;
+          }).action(api.e2eeWorkspaces.history, {
             ...input,
             ...(options.token === undefined ? {} : { cliToken: options.token }),
           })
         );
       } catch (cause) {
-        return classifyE2eeRejection(cause);
+        try {
+          return classifyE2eeRejection(cause);
+        } catch (classified) {
+          throw ledgerReadFailure(classified, status);
+        }
       }
     },
     getContentToken: (input) => getContentToken(input, AbortSignal.timeout(30_000)),
@@ -457,6 +550,53 @@ export function createCloudCliPort(options: CloudCliPortOptions): CloudPort {
     sessionSharing: createCloudSessionSharingPort(options),
     identity: options.identity,
     access: {
+      verifySessionHistoryRead: async (request) => {
+        const response = await getCliHttpFetch({ logger: options.logger })(
+          new URL(
+            '/api/session-history/verify',
+            options.authSiteUrl?.trim() || deriveConvexSiteUrl(options.authBaseUrl)
+          ),
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${options.token}`,
+            },
+            body: JSON.stringify(request),
+            signal: AbortSignal.timeout(10_000),
+          }
+        );
+        if (!response.ok) return false;
+        return z
+          .object({ allowed: z.boolean() })
+          .strict()
+          .parse(await response.json()).allowed;
+      },
+      verifySessionHistoryWrite: async (request) => {
+        const response = await getCliHttpFetch({ logger: options.logger })(
+          new URL(
+            '/api/session-history/verify-edit',
+            options.authSiteUrl?.trim() || deriveConvexSiteUrl(options.authBaseUrl)
+          ),
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${options.token}`,
+            },
+            body: JSON.stringify(request),
+            signal: AbortSignal.timeout(10_000),
+          }
+        );
+        if (!response.ok) return null;
+        const value = z
+          .object({ allowed: z.boolean(), expiresAt: z.number().int().nonnegative().optional() })
+          .strict()
+          .parse(await response.json());
+        return value.allowed && value.expiresAt !== undefined
+          ? { expiresAt: value.expiresAt }
+          : null;
+      },
       watchWorkspaceAccess: (listener, onError) =>
         subscriptionClient.onUpdate(
           api.deviceAuth.listMyWorkspacesForCliToken,
@@ -832,4 +972,29 @@ export function createCloudRemoteMachinePairingClaim(options: {
     if (!response.ok) throw new Error('e2ee_pairing_unavailable_retry_same_command');
     return response.json();
   };
+}
+
+/** Ordinary source-daemon preflight; metadata is routing evidence under the UI trust model. */
+export async function canReadSessionForCliRequester(input: {
+  token: string;
+  authBaseUrl?: string;
+  workspaceId: string;
+  machineId: string;
+  sessionId: string;
+  rootSessionId: string;
+  sessionOwnerUserId?: string;
+  localProjectId?: string;
+  requester: { userId: string; machineId: string };
+}): Promise<boolean> {
+  const { token, authBaseUrl, ...target } = input;
+  if (!authBaseUrl) return false;
+  return z
+    .object({ allowed: z.boolean() })
+    .strict()
+    .parse(
+      await new ConvexHttpClient(normalizeBaseUrl(authBaseUrl)).query(
+        api.machines.canRequestSessionReadFromCliToken,
+        { ...target, cliToken: token }
+      )
+    ).allowed;
 }

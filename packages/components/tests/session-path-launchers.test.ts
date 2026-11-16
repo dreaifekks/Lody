@@ -103,7 +103,7 @@ describe('built-in path launchers', () => {
         label: 'Delta',
       });
       expect(buildPathLauncherProbes([delta!], targetPath, platform)).toEqual([
-        { launcherId: 'delta', input },
+        { launcherId: 'delta', targetPath, targetKind: 'directory' },
       ]);
       expect(
         pathLauncherPreferenceSchema.parse({ selectedLauncherId: 'delta' }).selectedLauncherId
@@ -345,8 +345,9 @@ describe('a folder of another machine', () => {
     expect(
       buildPathLauncherProbes(all, '/srv/app', 'darwin', ssh).map(({ launcherId }) => launcherId)
     ).toEqual(['vscode', 'cursor', 'antigravity', 'windsurf', 'zed']);
-    expect(buildPathLauncherProbes(all, '/srv/app', 'darwin', ssh)[4]?.input).toMatchObject({
-      command: { command: 'zed', args: ['ssh://me@10.0.0.7/srv/app'] },
+    expect(buildPathLauncherProbes(all, '/srv/app', 'darwin', ssh)[4]).toMatchObject({
+      launcherId: 'zed', targetPath: '/srv/app', targetKind: 'directory',
+      sshDestination: { user: 'me', host: '10.0.0.7' },
     });
     // The same launchers asked about a folder of this machine.
     expect(buildPathLauncherProbes(all, '/srv/app', 'darwin')).toHaveLength(all.length);

@@ -1,3 +1,4 @@
+import { beforeEach } from 'vitest';
 import { SessionArchiveConfirmationDialog } from '../src/components/sessions/session-archive-confirmation';
 import { normalizeAgentRole } from '@lody/shared';
 // @vitest-environment jsdom
@@ -213,7 +214,7 @@ vi.mock('@/hooks/use-visible-session-metas', async () => {
   const visibleMachineIds = new Set(['machine', 'remote', 'devnuc', 'machine-1']);
   const visibleLocalProjectKeys = new Set<string>();
   return {
-    useVisibleMachineIdSet: () => ({ visibleMachineIds, isLoading: false }),
+    useVisibleMachineIdSet: () => ({ visibleMachineIds, ownedMachineIds: visibleMachineIds, isLoading: false }),
     useVisibleLocalProjectKeySet: () => ({ visibleLocalProjectKeys, isLoading: false }),
     useVisibleSessionMetas: () => ({ allActiveSessions: read(active) }),
     useVisibleArchivedSessionMetas: () => ({ archivedSessions: read(archived) }),
@@ -323,6 +324,7 @@ function catalogRuntime(rows = new Map<string, { key: readonly unknown[]; value:
   const runtime = {
     workspaceId: 'ws',
     workspaceSlug: 'ws',
+    accountId: 'user',
     repo: {
       openFlockDoc: async () => ({
         flock: { scan: () => rows.values() },
@@ -346,7 +348,7 @@ function catalogRuntime(rows = new Map<string, { key: readonly unknown[]; value:
 const testPlatform: PlatformProvider = {
   kind: 'cloud',
   identity: {
-    session: createStaticStore({ status: 'unauthenticated' }),
+    session: createStaticStore({ status: 'authenticated', user: { id: 'user', name: 'User', email: 'user@example.com' } }),
     signOut: async () => {},
   },
   workspaces: {
@@ -408,6 +410,7 @@ async function boardRuntime(sessions: readonly SessionMeta[]) {
 function workspaceStore(runtime: WorkspaceRuntime) {
   const store = createStore();
   store.set(runtimeAtom, runtime);
+  store.set(userAtom, { id: 'user', name: 'User', email: 'user@example.com' });
   store.set(currentWorkspaceIdAtom, 'ws' as WorkspaceId);
   store.set(currentWorkspaceSlugAtom, 'ws');
   store.set(localProbeResultAtom, { ok: true, machineId: 'machine' });
@@ -3146,6 +3149,7 @@ it("follows a Board document's links in place, a session's file as well", async 
   store.set(runtimeAtom, {
     workspaceId: 'ws',
     workspaceSlug: 'ws',
+    accountId: 'user',
     requestFilePreview: async (_machineId: string, request: { path: string }) => {
       probes.push(request.path);
       return request.path === 'docs/guide.md'
@@ -3346,6 +3350,7 @@ it('drops a link still being looked up once the reader has gone back', async () 
   store.set(runtimeAtom, {
     workspaceId: 'ws',
     workspaceSlug: 'ws',
+    accountId: 'user',
     requestFilePreview: (_machineId: string, request: { path: string }) =>
       new Promise((resolve) =>
         lookups.push({
@@ -3577,6 +3582,7 @@ it("opens a previewed document's links beside it instead of copying them", async
   store.set(runtimeAtom, {
     workspaceId: 'ws',
     workspaceSlug: 'ws',
+    accountId: 'user',
     requestFilePreview: async (_machineId: string, request: { path: string }) =>
       request.path === 'README.md'
         ? { status: 'error', code: 'too_large', path: request.path }
@@ -4070,4 +4076,8 @@ describe('Board project scope picker', () => {
     if (!row) throw new Error('Expected the retired row');
     expect(toggleBoardScopeOption([gone], row)).toEqual([]);
   });
+});
+
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 });

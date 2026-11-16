@@ -6,34 +6,33 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
 ## `agent-client.ts`
 
 - Consume Core extensions via `agentCapabilities._meta.lody`, session `_meta.lody`, and
-  `_lody/...`. Provider/pre-Core readers stay in `lody-acp-extension.ts`; consumers stay neutral.
-- Grok Always Approve uses allow_once, never lasting grants. Accepted config changes
-  drain pending calls through durable permissions; questions stay interactive. Default
-  builtin Grok terminal capability to false. Map ACP ENOENT to RequestError.resourceNotFound;
-  preserve other errors/Session validation, never empty-content fallback.
-
-- Send the driving model/config as `_meta.lody.sessionConfig` on establishment;
-  adapters own provider translation. Successful session/set_config_option changes become
-  replacement startup state. Cache `_meta.lody.modelReasoningEfforts` for Codex model[effort].
-  Setup, set_config_option responses and config_option_update project configOptions:
-  present values (including []) replace snapshots; omission alone uses the requested
-  value. Update replacement state and currentValue. Convert Core goal epoch seconds
-  to durable milliseconds and limited to blocked.
-
-- Keep both builtin lody MCP transports; never execute MCP tools inside the daemon.
-
-- MCP HTTP binds loopback with a bearer token. On Linux verify peer uid through
-  /proc/net/tcp{,6}; refuse unprovable peers or unreadable socket tables.
-  LODY_MCP_HTTP_DISABLED=1 forces stdio. Its explicit env allowlist preserves
-  LODY_AUTH_URL, LODY_AUTH_SITE_URL and LODY_SERVER_URL for cloud orchestration;
-  local assembly clears them before startup. Never add CLI credentials or secrets.
-
-- Pass same MCP config on initial and replacement DeepSeek Harness sessions.
-- Resolve MCPs before initialize. Before remote baseline, complete selected rows may start
-  with a warning. Missing rows retain the typed cold error, reload once before Provider
-  Session establishment, then fail if still missing. Check completeness before auth
-  preparation so rechecks cannot repeat it.
-
+  `_lody/...`. Provider compatibility stays in `lody-acp-extension.ts` and `antigravity-quota.ts`; consumers stay neutral.
+- Grok Always Approve uses `allow_once`, never lasting grants; pending calls drain through
+  the durable permission flow on accepted config changes. Questions remain interactive.
+- Builtin Grok must default `clientCapabilities.terminal` to false.
+- ACP file reads map native `ENOENT` to `RequestError.resourceNotFound`; preserve
+  other failures and session validation rather than returning empty content.
+- Send the driving turn's model/config on session establishment as `_meta.lody.sessionConfig`;
+  provider-specific startup translation belongs in the ACP adapter. `session/set_config_option`
+  stays the live-session switch, and a successful selection becomes a later replacement's
+  startup state.
+- Cache session `_meta.lody.modelReasoningEfforts`; Codex `model[effort]` only.
+- Project config from setup, `set_config_option` responses, and `config_option_update`.
+  Present `configOptions` (including `[]`) replaces the snapshot; only omission falls back
+  to the requested value, updating both replacement startup state and `currentValue`.
+- Convert Core `_meta.lody.goal` epoch seconds to durable milliseconds here, and normalize
+  `limited` to the durable `blocked` status.
+- Keep both built-in `lody` MCP transports. INVARIANT: MCP tools must not run inside the
+  daemon process.
+- MCP HTTP: loopback bind plus bearer token; on Linux prove the peer socket's uid via
+  `/proc/net/tcp{,6}`, REJECT an unprovable peer, and refuse to start when it is
+  unreadable. `LODY_MCP_HTTP_DISABLED=1` forces stdio. Stdio forwards nonempty `LODY_PLATFORM`, `LODY_DATA_DIR`, `LODY_AUTH_URL`, `LODY_AUTH_SITE_URL` and `LODY_SERVER_URL`. Discover control lazily unless `LODY_MCP_SOCKET_PATH` overrides it. Local assembly clears cloud endpoints before startup; never forward credentials or secrets.
+- Pass the same MCP config on initial and replacement DeepSeek Harness sessions.
+- Workspace MCP resolution starts before `initialize` to overlap the handshake.
+  Before the first remote baseline, complete selected rows may start locally with a
+  config warning. Missing selected rows preserve the typed cold error and may reload
+  once before provider-session establishment; still missing fails initialization.
+  Check completeness before preparing local authentication so a recheck cannot repeat it.
 - Acknowledged steer ends `applied`, `not-applied`, or `unknown`. Only adapter proof maps
   `not-applied`; transport/process ambiguity stays `unknown`. Await the request answer even
   after the turn response; Session execution never classifies provider errors.

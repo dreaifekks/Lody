@@ -178,6 +178,7 @@ const meta = {
   ],
   args: {
     rows,
+    currentUserId: 'owner',
     runtimes,
     ready: true,
     now: NOW,
@@ -239,6 +240,25 @@ function MacElectronCollapsedSidebar({ children }: { children: ReactNode }) {
 }
 
 export const List: Story = {};
+
+export const Ownership: Story = {
+  args: {
+    rows: rows.map((item, index) => (index % 2 ? { ...item, ownerId: 'teammate' } : item)),
+    contextForRow: (item) => ({
+      ...context(item),
+      owner: item.ownerId === 'teammate' ? 'Alex' : 'You',
+    }),
+  },
+};
+
+export const MySchedules: Story = {
+  args: { ...Ownership.args, initialFilters: { owner: 'mine' } },
+};
+
+export const OtherMembersSchedules: Story = {
+  args: { ...Ownership.args, initialFilters: { owner: 'others' } },
+};
+
 export const SidebarHidden: Story = {
   render: (args) => (
     <CollapsedSidebar>

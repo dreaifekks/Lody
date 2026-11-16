@@ -1,5 +1,10 @@
 import { Cause, Clock, Effect, Exit, Result, Semaphore, type Layer } from 'effect';
-import type { E2eeWorkspaceRuntime, E2eeRuntimeStatus, E2eeContentRoom } from '@lody/platform';
+import type {
+  E2eeWorkspaceRuntime,
+  E2eeRuntimeStatus,
+  E2eeContentRoom,
+  E2eeMemberKeyDelivery,
+} from '@lody/platform';
 import { encryptedWorkspaceRoom } from '@lody/shared/workspace-streams-content';
 import {
   Bytes,
@@ -8,14 +13,35 @@ import {
   hashRecordBytes,
   type LedgerView,
 } from '@lody/e2ee-core/protocol';
+import {
+  ACCOUNT_APPROVAL_REFRESH_TIMEOUT_MS,
+  KEY_DELIVERY_RETRY_DELAYS,
+  personalHostAccountPairing,
+  type AccountPairingIdentityHost,
+} from './account-requester';
 import { makeOwnedPersonalDeviceHost, type PersonalHostPorts } from './owned-host';
 import { PersonalPairingOfferSchema, type PersonalPairingOffer } from './pairing';
 import { fail, PersonalRuntimeFailure } from './errors';
 import { fromHex, toHex } from './bytes';
+import { decodeMemberKeyPackage } from './member';
 import { captureSeal, captureOpen, capturePage } from './runtime-input';
+
+const requesters = new WeakMap<E2eeWorkspaceRuntime, AccountPairingIdentityHost>();
+/** Purpose-bound account-pairing operations on this runtime's existing owned host.
+ * Returns null for foreign runtimes; never constructs another identity owner. */
+export const personalRuntimeAccountRequester = (runtime: E2eeWorkspaceRuntime) =>
+  requesters.get(runtime) ?? null;
 
 type Host = Effect.Success<ReturnType<typeof makeOwnedPersonalDeviceHost>>;
 type Session = Effect.Success<ReturnType<Host['open']>>;
+/** Recovery uses the same identity owner as content and account approval. */
+export interface PersonalRuntimeRecovery {
+  restore(input: Parameters<Host['restoreRecovery']>[0]): ReturnType<Host['restoreRecovery']>;
+  setup(input: Parameters<Session['setupRecovery']>[0]): ReturnType<Session['setupRecovery']>;
+}
+const recoveries = new WeakMap<E2eeWorkspaceRuntime, PersonalRuntimeRecovery>();
+export const personalRuntimeRecovery = (runtime: E2eeWorkspaceRuntime) =>
+  recoveries.get(runtime) ?? null;
 /** Real application ports for one pinned workspace. No backend or identity creation is implicit. */
 export interface PersonalRuntimeOptions<E> {
   readonly accountId: string;
@@ -38,6 +64,20 @@ export interface PersonalRuntimeOptions<E> {
   readonly recordCreated?: (
     input: Parameters<E2eeWorkspaceRuntime['recordCreated']>[0]
   ) => Effect.Effect<void, unknown>;
+  /** Member key delivery's due-retry schedule; tests inject `sleep` instead of waiting. */
+  readonly keyDeliveryRetry?: {
+    readonly delays?: readonly number[];
+    readonly sleep?: (ms: number) => Effect.Effect<void>;
+  };
+  /** The background key round after an open: its start delay and minimum spacing in
+   * milliseconds; tests inject `sleep` instead of waiting. */
+  readonly openKeyRound?: {
+    readonly delay?: number;
+    readonly interval?: number;
+    readonly sleep?: (ms: number) => Effect.Effect<void>;
+  };
+  /** Bounded local diagnostics for background work no caller awaits. */
+  readonly diagnostics?: (scope: string, cause: unknown) => void;
 }
 
 /**
@@ -206,6 +246,329 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
     if (result.outcome !== 'Committed') return yield* fail('conflict');
     return undefined;
   });
+  // Key delivery after a member admission. Delivery never holds or undoes the admission;
+  // its state is reason codes only. An attempt short of mailbox evidence is retried on
+  // the desktop's bounded backoff while the entry stays `delivering`; only an exhausted
+  // schedule or a sender that can never send leaves it `failed` for a manual retry.
+  const deliveries = new Map<
+    string,
+    { device: string } & Omit<E2eeMemberKeyDelivery, 'requestId'>
+  >();
+  const deliveryView = (requestId: string): E2eeMemberKeyDelivery => {
+    const entry = deliveries.get(requestId)!;
+    return { requestId, state: entry.state, ...(entry.code ? { code: entry.code } : {}) };
+  };
+  const deliveryDelays = options.keyDeliveryRetry?.delays ?? KEY_DELIVERY_RETRY_DELAYS;
+  const deliverySleep = options.keyDeliveryRetry?.sleep ?? ((ms: number) => Effect.sleep(ms));
+  // One attempt holds the reader only while it runs, never across the backoff, and never
+  // opens one: without an open reader it reports `closed` and the schedule continues.
+  // The mailbox refuses a sender behind the ledger, so a retry catches up first; a
+  // failed or timed-out catch-up does not skip the round.
+  const attemptDelivery = (id: string, device: string, retry: number) =>
+    withSession(id, (session) =>
+      Effect.gen(function* () {
+        if (retry > 0)
+          yield* Effect.result(
+            session.refresh().pipe(Effect.timeoutOption(ACCOUNT_APPROVAL_REFRESH_TIMEOUT_MS))
+          );
+        const round = yield* Effect.result(session.keyRound());
+        const evidence = yield* Effect.result(session.keyDeliveryEvidence(device));
+        if (Result.isSuccess(evidence) && evidence.success === 'delivered') return 'delivered';
+        return Result.isSuccess(round) && Result.isSuccess(evidence)
+          ? evidence.success
+          : 'e2ee_key_delivery_failed';
+      })
+    );
+  const startDelivery = (id: string, requestId: string) => {
+    const entry = deliveries.get(requestId);
+    if (!entry || entry.state === 'delivering' || entry.state === 'delivered') return;
+    entry.state = 'delivering';
+    delete entry.code;
+    const schedule = Effect.gen(function* () {
+      for (let retry = 0; ; retry++) {
+        const attempt = yield* Effect.result(attemptDelivery(id, entry.device, retry));
+        const code = Result.isSuccess(attempt) ? attempt.success : 'e2ee_key_delivery_failed';
+        if (code === 'delivered') {
+          entry.state = 'delivered';
+          delete entry.code;
+          return;
+        }
+        entry.code = code;
+        // A retired assembly or a sender the ledger excludes can never deliver.
+        if (retired || code === 'e2ee_key_sender_ineligible' || retry >= deliveryDelays.length) {
+          entry.state = 'failed';
+          return;
+        }
+        yield* deliverySleep(deliveryDelays[retry]!);
+      }
+    });
+    void run(schedule).catch(() => {
+      if (entry.state === 'delivering') {
+        entry.state = 'failed';
+        entry.code ??= 'e2ee_key_delivery_failed';
+      }
+    });
+  };
+  // After an open on an active member's non-recovery device, one background key round sends
+  // what an earlier session left undelivered, for example after the approval page closed.
+  // Core's journal keeps those tasks; this only gives them a round. A device still without
+  // the current key (another device just rotated it) is not skipped: like an installing
+  // refresh, each round receives and installs before it distributes, and a round that asks
+  // for the ledger catches up and runs again (at most four). Core decides whether this
+  // device may send at all. It starts after a delay, so the open and its first reads go first;
+  // it holds the reader only while it runs and never opens one. At most one is in flight and
+  // rounds that reach the reader are spaced by the interval. A failure is only reported.
+  // Desktop composes its own runtime, so this never doubles its maintenance.
+  const openRoundDelay = options.openKeyRound?.delay ?? 30_000;
+  const openRoundInterval = options.openKeyRound?.interval ?? 10 * 60_000;
+  const openRoundSleep = options.openKeyRound?.sleep ?? ((ms: number) => Effect.sleep(ms));
+  const report = (scope: string, cause: unknown) => {
+    try {
+      options.diagnostics?.(scope, cause);
+    } catch {
+      /* A diagnostic sink never affects the work it observes. */
+    }
+  };
+  const openRound = { running: false, due: 0 };
+  const startOpenKeyRound = (id: string, opened: E2eeRuntimeStatus) => {
+    if (
+      retired ||
+      openRound.running ||
+      opened.memberRole === null ||
+      opened.deviceKind === null ||
+      opened.deviceKind === 'recovery'
+    )
+      return;
+    openRound.running = true;
+    const round = Effect.gen(function* () {
+      if ((yield* Clock.currentTimeMillis) < openRound.due) return;
+      yield* openRoundSleep(openRoundDelay);
+      yield* withSession(id, (session) =>
+        Effect.gen(function* () {
+          openRound.due = (yield* Clock.currentTimeMillis) + openRoundInterval;
+          yield* installKeys(session);
+        })
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          openRound.running = false;
+        })
+      )
+    );
+    void run(round).catch((cause: unknown) => report('e2ee-open-key-round', cause));
+  };
+  /** Joining a team on this device. The application retains the identity offer
+   * `memberPairingOffer` derives before preparing, so pending and claim find the
+   * same identity; a personal pairing identity never reads as a member join. */
+  const joinRuntime = host.capabilities.memberJoin
+    ? ({
+        prepareMemberJoin: (supplied) =>
+          run(
+            Effect.gen(function* () {
+              yield* guard(supplied.workspaceId);
+              if (supplied.genesisHash !== genesisHash) return yield* fail('scope-mismatch');
+              const { request } = yield* host.prepareMember(supplied);
+              yield* guard(supplied.workspaceId);
+              return request;
+            })
+          ),
+        pendingMemberJoin: (id) =>
+          run(
+            Effect.gen(function* () {
+              yield* guard(id);
+              const saved = yield* retained();
+              if (!saved) return null;
+              const parsed = yield* Effect.try({
+                try: () => PersonalPairingOfferSchema.parse(saved),
+                catch: () => fail('corrupt'),
+              });
+              if (parsed.workspaceId !== workspaceId || parsed.genesisHash !== genesisHash)
+                return yield* fail('scope-mismatch');
+              return yield* host.memberJoin(parsed);
+            })
+          ),
+        claimMemberJoin: (id, requestId) =>
+          run(
+            Effect.gen(function* () {
+              const result = yield* host.claimMember(
+                yield* retainedRequest(id, requestId),
+                requestId
+              );
+              yield* guard(id);
+              return { ready: result.state === 'committed', state: result.state };
+            })
+          ),
+      } satisfies Pick<
+        E2eeWorkspaceRuntime,
+        'prepareMemberJoin' | 'pendingMemberJoin' | 'claimMemberJoin'
+      >)
+    : {};
+  const memberRuntime = host.capabilities.members
+    ? ({
+        createMemberInvitation: (input) =>
+          run(
+            withSession(input.workspaceId, (session) =>
+              input.mode === 'email' || input.mode === 'link'
+                ? session.members.invite(input.mode, input.email)
+                : Effect.fail(fail('invalid-input'))
+            )
+          ),
+        memberJoinRequests: (id) => run(withSession(id, (session) => session.members.pending())),
+        approveMemberJoin: (id, requestId, mode) =>
+          run(
+            withSession(id, (session) =>
+              Effect.gen(function* () {
+                if (mode !== 'automatic' && mode !== 'explicit')
+                  return yield* fail('invalid-input');
+                // An earlier approval whose reply was lost left its signed original in the
+                // journal: resubmit those exact bytes and settle them before anything new.
+                const resumed = yield* session.resume();
+                if (resumed) {
+                  yield* session.acknowledge(resumed);
+                  if (resumed.outcome !== 'Committed') return { admitted: false, keyPending: true };
+                }
+                // Decided against the verified ledger: an applicant the resumed original
+                // admitted needs no second signature.
+                const command = yield* session.members.admission(requestId, mode);
+                if (command) {
+                  // The session journals the signed original; a lost reply is settled from
+                  // the verified ledger and never signed again.
+                  const result = yield* session.execute(command);
+                  yield* session.acknowledge(result);
+                  if (result.outcome !== 'Committed') return { admitted: false, keyPending: true };
+                }
+                const material = yield* session.members.read(requestId);
+                if (material.state !== 'committed') return { admitted: false, keyPending: true };
+                const device = toHex(
+                  decodeMemberKeyPackage(material.keyPackageHex).request.signingPublicKey.toBytes()
+                );
+                if (!deliveries.has(requestId))
+                  deliveries.set(requestId, { device, state: 'pending' });
+                startDelivery(id, requestId);
+                return { admitted: true, keyPending: true, keyDelivery: 'delivering' as const };
+              })
+            )
+          ),
+        memberKeyDeliveries: async () => ({
+          items: [...deliveries.keys()].map(deliveryView),
+        }),
+        retryMemberKeyDelivery: async (id, requestId) => {
+          const entry = deliveries.get(requestId);
+          if (!entry) throw fail('invalid-input');
+          if (entry.state === 'failed') startDelivery(id, requestId);
+          return deliveryView(requestId);
+        },
+        rejectMemberJoin: (id, requestId) =>
+          run(withSession(id, (session) => session.members.reject(requestId))),
+        revokeMemberInvitation: (id, token) =>
+          run(withSession(id, (session) => session.members.revoke(token))),
+      } satisfies Pick<
+        E2eeWorkspaceRuntime,
+        | 'createMemberInvitation'
+        | 'memberJoinRequests'
+        | 'approveMemberJoin'
+        | 'memberKeyDeliveries'
+        | 'retryMemberKeyDelivery'
+        | 'rejectMemberJoin'
+        | 'revokeMemberInvitation'
+      >)
+    : {};
+  /** Opens one reader lease and returns its status; `open` adds the background round. */
+  const opened = (
+    id: string,
+    observed: Parameters<E2eeWorkspaceRuntime['open']>[1],
+    expected: string | undefined,
+    readerOwner: string
+  ) =>
+    run(
+      Effect.acquireUseRelease(
+        Effect.gen(function* () {
+          if (typeof readerOwner !== 'string' || !readerOwner.length || readerOwner.length > 256)
+            return yield* fail('invalid-input');
+          if (pendingReaders.has(readerOwner) || entry?.readers.has(readerOwner))
+            return yield* fail('conflict');
+          const pending = { closed: false };
+          pendingReaders.set(readerOwner, pending);
+          return pending;
+        }),
+        (pending) =>
+          Effect.gen(function* () {
+            yield* guard(id, expected);
+            return yield* setup.withPermit(
+              Effect.gen(function* () {
+                yield* guard(id, expected);
+                if (pending.closed) return yield* fail('closed');
+                if (
+                  observed &&
+                  (observed.genesisHash !== genesisHash ||
+                    !Number.isSafeInteger(observed.length) ||
+                    observed.length < 1 ||
+                    !/^[0-9a-f]{64}$/.test(observed.headHash))
+                )
+                  return yield* fail('scope-mismatch');
+                if (entry?.closing) {
+                  yield* entry.session.close();
+                  entry = undefined;
+                }
+                let created = false;
+                if (!entry) {
+                  const saved = yield* offer();
+                  if (pending.closed) return yield* fail('closed');
+                  opening = readerOwner;
+                  yield* Effect.acquireUseRelease(
+                    host.open(saved, false, true),
+                    (session) =>
+                      Effect.sync(() => {
+                        entry = { session, closing: retired, readers: new Set() };
+                        created = true;
+                      }),
+                    (session, result) =>
+                      Exit.isFailure(result) ? session.close().pipe(Effect.orDie) : Effect.void
+                  ).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        if (opening === readerOwner) opening = undefined;
+                      })
+                    )
+                  );
+                }
+                const lease = entry!;
+                const result = yield* Effect.exit(
+                  Effect.gen(function* () {
+                    const view = yield* lease.session.ledger();
+                    if (
+                      observed &&
+                      !Result.getOrThrow(
+                        hasVerifiedCheckpoint(view, {
+                          length: observed.length,
+                          head: Result.getOrThrow(Bytes.recordHash(fromHex(observed.headHash))),
+                        })
+                      )
+                    )
+                      return yield* fail('history-conflict');
+                    const value = yield* status(lease.session);
+                    yield* guard(id, expected);
+                    if (lease.closing || pending.closed) return yield* fail('closed');
+                    lease.readers.add(readerOwner);
+                    return { ...value, readerOwner };
+                  })
+                );
+                if (Exit.isFailure(result) && created) {
+                  lease.closing = true;
+                  yield* lease.session.close();
+                  if (entry === lease) entry = undefined;
+                }
+                return yield* result;
+              })
+            );
+          }),
+        () =>
+          Effect.sync(() => {
+            pendingReaders.delete(readerOwner);
+          })
+      )
+    );
   const runtime: E2eeWorkspaceRuntime = {
     readerLeases: 'preallocated-v1',
     account: (input) => run(account(input)),
@@ -262,7 +625,10 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
             settle: (record: Uint8Array) => run(approval.settle(record)),
             invitation: (record: Uint8Array) => run(approval.invitation(record)),
             access: () => run(approval.access()),
-            refresh: () => run(Effect.asVoid(lease.session.refresh())),
+            // Bounded inside the session: this Promise cannot be cancelled by its caller,
+            // and a hung read would hold the session's serial permit from the next round.
+            refresh: () =>
+              run(Effect.asVoid(lease.session.refresh(ACCOUNT_APPROVAL_REFRESH_TIMEOUT_MS))),
             // The session's existing key round, so an approver can send the device it
             // just admitted the current epoch key. No key or credential leaves.
             keyRound: () => run(Effect.asVoid(lease.session.keyRound())),
@@ -273,94 +639,10 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
     open: (id, supplied, expected, requestedOwner) => {
       const observed = supplied ? { ...supplied } : undefined;
       const readerOwner = requestedOwner ?? `${ownerId}:${++nextReader}`;
-      return run(
-        Effect.acquireUseRelease(
-          Effect.gen(function* () {
-            if (typeof readerOwner !== 'string' || !readerOwner.length || readerOwner.length > 256)
-              return yield* fail('invalid-input');
-            if (pendingReaders.has(readerOwner) || entry?.readers.has(readerOwner))
-              return yield* fail('conflict');
-            const pending = { closed: false };
-            pendingReaders.set(readerOwner, pending);
-            return pending;
-          }),
-          (pending) =>
-            Effect.gen(function* () {
-              yield* guard(id, expected);
-              return yield* setup.withPermit(
-                Effect.gen(function* () {
-                  yield* guard(id, expected);
-                  if (pending.closed) return yield* fail('closed');
-                  if (
-                    observed &&
-                    (observed.genesisHash !== genesisHash ||
-                      !Number.isSafeInteger(observed.length) ||
-                      observed.length < 1 ||
-                      !/^[0-9a-f]{64}$/.test(observed.headHash))
-                  )
-                    return yield* fail('scope-mismatch');
-                  if (entry?.closing) {
-                    yield* entry.session.close();
-                    entry = undefined;
-                  }
-                  let created = false;
-                  if (!entry) {
-                    const saved = yield* offer();
-                    if (pending.closed) return yield* fail('closed');
-                    opening = readerOwner;
-                    yield* Effect.acquireUseRelease(
-                      host.open(saved, false, true),
-                      (session) =>
-                        Effect.sync(() => {
-                          entry = { session, closing: retired, readers: new Set() };
-                          created = true;
-                        }),
-                      (session, result) =>
-                        Exit.isFailure(result) ? session.close().pipe(Effect.orDie) : Effect.void
-                    ).pipe(
-                      Effect.ensuring(
-                        Effect.sync(() => {
-                          if (opening === readerOwner) opening = undefined;
-                        })
-                      )
-                    );
-                  }
-                  const lease = entry!;
-                  const result = yield* Effect.exit(
-                    Effect.gen(function* () {
-                      const view = yield* lease.session.ledger();
-                      if (
-                        observed &&
-                        !Result.getOrThrow(
-                          hasVerifiedCheckpoint(view, {
-                            length: observed.length,
-                            head: Result.getOrThrow(Bytes.recordHash(fromHex(observed.headHash))),
-                          })
-                        )
-                      )
-                        return yield* fail('history-conflict');
-                      const value = yield* status(lease.session);
-                      yield* guard(id, expected);
-                      if (lease.closing || pending.closed) return yield* fail('closed');
-                      lease.readers.add(readerOwner);
-                      return { ...value, readerOwner };
-                    })
-                  );
-                  if (Exit.isFailure(result) && created) {
-                    lease.closing = true;
-                    yield* lease.session.close();
-                    if (entry === lease) entry = undefined;
-                  }
-                  return yield* result;
-                })
-              );
-            }),
-          () =>
-            Effect.sync(() => {
-              pendingReaders.delete(readerOwner);
-            })
-        )
-      );
+      return opened(id, observed, expected, readerOwner).then((value) => {
+        startOpenKeyRound(id, value);
+        return value;
+      });
     },
     close: (id, expected = accountId, readerOwner) =>
       run(
@@ -712,13 +994,14 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
           })
         )
       ),
-    revokeDevice: (id, key) =>
+    revokeDevice: (id, key, confirmation) =>
       run(
         withSession(id, (session) =>
           Effect.gen(function* () {
             if (!/^[0-9a-f]{64}$/.test(key)) return yield* fail('invalid-input');
             yield* finish(session, {
               _tag: 'RevokeDevice',
+              confirmedRecoveryOnly: confirmation?.confirmedRecoveryOnly === true,
               target: Result.getOrThrow(Bytes.signingPublicKey(fromHex(key))),
             });
             return undefined;
@@ -730,9 +1013,19 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
         withSession(id, (session) =>
           Effect.gen(function* () {
             if (!/^[0-9a-f]{32}$/.test(membership)) return yield* fail('invalid-input');
-            const result = yield* session.removeMember(
-              Result.getOrThrow(Bytes.membershipId(fromHex(membership)))
-            );
+            const membershipId = Result.getOrThrow(Bytes.membershipId(fromHex(membership)));
+            const state = (yield* session.ledgerState()).view.inspectState();
+            const self = state.devices.get(toHex(session.binding.device.toBytes()));
+            // Core lets only the owner remove a member and publish the next epoch in one
+            // record. An administrator removes the member plainly, as desktop does; that
+            // marks the epoch for rotation, which an administrator may then publish.
+            if (self && state.members.get(toHex(self.membershipId.toBytes()))?.role !== 'owner') {
+              if (!state.capabilities.includes(1))
+                yield* finish(session, { _tag: 'DeclareCapabilities', capabilities: [1] });
+              yield* finish(session, { _tag: 'RemoveMember', membershipId });
+              return undefined;
+            }
+            const result = yield* session.removeMember(membershipId);
             yield* session.refresh();
             yield* session.acknowledgeRotation(result);
             if (result.outcome !== 'Committed') return yield* fail('conflict');
@@ -755,6 +1048,30 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
           })
         )
       ),
+    // Declarations need only this admitted device, not RPC transport: an encrypted
+    // schedule saved from any host carries its setter's signature.
+    signScheduleDeclaration: (id, document, manualRunKey) =>
+      run(withSession(id, (session) => session.signScheduleDeclaration(document, manualRunKey))),
+    /** Owner only, as on desktop: hands ownership to an existing non-guest member and
+     * this owner becomes an admin. Core authorizes the signed record again. */
+    transferOwnership: (id, membership) =>
+      run(
+        withSession(id, (session) =>
+          Effect.gen(function* () {
+            if (!/^[0-9a-f]{32}$/.test(membership)) return yield* fail('invalid-input');
+            const state = (yield* session.ledger()).inspectState();
+            const target = state.members.get(membership);
+            if (!target || target.role === 'guest') return yield* fail('invalid-input');
+            yield* finish(session, {
+              _tag: 'TransferOwner',
+              successorMembershipId: Result.getOrThrow(Bytes.membershipId(fromHex(membership))),
+            });
+            return undefined;
+          })
+        )
+      ),
+    ...memberRuntime,
+    ...joinRuntime,
     ...(host.capabilities.rpc
       ? ({
           prepareDispatch: (id, target, input) =>
@@ -773,6 +1090,23 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
           | 'acceptFeatureRpcResponse'
         >)
       : {}),
+    ...(host.capabilities.iroh
+      ? ({
+          // Route resolution runs inside the session; network waits run after it.
+          irohPath: (id, target) =>
+            run(withSession(id, (session) => session.irohPath(target))).then(
+              (route) => route?.path() ?? ('none' as const)
+            ),
+          irohReady: (id, target) =>
+            run(withSession(id, (session) => session.irohRoute(target)))
+              .then((route) => route.ready())
+              .catch(() => false),
+          irohCall: (id, target, envelope, timeoutMs) =>
+            run(withSession(id, (session) => session.irohRoute(target))).then((route) =>
+              route.call(envelope, timeoutMs)
+            ),
+        } satisfies Pick<E2eeWorkspaceRuntime, 'irohReady' | 'irohCall' | 'irohPath'>)
+      : {}),
     ...(host.capabilities.machineSharing
       ? ({
           readMachineSharing: (id, machine) =>
@@ -786,5 +1120,27 @@ export const makePersonalWorkspaceRuntime = Effect.fnUntraced(function* <E>(
         } satisfies Pick<E2eeWorkspaceRuntime, 'readMachineSharing' | 'updateMachineSharing'>)
       : {}),
   };
-  return Object.freeze(runtime);
+  const requester = personalHostAccountPairing(host);
+  const checked = <A>(work: Effect.Effect<A, unknown>) =>
+    Effect.gen(function* () {
+      yield* guard(workspaceId);
+      const result = yield* work;
+      yield* guard(workspaceId);
+      return result;
+    });
+  const accountRequester: AccountPairingIdentityHost = {
+    workspaceId,
+    genesisHash,
+    prepareAccountIdentity: (pin) => checked(requester.prepareAccountIdentity(pin)),
+    pendingPersonalJoin: () => checked(requester.pendingPersonalJoin()),
+    acceptAccountInvitation: (input) => checked(requester.acceptAccountInvitation(input)),
+    acceptAccountHistory: (input) => checked(requester.acceptAccountHistory!(input)),
+  };
+  const exposed = Object.assign(runtime, { accountRequester });
+  requesters.set(exposed, accountRequester);
+  recoveries.set(exposed, {
+    restore: (input) => checked(host.restoreRecovery(input)),
+    setup: (input) => withSession(workspaceId, (session) => session.setupRecovery(input)),
+  });
+  return Object.freeze(exposed);
 });

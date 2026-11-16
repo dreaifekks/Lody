@@ -1,5 +1,6 @@
 import {
   canReadAgentRole,
+  findAgentRoleRunConfigIssue,
   getAgentRoleTargets,
   getAcpCapabilityCacheKey,
   summarizeAgentRunConfigCapabilities,

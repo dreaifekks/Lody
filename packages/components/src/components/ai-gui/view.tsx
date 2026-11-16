@@ -1,4 +1,12 @@
 import { CreatedSessionOperationCard } from './created-session-operation-card';
+import { SessionFileImagePreview } from '../sessions/session-file-image-preview';
+import { collectFileDownload } from '@/lib/file-download';
+import { downloadBytesAsFile } from '@/lib/download-file';
+import { shareFileBytesNatively } from '@/lib/session-file-native-save';
+import { isNativeAppShell } from '@/lib/native-platform';
+import { getIpcServices } from '@/lib/electron-ipc-client';
+import { localMachineIdAtom } from '@/atoms/local-probe';
+import type { SessionLocalAttachment } from '@lody/shared';
 import { AgentRoleProposalNotice } from './agent-role-proposal-notice';
 import type { AgentRoleProposalMeta } from '@lody/shared';
 import { MessageAuthorIdentity } from './message-author-identity';
@@ -288,7 +296,7 @@ import {
   peekSessionImageUrl,
 } from '@/lib/session-image-cache';
 import { useAppCapabilityCheck } from '@/lib/app-platform';
-import { SessionFileCard, SessionFileCardList } from './session-file-card';
+import { SessionFileCard, SessionFileCardList, SessionFileCardLayout } from './session-file-card';
 import { isKeptMediaFile, SessionKeptMediaFile } from './session-kept-media-file';
 import {
   SessionFilePreviewDialog,
@@ -707,7 +715,7 @@ export interface SessionChatStreamViewProps {
   sendMessage?: (message: ClientToServer) => void;
   renderMessageRow: (args: { message: SessionHistoryParsed; sessionId: SessionId }) => ReactNode;
   onFileDiffClick?: (turnId: string, filePath: string) => void;
-  onFilePathClick?: (filePath: string) => void;
+  onFilePathClick?: (filePath: string, options?: { pathKind: 'canonical' }) => void;
   /** Returns true when an HTML attachment click was routed to a richer surface. */
   onOpenHtmlFile?: (file: SessionFilePayload) => boolean;
   onAnnotateImage?: (selection: DocumentSelection) => boolean;
@@ -749,6 +757,7 @@ export interface SessionChatStreamViewProps {
 export const SessionChatActionContext = createContext<{
   sendMessage?: (message: ClientToServer) => void;
   openHtmlFile?: (file: SessionFilePayload) => boolean;
+  openLocalFile?: (path: string, options?: { pathKind: 'canonical' }) => void;
   copyContext?: (messageId: string) => void;
 }>({});
 
@@ -1432,9 +1441,7 @@ export const buildChatVirtualRows = ({
         block.entries,
         selectionSearchBlockId
       );
-      const thoughtOnly =
-        showThoughts && block.entries.every((entry) => entry.content.type === 'thought');
-      const expanded = isSearchExpanded || (cachedExpansion[block.key] ?? thoughtOnly);
+      const expanded = isSearchExpanded || (cachedExpansion[block.key] ?? false);
       const isActive =
         isLastAssistantMessage && message.finished !== true && blockIndex === blocks.length - 1;
       const lastEntry = block.entries[block.entries.length - 1];
@@ -2560,10 +2567,11 @@ export const SessionChatStreamView = forwardRef<
     const chatActionContextValue = useMemo(
       () => ({
         copyContext: onCopyContext,
+        openLocalFile: onFilePathClick,
         ...(sendMessage ? { sendMessage } : {}),
         ...(onOpenHtmlFile ? { openHtmlFile: onOpenHtmlFile } : {}),
       }),
-      [onCopyContext, onOpenHtmlFile, sendMessage]
+      [onCopyContext, onOpenHtmlFile, onFilePathClick, sendMessage]
     );
     const hasOnlyEmptyItem = items.length === 1 && items[0]?.type === 'empty';
 
@@ -4107,9 +4115,15 @@ const UserMessageRowView = ({
   const rpcDelivered = rpcDeliveredTurns.has(getRpcDeliveredTurnKey(sessionId, message.id));
   const isPendingApply = message.status === 'pending_apply' && !rpcDelivered;
   const isDeliveryUnknown = message.status === 'delivery_unknown';
-  const recoveryLabel = isDeliveryUnknown
-    ? t('sessions.messageStatus.deliveryUnknown', 'Application unknown')
-    : t('sessions.messageStatus.notDelivered', 'Not delivered');
+  // A forced machine update cancelled this turn; Continue resends it as a new
+  // message instead of replaying it automatically.
+  const isUpdateInterrupted =
+    message.status === 'canceled' && message.cancellationReason === 'machine_update';
+  const recoveryLabel = isUpdateInterrupted
+    ? t('sessions.messageStatus.interruptedByUpdate', 'Interrupted by update')
+    : isDeliveryUnknown
+      ? t('sessions.messageStatus.deliveryUnknown', 'Application unknown')
+      : t('sessions.messageStatus.notDelivered', 'Not delivered');
   const isDelivered = !isPendingApply && (isSessionHistoryDelivered(message) || rpcDelivered);
   // Missing-history recovery negatively acknowledged this exact turn
   // (`SessionMeta.lastMissingHistoryUserMsgId`): the entry is visible but kept
@@ -4120,7 +4134,8 @@ const UserMessageRowView = ({
   const sessionMeta = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
   const isUndelivered = isUndeliveredUserTurnEntry(
     sessionMeta?.lastMissingHistoryUserMsgId,
-    message
+    message,
+    sessionMeta?.missingHistoryUserMsgIds
   );
   const pinCtx = useSessionPin();
   const showSendingSpinner =
@@ -4245,7 +4260,7 @@ const UserMessageRowView = ({
             </span>
           ) : null}
           {timestampLabel ? <span className="tabular-nums">{timestampLabel}</span> : null}
-          {isUndelivered || isDeliveryUnknown ? (
+          {isUndelivered || isDeliveryUnknown || isUpdateInterrupted ? (
             onResendUndelivered ? (
               <button
                 type="button"
@@ -4474,6 +4489,7 @@ const UserMessageRowView = ({
       {onResendUndelivered ? (
         <ResendUndeliveredDialog
           deliveryUnknown={isDeliveryUnknown}
+          updateInterrupted={isUpdateInterrupted}
           open={resendDialogOpen}
           onOpenChange={setResendDialogOpen}
           isResending={isResending}
@@ -4567,14 +4583,43 @@ const ResendUndeliveredDialog = ({
   isResending,
   onConfirm,
   deliveryUnknown = false,
+  updateInterrupted = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isResending: boolean;
   onConfirm: () => void;
   deliveryUnknown?: boolean;
+  updateInterrupted?: boolean;
 }) => {
   const { t } = useTranslation();
+  if (updateInterrupted)
+    return (
+      <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
+        <AlertDialog.Content>
+          <AlertDialog.Header>
+            <AlertDialog.Title>
+              {t('sessions.messageStatus.interruptedByUpdate', 'Interrupted by update')}
+            </AlertDialog.Title>
+            <AlertDialog.Description>
+              {t(
+                'sessions.resendUndelivered.updateDescription',
+                'A machine update interrupted this message. Work it already did is kept. Continue sends the same content as a new message.'
+              )}
+            </AlertDialog.Description>
+          </AlertDialog.Header>
+          <AlertDialog.Footer>
+            <AlertDialog.Cancel disabled={isResending}>
+              {t('common.cancel', 'Cancel')}
+            </AlertDialog.Cancel>
+            <AlertDialog.Action disabled={isResending} onClick={onConfirm}>
+              {isResending ? <Spinner className="h-3.5 w-3.5" strokeWidth={2} /> : null}
+              {t('sessions.resendUndelivered.continue', 'Continue')}
+            </AlertDialog.Action>
+          </AlertDialog.Footer>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+    );
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Content>
@@ -6582,6 +6627,8 @@ const renderAssistantContent = (
           align="start"
         />
       );
+    case 'local_attachment':
+      return <LocalAttachmentCard attachment={content} sessionId={sessionId} />;
     case 'file':
       return (
         <SessionFileGroup
@@ -6692,7 +6739,7 @@ function useImageBlobUrls(
   }, [open]);
 
   useEffect(() => {
-    if (!open || activeIndex === -1 || !workspaceId || !authToken) {
+    if (!open || activeIndex === -1 || !workspaceId) {
       return undefined;
     }
 
@@ -6703,21 +6750,23 @@ function useImageBlobUrls(
     let active = true;
     indicesToLoad.forEach((i) => {
       const entry = entries[i];
-      // Only an uploaded image is fetched here; the rest are read by the gallery.
-      if (!entry || !('imageId' in entry)) {
+      if (!entry || !('imageId' in entry) || (!authToken && entry.transport !== 'local' && !entry.localImageId)) {
         return;
       }
 
       void getSessionImageBlobUrl({
         workspaceId,
-        sessionId: entry.sessionId,
-        imageId: entry.imageId,
+        ...entry,
+        mimeType: entry.mimeType,
+        sizeBytes: entry.sizeBytes,
+        transport: entry.transport,
+        machineId: entry.machineId,
         encryption: entry.encryption,
         attachmentToken:
           attachmentRuntime?.workspaceId === workspaceId
             ? attachmentRuntime.attachmentToken
             : undefined,
-        token: authToken,
+        token: authToken ?? '',
         variant: 'original',
       })
         .then((url) => {
@@ -6792,6 +6841,7 @@ const ImagePreviewDialog = ({
     [entries, onActiveImageKeyChange]
   );
 
+  const readonlyPresentation = useContext(SessionReadonlyContext);
   const handleClose = useCallback(() => {
     markupRequest.current += 1;
     onOpenChange(false);
@@ -6800,6 +6850,7 @@ const ImagePreviewDialog = ({
   return (
     <>
       <ZoomableImageViewer
+        allowExport={!readonlyPresentation}
         open={open && !markupFile}
         onClose={handleClose}
         images={images}
@@ -6896,9 +6947,9 @@ export const WorkspaceUserImageBlock = ({
   const imageLoadUnavailableLabel = t('sessions.imageLoadUnavailable', 'Unable to load image');
   const imageLoadFailedLabel = t('sessions.imageLoadFailed', 'Failed to load image');
   const cachedThumbnailUrl =
-    workspaceId && authToken
+    workspaceId && (authToken || entry.transport === 'local' || entry.localImageId)
       ? peekSessionImageUrl(
-          { workspaceId, sessionId: entry.sessionId, imageId: entry.imageId },
+          { workspaceId, ...entry, transport: entry.transport, machineId: entry.machineId },
           useNativeIOSShareSafeImageUrl
         )
       : null;
@@ -6909,7 +6960,7 @@ export const WorkspaceUserImageBlock = ({
 
     setLocalActiveImageKey(null);
 
-    if (!workspaceId || !authToken) {
+    if (!workspaceId || (!authToken && entry.transport !== 'local' && !entry.localImageId)) {
       setThumbnailBlobUrl(null);
       setIsThumbnailLoading(false);
       setThumbnailLoadingError(imageLoadUnavailableLabel);
@@ -6919,7 +6970,7 @@ export const WorkspaceUserImageBlock = ({
     }
 
     const cachedUrl = peekSessionImageUrl(
-      { workspaceId, sessionId: entry.sessionId, imageId: entry.imageId },
+      { workspaceId, ...entry, transport: entry.transport, machineId: entry.machineId },
       useNativeIOSShareSafeImageUrl
     );
     if (cachedUrl) {
@@ -6940,14 +6991,17 @@ export const WorkspaceUserImageBlock = ({
 
     void loadImageUrl({
       workspaceId,
-      sessionId: entry.sessionId,
-      imageId: entry.imageId,
+      ...entry,
+      mimeType: entry.mimeType,
+      sizeBytes: entry.sizeBytes,
+      transport: entry.transport,
+      machineId: entry.machineId,
       encryption: entry.encryption,
       attachmentToken:
         attachmentRuntime?.workspaceId === workspaceId
           ? attachmentRuntime.attachmentToken
           : undefined,
-      token: authToken,
+      token: authToken ?? '',
       variant: 'thumbnail',
       thumbnailWidth,
       thumbnailHeight,
@@ -6974,6 +7028,12 @@ export const WorkspaceUserImageBlock = ({
   }, [
     authToken,
     entry.imageId,
+    entry.mimeType,
+    entry.sizeBytes,
+    entry.localImageId,
+    entry.storageSessionId,
+    entry.transport,
+    entry.machineId,
     entry.encryption,
     attachmentRuntime,
     entry.sessionId,
@@ -7173,6 +7233,190 @@ export const ImageGroupBubble = ({
   );
 };
 
+const localAttachmentImageStyles = stylex.create({
+  frame: { width: 320, maxWidth: '100%', height: 320 },
+});
+
+function LocalAttachmentImage({
+  attachment,
+  workspaceId,
+  sessionId,
+}: {
+  attachment: SessionLocalAttachment;
+  workspaceId: string;
+  sessionId: SessionId;
+}) {
+  const { t } = useTranslation();
+  // The parent keys this owner by the complete reference and workspace scope.
+  const attachmentRef = useRef(attachment);
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setUrl(null);
+    setFailed(false);
+    void (async () => {
+      try {
+        const ipc = getIpcServices();
+        if (!ipc) throw new Error('Local attachment unavailable');
+        const preview = await ipc.machineRpc.previewFile({
+          machineId: attachmentRef.current.machineId,
+          path: attachmentRef.current.path,
+          workspaceRoot: null,
+        });
+        if (!active) return;
+        if (preview?.status !== 'resource' || preview.kind !== 'binary')
+          throw new Error('Local image preview unavailable');
+        setUrl(preview.url);
+      } catch {
+        if (active) setFailed(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [workspaceId, sessionId, attempt]);
+
+  if (url)
+    return (
+      <div
+        {...stylex.props(localAttachmentImageStyles.frame)}
+        onErrorCapture={() => {
+          setUrl(null);
+          setFailed(true);
+        }}
+      >
+        <SessionFileImagePreview path={attachment.fileName} url={url} />
+      </div>
+    );
+  return (
+    <SessionFileCardLayout
+      fileName={attachment.fileName}
+      mimeType={attachment.mimeType}
+      subtitle={
+        failed
+          ? t('sessions.localAttachmentUnavailable', 'Local attachment unavailable')
+          : t('sessions.markdownImage.loading', 'Loading image…')
+      }
+      actionIcon={failed ? null : <Spinner className="h-4 w-4" />}
+      failed={failed}
+      isInteractive={failed}
+      onClick={() => setAttempt((value) => value + 1)}
+    />
+  );
+}
+
+export const LocalAttachmentCard = ({
+  attachment,
+  sessionId,
+}: {
+  attachment: SessionLocalAttachment;
+  sessionId: SessionId;
+}) => {
+  const { t } = useTranslation();
+  const workspaceId = useAtomValue(currentWorkspaceIdAtom);
+  const machineId = useAtomValue(localMachineIdAtom);
+  const runtime = useAtomValue(runtimeAtom);
+  const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
+  const readonly = useContext(SessionReadonlyContext);
+  const { openLocalFile } = useContext(SessionChatActionContext);
+  const [error, setError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const binding = JSON.stringify([
+    workspaceId,
+    sessionId,
+    attachment.machineId,
+    attachment.path,
+    machineId,
+  ]);
+  const currentBinding = useRef<string | null>(binding);
+  currentBinding.current = binding;
+  useEffect(
+    () => () => {
+      currentBinding.current = null;
+    },
+    []
+  );
+  const remote = machineId !== attachment.machineId;
+  const available = !readonly && !!workspaceId && (remote ? !!runtime : !!openLocalFile);
+  if (!readonly && !remote && workspaceId && attachment.kind === 'image') {
+    return (
+      <LocalAttachmentImage
+        key={JSON.stringify([workspaceId, sessionId, attachment])}
+        attachment={attachment}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+      />
+    );
+  }
+  return (
+    <SessionFileCardLayout
+      fileName={attachment.fileName}
+      mimeType={attachment.mimeType}
+      subtitle={
+        error ??
+        (opening && remote
+          ? t('sessions.localAttachmentDownloading', 'Downloading from original computer…')
+          : remote
+            ? t('sessions.localAttachmentDownload', 'Download from original computer')
+            : t('sessions.localAttachmentOnly', 'Available only on the original computer'))
+      }
+      actionIcon={
+        remote ? (
+          opening ? (
+            <Spinner className="h-4 w-4" />
+          ) : (
+            <ArrowDown className="h-4 w-4" />
+          )
+        ) : null
+      }
+      failed={!!error}
+      isInteractive={available && !opening}
+      onClick={() => {
+        if (!available || !workspaceId) return;
+        setOpening(true);
+        setError(null);
+        if (remote && runtime) {
+          void collectFileDownload((range) =>
+            runtime.requestFileDownloadChunk(
+              attachment.machineId as MachineId,
+              {
+                sessionId,
+                path: attachment.path,
+                attachment,
+                ...range,
+              },
+              session?.parentSessionId ?? sessionId
+            )
+          )
+            .then(async (bytes) => {
+              if (currentBinding.current !== binding) return;
+              if (!bytes) throw new Error('Attachment download unavailable');
+              if (isNativeAppShell()) await shareFileBytesNatively(attachment.fileName, bytes);
+              else downloadBytesAsFile(attachment.fileName, bytes);
+            })
+            .catch(() => {
+              if (currentBinding.current === binding)
+                setError(
+                  t(
+                    'sessions.localAttachmentDownloadFailed',
+                    'Cannot download. Check that the original computer is online and the file still exists.'
+                  )
+                );
+            })
+            .finally(() => {
+              if (currentBinding.current === binding) setOpening(false);
+            });
+          return;
+        }
+        openLocalFile?.(attachment.path, { pathKind: 'canonical' });
+        setOpening(false);
+      }}
+    />
+  );
+};
+
 /**
  * Container for a run of adjacent `file` blocks. Owns the workspace/token
  * atoms, machine-name resolution, download, and the in-app preview dialog, then
@@ -7202,6 +7446,7 @@ export const WorkspaceSessionFileGroup = ({
   align?: 'start' | 'end';
 }) => {
   const { t } = useTranslation();
+  const readonlyPresentation = useContext(SessionReadonlyContext);
   const workspaceId = useAtomValue(currentWorkspaceIdAtom) as WorkspaceId | null;
   const authToken = useAtomValue(authTokenAtom);
   const attachmentRuntime = useAtomValue(runtimeAtom);
@@ -7344,7 +7589,7 @@ export const WorkspaceSessionFileGroup = ({
             messageId={messageId}
             workspaceId={workspaceId}
             onPreview={handlePreview}
-            onDownload={handleDownload}
+            onDownload={readonlyPresentation ? undefined : handleDownload}
             isDownloading={downloadingId === file.fileId}
           />
         ))}
@@ -7367,7 +7612,7 @@ export const WorkspaceSessionFileGroup = ({
           }}
           file={previewFile}
           status={previewStatus}
-          onDownload={handleDownload}
+          onDownload={readonlyPresentation ? undefined : handleDownload}
           isDownloading={downloadingId === previewFile.fileId}
         />
       ) : null}
@@ -7390,7 +7635,7 @@ const SessionFileBlockCard = ({
   messageId?: string;
   workspaceId: WorkspaceId | null;
   onPreview: (file: SessionFilePayload) => void;
-  onDownload: (file: SessionFilePayload) => void;
+  onDownload?: (file: SessionFilePayload) => void;
   isDownloading: boolean;
 }) => {
   const machineMeta = useAtomValue(
@@ -7489,6 +7734,8 @@ const renderUserContent = (
           thumbnailSize={options.thumbnailSize}
         />
       );
+    case 'local_attachment':
+      return <LocalAttachmentCard attachment={content} sessionId={sessionId} />;
     case 'file':
       return (
         <SessionFileGroup

@@ -89,6 +89,13 @@ The latter own build, packaging, native dependencies and OSS composition.
 
 ## Local file resources
 
+- Local attachments carry machine identity, a path and display metadata; Electron
+  must not register, resolve or inherit reference IDs or submission bindings.
+  Original files use their paths directly without preparation IPC. Only generated
+  bytes enter attachment preparation and remain staged until it returns the durable path.
+  Read paths through the existing machine-authorized local file boundary. Image
+  snapshots keep their separate preparation and resolution protocol.
+
 - Markdown link discovery uses the shared resolver after disk-machine validation.
   It returns identities without resources; the selected path is reauthorized on read.
 

@@ -168,9 +168,13 @@ Lody 为 Agent 提供创建或复用其他对话、读取状态和历史、追�
 - `packages/ui` — Base UI 基础组件与 StyleX 设计令牌
 - `packages/platform` — 平台能力与集成
 - `packages/shared` — 共享 Schema、协议与工具
+- `packages/e2ee-core` — 端到端加密库：签名账本、密钥投递、服务与适配器（[中文导读](packages/e2ee-core/README.zh.md)）。产品宿主见 [工作区引导](.agents/docs/e2ee-workspace-bootstrap.zh.md)
+- `packages/e2ee-client` — 个人设备 E2EE 宿主
+- `packages/e2ee-machine-sharing` — 机器服务共享策略
+- `packages/turn-diff-store` — 本地按内容寻址的回合快照
 - `packages/cloud-api` — 可选云端协议的名称与 DTO
 - `packages/loro-streams-rpc` — 基于 Loro Streams 的 RPC
-- `packages/acp-extension-{core,kimi}` — ACP 扩展子模块工作区
+- `packages/acp-extension-{core,kimi,pi}` — ACP 扩展子模块工作区
 - `packages/lan-share-reader` — LAN 分享对话的阅读页
 - `scripts/lan` — 随每次发布一起发布的安装脚本
 - `site-docs` — 上游的官网、文档与博客

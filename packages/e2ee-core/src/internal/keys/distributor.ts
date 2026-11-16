@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Result, Schema } from 'effect';
+import { Context, Effect, Layer, Result, Schema, Semaphore } from 'effect';
 import { sha256 } from '@noble/hashes/sha2.js';
 import * as Bytes from '../foundation/bytes';
 import { disposeEpochKey } from '../foundation/epoch-key';
@@ -70,7 +70,8 @@ const fatal = (error: unknown) =>
 /**
  * Bound on recipients whose mailbox round trips run at once. Per-recipient steps
  * stay ordered; only different recipients overlap, so a round costs a few round
- * trips instead of several per device.
+ * trips instead of several per device. Installed-key reads do not overlap: see
+ * `protection` in the layer.
  */
 const RECIPIENT_CONCURRENCY = 8;
 
@@ -192,6 +193,11 @@ export class KeyDistributor extends Context.Service<
       const journal = own(yield* DistributionJournal);
       const publications = own(yield* EpochPublicationSource);
       const gate = yield* makeCloseGuard(() => fail('closed'));
+      // One installed-key read at a time. The custody writer contract lets a busy writer
+      // fail conflict instead of queueing (the browser adapter queues only within a tab),
+      // so overlapping reads could block every recipient but one per round. Network round
+      // trips still overlap.
+      const protection = yield* Semaphore.make(1);
       const org = keyId(anchor.toBytes()),
         self = keyId(signer.publicKey.toBytes());
       const store = <A>(effect: Effect.Effect<A, LocalStoreError>) =>
@@ -355,7 +361,7 @@ export class KeyDistributor extends Context.Service<
           return true;
         }
         return yield* Effect.acquireUseRelease(
-          keys.read(task.epoch),
+          protection.withPermit(keys.read(task.epoch)),
           Effect.fnUntraced(function* (key) {
             const context = {
               genesis: anchor,

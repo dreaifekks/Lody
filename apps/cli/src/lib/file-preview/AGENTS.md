@@ -45,12 +45,10 @@ save path's text reads.
   preview and Code Collab still require their existing workspace resolution.
 - `file-preview-service.ts` never throws for a domain failure: every rejection is a
   typed `status: 'error'` response.
-- Shared `node/file-preview-path-policy.ts` is the security boundary. Hosted remote
-  `file/preview` requests may read only the registered session file roots, `os.tmpdir()`,
-  `<LodyDataDir>/chats`, and `LODY_FILE_PREVIEW_EXTRA_ROOTS`. On the local
-  platform `MessageHandler` lifts the boundary (`allowArbitraryPaths`,
-  [why](README.md#local-platform-and-machine-links)). The separate
-  local-only `file/resolve-local` IPC method is the Electron user's explicit
+- Shared `node/file-preview-path-policy.ts` is the security boundary. Hosted `file/preview`
+  requests may read only the resolved session workspace and registered session file roots.
+  System temp directories, sibling chats and environment-configured extra roots grant no remote access. Local preview and Markdown link resolution allow arbitrary paths for the LAN user. The separate
+  legacy local-only `file/resolve-local` IPC method is the desktop user's explicit
   same-machine capability and resolves any regular file for Electron; it returns
   identity only, never bytes, and is never added
   to the Loro Streams RPC protocol.
@@ -109,8 +107,8 @@ save path's text reads.
   workspace" — the web error surface keys its dedicated presentation off that text
   (`session-file-error-state.tsx`).
 - **Reading is wider than writing, on purpose, and preview grants no write
-  capability — do not add one here.** Remote preview serves only the allowlisted
-  temp/scratch roots, while Electron's same-machine local preview can inspect
+  capability — do not add one here.** Remote preview serves only the session
+  roots, while Electron's same-machine local preview can inspect
   arbitrary paths. `code-collab/save-text` refuses everything outside the session
   roots (lexical check plus `assertRealPathInsideWorkspace` on the
   symlink-resolved path) and cannot create files at all. The client counterpart: an

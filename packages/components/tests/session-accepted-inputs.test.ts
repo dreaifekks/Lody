@@ -13,7 +13,8 @@ import { createDirectWorkspaceWriter } from '../src/providers/workspace-writer-i
 import { createWorkspacePendingSends } from '../src/providers/workspace-pending-sends';
 import { acceptSessionUserTurn } from '../src/lib/session-send-admission';
 import { createSessionSubmission } from '../src/lib/session-submission';
-import * as localFileSender from '../src/lib/electron-session-file-sender';
+import * as nativeAttachment from '../src/lib/electron-local-attachment';
+import * as electron from '../src/lib/electron';
 import type { WorkspaceRuntime } from '../src/atoms/runtime';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import {
@@ -30,6 +31,7 @@ import {
 } from '../src/lib/session-accepted-inputs';
 import { createSessionInputStorage } from '../src/lib/session-input-storage';
 import { createSessionSendResources } from '../src/lib/session-send-resources';
+import { initI18n } from '../src/i18n';
 import type { PendingSessionSend } from '../src/lib/session-pending-sends';
 import type { SessionHistory, SessionId, SessionInputBlock, SessionMeta } from '@lody/shared';
 import type { SessionInputAcceptanceResult, SessionTurn } from '@lody/shared/session-data';
@@ -930,6 +932,60 @@ describe('locally accepted Roost input', () => {
     expect(fixture.delivered).toEqual([input.id]);
   });
 
+  it('dispatching a new conversation held for attachment preparation leaves it to the queue instead of refusing an unwritten session', async () => {
+    const fixture = await workspaceHarness({
+      newSession: true,
+      paused: true,
+      accept: async () => {
+        throw new Error('unused');
+      },
+    });
+    const { input, sessionId, repo } = fixture;
+    const { runtime, pending } = fixture.makeRuntime();
+    const accepted = await acceptSessionUserTurn(
+      runtime,
+      sessionId,
+      input.entry,
+      { kind: 'dispatch' },
+      {
+        id: sessionId,
+        machineId: input.targetMachineId,
+        historyBackend: 'loro',
+        userId: 'source-user',
+      } as SessionMeta,
+      undefined,
+      [
+        {
+          id: 'attachment',
+          kind: 'image',
+          name: 'input.png',
+          mimeType: 'image/png',
+          lastModified: 0,
+          source: new Blob(['image']),
+        },
+      ]
+    );
+    expect(accepted).toBe('pending');
+    expect(await repo.getDocMeta(getSessionRoomId(sessionId))).toBeUndefined();
+    const submission = createSessionSubmission({
+      runtime,
+      assertSessionCreateAllowed: () => {},
+      // Like the management guard: a session without written metadata is refused.
+      assertSessionEditable: async (id) => {
+        if (!(await repo.getDocMeta(getSessionRoomId(id))))
+          throw new Error('history machine unavailable');
+      },
+      recordWorkspaceActivity: () => {},
+      publishSessionMeta: () => {},
+      readSessionMeta: () => undefined,
+      recordChat: () => {},
+      onRpcDelivered: () => {},
+    });
+    await expect(submission.requestSessionDispatch(sessionId, input.id)).resolves.toBeUndefined();
+    expect(pending.getSnapshot()).toMatchObject([{ id: input.id, sessionId }]);
+    expect(fixture.delivered).toEqual([]);
+  });
+
   it.each(['image', 'file'] as const)(
     'accepts already prepared %s content through the shared history input parser',
     async (kind) => {
@@ -994,27 +1050,19 @@ describe('locally accepted Roost input', () => {
     let transferReady = false,
       ownerReady = false;
     const transferred: string[] = [];
-    vi.spyOn(localFileSender, 'canUseElectronLocalFileSend').mockReturnValue(true);
-    vi.spyOn(localFileSender, 'sendSessionFileToLocalRuntime').mockImplementation(
-      async ({ file, machineId }) => {
+    vi.spyOn(electron, 'isElectronRenderer').mockReturnValue(true);
+    vi.spyOn(nativeAttachment, 'prepareElectronLocalAttachment').mockImplementation(
+      async ({ attachment, machineId }) => {
         if (!transferReady) throw new Error('Synthetic local transfer unavailable');
-        transferred.push(await file.text());
+        transferred.push(await attachment.source!.text());
         return {
-          ok: true,
-          files: [
-            {
-              type: 'file',
-              transport: 'local',
-              fileId: 'prepared-file',
-              fileName: file.name,
-              mimeType: file.type,
-              sizeBytes: file.size,
-              machineId,
-              sha256: 'a'.repeat(64),
-              textPreview: true,
-              uploadedAt: 1,
-            },
-          ],
+          type: 'local_attachment',
+          path: '/synthetic/input.txt',
+          machineId,
+          kind: attachment.kind,
+          fileName: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.source!.size,
         };
       }
     );
@@ -1029,6 +1077,7 @@ describe('locally accepted Roost input', () => {
     const { runtime, pending } = fixture.makeRuntime();
     const storage = createSessionInputStorage('input-account', input.workspaceId);
     cleanup.push(() => storage.close());
+    await initI18n('en');
     await acceptSessionUserTurn(
       runtime,
       sessionId,
@@ -1048,8 +1097,11 @@ describe('locally accepted Roost input', () => {
       ]
     );
     await when(pending, () => Boolean(pending.getSnapshot()[0]?.error));
+    // A same-machine preparation failure names that step and keeps the host's reason.
+    const prepareFailed =
+      "Lody on this computer couldn't prepare this attachment (Synthetic local transfer unavailable). Make sure the local agent is running and up to date, then continue sending.";
     expect(pending.getSnapshot()).toMatchObject([
-      { id: input.id, attachments: [{ error: 'Missing workspace or auth token' }] },
+      { id: input.id, error: prepareFailed, attachments: [{ error: prepareFailed }] },
     ]);
     expect(await storage.list()).toEqual([]);
     expect(await owner.history.count()).toBe(0);
@@ -1061,7 +1113,7 @@ describe('locally accepted Roost input', () => {
     expect(frozen).toMatchObject({
       id: input.id,
       state: 'failed',
-      send: { attachments: [{ ready: { fileId: 'prepared-file' } }] },
+      send: { attachments: [{ ready: { type: 'local_attachment', fileName: 'input.txt' } }] },
     });
     expect(frozen?.send.attachments[0]).not.toHaveProperty('source');
     expect(await owner.history.count()).toBe(0);

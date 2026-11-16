@@ -15,8 +15,9 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
 - Encrypted machine RPC uses one feature DTO/chunk codec and shared complete-response assembler.
   The closed pure-read list uses fresh read authority, never execution journals; other admitted
   Code Collab/preview actions require write authority and execution claims. Keep same-member
-  machine binding, exact originals and explicit size errors; never fall back to ordinary RPC.
-- Encrypted dispatch fails with `e2ee_machine_not_shared` only if `authorizeTarget`
+  machine binding except for `session/history-read`, exact originals and explicit size errors;
+  never fall back to ordinary RPC.
+- Encrypted dispatch fails with `e2ee_machine_not_shared` only when `authorizeTarget`
   returns a verified `false`. An unknown policy signs, because senders withhold input
   only for a known withdrawal and the receiving machine decides.
 - A fully verified ledger view that no longer contains the requester classifies
@@ -56,15 +57,17 @@ Machine RPC contracts: [transport map](../../.agents/docs/rpc-loro-streams-rpc.m
   `session/history-watch` retains owner encryption and readiness checks. Bound its
   separate admission at 128; checkpoint waits hold no ordinary read permit. Acquire
   that permit only for the subsequent body/change read. Stop aborts parked waits.
-- `session/dispatch-turn` only stashes/wakes, never runs agents inline. Its TTL
-  equals the client deadline. Stop fences queued handlers and retains started work
-  through raw completion.
-- Persist history precondition refusals before replying; replay retains them until
-  expiry. Conflicting ID reuse or unavailable request state fails closed. Details: [history readiness](../../.agents/docs/rpc-loro-streams-rpc.md#history-readiness-and-error-provenance).
-- Authorize orchestration source-side with its CLI token; workspace RPC cannot
-  authenticate claimed requesters. Automation controls need target-verified,
-  operation-bound proof. `session/live-status` reads target active presence, never
-  infers liveness from `SessionMeta.status` or message pointers.
+- Control handlers stay fast: `session/dispatch-turn` stashes/wakes, never executes
+  an agent inline. Its TTL equals the client deadline, bounding restart replay.
+  Stop fences queued handlers; retain started work until its raw completion.
+- Ordinary history proofs require both proxy principals; encrypted reads retain exact-session fences through sending. Writes require intent-bound editing proofs and durable claims until proof expiry; uncertain outcomes never replay. Recheck cancellation and deadlines after authorization and persistence.
+- Keep precondition refusals until expiry. Conflicting IDs and unavailable request state fail closed. Details: [history readiness](../../.agents/docs/rpc-loro-streams-rpc.md#history-readiness-and-error-provenance).
+- Session orchestration authorization is checked source-side with the source CLI
+  token because workspace RPC cannot authenticate a claimed requester identity.
+  Automation controls require target-verified operation-bound proof.
+  `session/live-status` reads the target
+  daemon's active-presence controller and must not infer liveness from durable
+  `SessionMeta.status` or message pointers.
 - Remote lifecycle: [ACK contract](../../specs/machine-lifecycle-ack.md).
   RPC handlers never run installers inline. Accepted work exits via the CLI process
   boundary after a bounded ACK attempt, including delivery failure or timeout.

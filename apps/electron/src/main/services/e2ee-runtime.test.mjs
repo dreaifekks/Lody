@@ -7,6 +7,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import {
+  decodeE2eeIntentRecord,
+  scheduleDeclarationSubject
+} from '@lody/shared/e2ee-execution-intent'
 import { createDesktopE2eeContent } from '../../../../../packages/components/src/providers/desktop-e2ee-content.ts'
 import { Clock, Context, Effect, Layer, Result, Scope, Exit, Deferred, Fiber } from 'effect'
 import {
@@ -38,15 +42,17 @@ import {
   prepareEpochEnvelope,
   getCommittedEpochStagingKey,
   signDeviceCredentialBinding,
+  verifyExecutionIntent,
   prepareLedgerCommand,
   signLedgerRecord,
   extendLedger,
   verifyLedger
 } from '@lody/e2ee-core/protocol'
-import { inspectContentFrame } from '@lody/e2ee-core/protocol'
+import { accountUserId, inspectContentFrame } from '@lody/e2ee-core/protocol'
 import { desktopE2eePorts, makeDesktopE2eeCustody } from '../e2ee-custody.mts'
 import { makeDesktopE2eeBootstrap } from './e2ee-bootstrap.mts'
 import { makeDesktopE2eeRuntimeHost } from './e2ee-runtime.mts'
+import { makeDesktopLocalPairing } from './e2ee-local-pairing.mts'
 import { decodeMemberKeyPackage } from './e2ee-member-join.mts'
 import { createDesktopQuitBarrier, drainMainProcessQuitResources } from './desktop-shutdown.ts'
 // Authenticated synthetic OS storage; this suite does not exercise a user's keychain.
@@ -73,7 +79,7 @@ const safeStorage = {
   }
 }
 const intent = Object.freeze({
-  accountId: 'synthetic-account',
+  accountId: '2w8hg7s65mt3pgj9a1bnwsbcedx48wr',
   requestId: 'request-0123456789',
   name: 'Encrypted example',
   slug: 'encrypted-example'
@@ -96,12 +102,7 @@ const openOwner = (directory, override = (custody) => custody, registerIdentity 
       accountId: intent.accountId,
       custody: override(custody)
     })
-    if (registerIdentity)
-      yield* bootstrap.recordAccountIdentity({
-        accountId: intent.accountId,
-        cryptoUserId: 'aa'.repeat(32)
-      })
-    return { custody, bootstrap }
+    if (registerIdentity) return { custody, bootstrap }
   })
 
 const workspaceId = 'synthetic-workspace'
@@ -341,12 +342,8 @@ const memberWithHost = Effect.fnUntraced(function* (folder) {
   })
   const bootstrap = yield* makeDesktopE2eeBootstrap({
     directory: folder,
-    accountId: 'other-account',
+    accountId: 'acc2',
     custody
-  })
-  yield* bootstrap.recordAccountIdentity({
-    accountId: 'other-account',
-    cryptoUserId: 'bb'.repeat(32)
   })
   const host = yield* makeDesktopE2eeRuntimeHost({ directory: folder, custody, bootstrap })
   return { custody, bootstrap, host }
@@ -376,7 +373,7 @@ void test('a different account retains its KeyPackage, joins as Member, exchange
       assert.deepEqual(yield* member.bootstrap.prepareMemberJoin(offer), original)
       assert.equal(
         hex(decodeMemberKeyPackage(original.keyPackageHex).request.userId.toBytes()),
-        'bb'.repeat(32)
+        hex(Result.getOrThrow(accountUserId('acc2')).toBytes())
       )
       assert.ok(Result.isFailure(yield* Effect.result(member.host.open(workspaceId))))
       yield* owner.host.inspectMemberAdmission(workspaceId, original.keyPackageHex)
@@ -703,6 +700,11 @@ for (const installation of ['member', 'personal-history', 'personal-snapshot']) 
         const nextOffer = yield* owner.host.memberOffer(workspaceId, 'email', 9_000_000_000_001)
         assert.notEqual(nextOffer.token, firstOffer.token)
         const nextRequest = yield* next.bootstrap.prepareMemberJoin(nextOffer)
+        // The rejoining account is recognizably the same person under a new membership.
+        assert.equal(
+          hex(decodeMemberKeyPackage(nextRequest.keyPackageHex).request.userId.toBytes()),
+          hex(decodeMemberKeyPackage(firstRequest.keyPackageHex).request.userId.toBytes())
+        )
         const proof = decodeMemberKeyPackage(nextRequest.keyPackageHex)
         assert.notEqual(hex(proof.request.signingPublicKey.toBytes()), original.signingPublicKey)
         assert.notEqual(
@@ -866,6 +868,63 @@ for (const installation of ['member', 'personal-history', 'personal-snapshot']) 
     )
   })
 }
+for (const fault of ['feed', 'origin']) {
+  void test(`accepted ledger progress survives auxiliary ${fault} compaction failure`, async (t) => {
+    const directory = await fixture(t),
+      warnings = []
+    t.mock.method(console, 'warn', (...args) => {
+      warnings.push(args)
+    })
+    await execute(
+      Effect.gen(function* () {
+        const owner = yield* ownerWithHost(directory),
+          prepared = yield* bind(owner)
+        const records = yield* makeRecords(owner.custody, prepared, 71)
+        yield* owner.host.open(workspaceId)
+        const workspace = join(directory, 'workspaces', workspaceId)
+        const history = new DatabaseSync(join(workspace, 'history.sqlite'))
+        const feed = new DatabaseSync(
+          join(workspace, history.prepare('SELECT name FROM cache WHERE id=1').get().name)
+        )
+        const db = fault === 'feed' ? feed : history
+        db.exec(
+          `CREATE TRIGGER fail_compaction BEFORE UPDATE OF origin ON ${fault === 'feed' ? 'feed_meta' : 'cache'} BEGIN SELECT RAISE(ABORT,'synthetic auxiliary failure'); END`
+        )
+        try {
+          yield* owner.host.ingestLedgerRecords(
+            workspaceId,
+            page(records, prepared.genesisHashHex, 0, 64)
+          )
+          yield* owner.host.ingestLedgerRecords(
+            workspaceId,
+            page(records, prepared.genesisHashHex, 64, 70)
+          )
+          assert.equal((yield* owner.host.status(workspaceId)).length, 70)
+          assert.equal(history.prepare('SELECT COUNT(*) AS n FROM records').get().n, 70)
+          yield* owner.host.ingestLedgerRecords(
+            workspaceId,
+            page(records, prepared.genesisHashHex, 70)
+          )
+          assert.equal((yield* owner.host.status(workspaceId)).length, 71)
+          assert.deepEqual(warnings, [
+            ['[E2EE] Ledger compaction pending', { code: 'e2ee_ledger_compaction_pending' }]
+          ])
+        } finally {
+          db.exec('DROP TRIGGER fail_compaction')
+          feed.close()
+          history.close()
+        }
+      })
+    )
+    await execute(
+      Effect.gen(function* () {
+        const owner = yield* ownerWithHost(directory)
+        assert.equal((yield* owner.host.open(workspaceId)).length, 71)
+      })
+    )
+  })
+}
+
 void test('binding is immutable, retained reopen asks only for a suffix, and corrupted cache recovers locally', async (t) => {
   const directory = await fixture(t)
   let saved
@@ -1419,6 +1478,85 @@ void test('workspace close fences and drains a held key round without blocking a
     })
   )
 })
+
+for (const first of ['local', 'remote']) {
+  void test(`pairing reset isolates journals and reset receipts with ${first} reset first`, async (t) => {
+    const db = new DatabaseSync(':memory:')
+    t.after(() => db.close())
+    const journals = {
+      local: makeDesktopLocalPairing({ db, current: () => Effect.void }),
+      remote: makeDesktopLocalPairing({ db, journal: 'remote', current: () => Effect.void })
+    }
+    const tables = { local: 'local_pairing', remote: 'remote_local_pairing' }
+    const archives = {
+      local: 'archived_local_pairings',
+      remote: 'remote_archived_local_pairings'
+    }
+    const read = (table) => db.prepare(`SELECT * FROM ${table} WHERE id=1`).get()
+    const originals = {}
+    for (const mode of ['local', 'remote']) {
+      db.prepare(`INSERT INTO ${tables[mode]} VALUES(1,?,?,?,?)`).run(
+        `${mode}-session`,
+        `${mode}-material`,
+        `${mode}-request`,
+        Buffer.from(`${mode}-record`)
+      )
+      originals[mode] = read(tables[mode])
+    }
+    // Preserve the existing local archive schema and historical receipts.
+    db.exec(
+      'CREATE TABLE archived_local_pairings(reset_id TEXT PRIMARY KEY, session TEXT, material TEXT, request_id TEXT, record BLOB)'
+    )
+    db.prepare('INSERT INTO archived_local_pairings VALUES(?,?,?,?,?)').run(
+      'previous-reset',
+      'previous-session',
+      'previous-material',
+      'previous-request',
+      Buffer.from('previous-record')
+    )
+    const previous = db.prepare('SELECT * FROM archived_local_pairings').get()
+    const second = first === 'local' ? 'remote' : 'local'
+    for (const mode of [first, second]) {
+      const other = mode === 'local' ? 'remote' : 'local'
+      const otherBefore = read(tables[other])
+      await execute(journals[mode].reset('shared-reset-id'))
+      const reset = read(tables[mode])
+      assert.notEqual(reset.session, originals[mode].session)
+      assert.deepEqual(
+        { ...reset },
+        {
+          ...originals[mode],
+          session: reset.session,
+          material: null,
+          request_id: null,
+          record: null
+        }
+      )
+      assert.deepEqual(read(tables[other]), otherBefore)
+      assert.deepEqual(
+        {
+          ...db.prepare(`SELECT * FROM ${archives[mode]} WHERE reset_id=?`).get('shared-reset-id')
+        },
+        {
+          reset_id: 'shared-reset-id',
+          ...Object.fromEntries(Object.entries(originals[mode]).filter(([key]) => key !== 'id'))
+        }
+      )
+      const reopened = makeDesktopLocalPairing({
+        db,
+        ...(mode === 'remote' ? { journal: 'remote' } : {}),
+        current: () => Effect.void
+      })
+      await execute(reopened.reset('shared-reset-id'))
+      assert.deepEqual(read(tables[mode]), reset)
+      assert.deepEqual(read(tables[other]), otherBefore)
+    }
+    assert.deepEqual(
+      db.prepare('SELECT * FROM archived_local_pairings WHERE reset_id=?').get('previous-reset'),
+      previous
+    )
+  })
+}
 
 void test('local machine approval retains its exact signed original across restart and verifies the intended session', async (t) => {
   const directory = await fixture(t)
@@ -2451,34 +2589,6 @@ void test('terminal cancellation can archive a signed pre-reservation intent, wh
       assert.equal((yield* first.host.status(workspaceId)).length, 2)
     })
   )
-})
-
-void test('D03 unknown identity companion blocks only new signatures; existing workspace and signed originals reopen offline', async (t) => {
-  const directory = await fixture(t)
-  let original
-  await execute(
-    Effect.gen(function* () {
-      const owner = yield* ownerWithHost(directory)
-      original = yield* bind(owner)
-      yield* owner.host.open(workspaceId)
-    })
-  )
-  const protectedBytes = Buffer.from('{"version":99,"opaque":"future account identity"}')
-  await writeFile(join(directory, 'account-identity.json'), protectedBytes)
-  await execute(
-    Effect.gen(function* () {
-      const owner = yield* openOwner(directory, (value) => value, false)
-      const host = yield* makeDesktopE2eeRuntimeHost({ directory, ...owner })
-      assert.equal((yield* host.open(workspaceId)).hasCurrentKey, true)
-      assert.equal(yield* owner.bootstrap.creationNeedsAccountIdentity(intent), false)
-      assert.deepEqual(yield* owner.bootstrap.prepareCreation(intent), original)
-      const next = { ...intent, requestId: 'another-request-01234567' }
-      const rejected = yield* Effect.result(owner.bootstrap.creationNeedsAccountIdentity(next))
-      assert.equal(rejected.failure.code, 'corrupt')
-      assert.equal((yield* host.status(workspaceId)).hasCurrentKey, true)
-    })
-  )
-  assert.deepEqual(await readFile(join(directory, 'account-identity.json')), protectedBytes)
 })
 
 for (const source of ['staging', 'temporary-io'])
@@ -3854,6 +3964,72 @@ void test('member controls use ordinary durable records and keep the old epoch a
   )
 })
 
+void test('ownership transfer signs one ordinary record and leaves the former owner an admin', async (t) => {
+  const directory = await fixture(t)
+  await execute(
+    Effect.gen(function* () {
+      const owner = yield* ownerWithHost(directory)
+      const prepared = yield* bind(owner)
+      const records = yield* makeRecords(owner.custody, prepared, 2)
+      yield* owner.host.open(workspaceId)
+      yield* owner.host.ingestLedgerRecords(workspaceId, page(records, prepared.genesisHashHex, 0))
+      const remote = () => ({
+        staging: () => ({
+          stageGroup: () => Effect.die('member commands must not stage a candidate'),
+          readGroup: () => Effect.die('member commands must not read a candidate'),
+          deleteGroup: () => Effect.die('member commands must not delete a candidate')
+        }),
+        mailbox: () => {
+          throw new Error('member commands must not receive a candidate')
+        },
+        log: {
+          read: () =>
+            Effect.sync(() => ({
+              records: records.map((x) => new Uint8Array(x)),
+              checkpoint: { head: hashRecordBytes(records.at(-1)), length: records.length }
+            })),
+          appendCas: (_genesis, point, original) =>
+            Effect.sync(() => {
+              assert.equal(
+                hex(point.head.toBytes()),
+                hex(hashRecordBytes(records.at(-1)).toBytes())
+              )
+              records.push(new Uint8Array(original))
+            })
+        },
+        history: () => Effect.succeed(page(records, prepared.genesisHashHex, 0))
+      })
+      const membershipId = '11'.repeat(16)
+      // A member that does not exist cannot receive ownership.
+      const missing = yield* Effect.result(
+        owner.host.manage(
+          workspaceId,
+          { type: 'transferOwner', membershipId: '99'.repeat(16) },
+          remote
+        )
+      )
+      assert.equal(missing._tag, 'Failure')
+      assert.equal(
+        yield* owner.host.manage(workspaceId, { type: 'transferOwner', membershipId }, remote),
+        'Committed'
+      )
+      assert.equal(
+        Result.getOrThrow(decodeRecord(records.at(-1))).body.operation.type,
+        'transferOwner'
+      )
+      const status = yield* owner.host.status(workspaceId)
+      assert.equal(status.memberRole, 'admin')
+      // Keys are unchanged: a transfer is not a removal.
+      assert.equal(status.rotationRequired, false)
+      // The former owner has no authority to transfer again.
+      const again = yield* Effect.result(
+        owner.host.manage(workspaceId, { type: 'transferOwner', membershipId }, remote)
+      )
+      assert.equal(again._tag, 'Failure')
+    })
+  )
+})
+
 void test('member removal reopens its uncertain original and never signs a replacement', async (t) => {
   const directory = await fixture(t)
   let records,
@@ -4244,6 +4420,69 @@ void test('sharing host retains an unknown owner original across reopen and pres
   assert.equal(commits, 1)
 })
 
+void test('signs a schedule declaration over the fingerprint it computes itself', async (t) => {
+  const directory = await fixture(t)
+  const document = {
+    definition: {
+      scheduleId: 'synthetic-schedule',
+      title: 'Synthetic',
+      ownerId: 'owner',
+      machineId: 'fixture-machine',
+      enabled: true,
+      activationId: 'activation',
+      activeFrom: 0,
+      trigger: { kind: 'interval', everyMs: 60_000, anchorAt: '2026-01-01T00:00:00Z' },
+      misfirePolicy: { kind: 'skip' },
+      overlapPolicy: 'queue_one',
+      agent: { agentConfigId: 'agent', modeId: 'safe' },
+      retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+      createdAt: 0,
+      updatedAt: 0,
+      createdBy: 'owner'
+    },
+    prompt: 'synthetic scheduled input'
+  }
+  await execute(
+    Effect.gen(function* () {
+      const owner = yield* ownerWithHost(directory)
+      yield* bind(owner)
+      yield* owner.host.open(workspaceId)
+      const status = yield* owner.host.status(workspaceId)
+      const manualRunKey = 'ab'.repeat(32)
+      const record = decodeE2eeIntentRecord(
+        yield* owner.host.signScheduleDeclaration(workspaceId, document, manualRunKey)
+      )
+      assert.equal(Buffer.from(record.signer).toString('hex'), status.signingPublicKey)
+      const subject = scheduleDeclarationSubject(document, manualRunKey)
+      const intent = {
+        ...subject,
+        genesis: Result.getOrThrow(Bytes.genesisHash(Buffer.from(status.genesisHash, 'hex'))),
+        workspaceId,
+        contentDigest: Buffer.from(subject.contentDigest, 'hex')
+      }
+      assert.equal(
+        Result.isSuccess(verifyExecutionIntent(intent, record.signer, record.signature)),
+        true
+      )
+      // It binds this definition and run only.
+      assert.equal(
+        Result.isFailure(
+          verifyExecutionIntent(
+            { ...intent, messageId: 'definition' },
+            record.signer,
+            record.signature
+          )
+        ),
+        true
+      )
+      const refused = yield* Effect.result(
+        owner.host.signScheduleDeclaration(workspaceId, { ...document, prompt: '' })
+      )
+      assert.equal(refused.failure.code, 'invalid-input')
+    })
+  )
+})
+
 void test('passive cache state never opens workspace custody or changes sibling entries', async (t) => {
   const directory = await fixture(t)
   await execute(
@@ -4488,3 +4727,139 @@ for (const advance of [false, true]) {
     )
   })
 }
+
+void test('an iroh call that outlives its budget is cancelled and rejects for Streams fallback', async (t) => {
+  const { makeIrohRoute } = await import('./e2ee-iroh.mts')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let release
+  const call = {
+    // The machine accepted the stream but never replies or finishes it.
+    nextReply: () => new Promise((resolve) => (release = resolve)),
+    cancel: () => release?.(null)
+  }
+  const route = makeIrohRoute(
+    {
+      hasConnection: async () => true,
+      warm: async () => undefined,
+      call: async () => call
+    },
+    'aa'.repeat(32),
+    new Set()
+  )
+  assert.equal(await route.ready(), true)
+  const pending = route.call({ id: 'bb'.repeat(16), frame: 'cc'.repeat(200) }, 800)
+  await new Promise((resolve) => setImmediate(resolve))
+  t.mock.timers.tick(800)
+  await assert.rejects(pending, /iroh_timeout/)
+})
+
+void test('desktop status skips an abandoned retained write hint with only K1 installed', async (t) => {
+  const directory = await fixture(t)
+  await execute(
+    Effect.gen(function* () {
+      const owner = yield* ownerWithHost(directory),
+        prepared = yield* bind(owner)
+      yield* owner.host.open(workspaceId)
+      const genesis = Result.getOrThrow(
+        Bytes.genesisHash(Buffer.from(prepared.genesisHashHex, 'hex'))
+      )
+      const signer = yield* owner.custody.openDevice(genesis),
+        records = [Buffer.from(prepared.genesisRecordHex, 'hex')]
+      let view = Result.getOrThrow(
+        verifyLedger({
+          anchor: genesis,
+          records,
+          checkpoint: { head: hashRecordBytes(records[0]), length: 1 }
+        })
+      )
+      const append = Effect.fnUntraced(function* (op) {
+        const body = Result.getOrThrow(
+          encodeCbor([view.head.toBytes(), signer.publicKey.toBytes(), op])
+        )
+        const record = yield* signLedgerRecord(
+          Result.getOrThrow(prepareLedgerRecord(view, body)),
+          signer
+        )
+        records.push(record)
+        view = Result.getOrThrow(
+          extendLedger(view, [record], { head: hashRecordBytes(record), length: records.length })
+        )
+      })
+      const ports = Layer.mergeAll(
+        desktopE2eePorts(owner.custody, signer),
+        Layer.succeed(WorkspaceScope, { genesis }),
+        Layer.succeed(LedgerViewSource, { current: () => Effect.succeed(view) }),
+        Layer.succeed(LedgerPinStore, {
+          read: () => Effect.succeed(null),
+          write: () => Effect.void
+        })
+      )
+      const path = join(directory, 'workspaces', workspaceId, 'installed-keys.sqlite')
+      const keys = Context.get(
+        yield* Layer.build(
+          InstalledEpochKeys.layer.pipe(
+            Layer.provideMerge(sqliteInstalledKeyStore({ path, mode: 'open' })),
+            Layer.provideMerge(VerifiedLedger.layer),
+            Layer.provideMerge(ports)
+          )
+        ),
+        InstalledEpochKeys
+      )
+      const key1 = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(71))),
+        key2 = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(72)))
+      try {
+        const base = yield* keys.read(0)
+        try {
+          yield* append([
+            7,
+            1,
+            Result.getOrThrow(commitEpochKey(genesis, 1, key1)).toBytes(),
+            Result.getOrThrow(
+              sealHistoryPacket({ genesis, epoch: 1, currentKey: key1, previousKey: base })
+            )
+          ])
+          yield* keys.saveAndReload(1, key1)
+          const db = new DatabaseSync(path)
+          try {
+            db.exec('DELETE FROM installed_epoch_keys WHERE epoch = 0')
+          } finally {
+            db.close()
+          }
+          yield* owner.host.ingestLedgerRecords(
+            workspaceId,
+            page(records, prepared.genesisHashHex, 0)
+          )
+          assert.equal((yield* owner.host.status(workspaceId)).writeEpoch, 1)
+          yield* append([9, [2]])
+          yield* append([
+            11,
+            2,
+            Result.getOrThrow(commitEpochKey(genesis, 2, key2)).toBytes(),
+            0,
+            Result.getOrThrow(
+              sealHistoryPacket({
+                genesis,
+                epoch: 2,
+                baseEpoch: 0,
+                currentKey: key2,
+                previousKey: base
+              })
+            )
+          ])
+          yield* owner.host.ingestLedgerRecords(
+            workspaceId,
+            page(records, prepared.genesisHashHex, 0)
+          )
+          assert.equal((yield* owner.host.status(workspaceId)).writeEpoch, null)
+          assert.equal((yield* owner.host.status(workspaceId)).writeEpoch, null)
+          yield* keys.check(1) // Historical key installation remains intact.
+        } finally {
+          disposeEpochKey(base)
+        }
+      } finally {
+        disposeEpochKey(key1)
+        disposeEpochKey(key2)
+      }
+    })
+  )
+})

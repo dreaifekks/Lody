@@ -1,4 +1,5 @@
-import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { ProductWindowIpcService } from '../product-window-ipc-service'
+import { getIpcContext, IpcMethod } from 'electron-ipc-decorator'
 import { isLocalPlatform, readLocalPlatformSnapshot } from '../../platform'
 import { readLanCredentialsGitHub } from '@lody/shared/node/lan-credentials'
 import { readGitHubCliToken, type GitHubCliTokenResult } from '../../services/github-cli-token'
@@ -6,7 +7,7 @@ import { readGitHubToken } from '../../services/github-token-source'
 import { assertProductWindowSender } from '../assert-sender'
 import { getIpcServiceDeps } from '../ipc-service-deps'
 
-export class LocalPlatformIpc extends IpcService {
+export class LocalPlatformIpc extends ProductWindowIpcService {
   static override readonly groupName = 'localPlatform'
 
   @IpcMethod()

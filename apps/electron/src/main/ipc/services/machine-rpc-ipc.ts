@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, type WebContents } from 'electron'
 import path from 'node:path'
 import { z } from 'zod'
+import { ProductWindowIpcService } from '../product-window-ipc-service'
 import { getLodyDataDir } from '@lody/shared/node/installation-profile'
 import { SessionFileRootIdSchema } from '@lody/shared/project-path'
 import { mainPlatformKind } from '../../platform'
@@ -18,7 +19,7 @@ import {
 import { saveAgentFile, type AgentFileTarget } from '../../services/member-file-resource'
 import { isLocalPlatform } from '../../platform'
 import { formatUnknownError } from '../../utils'
-import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { getIpcContext, IpcMethod } from 'electron-ipc-decorator'
 import type { LocalMachineRpcRequest } from '@lody/shared/local-machine-rpc'
 import { getIpcServiceDeps } from '../ipc-service-deps'
 import { assertProductWindowSender } from '../assert-sender'
@@ -66,7 +67,7 @@ export type SaveMemberFileResult =
 const toTarget = ({ mimeType: _mimeType, ...target }: z.output<typeof MemberFileSchema>) =>
   target satisfies AgentFileTarget
 
-export class MachineRpcIpc extends IpcService {
+export class MachineRpcIpc extends ProductWindowIpcService {
   static override readonly groupName = 'machineRpc'
 
   @IpcMethod()

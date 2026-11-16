@@ -1,3 +1,4 @@
+import { composerIn } from './composer-test-utils';
 const catalog = vi.hoisted(() => ({ enabled: true }));
 vi.mock('../src/hooks/use-workspace-catalog', () => ({
   useWorkspaceCatalog: () => ({
@@ -213,7 +214,7 @@ it('removes the suggestion and Tab hint from the real composer when the workspac
     act(async () => root.render(createElement(Provider, { store }, createElement(Composer))));
   const tab = async () => {
     const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
-    await act(async () => host.querySelector('textarea')!.dispatchEvent(event));
+    await act(async () => composerIn(host).dispatchEvent(event));
     return event;
   };
   try {
@@ -221,7 +222,7 @@ it('removes the suggestion and Tab hint from the real composer when the workspac
     await render();
     expect(host.querySelector('[data-prompt-suggestion]')).toBeNull();
     expect((await tab()).defaultPrevented).toBe(false);
-    expect(host.querySelector('textarea')?.value).toBe('');
+    expect(composerIn(host).value).toBe('');
     catalog.enabled = true;
     await render();
     expect(host.querySelector('[data-prompt-suggestion]')?.textContent).toContain('Tab');
@@ -235,7 +236,7 @@ it('removes the suggestion and Tab hint from the real composer when the workspac
     catalog.enabled = true;
     await render();
     expect((await tab()).defaultPrevented).toBe(true);
-    expect(host.querySelector('textarea')?.value).toBe('Run the tests');
+    expect(composerIn(host).value).toBe('Run the tests');
   } finally {
     await act(async () => root.unmount());
     host.remove();

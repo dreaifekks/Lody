@@ -1,3 +1,7 @@
+import { Button } from '@lody/ui/button';
+import * as stylex from '@stylexjs/stylex';
+import { colors } from '@lody/ui/tokens/colors.stylex';
+import { space, text } from '@lody/ui/tokens/scales.stylex';
 import type { ReactNode } from 'react';
 import { describeLanHubPart, type LanHubRole } from '@lody/shared/lan-hub-role';
 import { Activity, DatabaseBackup, Folder, Monitor, ServerCog, User } from 'lucide-react';
@@ -25,6 +29,8 @@ const OS_LABELS: Readonly<Record<string, string>> = {
 
 export type SidebarMachineInfo = {
   machineId: MachineId;
+  needsSharingReview?: boolean;
+  onReviewSharing?: () => void;
   /** The machine's full name (the sidebar label may drop `.local`). */
   name: string;
   /** The name it registered under, when `name` is the short name its LAN gave it. */
@@ -91,7 +97,7 @@ export function SidebarMachineHoverCard({
   );
 }
 
-function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
+export function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
   const { t } = useTranslation();
   const status = useMachineOnlineStatus(machine.machineId);
   const activityDescription = useSidebarGroupActivityDescription(machine.activity);
@@ -218,6 +224,16 @@ function SidebarMachineCard({ machine }: { machine: SidebarMachineInfo }) {
           </span>
         )}
       </div>
+      {machine.needsSharingReview && (
+        <div {...stylex.props(reviewStyles.notice)}>
+          <p>{t('e2ee.machineSharing.resignHint')}</p>
+          {machine.onReviewSharing && (
+            <Button variant="ghost" size="small" onClick={machine.onReviewSharing}>
+              {t('e2ee.machineSharing.resign')}
+            </Button>
+          )}
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         {rows.map((row) => (
           <div key={row.key} className="flex items-center gap-2">
@@ -259,3 +275,12 @@ function SidebarMachineLatency({ machineId }: { machineId: MachineId }) {
     </span>
   );
 }
+const reviewStyles = stylex.create({
+  notice: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: space[2],
+    fontSize: text.captionSize,
+    color: colors.secondaryLabel,
+  },
+});

@@ -16,7 +16,14 @@ export class PersonalHostError extends Data.TaggedError('PersonalHostError')<{
     | 'unsupported'
     | 'storage'
     | 'network'
-    | 'restart-required';
+    | 'restart-required'
+    | 'unauthorized'
+    /** Automatic admission refused; see `AutomaticAdmissionRefusal`. Explicit approval remains. */
+    | 'invitation-invalid'
+    | 'invitation-endorser-ineligible'
+    | 'invitation-expired'
+    | 'invitation-mismatch'
+    | 'invitation-used';
   readonly cause?: unknown;
 }> {}
 export const fail = (code: PersonalHostError['code'], cause?: unknown) =>

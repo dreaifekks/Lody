@@ -25,11 +25,13 @@ import {
   resolveAgentRoleAvailability,
   selectAgentRoleInstance,
   withAgentRoleTargets,
+  selectAgentRoleCapability,
   type AgentRole,
   type AgentRoleAvailabilityContext,
   type AgentRoleTarget,
 } from '../src/agent-role';
 import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from '../src/ids';
+import type { AcpCapabilityCacheEntry } from '../src/ai';
 
 /** A row as a client that predates instances writes it: the legacy fields only. */
 const legacyRow = (overrides: Partial<AgentRole> = {}) => {
@@ -429,6 +431,72 @@ it('preserves memory references, revises identity changes, and gates older machi
   expect(
     normalizeAgentRole({ ...configured, runConfig: { memory: { providerId: 'nowledge-mem' } } })
   ).toBeUndefined();
+});
+
+describe('agent role run config availability', () => {
+  const capability = (overrides: Partial<AcpCapabilityCacheEntry> = {}) =>
+    ({
+      agentType: 'codex',
+      cliType: 'builtin',
+      provenance: 'runtime',
+      models: [{ modelId: 'model-new', name: 'New' }],
+      modes: [{ id: 'mode-new', name: 'New' }],
+      fetchedAt: 1,
+      ...overrides,
+    }) as AcpCapabilityCacheEntry;
+  const config = { agentType: 'codex', cliType: 'builtin' } as const;
+  const judged = (entry: AcpCapabilityCacheEntry | undefined, runConfig: AgentRole['runConfig']) =>
+    resolveAgentRoleAvailability(
+      role({ runConfig }),
+      context({ runConfigCapability: () => selectAgentRoleCapability(entry, config) })
+    );
+
+  it('disables a Role whose pinned model the agent stopped offering', () => {
+    expect(judged(capability(), { modelId: 'model-old' })).toEqual({
+      kind: 'unavailable',
+      reason: 'model_unavailable',
+    });
+    expect(judged(capability(), { modelId: 'model-new' })).toEqual({ kind: 'available' });
+  });
+
+  it('disables a Role whose pinned mode or permission is gone', () => {
+    expect(judged(capability(), { modeId: 'mode-old' })).toEqual({
+      kind: 'unavailable',
+      reason: 'mode_unavailable',
+    });
+    expect(
+      judged(
+        capability({
+          configOptions: [
+            {
+              id: 'permission_mode',
+              category: '_permission',
+              type: 'select',
+              options: [{ value: 'ask', name: 'Ask' }],
+            },
+          ] as AcpCapabilityCacheEntry['configOptions'],
+        }),
+        { configOptionValues: { permission_mode: 'yolo' } }
+      )
+    ).toEqual({ kind: 'unavailable', reason: 'mode_unavailable' });
+  });
+
+  it('never judges a pin against capabilities that do not prove it is gone', () => {
+    const pin = { modelId: 'model-old' };
+    expect(judged(undefined, pin)).toEqual({ kind: 'available' });
+    expect(judged(capability({ provenance: undefined }), pin)).toEqual({ kind: 'available' });
+    expect(judged(capability({ models: [], modes: [] }), pin)).toEqual({ kind: 'available' });
+    expect(judged(capability({ agentType: 'claude' }), pin)).toEqual({ kind: 'available' });
+  });
+
+  it('keeps the binding reason ahead of the run config one', () => {
+    expect(
+      resolveAgentRoleAvailability(
+        role({ runConfig: { modelId: 'model-old' } }),
+        context({ onlineMachineIds: new Set(), runConfigCapability: () => capability() })
+      )
+    ).toEqual({ kind: 'unavailable', reason: 'machine_offline' });
+  });
 });
 
 describe('agent role machine targets', () => {

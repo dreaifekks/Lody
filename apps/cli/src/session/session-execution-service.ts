@@ -1,3 +1,5 @@
+import { machineTurnInterruptionReason, reserveMachineTurn } from './machine-turn-admission';
+import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';
 import { classifyCapacityFailure } from './acp-error-classification';
 import {
@@ -178,6 +180,8 @@ import {
   acpOwnsSessionTitleGeneration,
   assertManagedCodexProfileConfig,
   createReplayPromptBuilder,
+  hasEmptyModelSelectOption,
+  isReplayEntryExcluded,
   isSessionCollaborationStopped,
   resolveActiveAssistantTurnId,
   resolveSessionAuthoredText,
@@ -236,6 +240,32 @@ type FinalizeTurnContext = {
 };
 
 type InboxExecutionHandle = Awaited<ReturnType<OperationInboxLegacy['openExecution']>>;
+
+/** One message per definite encrypted refusal; only a sender without rights reads as one. */
+function encryptedRefusalMessage(
+  reason: Exclude<
+    Extract<
+      import('@/lib/e2ee/agent-execution').EncryptedExecutionClaim,
+      { state: 'denied' }
+    >['reason'],
+    undefined
+  >
+): string {
+  switch (reason) {
+    case 'e2ee_machine_not_shared':
+      return 'e2ee_machine_not_shared: 机器或本地项目未共享，请联系机器所有者。';
+    case 'e2ee_sender_not_authorized':
+      return 'e2ee_sender_not_authorized: The sender is not authorized to run turns in this encrypted workspace now, so this turn will not run.';
+    case 'e2ee_machine_not_member':
+      return 'e2ee_machine_not_member: This machine is no longer a member of this encrypted workspace, so it cannot run this turn.';
+    case 'e2ee_signature_missing':
+      return 'e2ee_signature_missing: This encrypted turn has no signature, so it will not run. Send it again.';
+    case 'e2ee_signature_invalid':
+      return 'e2ee_signature_invalid: This encrypted turn does not match its signature, so it will not run.';
+    case 'e2ee_scope_mismatch':
+      return 'e2ee_scope_mismatch: This encrypted turn was signed for another conversation or machine, so it will not run here.';
+  }
+}
 
 const TURN_FINALIZATION_STAGE_WARN_MS = 5_000;
 /** Trailing history rows searched for the last assistant turn and its user input. */
@@ -372,7 +402,7 @@ type TurnRuntimeState = {
   /** Encrypted member turns only: the verified origin device and reached projects. */
   encryptedOrigin?: { requesterDevice: string; localProjectIds: readonly string[] };
   /** Inputs derived from this member turn so far (owner decision: bounded per origin). */
-  encryptedDerivations?: number;
+  encryptedDerivations?: Set<string>;
   inboxNotificationWork?: { userId: string; originTurnIds: string[] };
   goalControl?: GoalPromptControl;
   /** A Board maintenance turn: never steered into, never announced. */
@@ -712,6 +742,7 @@ export type SessionExecutionServiceDeps = {
    * if steers moved it). Turn wrap-up such as Git and PR sync still follows.
    */
   buildAcpPromptBlocks: (args: {
+    requesterUserId?: string;
     workspaceId: WorkspaceId;
     sessionId: SessionId;
     /** The input's history turn; an agent author adds a provenance header. */
@@ -752,6 +783,8 @@ export type SessionExecutionServiceDeps = {
    */
   publishCodeCollabSharedStateOnSessionStart?: (sessionId: SessionId) => Promise<void>;
   turnFinalization: TurnFinalizationEffects;
+  /** Borrow the existing bounded user-history gate before recovery list writes. */
+  awaitTurnHistoryGate?: (sessionId: SessionId) => Promise<void>;
   recordChatFailure: (
     sessionDoc: SessionDocument,
     reason: ChatFailedReason,
@@ -998,6 +1031,17 @@ export class SessionExecutionService {
   }
 
   private readonly shutdownAbort = new AbortController();
+  private machineIdentityRestoreSealed = false;
+
+  isMachineIdentityRestoreIdle(): boolean {
+    // An execution owner can exist before its active presence is published.
+    return !this.machineIdentityRestoreSealed && this.turnRuntimeBySession.size === 0;
+  }
+
+  stopNewIdentityRestoreExecutions(): void {
+    this.machineIdentityRestoreSealed = true;
+  }
+
   private readonly ownedWork = new Set<Promise<unknown>>();
   private ownBookkeeping<T>(sessionId: SessionId, work: Promise<T>): Promise<T | undefined> {
     const observed = work.catch((error: unknown) => {
@@ -1257,7 +1301,7 @@ export class SessionExecutionService {
       const read = await (await createSessionBackend(doc)).readTurn(args.inputId);
       if (
         meta?.lastHandledUserMsgId === args.inputId ||
-        meta?.lastMissingHistoryUserMsgId === args.inputId ||
+        isMissingHistoryUserTurn(meta, args.inputId) ||
         (read.state === 'ready' &&
           (read.turn.role !== 'user' ||
             ['handled', 'failed', 'canceled', 'delivery_unknown'].includes(read.turn.status ?? '')))
@@ -2597,6 +2641,7 @@ export class SessionExecutionService {
       const inputBlocks = resolveSessionExecutionInputBlocks(options.inputConfig);
       const promptBlocks = await wait(
         this.deps.buildAcpPromptBlocks({
+          requesterUserId: options.userId,
           workspaceId: this.deps.workspaceId,
           sessionId: options.sessionId,
           userTurnId: options.userTurnId,
@@ -4056,6 +4101,132 @@ export class SessionExecutionService {
     );
   }
 
+  /** Called only by the serialized dispatch watcher with no live turn owner. */
+  async recoverUncertainEncryptedTurn(
+    sessionId: SessionId,
+    sessionDoc: SessionDocument,
+    userTurnId: string
+  ): Promise<boolean> {
+    const gate = this.deps.encryptedExecution;
+    if (!gate || this.getExecutionSnapshot(sessionId).hasActiveTurn) return false;
+    const release = this.tryAcquireSessionRewriteConflictLease(sessionId);
+    if (!release) return false;
+    try {
+      const meta = await this.getSessionMeta(sessionId);
+      const backend = await createSessionBackend(sessionDoc, meta);
+      const read = await backend.readTurn(userTurnId);
+      if (
+        read.state === 'ready' &&
+        ['handled', 'failed', 'canceled', 'delivery_unknown'].includes(read.turn.status ?? '') &&
+        meta?.processingUserMsgId !== userTurnId
+      )
+        return false;
+      const state = await Effect.runPromise(gate.readState({ sessionId, userTurnId }));
+      if (state !== 'uncertain') return false;
+      return await this.settleUncertainEncryptedTurn(sessionId, sessionDoc, userTurnId);
+    } finally {
+      release();
+    }
+  }
+
+  private async settleUncertainEncryptedTurn(
+    sessionId: SessionId,
+    sessionDoc: SessionDocument,
+    userTurnId: string
+  ): Promise<boolean> {
+    await this.deps.awaitTurnHistoryGate?.(sessionId);
+    const backend = await this.getSessionBackend(sessionDoc, sessionId);
+    const user = await backend.readTurn(userTurnId);
+    if (
+      user.state === 'ready' &&
+      ['handled', 'failed', 'canceled', 'delivery_unknown'].includes(user.turn.status ?? '')
+    ) {
+      const meta = await this.getSessionMeta(sessionId);
+      if (meta?.processingUserMsgId !== userTurnId) return false;
+      // A stale running pointer does not undo a user's terminal decision.
+      await this.upsertSessionMeta(sessionId, { processingUserMsgId: undefined });
+      await sessionDoc.setStatus(SessionStatusFactory.idle());
+      await backend.flushLocalWrites();
+      return true;
+    }
+    const noticeId = `e2ee-interrupted:${userTurnId}`;
+    const output = await backend.readHistorySelection((rows) => {
+      const start = rows.findIndex((row) => row.id === userTurnId);
+      let end = rows.length;
+      for (let i = start + 1; i < rows.length; i++) {
+        if (rows[i]?.role === 'user') {
+          end = i;
+          break;
+        }
+      }
+      return rows.flatMap((row, index) =>
+        row.id === noticeId ||
+        (row.role === 'assistant' && row.userTurnId === userTurnId) ||
+        (start >= 0 && index > start && index < end && row.role === 'system')
+          ? [index]
+          : []
+      );
+    });
+    const hasNotice = output.some(
+      (entry) =>
+        entry.id === noticeId ||
+        entry.items?.some((item) => item.type === 'system_notice' && item.name === 'chat_failed')
+    );
+    // A completed reply is positive completion evidence, unless it was closed by
+    // this recovery (the durable notice is written before any terminal stamp).
+    if (
+      !hasNotice &&
+      output.some((entry) => entry.role === 'assistant' && typeof entry.endedAt === 'number')
+    )
+      return false;
+    if (!hasNotice) {
+      await backend.applyHistoryAction({
+        kind: 'upsert-turn',
+        turn: {
+          id: noticeId,
+          role: 'system',
+          userTurnId,
+          timestamp: new Date().toISOString(),
+          fileDiff: [],
+          items: [
+            {
+              type: 'system_notice',
+              name: 'chat_failed',
+              meta: {
+                reason: 'turn_pre_prompt_failed',
+                message:
+                  'The previous run was interrupted by a device shutdown or crash. Its outcome is unknown, so it was not retried automatically to avoid duplicate execution. Check its effects before sending a new message.',
+              },
+            },
+          ],
+        },
+      });
+      await backend.flushLocalWrites();
+    }
+    for (const entry of output) {
+      if (entry.role === 'assistant' && typeof entry.endedAt !== 'number')
+        await backend.applyHistoryAction({
+          kind: 'finish-assistant',
+          turnId: entry.id,
+          endedAt: Date.now(),
+        });
+    }
+    await this.setTerminalUserTurnStatus(sessionId, sessionDoc, userTurnId, 'failed');
+    const meta = await this.getSessionMeta(sessionId);
+    // Recovery settles an old identity, not the latest execution. Never replace
+    // another turn's handled/processing pointers with this interrupted turn.
+    await this.upsertSessionMeta(sessionId, {
+      ...(!meta?.lastHandledUserMsgId || meta.lastHandledUserMsgId === userTurnId
+        ? { lastHandledUserMsgId: userTurnId }
+        : {}),
+      ...(meta?.processingUserMsgId === userTurnId ? { processingUserMsgId: undefined } : {}),
+    });
+    if (!meta?.processingUserMsgId || meta.processingUserMsgId === userTurnId)
+      await sessionDoc.setStatus(SessionStatusFactory.idle());
+    await backend.flushLocalWrites();
+    return true;
+  }
+
   private async recordKnownChatFailure(options: {
     sessionId: SessionId;
     sessionDoc: SessionDocument;
@@ -4915,12 +5086,15 @@ export class SessionExecutionService {
     options: VisibleSessionTurnOptions,
     body: (ctx: VisibleSessionTurnContext) => Effect.Effect<void, unknown, Scope.Scope>
   ): Promise<string> {
+    const releaseAdmission = reserveMachineTurn();
+    if (!releaseAdmission) return 'execution-deferred';
     const owned = this.runVisibleSessionTurnOwned(options, body);
     this.ownedWork.add(owned);
     try {
       return await owned;
     } finally {
       this.ownedWork.delete(owned);
+      releaseAdmission();
       daemonLossObserver.changed();
     }
   }
@@ -4929,6 +5103,7 @@ export class SessionExecutionService {
     options: VisibleSessionTurnOptions,
     body: (ctx: VisibleSessionTurnContext) => Effect.Effect<void, unknown, Scope.Scope>
   ): Promise<string> {
+    if (this.machineIdentityRestoreSealed) return 'identity-restore-pending';
     const { sessionId, sessionDoc, userTurnId } = options;
     const assistantEntryParentTurnId = options.assistantEntryParentTurnId ?? userTurnId;
     const span = startTraceSpan(this.deps.logger, 'execution.visible_turn', {
@@ -5061,6 +5236,13 @@ export class SessionExecutionService {
     let turnId!: string;
     let runtime!: TurnRuntimeState;
     try {
+      // Recheck after every pre-owner await has finished. No await may separate
+      // this check from registration: Fleet either sees this owner or seals first.
+      // Returning before ownership leaves pending input/history and Inbox intact.
+      if (this.machineIdentityRestoreSealed) {
+        span.end({ outcome: 'identity-restore-pending' });
+        return 'identity-restore-pending';
+      }
       turnId = this.deps.beginConversationTurn(sessionId, assistantEntryParentTurnId, {
         ...(options.dispatchSource ? { dispatchSource: options.dispatchSource } : {}),
         sessionDoc,
@@ -5724,7 +5906,7 @@ export class SessionExecutionService {
                       localProjectIds: [...authorized],
                     }
                   : undefined;
-                runtime.encryptedDerivations = 0;
+                runtime.encryptedDerivations = new Set();
                 // Authorization may have yielded while Stop was requested.
                 yield* abortIfCancelled();
                 self.deps.logger.debug('[e2ee-rpc-timing]', {
@@ -5733,6 +5915,14 @@ export class SessionExecutionService {
                   at: yield* Clock.currentTimeMillis,
                 });
                 return authorized;
+              }
+              if (result.state === 'uncertain' && userTurnId) {
+                yield* self.tryPromise(() =>
+                  self.settleUncertainEncryptedTurn(sessionId, sessionDoc, userTurnId)
+                );
+                return yield* Effect.fail(
+                  new SessionTurnClaimContended({ sessionId, turnId: runtime.turnId })
+                );
               }
               if (result.state === 'completed' && userTurnId) {
                 const backend = yield* self.tryPromise(() =>
@@ -5761,15 +5951,11 @@ export class SessionExecutionService {
                 userTurnId,
                 reason: 'turn_pre_prompt_failed',
                 message:
-                  result.state === 'uncertain'
-                    ? 'Result unknown. This encrypted turn may already have started and will not be started again. Send a new turn to continue.'
-                    : result.state === 'completed'
-                      ? 'This encrypted turn already finished and will not be started again.'
-                      : result.state === 'expired'
-                        ? 'This encrypted turn expired before execution. Send a new turn to continue.'
-                        : result.state === 'denied' && result.reason === 'e2ee_machine_not_shared'
-                          ? 'e2ee_machine_not_shared: 机器或本地项目未共享，请联系机器所有者。'
-                          : 'This encrypted turn is not authorized for execution.',
+                  result.state === 'completed'
+                    ? 'This encrypted turn already finished and will not be started again.'
+                    : result.state === 'denied' && result.reason
+                      ? encryptedRefusalMessage(result.reason)
+                      : 'This encrypted turn is not authorized for execution.',
               });
             });
 
@@ -6235,7 +6421,7 @@ export class SessionExecutionService {
     backend: SessionBackend,
     userTurnId: string,
     status: 'pending' | 'seen' | 'processing' | 'handled' | 'failed' | 'canceled',
-    cancellationReason?: 'user_stop'
+    cancellationReason?: 'user_stop' | 'machine_update'
   ): Promise<boolean> {
     let matched = false;
     await backend
@@ -6294,7 +6480,8 @@ export class SessionExecutionService {
       userTurnId,
       status,
       status === 'canceled'
-        ? this.getInboxInputCancellationReason(sessionId, userTurnId)
+        ? (this.getInboxInputCancellationReason(sessionId, userTurnId) ??
+            machineTurnInterruptionReason())
         : undefined
     );
     if (!matched) {
@@ -6346,21 +6533,27 @@ export class SessionExecutionService {
 
   /**
    * Encrypted only: the verified principal of the active turn driving `sourceTurnId`.
-   * A member result reserves one of that origin's bounded derivations; past the
-   * bound, or for any other turn, the result is undefined and callers fail closed.
+   * After write authorization, reserve one slot per request; identical retries reuse it. Past the
+   * bound, new requests fail closed; accepted IDs can retry within the same turn.
    */
   reserveEncryptedDerivation(
     sessionId: SessionId,
-    sourceTurnId: string
+    sourceTurnId: string,
+    requestId: string
   ): { kind: 'owner' } | { kind: 'member' } | undefined {
     const runtime = this.turnRuntimeBySession.get(sessionId);
     if (!runtime || runtime.cancelRequested || runtime.invocation?.sourceTurnId !== sourceTurnId)
       return undefined;
     if (runtime.encryptedPrincipal === 'owner') return { kind: 'owner' };
-    if (runtime.encryptedPrincipal !== 'member' || !runtime.encryptedOrigin) return undefined;
-    const used = runtime.encryptedDerivations ?? 0;
-    if (used >= MAX_DERIVED_TURNS_PER_ORIGIN) return undefined;
-    runtime.encryptedDerivations = used + 1;
+    if (
+      (runtime.encryptedPrincipal !== 'member' && runtime.encryptedPrincipal !== 'derived') ||
+      !runtime.encryptedOrigin
+    )
+      return undefined;
+    if (!requestId) return undefined;
+    const used = (runtime.encryptedDerivations ??= new Set<string>());
+    if (!used.has(requestId) && used.size >= MAX_DERIVED_TURNS_PER_ORIGIN) return undefined;
+    used.add(requestId);
     return { kind: 'member' };
   }
 
@@ -6374,7 +6567,10 @@ export class SessionExecutionService {
     const runtime = this.turnRuntimeBySession.get(sessionId);
     if (!runtime || runtime.cancelRequested) return undefined;
     if (runtime.encryptedPrincipal === 'owner') return { kind: 'owner' };
-    if (runtime.encryptedPrincipal === 'member' && runtime.encryptedOrigin)
+    if (
+      (runtime.encryptedPrincipal === 'member' || runtime.encryptedPrincipal === 'derived') &&
+      runtime.encryptedOrigin
+    )
       return { kind: 'member', ...runtime.encryptedOrigin };
     return undefined;
   }
@@ -6402,11 +6598,12 @@ export class SessionExecutionService {
     // In encrypted workspaces the history row's userId is unauthenticated display
     // data and never authority. Derived work from an owner turn keeps today's
     // behavior; from a shared member's turn it is re-authorized as that member when
-    // written and when it starts. Derived, steered or unclaimed turns expose none.
+    // written and when it starts. Unclaimed turns expose no invocation identity.
     if (
       (this.deps.encryptedExecution || this.deps.encryptedWorkspace) &&
       runtime.encryptedPrincipal !== 'owner' &&
-      runtime.encryptedPrincipal !== 'member'
+      runtime.encryptedPrincipal !== 'member' &&
+      runtime.encryptedPrincipal !== 'derived'
     ) {
       return undefined;
     }
@@ -6525,6 +6722,68 @@ export class SessionExecutionService {
     return builder.finish();
   }
 
+  /**
+   * Create dispatch has no `meta.acpSessionId`, but that does not prove the
+   * conversation is empty: a first start can fail during process startup.
+   * Replay is best-effort. Wait briefly for earlier turns, but if the mirror or
+   * backend cannot provide them, start the requested turn without replay rather
+   * than blocking a session that otherwise could run.
+   */
+  private hasPriorCreateHistory(
+    meta: SessionMeta | undefined,
+    userTurnId: string | undefined
+  ): boolean {
+    if (!meta) return false;
+    if ((meta.externalHistory?.importedTurnCount ?? 0) > 0) return true;
+    return [meta.lastHandledUserMsgId, meta.processingUserMsgId, meta.latestUserMsgId].some(
+      (turnId) => !!turnId && turnId !== userTurnId
+    );
+  }
+
+  private async buildCreateHistoryReplay(args: {
+    sessionId: SessionId;
+    sessionDoc: SessionDocument;
+    userTurnId?: string;
+    meta?: SessionMeta;
+  }): Promise<ReplayPromptResult | undefined> {
+    const { sessionId, sessionDoc, userTurnId, meta } = args;
+    if (!userTurnId || !this.hasPriorCreateHistory(meta, userTurnId)) {
+      return undefined;
+    }
+
+    try {
+      const replayHistory = await this.waitForReplayableHistory({
+        sessionId,
+        sessionDoc,
+        excludeTurnId: userTurnId,
+      });
+      const hasReplayableEntry = replayHistory.some(
+        (entry) =>
+          !isReplayEntryExcluded(entry, userTurnId) &&
+          (entry.role === 'user' || entry.role === 'assistant')
+      );
+      if (!hasReplayableEntry) {
+        this.deps.logger.warn(
+          `[${sessionId}] Continuing create without history replay; prior turns were expected but none are replayable`
+        );
+        return undefined;
+      }
+      const replay = await this.buildHistoryReplay(sessionDoc, userTurnId);
+      if (replay.stats.messagesIncluded === 0) {
+        this.deps.logger.warn(
+          `[${sessionId}] Continuing create without history replay; replay contained no messages`
+        );
+        return undefined;
+      }
+      return replay;
+    } catch (error) {
+      this.deps.logger.warn(
+        `[${sessionId}] Continuing create without history replay: ${formatErrorMessage(error)}`
+      );
+      return undefined;
+    }
+  }
+
   private async getSessionBackend(
     sessionDoc: SessionDocument,
     sessionId: SessionId
@@ -6560,7 +6819,8 @@ export class SessionExecutionService {
     ): boolean =>
       history.some(
         (entry) =>
-          entry.id !== args.excludeTurnId && (entry.role === 'user' || entry.role === 'assistant')
+          !isReplayEntryExcluded(entry, args.excludeTurnId) &&
+          (entry.role === 'user' || entry.role === 'assistant')
       );
 
     let latest = await this.getSessionHistoryQuery(args.sessionDoc);
@@ -6949,10 +7209,12 @@ export class SessionExecutionService {
     rawMessage: SessionChatRequestValidated,
     dispatchOptions?: SessionDispatchOptions
   ): Promise<void> {
+    if (this.machineIdentityRestoreSealed) return;
     const message =
       dispatchOptions?.dispatchSource === 'inbox'
         ? rawMessage
         : await this.withVerifiedRequester(rawMessage);
+    if (this.machineIdentityRestoreSealed) return;
     if (
       dispatchOptions?.dispatchSource === 'inbox' &&
       (!dispatchOptions.inboxBatch || !this.operationInbox)
@@ -6960,6 +7222,7 @@ export class SessionExecutionService {
       throw new Error('INBOX_BATCH_REQUIRED');
     }
     const turn = await this.prepareContinueSessionTurn(message, dispatchOptions);
+    if (this.machineIdentityRestoreSealed) return;
     if (
       dispatchOptions?.dispatchSource !== 'inbox' &&
       (await this.markCancelledUserTurnBeforeOwner({
@@ -7474,6 +7737,7 @@ export class SessionExecutionService {
           { sessionId, turnId, inputBlocks: sessionInputBlocks.length },
           async () =>
             await self.deps.buildAcpPromptBlocks({
+              requesterUserId: message.userId,
               workspaceId: message.workspaceId,
               sessionId,
               userTurnId: message.userTurnId,
@@ -8024,8 +8288,11 @@ export class SessionExecutionService {
     rawMessage: SessionCreateRequestValidated,
     dispatchOptions?: SessionDispatchOptions
   ): Promise<void> {
+    if (this.machineIdentityRestoreSealed) return;
     const message = await this.withVerifiedRequester(rawMessage);
+    if (this.machineIdentityRestoreSealed) return;
     const turn = await this.prepareStartSessionTurn(message, dispatchOptions);
+    if (this.machineIdentityRestoreSealed) return;
     const userTurnId =
       typeof message.userTurnId === 'string' && message.userTurnId.trim()
         ? message.userTurnId.trim()
@@ -8312,6 +8579,15 @@ export class SessionExecutionService {
           });
 
           yield* abortIfCancelled();
+          const replayPromptResult = yield* self.tryPromise(() =>
+            self.buildCreateHistoryReplay({
+              sessionId,
+              sessionDoc,
+              userTurnId,
+              meta: existingMeta,
+            })
+          );
+          yield* abortIfCancelled();
           if (project?.kind === 'local') {
             if (!workdir) {
               yield* Effect.fail(
@@ -8417,9 +8693,15 @@ export class SessionExecutionService {
               { sessionId, turnId, inputBlocks: sessionInputBlocks.length },
               async () =>
                 await self.deps.buildAcpPromptBlocks({
+                  requesterUserId: message.userId,
                   workspaceId,
                   sessionId,
+                  userTurnId,
                   inputBlocks: sessionInputBlocks,
+                  replayPromptText:
+                    replayPromptResult && replayPromptResult.stats.messagesIncluded > 0
+                      ? replayPromptResult.promptText
+                      : undefined,
                 })
             );
           };
@@ -9361,6 +9643,17 @@ export class SessionExecutionService {
             error: refresh.error ?? 'Authentication succeeded, but capability refresh failed',
           };
         }
+        if (hasEmptyModelSelectOption(refresh.capability?.configOptions)) {
+          // Auth worked, but the agent's catalog is still degraded: that is not
+          // a successful verification, and the caller must not mark the provider
+          // verified on the strength of the authentication alone.
+          return {
+            ...resolvedBase,
+            ...result,
+            capabilitiesRefreshed: false,
+            error: 'Authentication succeeded, but the provider reported no usable models',
+          };
+        }
         return { ...resolvedBase, ...result, capabilitiesRefreshed: true };
       }
 
@@ -9694,6 +9987,12 @@ export class SessionExecutionService {
         message.configId,
         fingerprintAcpLaunchInputs(message)
       );
+      if (hasEmptyModelSelectOption(configOptions)) {
+        this.deps.logger.warn(
+          `[acp-refresh] ${message.cliType}/${message.agentType} advertised a model select with zero options; the persisted entry stays degraded and will be re-probed on the next refresh`,
+          { configId: message.configId }
+        );
+      }
 
       return {
         type: 'machine/acp-capabilities-refresh_response',

@@ -16,6 +16,10 @@ import {
   LanGitHubStateSchema,
   LanGitHubTokenResultSchema,
 } from './lan-control';
+import {
+  ManagedDaemonUpdateStatusSchema,
+  ManagedDaemonUpgradeOptionsSchema,
+} from './daemon-update';
 import { EncryptedAttachmentSchema } from './encrypted-attachment';
 import { ProjectLocalMemberProbeSchema, SessionProjectRunSchema } from './workspace-project';
 import { automationOriginSchema } from './automations/contracts';
@@ -165,6 +169,9 @@ const OptionalStringSchema = z.preprocess(
 export const SessionImagePayloadSchema = z
   .object({
     imageId: SharedStringSchema,
+    transport: z.enum(['local', 'r2']).optional(),
+    machineId: MachineIdSchema.optional(),
+    localImageId: z.string().uuid().optional(),
     encryption: EncryptedAttachmentSchema.optional(),
     mimeType: z.enum(SESSION_IMAGE_ALLOWED_MIME_TYPES),
     fileName: OptionalStringSchema,
@@ -175,6 +182,16 @@ export const SessionImagePayloadSchema = z
   })
   .strict()
   .superRefine((image, ctx) => {
+    if (
+      image.transport === 'local' &&
+      (!image.machineId ||
+        !image.localImageId ||
+        image.imageId !== image.localImageId ||
+        image.encryption)
+    )
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid local image reference' });
+    if (image.localImageId && !image.machineId)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Local image requires its machine' });
     const manifest = image.encryption;
     if (
       manifest &&
@@ -405,10 +422,23 @@ const SessionVisualAnnotationReferenceInputBlockSchema =
     type: z.literal('visual_annotation_reference'),
   }).strict();
 
+export const SessionLocalAttachmentSchema = z
+  .object({
+    type: z.literal('local_attachment'),
+    machineId: MachineIdSchema,
+    path: SharedTrimmedNonEmptyStringSchema,
+    kind: z.enum(['file', 'image']),
+    fileName: SharedTrimmedNonEmptyStringSchema,
+    mimeType: SharedTrimmedNonEmptyStringSchema,
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const SessionInputBlockSchema = z.discriminatedUnion('type', [
   SessionTextInputBlockSchema,
   SessionImageInputBlockSchema,
   SessionFileBlockObjectSchema,
+  SessionLocalAttachmentSchema,
   SessionCommentReferenceInputBlockSchema,
   SessionVisualAnnotationReferenceInputBlockSchema,
 ]);
@@ -419,9 +449,10 @@ export const SessionInputBlocksSchema = z
     let imageCount = 0;
     let fileCount = 0;
     blocks.forEach((block, index) => {
-      if (block.type === 'image') {
+      if (block.type === 'image' || (block.type === 'local_attachment' && block.kind === 'image')) {
         imageCount += 1;
       }
+      if (block.type === 'local_attachment' && block.kind === 'file') fileCount += 1;
       if (block.type === 'file') {
         fileCount += 1;
         refineSessionFileBlock(block, ctx, [index]);
@@ -531,6 +562,16 @@ export const normalizeSessionTurnInputConfig = (
   }
 
   const inputBlocks = maybeParseField(SessionInputBlocksSchema, record.inputBlocks);
+  if (
+    !inputBlocks &&
+    Array.isArray(record.inputBlocks) &&
+    record.inputBlocks.some(
+      (block) =>
+        block?.type === 'local_attachment' ||
+        (block?.type === 'image' && block?.transport === 'local')
+    )
+  )
+    throw new Error('Invalid local attachment input');
   if (inputBlocks) {
     normalized.inputBlocks = inputBlocks;
   }
@@ -1170,6 +1211,7 @@ export const MachineStatusRequestSchema = z
     workspaceId: WorkspaceIdSchema,
     /** Only for daemons advertising `machineDiskStatus`. */
     includeDisk: z.literal(true).optional(),
+    includeDaemonUpdate: z.literal(true).optional(),
   })
   .strict();
 
@@ -1212,6 +1254,7 @@ export const MachineStatusResponseSchema = z
     resources: MachineResourceInfoSchema.optional(),
     disk: MachineDiskInfoSchema.optional(),
     lifecycle: MachineLifecycleCapabilitySchema.optional(),
+    daemonUpdate: ManagedDaemonUpdateStatusSchema.nullable().optional(),
     error: SharedOptionalStringSchema,
   })
   .strict();
@@ -1259,6 +1302,7 @@ export const MachineLifecycleDispositionSchema = z.enum([
 export const MachineRestartRequestSchema = z
   .object({
     type: z.literal('machine/restart'),
+    restoreMachineId: MachineIdSchema.optional(),
     machineId: MachineIdSchema,
     workspaceId: WorkspaceIdSchema,
     requesterUserId: SharedTrimmedNonEmptyStringSchema,
@@ -1288,6 +1332,7 @@ export const MachineUpgradeRequestSchema = z
     requestToken: SharedTrimmedNonEmptyStringSchema,
     requestId: SharedTrimmedNonEmptyStringSchema,
     targetVersion: z.string().trim().min(1).optional(),
+    upgrade: ManagedDaemonUpgradeOptionsSchema.optional(),
   })
   .strict();
 
@@ -1908,6 +1953,71 @@ export const SessionFileUploadResponseSchema = z
   })
   .strict();
 
+export const SessionImagePrepareLocalRequestSchema = z
+  .object({
+    type: z.literal('session/image-prepare-local'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sessionId: SessionIdSchema,
+    imageId: z.string().uuid(),
+    source: z.union([
+      z.object({ path: SharedTrimmedNonEmptyStringSchema }).strict(),
+      z.object({ base64: z.string().min(1).max(27962028) }).strict(),
+    ]),
+    fileName: SharedTrimmedNonEmptyStringSchema,
+    mimeType: z.enum(SESSION_IMAGE_ALLOWED_MIME_TYPES),
+  })
+  .strict();
+export const SessionImagePrepareLocalResponseSchema = z
+  .object({
+    type: z.literal('session/image-prepare-local_response'),
+    sessionId: SessionIdSchema,
+    success: z.boolean(),
+    error: SharedOptionalStringSchema,
+    image: SessionImagePayloadSchema.optional(),
+  })
+  .strict();
+export const SessionImageResolveLocalRequestSchema = z
+  .object({
+    type: z.literal('session/image-resolve-local'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sessionId: SessionIdSchema,
+    image: SessionImagePayloadSchema,
+  })
+  .strict();
+export const SessionImageResolveLocalResponseSchema = z
+  .object({
+    type: z.literal('session/image-resolve-local_response'),
+    sessionId: SessionIdSchema,
+    success: z.boolean(),
+    error: SharedOptionalStringSchema,
+    path: SharedOptionalStringSchema,
+  })
+  .strict();
+
+export const SessionAttachmentPrepareRequestSchema = z
+  .object({
+    type: z.literal('session/attachment-prepare'),
+    machineId: MachineIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    sessionId: SessionIdSchema,
+    path: SharedTrimmedNonEmptyStringSchema,
+    kind: z.enum(['file', 'image']),
+    fileName: SharedTrimmedNonEmptyStringSchema,
+    mimeType: SharedTrimmedNonEmptyStringSchema,
+  })
+  .strict();
+export const SessionAttachmentPrepareResponseSchema = z
+  .object({
+    type: z.literal('session/attachment-prepare_response'),
+    sessionId: SessionIdSchema,
+    success: z.boolean(),
+    error: z.string().optional(),
+    attachment: SessionLocalAttachmentSchema.optional(),
+  })
+  .strict();
+
 export const SessionFileSendLocalRequestSchema = z
   .object({
     type: z.literal('session/file-send-local'),
@@ -2503,6 +2613,9 @@ export const LocalSessionControlRequestSchema = z.discriminatedUnion('type', [
   SessionFileUploadRequestSchema,
   SessionFileSendLocalRequestSchema,
   SessionFileReadLocalRequestSchema,
+  SessionImagePrepareLocalRequestSchema,
+  SessionImageResolveLocalRequestSchema,
+  SessionAttachmentPrepareRequestSchema,
   SessionHistoryReadRequestSchema,
   SessionHistoryWriteRequestSchema,
   PreviewCandidateReportRequestSchema,
@@ -2541,6 +2654,9 @@ export const LocalSessionControlResponseSchema = z.discriminatedUnion('type', [
   SessionFileUploadResponseSchema,
   SessionFileSendLocalResponseSchema,
   SessionFileReadLocalResponseSchema,
+  SessionImagePrepareLocalResponseSchema,
+  SessionImageResolveLocalResponseSchema,
+  SessionAttachmentPrepareResponseSchema,
   SessionHistoryReadResponseSchema,
   SessionHistoryWriteResponseSchema,
   PreviewCandidateReportResponseSchema,
@@ -4314,6 +4430,7 @@ export const NonSystemNoticeMessageContentSchema = z.discriminatedUnion('type', 
   SessionImageInputBlockSchema,
   SessionImageGroupContentSchema,
   SessionFileBlockObjectSchema,
+  SessionLocalAttachmentSchema,
   z.object({
     type: z.literal('thought'),
     text: SharedStringSchema,

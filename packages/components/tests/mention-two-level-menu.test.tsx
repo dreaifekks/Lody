@@ -33,6 +33,7 @@ import {
   type MachineId,
 } from '@lody/shared';
 import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
+import { composerIn } from './composer-test-utils';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -241,11 +242,8 @@ describe('MentionTwoLevelMenuBody', () => {
     act(() => {
       root?.render(<Harness initialValue={initialValue} categories={categories} detail={detail} />);
     });
-    const input = container?.querySelector('textarea');
-    if (!input) throw new Error('Expected mention textarea to render');
-    act(() => {
-      input.setSelectionRange(initialValue.length, initialValue.length);
-    });
+    const input = composerIn(container!);
+    input.setSelectionRange(initialValue.length, initialValue.length);
     return input;
   }
 
@@ -439,7 +437,7 @@ describe('MentionTwoLevelMenuBody', () => {
       act(() =>
         root?.render(<Harness initialValue="@review" categories={categories} followHighlight />)
       );
-      const input = container?.querySelector('textarea');
+      const input = container ? composerIn(container) : null;
       const rows = container?.querySelectorAll<HTMLElement>('[data-slot="mention-item"]');
       const issue = rows?.[3];
       const role = rows?.[4];
@@ -447,7 +445,7 @@ describe('MentionTwoLevelMenuBody', () => {
       const scroller = role.parentElement;
       if (!scroller) throw new Error('Expected candidate scroller');
       scroller.scrollTop = 240;
-      act(() => input.setSelectionRange(7, 7));
+      input.setSelectionRange(7, 7);
 
       for (const row of [role, issue, role]) {
         act(() => {
@@ -570,18 +568,17 @@ describe('typing a mention into the input', () => {
     originalRequestAnimationFrame = undefined;
   });
 
-  const input = () => container!.querySelector('textarea')!;
+  const input = () => composerIn(container!);
 
   /** One key at a time: the key, then the character it leaves at the caret. */
   function type(text: string) {
-    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     for (const key of text) {
       act(() => {
         const element = input();
         element.focus();
         element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
         const caret = element.selectionStart;
-        setValue?.call(element, element.value.slice(0, caret) + key + element.value.slice(caret));
+        element.type(key);
         element.setSelectionRange(caret + 1, caret + 1);
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
@@ -666,8 +663,7 @@ describe('typing a mention into the input', () => {
     press('Backspace');
     act(() => {
       const element = input();
-      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      setValue?.call(element, '#3312');
+        element.edit('#3312');
       element.setSelectionRange(5, 5);
       element.dispatchEvent(new Event('input', { bubbles: true }));
     });

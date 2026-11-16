@@ -26,7 +26,8 @@ const fixture = vi.hoisted(() => ({
 vi.mock('@lody/platform/react', () => ({ usePlatformCapability: () => fixture.teamSharing }));
 vi.mock('@tanstack/react-router', () => ({ useRouter: () => ({ navigate: () => {} }) }));
 vi.mock('@/hooks/use-visible-session-metas', () => ({
-  useVisibleArchivedSessionMetas: () => ({ archivedSessions: fixture.sessions }),
+  useMySessionScope: () => ({ currentUserId: 'owner', ownedMachineIds: new Set() }),
+  useVisibleArchivedSessionMetas: () => ({ archivedSessions: fixture.sessions, historyOnlySessionIds: new Set(), visibleMachineIds: new Set(fixture.sessions.map((session) => session.machineId)), visibleLocalProjectKeys: new Set() }),
 }));
 vi.mock('@/hooks/use-session-actions', () => ({
   useSessionActions: () => ({

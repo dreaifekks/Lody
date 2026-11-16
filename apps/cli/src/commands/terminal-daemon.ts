@@ -22,6 +22,7 @@ import { ensureWorkspaceMetaSynced, syncWorkspaceMetaForRead } from '@/lib/comma
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import {
   buildSessionShowResult,
+  assertSessionManagementAccess,
   createSessionResult,
   resolveSessionMetaOrThrow,
   resolveTurnDispatchConfig,
@@ -182,7 +183,8 @@ export async function executeTerminalCommand(
       const children = await runSessionOperationWithSyncedMetadata(
         manager,
         sessionId,
-        command.command
+        command.command,
+        (targetId) => assertSessionManagementAccess({ ...context, sessionId: targetId })
       );
       const key = {
         archive: 'archivedChildSessionIds',

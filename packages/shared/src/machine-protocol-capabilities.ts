@@ -8,6 +8,7 @@
 export type MachineProtocolCapabilities = Record<string, number>;
 
 export const MACHINE_PROTOCOL_CAPABILITIES = {
+  machineIdentityRestore: 'machineIdentityRestore',
   multiRepoProject: 'multiRepoProject',
   projectFolderSelection: 'projectFolderSelection',
   projectFileRoots: 'projectFileRoots',
@@ -40,8 +41,10 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   preparedSessionInput: 'preparedSessionInput',
   messageQuotes: 'messageQuotes',
   sessionInputAttachments: 'sessionInputAttachments',
+  localAttachmentDownload: 'localAttachmentDownload',
   localFileResources: 'localFileResources',
   fileDownload: 'fileDownload',
+  sessionDirectoryListing: 'sessionDirectoryListing',
   markdownFileLinks: 'markdownFileLinks',
   acpProtocolAuthentication: 'acpProtocolAuthentication',
   previewControl: 'previewControl',
@@ -77,10 +80,12 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   bugReportClientLog: 'bugReportClientLog',
   sessionLiveActivity: 'sessionLiveActivity',
   machineDiskStatus: 'machineDiskStatus',
+  managedDaemonUpdates: 'managedDaemonUpdates',
   sessionInputWithdraw: 'sessionInputWithdraw',
 } as const;
 
 export const PROJECT_FOLDER_SELECTION_PROTOCOL_VERSION = 1;
+export const SESSION_DIRECTORY_LISTING_PROTOCOL_VERSION = 1;
 
 export const OPERATION_INBOX_PROTOCOL_VERSION = 2;
 export const MEMORY_PROVIDERS_PROTOCOL_VERSION = 1;
@@ -128,8 +133,8 @@ export const SESSION_CANCEL_ACTIVE_TURN_PROTOCOL_VERSION = 1;
 export const SCHEDULE_AGENT_ROLES_PROTOCOL_VERSION = 1;
 export const CODE_COLLAB_ALL_CHANGES_SCOPE_PROTOCOL_VERSION = 1;
 export const CODE_COLLAB_DIFF_BLOBS_PROTOCOL_VERSION = 1;
-/** Native publication and watch are the history authority; no Loro cursor log. */
-export const SESSION_HISTORY_PROTOCOL_VERSION = 3;
+/** v4 adds purpose-bound member read/edit proofs; older strict payloads are incompatible. */
+export const SESSION_HISTORY_PROTOCOL_VERSION = 4;
 export const SESSION_HISTORY_INCREMENTAL_PROTOCOL_VERSION = 1;
 export const SESSION_HISTORY_WATCH_PROTOCOL_VERSION = 1;
 export const SESSION_HISTORY_INSPECTION_PROTOCOL_VERSION = 2;
@@ -191,11 +196,13 @@ export const PROJECT_FILE_ROOTS_PROTOCOL_VERSION = 1;
 export const PROJECT_REPOSITORY_MEMBERS_PROTOCOL_VERSION = 1;
 
 export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities = {
+  [MACHINE_PROTOCOL_CAPABILITIES.machineIdentityRestore]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.codeCollabDiffBlobs]: CODE_COLLAB_DIFF_BLOBS_PROTOCOL_VERSION,
   // `session/live-status` accepts `includeActivity` and may answer with `activity`.
   [MACHINE_PROTOCOL_CAPABILITIES.sessionLiveActivity]: 1,
   // `machine/status` accepts `includeDisk` and may answer with `disk`.
   [MACHINE_PROTOCOL_CAPABILITIES.machineDiskStatus]: 1,
+  [MACHINE_PROTOCOL_CAPABILITIES.managedDaemonUpdates]: 1,
   // Daemon answers `session/withdraw-input` for queued Agent inputs.
   [MACHINE_PROTOCOL_CAPABILITIES.sessionInputWithdraw]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.projectRepositoryMembers]:
@@ -229,10 +236,14 @@ export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities 
   [MACHINE_PROTOCOL_CAPABILITIES.sessionAutomations]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.preparedSessionInput]: PREPARED_SESSION_INPUT_PROTOCOL_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.messageQuotes]: MESSAGE_QUOTES_PROTOCOL_VERSION,
+  [MACHINE_PROTOCOL_CAPABILITIES.localAttachmentDownload]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.sessionInputAttachments]:
     SESSION_INPUT_ATTACHMENTS_PROTOCOL_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.localFileResources]: LOCAL_FILE_RESOURCES_PROTOCOL_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.fileDownload]: 1,
+  // `file/list-dir` lists one folder of the session's own workspace (its worktree when it has one).
+  [MACHINE_PROTOCOL_CAPABILITIES.sessionDirectoryListing]:
+    SESSION_DIRECTORY_LISTING_PROTOCOL_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.markdownFileLinks]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.acpProtocolAuthentication]: ACP_PROTOCOL_AUTHENTICATION_VERSION,
   [MACHINE_PROTOCOL_CAPABILITIES.previewControl]: PREVIEW_CONTROL_PROTOCOL_VERSION,

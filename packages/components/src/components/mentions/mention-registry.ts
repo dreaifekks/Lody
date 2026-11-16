@@ -125,6 +125,8 @@ export type MentionCandidate = {
   slashRank?: SlashMatchRank;
   /** A second line under the title, such as why a Role cannot be picked. */
   subtitle?: string;
+  /** A problem the user can fix, not a passing state such as a machine being offline. */
+  subtitleTone?: 'warning';
   trailing?: string;
   /**
    * When the thing was last touched, for a row whose recency is what tells two
@@ -578,6 +580,10 @@ export function toAgentRoleCandidate(
   // already says these are Agent Roles, so a second generic glyph only crowds
   // out the Role's own mark. Every Role has one, defaulted, so rows stay aligned.
   const emoji = getAgentRoleEmoji(role);
+  const { availability } = item;
+  const needsEdit =
+    availability.kind === 'unavailable' &&
+    (availability.reason === 'model_unavailable' || availability.reason === 'mode_unavailable');
   return {
     // The range payload is the stable Role id; the text only carries the token
     // derived from the name, which its owner may rename at any time.
@@ -593,6 +599,7 @@ export function toAgentRoleCandidate(
     hint: doesAgentRoleTitleNameAgent(item) ? undefined : item.agentConfig?.name,
     disabled: item.availability.kind !== 'available',
     subtitle: availabilityText,
+    ...(needsEdit ? { subtitleTone: 'warning' as const } : {}),
     detail: {
       // No `title` and no meta: the pane heads itself with the Role's own
       // mark and name, and visibility is deliberately absent — every Role the menu
@@ -604,6 +611,7 @@ export function toAgentRoleCandidate(
         agentConfig: item.agentConfig,
         machine: item.machine,
         machineName: item.machineName,
+        availability,
       },
     },
   };

@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
+import type { GitHubInstallErrorCode } from '@/lib/github-installation-recovery';
 import { BootNavigate } from '@/components/boot-navigate';
 import { useTranslation } from 'react-i18next';
 import { useOrganization } from '@/hooks/useOrganization';
@@ -21,7 +22,13 @@ export const Route = createFileRoute('/')({
   component: HomeRoute,
 });
 
-export function HomeRoute() {
+export type HomeDestination = {
+  kind: 'github-settings';
+  error: GitHubInstallErrorCode | 'unknown' | null;
+  retryHash: string;
+};
+
+export function HomeRoute({ destination }: { destination?: HomeDestination } = {}) {
   // The spare stays natively hidden on `/` while RuntimeProvider prepares the
   // local workspace. Target UI mounts only after the window is claimed.
   if (isWarmWindow()) return null;
@@ -30,7 +37,7 @@ export function HomeRoute() {
   if (isLocalAppPlatform()) {
     return <LocalHomeRoute />;
   }
-  return <CloudHomeRoute />;
+  return <CloudHomeRoute destination={destination} />;
 }
 
 function LocalHomeRoute() {
@@ -70,7 +77,7 @@ function LocalHomeRoute() {
   );
 }
 
-function CloudHomeRoute() {
+function CloudHomeRoute({ destination }: { destination?: HomeDestination }) {
   const { t } = useTranslation();
   const {
     data: session,
@@ -81,14 +88,15 @@ function CloudHomeRoute() {
   } = useStableSession();
   // Returning user with cached workspace: redirect immediately without waiting
   // for session network queries. The _auth route guard handles the rest.
-  if (hasLocalToken) {
+  // A workspace-independent GitHub return must resolve a live member target.
+  if (hasLocalToken && !destination) {
     const preferredSlug = readPreferredWorkspaceSlug();
     if (preferredSlug) {
       return (
         <BootNavigate to="/$workspaceName/chat" params={{ workspaceName: preferredSlug }} replace />
       );
     }
-    return <AuthedHomeRoute />;
+    return <AuthedHomeRoute destination={destination} />;
   }
 
   if (isPending || isRetrying) {
@@ -104,14 +112,18 @@ function CloudHomeRoute() {
 
   // Redirect based on auth state. Do not mount organization fetching when unauthenticated.
   if (!session?.user || sessionError) {
-    const redirectPath = typeof window === 'undefined' ? '/' : getAppCurrentPathWithSearch();
+    const redirectPath = destination
+      ? `/settings/github${destination.error ? `?${new URLSearchParams({ github_install_error: destination.error })}` : ''}`
+      : typeof window === 'undefined'
+        ? '/'
+        : getAppCurrentPathWithSearch();
     return <BootNavigate to="/login" search={{ redirect: redirectPath }} replace />;
   }
 
-  return <AuthedHomeRoute />;
+  return <AuthedHomeRoute destination={destination} />;
 }
 
-function AuthedHomeRoute() {
+function AuthedHomeRoute({ destination }: { destination?: HomeDestination }) {
   const { t } = useTranslation();
   const preferredWorkspaceSlug = readPreferredWorkspaceSlug();
   const {
@@ -170,8 +182,13 @@ function AuthedHomeRoute() {
     return <BootNavigate to="/workspace/create" replace />;
   }
 
+  const memberActiveOrganization = destination
+    ? (organizations.find(
+        (org) => org.id === activeOrganization?.id && org.slug === activeOrganization.slug
+      ) ?? null)
+    : activeOrganization;
   const targetSlug = getPreferredWorkspaceSlug(
-    activeOrganization,
+    memberActiveOrganization,
     organizations,
     preferredWorkspaceSlug
   );
@@ -179,5 +196,16 @@ function AuthedHomeRoute() {
     return <BootNavigate to="/workspace/create" replace />;
   }
 
+  if (destination) {
+    return (
+      <BootNavigate
+        to="/$workspaceName/settings/github"
+        params={{ workspaceName: targetSlug }}
+        search={destination.error ? { github_install_error: destination.error } : {}}
+        hash={destination.retryHash}
+        replace
+      />
+    );
+  }
   return <BootNavigate to="/$workspaceName/chat" params={{ workspaceName: targetSlug }} replace />;
 }

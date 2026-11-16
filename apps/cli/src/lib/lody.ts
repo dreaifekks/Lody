@@ -1,7 +1,9 @@
+import type { ManagedDaemonUpgradeOptions } from '@lody/shared';
 import { daemonLossObserver } from './e2ee/client-loss-observer';
 import type { AuthorizeEncryptedExecution, EncryptedAgentExecution } from './e2ee/agent-execution';
 import { workspaceSupports } from '@lody/shared/workspace-streams-content';
 import type { CliE2eeWorkspaceLegacy } from './e2ee/workspace-legacy';
+import type { AuthorityStamp } from './e2ee/authority-clock';
 import { LoroDocumentManager } from '@/lib/loro/doc';
 import { MachineRuntime } from '@/lib/machine-runtime';
 import { createSorbetCredentialsHandler } from '@/lib/sorbet-credentials';
@@ -37,12 +39,20 @@ import type { MemoryPressureSnapshotSource } from '@/monitor/memory-pressure-sam
 import type { WorkspaceWatchCoordinatorApi } from '@/lib/code-collab/workspace-watch-coordinator';
 import type { CloudPort } from '@lody/platform';
 import type { MessageHandlerConfig } from './message-handler';
+import { assertRetainedE2eeModeAllowsOpen } from '@/lib/e2ee/retained-binding';
 import type { DaemonWorkspaceAccess } from '@/lib/session-command-environment';
 
 const BUILTIN_AGENT_CONFIG_INITIAL_RETRY_DELAY_MS = 10_000;
 const BUILTIN_AGENT_CONFIG_MAX_RETRY_DELAY_MS = 5 * 60_000;
 
 interface LodyOptions {
+  /** A successful authenticated ledger read of this encrypted workspace; see Fleet. */
+  onEncryptedAuthorityConfirmed?: (startedAt: AuthorityStamp) => void;
+  /** True while execution relies on an outage window, with that window's ends. */
+  onEncryptedWindowNotice?: (
+    active: boolean,
+    window?: import('./e2ee/execution-authorization').E2eeAccessWindow
+  ) => void;
   remoteAutomation?: {
     handshake: () => Promise<import('@lody/shared/automations').RemoteAutomationHandshake>;
     control: (input: {
@@ -69,6 +79,12 @@ interface LodyOptions {
   localWorkspaceCatalog?: LocalWorkspaceCatalogService;
   memoryPressure: MemoryPressureSnapshotSource;
   machineLifecycleCapability: MachineLifecycleCapability;
+  hostsEncryptedWorkspace?: () => boolean;
+  prepareManagedUpgrade?: (
+    requestId: string,
+    target: string,
+    upgrade?: ManagedDaemonUpgradeOptions
+  ) => Promise<string>;
   closeSessionTerminals?: (sessionId: SessionId) => void;
   cleanupLocalProjectWorktreeSetupIfUnreferenced?: (
     localProjectId: LocalProjectId
@@ -85,6 +101,8 @@ interface LodyOptions {
     reason: 'member-removed' | 'device-revoked'
   ) => Promise<void>;
   onProcessLifecycleAction?: (action: MachineProcessLifecycleAction) => void;
+  isMachineIdentityRestoreIdle?: () => boolean;
+  sealMachineIdentityRestore?: () => boolean;
   workspaceWatchCoordinator?: WorkspaceWatchCoordinatorApi;
   /** Carries out what another member of the LAN of this workspace asks of this machine. */
   answerLanMemberControl?: (request: LanMemberControlRequest) => Promise<LanMemberControlResponse>;
@@ -133,6 +151,13 @@ export class Lody {
       options.contentMode !== 'e2ee'
     )
       throw new Error('workspace_mode_unsupported');
+    // Every runtime start re-checks the retained pairing binding, so neither a
+    // listing nor a stale cached row can open an encrypted workspace as plaintext.
+    assertRetainedE2eeModeAllowsOpen(options.userId, {
+      id: options.workspaceId,
+      contentMode: options.contentMode,
+      genesisHash: options.genesisHash,
+    });
     const encrypted = options.contentMode === 'e2ee';
     let e2ee: CliE2eeWorkspaceLegacy | undefined;
     let resolveRemovalOwner: (value: Lody | null) => void = () => {};
@@ -144,11 +169,14 @@ export class Lody {
         throw new Error('e2ee_workspace_unavailable');
       const { openCliE2eeWorkspaceLegacy } = await import('./e2ee/workspace-legacy');
       e2ee = await openCliE2eeWorkspaceLegacy({
+        machineId: options.machineId,
         accountId: options.userId,
         workspaceId: options.workspaceId,
         genesisHash: options.genesisHash,
         cloud: options.cloudPort.e2ee,
         onUnavailable: () => options.logger.debug('e2ee_background_unavailable'),
+        onAuthorityConfirmed: options.onEncryptedAuthorityConfirmed,
+        onWindowNotice: options.onEncryptedWindowNotice,
         onRemoved: async (reason, recorded) => {
           const owner = await removalOwner;
           if (!owner) return;
@@ -200,6 +228,9 @@ export class Lody {
         machineUserId: options.cloudPort.identity.userId,
         ledgerIdentity: e2ee.ledgerIdentity,
         authorizeMachineTarget: e2ee.authorizeMachineTarget,
+        ...(typeof e2ee.subscribeExecutionEvidence === 'function'
+          ? { subscribeEvidence: e2ee.subscribeExecutionEvidence }
+          : {}),
         journal: lazyExecutionJournal(join(e2ee.repositoryDirectory, 'execution.sqlite'), Date.now),
         authorizeExecution: options.authorizeEncryptedExecution ?? e2ee.authorizeExecution,
         isExecutionOpen: e2ee.isExecutionOpen,
@@ -360,6 +391,8 @@ export class Lody {
         machineNameExplicit: options.machineNameExplicit ?? false,
         cliVersion: pkg.version,
         machineLifecycleCapability: options.machineLifecycleCapability,
+        hostsEncryptedWorkspace: options.hostsEncryptedWorkspace,
+        prepareManagedUpgrade: options.prepareManagedUpgrade,
         supportRegistryAgentTypes: this.supportRegistryAgentTypes,
         ...(options.localWorkspaceCatalog
           ? { localWorkspaceCatalog: options.localWorkspaceCatalog }
@@ -370,6 +403,8 @@ export class Lody {
         onInboxAvailabilityChange: options.onInboxAvailabilityChange,
         onFatalAuthFailure: options.onFatalAuthFailure,
         onProcessLifecycleAction: options.onProcessLifecycleAction,
+        isMachineIdentityRestoreIdle: options.isMachineIdentityRestoreIdle,
+        sealMachineIdentityRestore: options.sealMachineIdentityRestore,
         workspaceWatchCoordinator: options.workspaceWatchCoordinator,
         answerLanMemberControl: options.answerLanMemberControl,
         askLanMemberDirectly: options.askLanMemberDirectly,
@@ -407,7 +442,8 @@ export class Lody {
       this.machineId,
       (input) => this.runtime.offerEncryptedRpcTurn(input),
       (event) => this.logger.debug('[e2ee-rpc-timing]', event),
-      (request, context) => this.runtime.handleEncryptedFeatureRpc(request, context)
+      (request, context) => this.runtime.handleEncryptedFeatureRpc(request, context),
+      (sessionId) => this.runtime.resolveSessionHistoryAccessTarget(sessionId)
     );
     this.documentManager.ensureMachineFlockDocJoined(this.machineId, { reason: 'lody-start' });
   }
@@ -585,6 +621,7 @@ export class Lody {
   }
 
   prepareForShutdown = () => this.runtime.prepareForShutdown();
+  stopNewIdentityRestoreDispatch = () => this.runtime.stopNewIdentityRestoreDispatch();
 
   cleanup = async () => {
     this.cleanedUp = true;
@@ -660,6 +697,10 @@ export class Lody {
 
   getActiveSessionCount(): number {
     return this.runtime.getActiveSessionCount();
+  }
+
+  isMachineIdentityRestoreIdle(): boolean {
+    return this.runtime.isMachineIdentityRestoreIdle();
   }
 
   async authorizeScheduleExecution(request: ScheduleAuthorizationRequest): Promise<boolean> {
@@ -757,8 +798,9 @@ export class Lody {
     return await this.runtime.resolveSessionWorkdir(sessionId);
   }
 
-  onSessionTerminated(handler: (sessionId: SessionId) => void): () => void {
-    return this.runtime.onSessionTerminated(handler);
+  async resolveAutomationWorkdir(sessionId: SessionId): Promise<string | null> {
+    const manager = this.runtime.getSessionManager();
+    return manager ? await manager.resolveSessionWorkdir(sessionId) : null;
   }
 
   getConnectedRoomCount(): number {

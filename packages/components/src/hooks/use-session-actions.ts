@@ -1,4 +1,5 @@
 import { useAppCapabilityCheck } from '@/lib/app-platform';
+import { useSessionOwnerAccess } from './use-session-owner-access';
 import { useSessionManagementGuard } from './use-session-management-guard';
 import { useLegacyWorkspaceMutation } from '@/hooks/use-legacy-workspace-query';
 import type { SessionAttachmentDraft } from '@/lib/session-attachment-draft';
@@ -26,8 +27,6 @@ import {
   getMachineFlockDeleteLocalProjectIds,
   getMachineFlockLocalProjects,
   getSessionRoomId,
-  buildSessionGroupRenamePatch,
-  buildSessionTabRenamePatch,
   getSessionCancelRequestMarker,
   machineFlockKeys,
   SessionStatusFactory,
@@ -275,10 +274,7 @@ export type SessionActions = {
   ) => Promise<SessionGoalResponse | null>;
   touchSessionActivity: (sessionId: SessionId) => Promise<void>;
   updateSessionStatus: (sessionId: SessionId, status: SessionStatus) => Promise<void>;
-  /** Renames one tab; never changes its group's sidebar title. */
   updateSessionTitle: (sessionId: SessionId, title: string) => Promise<void>;
-  /** Renames a root Session's conversation group in the sidebar; tabs keep their titles. */
-  updateSessionGroupTitle: (sessionId: SessionId, title: string) => Promise<void>;
   updateSessionMetadata: (sessionId: SessionId, patch: Record<string, unknown>) => Promise<void>;
   /** Reassign `SessionMeta.userId` to another workspace member. */
   transferSessionOwner: (sessionId: SessionId, nextUserId: string) => Promise<void>;
@@ -394,6 +390,7 @@ export async function touchSessionActivityMeta(
 }
 
 export function useSessionActions(): SessionActions {
+  const getOwnerAccessReason = useSessionOwnerAccess();
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const assertCanManageSessions = useSessionManagementGuard(runtime);
   const roostHistoryRequested = useAtomValue(roostHistoryFeatureEnabledAtom);
@@ -467,6 +464,7 @@ export function useSessionActions(): SessionActions {
           ? ROOST_SESSION_HISTORY_BACKEND
           : LEGACY_SESSION_HISTORY_BACKEND,
         assertSessionCreateAllowed,
+        assertSessionEditable: (sessionId) => assertCanManageSessions([sessionId]),
         recordWorkspaceActivity,
         publishSessionMeta: setDocMetaByRoomId,
         readSessionMeta: (sessionId) =>
@@ -494,6 +492,7 @@ export function useSessionActions(): SessionActions {
       runtime,
       roostHistoryEnabled,
       assertSessionCreateAllowed,
+      assertCanManageSessions,
       recordWorkspaceActivity,
       setDocMetaByRoomId,
       store,
@@ -508,6 +507,19 @@ export function useSessionActions(): SessionActions {
       await runtime.writer.upsertDocMeta(getSessionRoomId(sessionId), patch);
     },
     [runtime, assertCanManageSessions]
+  );
+
+  const assertReadablePreferences = useCallback(
+    (ids: readonly SessionId[]) => assertCanManageSessions(ids, true),
+    [assertCanManageSessions]
+  );
+  const updateSessionPreference = useCallback(
+    async (sessionId: SessionId, patch: { isPinned?: boolean; lastReadAt?: number }) => {
+      if (!runtime) throw new Error('Runtime not ready');
+      await assertReadablePreferences([sessionId]);
+      await runtime.writer.upsertDocMeta(getSessionRoomId(sessionId), patch);
+    },
+    [runtime, assertReadablePreferences]
   );
 
   const updateSessionStatus = useCallback(
@@ -600,6 +612,7 @@ export function useSessionActions(): SessionActions {
       if (!runtime) {
         throw new Error('Runtime not ready');
       }
+      await assertCanManageSessions([sessionId]);
       const roomId = getSessionRoomId(sessionId);
       const existing = await runtime.repo.getDocMeta(roomId);
       const meta = isLoroRepoDocDeleted(existing)
@@ -617,7 +630,7 @@ export function useSessionActions(): SessionActions {
         userId,
       });
     },
-    [runtime]
+    [runtime, assertCanManageSessions]
   );
 
   const touchSessionActivity = useCallback(
@@ -649,27 +662,10 @@ export function useSessionActions(): SessionActions {
       const roomId = getSessionRoomId(sessionId);
       const existing = await runtime.repo.getDocMeta(roomId);
       if (isLoroRepoDocDeleted(existing)) return;
-      await updateSessionMetadata(
-        sessionId,
-        buildSessionTabRenamePatch(existing?.meta as SessionMeta | undefined, nextTitle)
-      );
-    },
-    [runtime, updateSessionMetadata]
-  );
-
-  const updateSessionGroupTitle = useCallback(
-    async (sessionId: SessionId, title: string) => {
-      if (!runtime) {
-        throw new Error('Runtime not ready');
-      }
-      const nextTitle = title.trim();
-      if (!nextTitle) {
-        return;
-      }
-      const roomId = getSessionRoomId(sessionId);
-      const existing = await runtime.repo.getDocMeta(roomId);
-      if (isLoroRepoDocDeleted(existing)) return;
-      await updateSessionMetadata(sessionId, buildSessionGroupRenamePatch(nextTitle));
+      await updateSessionMetadata(sessionId, {
+        title: nextTitle,
+        titleSource: 'user',
+      } as Partial<SessionMeta>);
     },
     [runtime, updateSessionMetadata]
   );
@@ -677,8 +673,7 @@ export function useSessionActions(): SessionActions {
   /**
    * Hand a session to another workspace member. `SessionMeta.userId` is the
    * owner: it drives the My/Team scope split, the sidebar author avatar, and
-   * CLI-side owner checks (Code Collab writes, usage attribution). Anyone in
-   * the workspace may transfer, mirroring task owner assignment.
+   * CLI-side owner checks (Code Collab writes, usage attribution). Assignment never changes machine/project sharing.
    */
   const transferSessionOwner = useCallback(
     async (sessionId: SessionId, nextUserId: string) => {
@@ -692,11 +687,15 @@ export function useSessionActions(): SessionActions {
       const roomId = getSessionRoomId(sessionId);
       const existing = await runtime.repo.getDocMeta(roomId);
       if (isLoroRepoDocDeleted(existing)) return;
+      if (!existing) throw new Error('Session not found');
+      await assertCanManageSessions([sessionId]);
+      const reason = getOwnerAccessReason(existing?.meta as SessionMeta, userId);
+      if (reason) throw new Error(reason);
       await updateSessionMetadata(sessionId, {
         userId,
       } as Partial<SessionMeta>);
     },
-    [runtime, updateSessionMetadata]
+    [runtime, updateSessionMetadata, assertCanManageSessions, getOwnerAccessReason]
   );
 
   const markSessionRead = useCallback(
@@ -705,15 +704,15 @@ export function useSessionActions(): SessionActions {
         throw new Error('Runtime not ready');
       }
       const readAt = getFiniteTimestamp(lastMessageAt) ?? getServerNow();
-      await assertCanManageSessions([sessionId]);
+      await assertReadablePreferences([sessionId]);
       await touchSessionActivityMeta(
         runtime,
         sessionId,
         { lastReadAt: readAt },
-        assertCanManageSessions
+        assertReadablePreferences
       );
     },
-    [runtime, assertCanManageSessions]
+    [runtime, assertReadablePreferences]
   );
 
   const markSessionUnread = useCallback(
@@ -737,11 +736,11 @@ export function useSessionActions(): SessionActions {
       // Unread is the durable comparison `lastMessageAt > lastReadAt`. Move
       // only this receipt behind the latest known message; do not touch the
       // activity timestamp, which would reorder the sidebar.
-      await updateSessionMetadata(sessionId, {
+      await updateSessionPreference(sessionId, {
         lastReadAt: lastMessageAt - 1,
       } as Partial<SessionMeta>);
     },
-    [runtime, store, updateSessionMetadata]
+    [runtime, store, updateSessionPreference]
   );
 
   const invalidateExternalHistoryCatalog = useCallback(
@@ -1015,11 +1014,11 @@ export function useSessionActions(): SessionActions {
       const roomId = getSessionRoomId(sessionId);
       const existing = await runtime.repo.getDocMeta(roomId);
       if (isLoroRepoDocDeleted(existing)) return;
-      await updateSessionMetadata(sessionId, {
+      await updateSessionPreference(sessionId, {
         isPinned,
       } as Partial<SessionMeta>);
     },
-    [runtime, updateSessionMetadata]
+    [runtime, updateSessionPreference]
   );
 
   return {
@@ -1033,7 +1032,6 @@ export function useSessionActions(): SessionActions {
     touchSessionActivity,
     updateSessionStatus,
     updateSessionTitle,
-    updateSessionGroupTitle,
     updateSessionMetadata,
     setSessionTabClosed,
     transferSessionOwner,

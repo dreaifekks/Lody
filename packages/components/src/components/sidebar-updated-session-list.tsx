@@ -934,10 +934,11 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
       }
     : undefined;
 
-  const canArchive = typeof onArchive === 'function';
+  const readOnly = item.sharing?.access === 'read';
+  const canArchive = !readOnly && typeof onArchive === 'function';
   const canMarkUnread = typeof onMarkUnread === 'function' && !item.hasUnreadMessages;
   const showInlineArchive = canArchive && !isMobile;
-  const canRename = typeof onRename === 'function';
+  const canRename = !readOnly && typeof onRename === 'function';
   const canTogglePin = typeof onTogglePin === 'function';
   const canCopyUrl = typeof onCopyUrl === 'function';
   // Copy URL stays available for private sessions (the link still works for
@@ -993,7 +994,11 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
   const showProjectLine = showProjectContext && !isNestedChild;
   // The branch rides on the same second line as the project segment; nested
   // children skip it like the project context does.
-  const showBranchLine = showBranchContext && Boolean(branchName) && !isNestedChild;
+  const showBranchLine =
+    showBranchContext &&
+    (item.kind === 'github' || item.isWorktree === true) &&
+    Boolean(branchName) &&
+    !isNestedChild;
   const showMetaLine = showProjectLine || showBranchLine;
   const projectLabel = showProjectLine ? resolveUpdatedItemProjectLabel(item) : null;
   const titleNode = (
@@ -1139,7 +1144,14 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
           </div>
           {detailLine ? <div {...stylex.props(rowStyles.detail)}>{detailLine}</div> : null}
           {showMetaLine ? (
-            <div data-sidebar-session-meta="" className="flex min-w-0 items-center gap-1.5">
+            <div
+              data-sidebar-session-meta=""
+              className={cn(
+                'flex min-w-0 items-center gap-1.5',
+                SIDEBAR_CAPTION_TEXT_CLASS,
+                stylex.props(sidebarSurface.meta).className
+              )}
+            >
               {showProjectLine ? <UpdatedItemProjectLine item={item} /> : null}
               {showBranchLine ? <SidebarBranchSegment branchName={branchName} /> : null}
             </div>

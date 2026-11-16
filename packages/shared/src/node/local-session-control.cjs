@@ -13,6 +13,20 @@ function isObjectRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isLocalAttachment(value) {
+  return (
+    isObjectRecord(value) &&
+    value.type === 'local_attachment' &&
+    ['machineId', 'path', 'fileName', 'mimeType'].every(
+      (key) => typeof value[key] === 'string' && value[key].length > 0
+    ) &&
+    (value.kind === 'file' || value.kind === 'image') &&
+    typeof value.sizeBytes === 'number' &&
+    Number.isSafeInteger(value.sizeBytes) &&
+    value.sizeBytes >= 0
+  );
+}
+
 function isStringRecord(value) {
   if (!isObjectRecord(value)) {
     return false;
@@ -530,6 +544,10 @@ function isLocalSessionControlRequest(value) {
 
   if (value.type === 'machine/restart' || value.type === 'machine/upgrade') {
     return (
+      (value.restoreMachineId === undefined ||
+        (value.type === 'machine/restart' &&
+          typeof value.restoreMachineId === 'string' &&
+          value.restoreMachineId.trim().length > 0)) &&
       typeof value.machineId === 'string' &&
       typeof value.workspaceId === 'string' &&
       typeof value.requesterUserId === 'string' &&
@@ -661,7 +679,50 @@ function isLocalSessionControlRequest(value) {
     );
   }
 
-  if (value.type === 'session/file-upload') {
+  if (
+    value.type === 'session/image-prepare-local' ||
+    value.type === 'session/image-resolve-local'
+  ) {
+    if (
+      !['machineId', 'workspaceId', 'sessionId'].every(
+        (key) => typeof value[key] === 'string' && value[key].trim().length > 0
+      )
+    )
+      return false;
+    if (value.type === 'session/image-resolve-local') return isSessionImagePayload(value.image);
+    const source = value.source;
+    return (
+      typeof value.imageId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.imageId) &&
+      typeof value.fileName === 'string' &&
+      value.fileName.trim().length > 0 &&
+      typeof value.mimeType === 'string' &&
+      SESSION_IMAGE_ALLOWED_MIME_TYPES.has(value.mimeType) &&
+      isObjectRecord(source) &&
+      Object.keys(source).length === 1 &&
+      ((typeof source.path === 'string' && source.path.trim().length > 0) ||
+        (typeof source.base64 === 'string' &&
+          source.base64.length > 0 &&
+          source.base64.length <= 27962028))
+    );
+  }
+
+  if (value.type === 'session/attachment-prepare') {
+    if (
+      !['machineId', 'workspaceId', 'sessionId'].every(
+        (key) => typeof value[key] === 'string' && value[key].length > 0
+      )
+    )
+      return false;
+    return (
+      ['path', 'fileName', 'mimeType'].every(
+        (key) => typeof value[key] === 'string' && value[key].length > 0
+      ) &&
+      (value.kind === 'file' || value.kind === 'image')
+    );
+  }
+
+  if (value.type === 'session/file-upload' || value.type === 'session/file-send-local') {
     return (
       typeof value.machineId === 'string' &&
       typeof value.sessionId === 'string' &&
@@ -1152,6 +1213,35 @@ function isLocalSessionControlResponse(value) {
               // carry no downloadUrl.
               (typeof item.downloadUrl === 'string' || item.transport === 'local')
           )))
+    );
+  }
+
+  if (value.type === 'session/image-prepare-local_response') {
+    return (
+      typeof value.sessionId === 'string' &&
+      typeof value.success === 'boolean' &&
+      isOptionalString(value.error) &&
+      (typeof value.image === 'undefined' || isSessionImagePayload(value.image)) &&
+      (!value.success || isSessionImagePayload(value.image))
+    );
+  }
+
+  if (value.type === 'session/image-resolve-local_response') {
+    return (
+      typeof value.sessionId === 'string' &&
+      typeof value.success === 'boolean' &&
+      isOptionalString(value.error) &&
+      isOptionalString(value.path) &&
+      (!value.success || (typeof value.path === 'string' && value.path.trim().length > 0))
+    );
+  }
+
+  if (value.type === 'session/attachment-prepare_response') {
+    return (
+      typeof value.sessionId === 'string' &&
+      typeof value.success === 'boolean' &&
+      isOptionalString(value.error) &&
+      (!value.success || isLocalAttachment(value.attachment))
     );
   }
 

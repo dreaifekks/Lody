@@ -40,6 +40,7 @@ import {
   type AuthContext,
 } from '../command-runtime';
 import { SYNC_CONFIRMATION_TIMEOUT_MS } from '@/lib/loro/timeout-utils';
+import { ensureWorkspaceMetaSynced } from '../command-runtime';
 import type { LoroDocumentManager } from '../loro/doc';
 import type { WorkspaceSummary } from '../workspace';
 import { createSessionBackend } from '@/session/session-backend';
@@ -89,16 +90,35 @@ const AGENT_NOTICES = {
   resume: 'Resumed',
 } as const;
 
+export function assertScheduleCommandAllowed(
+  command: ScheduleCommand,
+  requesterSessionId?: SessionId,
+  requesterPermissionTier?: ResolvedPermissionTier
+) {
+  if (!requesterSessionId) return;
+  const boundedWrite =
+    requesterPermissionTier !== undefined && ['create', 'edit', 'resume'].includes(command.action);
+  if (!boundedWrite && !['list', 'show', 'pause', 'propose'].includes(command.action))
+    throw new Error('Schedule enablement requires a human action');
+}
+
 /** Same domain operations for human CLI and the bounded MCP surface, on either transport. */
 export async function executeScheduleCommand(
   context: ScheduleCommandContext,
   input: ScheduleCommand
 ): Promise<unknown> {
   const command = ScheduleCommandSchema.parse(input);
+  assertScheduleCommandAllowed(
+    command,
+    context.requesterSessionId,
+    context.requesterPermissionTier
+  );
   const { manager, auth, localOnly, requesterSessionId } = context;
   const workspaceId = context.workspace.id as WorkspaceId;
   const repository = new ScheduleRepository(manager.repo, workspaceId, {
     protectedContent: context.workspace.contentMode === 'e2ee',
+    signDeclaration: (document, manualRunKey) =>
+      manager.signScheduleDeclaration(document, manualRunKey),
   });
   const sync = async (room: string) => {
     if (!localOnly) await manager.syncDocOrThrow(room, { reason: 'schedule:command' });
@@ -159,6 +179,7 @@ export async function executeScheduleCommand(
       ['create', 'edit', 'resume'].includes(command.action);
     if (!agentWrite && !['list', 'show', 'pause', 'propose'].includes(command.action))
       throw new Error('Schedule enablement requires a human action');
+    if (!localOnly) await ensureWorkspaceMetaSynced(manager, 'schedule:requester');
     const record = await manager.repo.getDocMeta(getSessionRoomId(requesterSessionId));
     const meta = record?.meta as SessionMeta | undefined;
     if (

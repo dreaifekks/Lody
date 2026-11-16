@@ -37,6 +37,9 @@ and [platform rules](../platform/AGENTS.md) before changing these boundaries.
 - RPC exposes the existing closed product methods and exact original retries,
   never private keys, credentials or generic signing to product callers. Real
   injected implementations are required; no empty handler substitutes for support.
+- The optional `iroh` platform port receives the device seed once per session via
+  `withTransportSeed`; targets come from the admitted ledger, and route network
+  waits run outside session locks ([transport rules](../iroh-native/AGENTS.md)).
 
 - Product/runtime assembly uses `makeOwnedPersonalDeviceHost` with resource-owning
   port Layers. Its bounded close retains the actual drain and all dependencies;
@@ -52,3 +55,50 @@ and [platform rules](../platform/AGENTS.md) before changing these boundaries.
   account and owner; retain incomplete failures until actual close confirmation.
   Account change retires the assembly permanently. Only real optional port Layers
   advertise RPC or machine sharing; no unsupported channel becomes plaintext.
+
+- `personalRuntimeRecovery` exposes only closed setup/restore commands on the
+  existing owned host. Setup requires an active reader; callers release only
+  their own reader. Recovery failure never retires unrelated content readers.
+
+- Member approval on the portable runtime uses the optional `members` platform port with
+  the session's own credential. A listed key package is pinned per session; approval
+  signs only that pinned package through the session's ledger journal, never re-signs on
+  a lost reply, and key delivery afterwards never holds or undoes the admission.
+  A delivery short of mailbox evidence retries on the desktop's bounded backoff, holding
+  the reader only during an attempt and never opening one; only an exhausted schedule or
+  an ineligible sender ends it `failed` for a manual retry. Its task stays in the core
+  distribution journal, so any later key round on this device also sends it. An open on
+  an active member's non-recovery device schedules one delayed background installing key
+  round, even before the current key is installed: it receives and installs before it
+  distributes. At most one is in flight, spaced by an interval; it borrows the reader
+  only while it runs, never opens one, and only reports failure.
+  Automatic approval never trusts the relay's `source`: it signs only after
+  `verifyAutomaticMemberAdmission` accepts the endorser-signed email offer against the
+  verified ledger (eligible endorser now, unexpired, token-derived request id, unused).
+  Desktop uses the same verifier; a refusal keeps its precise code and leaves the
+  request for explicit approval. Only that verifier requires the signature: retained
+  joins, links and lists read offers without it, and a retained join keeps its signed
+  request id rather than re-deriving one.
+- Removing a member on the portable runtime follows core authority, as desktop does: only
+  the owner removes and publishes the next epoch in one record. An administrator removes
+  the member plainly, declaring removal support first if the ledger lacks it; that marks
+  the epoch for rotation, which an administrator may then publish as a separate update.
+- Joining a team on the portable runtime prepares this workspace's identity for
+  `memberPairingOffer`, whose request id is the admitted membership and the pairing
+  session of the credential binding. The key package is retained before submission and
+  resubmitted unchanged on retry. The relay's `committed` is a hint: only this device's
+  admission in the verified full signed history is accepted, as a history approval.
+  The retained join reports `joined` once that approval original exists, so a reopened
+  join page shows it joined before its confirming claim; the hint grants nothing.
+- A new invitation after an ended join first retires the old request through the relay;
+  only `cancelled` writes the terminal receipt that settles it. The old credential is
+  pinned to that membership, so the new one gets a replacement identity, activated only
+  after its own verified admission. An admitted or still-live join keeps refusing.
+- Automatic pairing approval signs only after the person types the code the new
+  device shows and it equals this device's derived code. Reviews never expose that
+  code, and the third wrong entry ends the request on the approver before any signing.
+
+- Management exposes last-personal-device risk from the verified ledger and requires
+  explicit recovery-only confirmation before signing its revocation. Restores report
+  partial epoch-key recovery separately from admission and content readiness, and
+  retain its retryable journal until the current epoch key is installed.

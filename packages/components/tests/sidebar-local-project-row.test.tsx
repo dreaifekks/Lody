@@ -2,6 +2,7 @@ import { flushSync } from 'react-dom';
 // @vitest-environment jsdom
 
 // @vitest-environment jsdom
+import type { SessionSharingState } from '../src/lib/session-sharing';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -110,6 +111,8 @@ describe('sidebar local project row', () => {
     /** A store of the test's own; the default one otherwise. */
     store?: ReturnType<typeof createStore>;
     childSessionsByParent?: Map<string, SessionMeta[]>;
+    sessionSharingById?: Map<string, SessionSharingState>;
+    onRenameSession?: (id: string, title: string) => void;
   }) {
     const item = (
       <LocalProjectItem
@@ -143,6 +146,8 @@ describe('sidebar local project row', () => {
         machineNameColor="blue"
         onNavigateSession={() => undefined}
         onArchive={() => undefined}
+        onRenameSession={options.onRenameSession}
+        sessionSharingById={options.sessionSharingById}
         collapsedOpenedBySessionIds={{}}
         onToggleOpenedBySessions={() => undefined}
         onToggleCollapsed={() => undefined}
@@ -184,6 +189,45 @@ describe('sidebar local project row', () => {
     });
     return container?.querySelector<HTMLElement>(`[data-id="project:${machineId}:${project.id}"]`);
   }
+
+  it('hides management and inline archive controls for a read-only local conversation', async () => {
+    const id = 'read-only-local';
+    render({
+      onNavigateProject: () => {},
+      onNewChatInProject: () => {},
+      sessions: [localSession(id)],
+      onRenameSession: () => {
+        throw new Error('rename must stay hidden');
+      },
+      sessionSharingById: new Map([
+        [
+          id,
+          {
+            visibility: 'team',
+            access: 'read',
+            canManage: false,
+            machineId,
+            localProjectId: project.id,
+            machineName: null,
+            projectName: null,
+          },
+        ],
+      ]),
+    });
+    const row = container!.querySelector(`[data-sidebar-session-id="${id}"]`)!;
+    expect(row).not.toBeNull();
+    expect(row.querySelector('[aria-label="Archive session"]')).toBeNull();
+    await act(async () =>
+      row.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })
+      )
+    );
+    expect(
+      [...document.querySelectorAll('[role="menuitem"]')].some((item) =>
+        /Rename|Archive|Delete/.test(item.textContent ?? '')
+      )
+    ).toBe(false);
+  });
 
   it('activates the project on the landing and offers a new chat for a shared machine', () => {
     const onNavigateProject = vi.fn();
