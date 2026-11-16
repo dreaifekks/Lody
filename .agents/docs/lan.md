@@ -114,7 +114,9 @@ The limits of a topic close its page.
 
 The local platform disables `managedDaemonUpdates`. Its npm-shaped LAN CLI installation
 never enters upstream managed-daemon migration, and the local Host lease exposes no
-upstream upgrade callback. Renderer update controls and their version probes use that
+upstream upgrade callback. Starting the local daemon always uses the current CLI,
+ignoring residual managed installations; update-status is unavailable and machine
+health does not read managed update records. Renderer update controls and their version probes use that
 capability too. The manifest-verified fork LAN updater remains the only update path.
 
 Same-machine attachments use the upstream local path/image preparation protocol.

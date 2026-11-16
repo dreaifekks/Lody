@@ -10768,7 +10768,12 @@ export class MessageHandler {
     message: MachineStatusRequestValidated
   ): Promise<MachineStatusResponse> {
     const response = await this.executionService.getMachineStatus(message);
-    if (!message.includeDaemonUpdate || this.encryptedAttachments) return response;
+    if (
+      !message.includeDaemonUpdate ||
+      this.encryptedAttachments ||
+      !getPlatformCapabilities(this.cloudPort.kind).has('managedDaemonUpdates')
+    )
+      return response;
     try {
       const operation = await readManagedOperation();
       if (!operation || operation.machineId !== this.machineId)

@@ -87,6 +87,8 @@ export const daemonUpdateStatusCommand = new Command('update-status')
   .description('Read the durable managed daemon update outcome')
   .option('--request-id <id>', 'Read one accepted operation, including older outcomes')
   .action(async (options: { requestId?: string }) => {
+    if (!getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'))
+      throw new Error('Managed daemon update status is unavailable; this fork uses LAN releases.');
     console.log(JSON.stringify(await readManagedOperation(options.requestId)));
   });
 

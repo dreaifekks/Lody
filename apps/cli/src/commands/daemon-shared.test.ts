@@ -249,3 +249,47 @@ describe('daemon runner launch cleanup', () => {
     expect(await stopped).toBe(false);
   });
 });
+
+it('starts the current local CLI despite a residual managed installation, without reading SEA context', async () => {
+  const pidFilePath = createPidPath();
+  const data = path.dirname(pidFilePath);
+  const managed = path.join(data, 'daemon-managed');
+  fs.mkdirSync(managed);
+  const service = path.join(managed, 'service');
+  fs.writeFileSync(service, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+  fs.writeFileSync(
+    path.join(managed, 'installation.json'),
+    JSON.stringify({
+      format: 1,
+      product: 'lody-oss',
+      serviceProtocol: 1,
+      service,
+    })
+  );
+  vi.stubEnv('LODY_PLATFORM', 'local');
+  vi.stubEnv('LODY_DATA_DIR', data);
+  const key = Symbol.for('lody.sea.context');
+  const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    get() {
+      throw new Error('Local launch must not read SEA');
+    },
+  });
+  try {
+    const { table, api, readyPipes } = runnerProcessTable();
+    const launch = spawnDaemonRunnerAndAwaitReady([], { nodeProcess: api, pidFilePath });
+    const [spawn] = runnerSpawns(table);
+    expect(spawn?.command).toBe(process.execPath);
+    expect(spawn?.args).toContain(process.argv[1]);
+    expect(spawn?.args).not.toContain(service);
+    readyPipes[0]?.write(
+      JSON.stringify({ status: 'ready', pid: 1, instanceId: 'local-runner' }) + '\n'
+    );
+    expect(await launch).toMatchObject({ status: 'ready', instanceId: 'local-runner' });
+  } finally {
+    Reflect.deleteProperty(globalThis, key);
+    if (previous) Object.defineProperty(globalThis, key, previous);
+    vi.unstubAllEnvs();
+  }
+});

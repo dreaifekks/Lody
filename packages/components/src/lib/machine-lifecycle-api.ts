@@ -194,7 +194,7 @@ export async function fetchLatestCliVersion({
 export async function fetchLatestDaemonVersion(
   channel: 'stable' | 'next' | 'nightly'
 ): Promise<FetchLatestCliVersionResult> {
-  if (!requireCloudAuthBaseUrl('remoteMachines'))
+  if (!requireCloudAuthBaseUrl('managedDaemonUpdates'))
     return { ok: false, error: 'missing_cloud_capability' };
   try {
     // Every channel moves only after all platform assets exist. This representative

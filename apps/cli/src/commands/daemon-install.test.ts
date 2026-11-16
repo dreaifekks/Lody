@@ -23,7 +23,7 @@ vi.mock('./daemon-autostart', async (original) => ({
   ...(await original<typeof import('./daemon-autostart')>()),
   registerDaemonAutostart: ports.autostart,
 }));
-import { installManagedDaemon } from './daemon-install';
+import { installManagedDaemon, daemonUpdateStatusCommand } from './daemon-install';
 const roots: string[] = [];
 beforeEach(() => {
   ports.kind = 'cloud';
@@ -134,4 +134,17 @@ it('does not install the upstream managed service on the local LAN platform', as
   );
   await expect(fs.stat(f.service)).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(fs.stat(f.events)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('rejects managed update-status on local platforms before reading an operation', async () => {
+  const { data } = await fixture();
+  ports.kind = 'local';
+  await fs.mkdir(path.join(data, 'daemon-managed'), { recursive: true });
+  await fs.writeFile(
+    path.join(data, 'daemon-managed', 'operation.json'),
+    'invalid residual operation'
+  );
+  await expect(
+    daemonUpdateStatusCommand.parseAsync(['--request-id', 'local-test'], { from: 'user' })
+  ).rejects.toThrow('Managed daemon update status is unavailable');
 });

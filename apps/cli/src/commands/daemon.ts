@@ -188,7 +188,9 @@ export const daemonCommand = new Command('daemon')
   .addCommand(daemonInstallCommand, {
     hidden: !getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'),
   })
-  .addCommand(daemonUpdateStatusCommand)
+  .addCommand(daemonUpdateStatusCommand, {
+    hidden: !getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'),
+  })
   .addCommand(daemonUpgradeCommand, {
     hidden: !getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'),
   })

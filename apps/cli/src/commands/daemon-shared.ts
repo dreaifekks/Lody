@@ -5,7 +5,7 @@ import {
   resolvePublishedManagedService,
 } from '@/lib/managed-daemon-release';
 import { toShared } from '@/platform/process-options';
-import { getCliPlatformKind } from '@/lib/cli-platform';
+import { getCliPlatformKind, getCliPlatformCapabilities } from '@/lib/cli-platform';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -324,20 +324,22 @@ export async function spawnDaemonRunnerAndAwaitReady(
   } = {}
 ): Promise<SpawnDaemonRunnerResult> {
   const bin = options.installation?.bin ?? resolveLodyBin();
-  const sea = options.installation ? null : getSeaContext();
+  const managedUpdates = getCliPlatformCapabilities().has('managedDaemonUpdates');
+  const sea = managedUpdates && !options.installation ? getSeaContext() : null;
   // An npm launcher forwards to a published managed service: after a relay
   // migration, the user's own autostart keeps starting the managed daemon.
-  const fixedService =
-    options.service ??
-    (options.installation
-      ? null
-      : sea
-        ? path.join(managedDaemonRoot(), process.platform === 'win32' ? 'service.exe' : 'service')
-        : process.platform === 'win32'
-          ? null
-          : resolvePublishedManagedService(
-              getCliPlatformKind() === 'cloud' ? 'lody-cloud' : 'lody-oss'
-            ));
+  const fixedService = !managedUpdates
+    ? null
+    : (options.service ??
+      (options.installation
+        ? null
+        : sea
+          ? path.join(managedDaemonRoot(), process.platform === 'win32' ? 'service.exe' : 'service')
+          : process.platform === 'win32'
+            ? null
+            : resolvePublishedManagedService(
+                getCliPlatformKind() === 'cloud' ? 'lody-cloud' : 'lody-oss'
+              )));
   if (fixedService && !fs.existsSync(fixedService))
     throw new Error('Run daemon install before starting the managed service.');
   const env: NodeJS.ProcessEnv = {
@@ -356,7 +358,7 @@ export async function spawnDaemonRunnerAndAwaitReady(
   // Windows, so the runner outlives the terminal that started it.
   const runner = startProcessLegacy(
     {
-      command: fixedService ?? getCliNodeExecutable(),
+      command: fixedService ?? (managedUpdates ? getCliNodeExecutable() : process.execPath),
       args: [
         ...(fixedService
           ? [`--node-options=--max-old-space-size=${DAEMON_WATCHDOG_MAX_OLD_SPACE_MB}`]
