@@ -24,19 +24,18 @@ export type BatchTurn = {
   elsewhere?: readonly ResultsElsewhere[];
 };
 
-export const batchPreviewForkLines = (turn: BatchTurn | undefined): string[] =>
-  turn
+export const batchPreviewForkLines = (turn: BatchTurn | undefined): string[] => [
+  "An output marked truncated omits its middle. The complete reply is in lody_session_history under that item's target.sessionId (a board_report event's sessionId).",
+  ...(turn
     ? [
-        // A coordinator woken by many batches refers back to earlier ones; the
-        // desktop scrolls to a linked turn and highlights it.
-        `To point the user back to this turn in a later reply, link it: [short label](${buildSessionLink(turn)}). Ids of other turns: lody_session_history.`,
-        // A path from such a result opens on this machine unless it names its own.
+        `This reply's turn: [short label](${buildSessionLink(turn)}). Ids of other turns: lody_session_history.`,
         ...(turn.elsewhere ?? []).map(
           ({ machine, sessionIds }) =>
-            `Results of ${sessionIds.join(', ')} ran on ${machine}: write their files as ${machine}:<absolute path>.`
+            `Results of ${sessionIds.join(', ')} ran on ${machine}; their file links use ${machine}:<absolute path>.`
         ),
       ]
-    : [];
+    : []),
+];
 
 /** The sessions a batch member's results came from. */
 const resultSessionIds = (completion: unknown): string[] => {
