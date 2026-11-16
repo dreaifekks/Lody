@@ -42,8 +42,9 @@ Text hydration resolves only a unique available match. Bare Role names, aliases
 or `@Role@machine` text that identifies several targets stays plain text, even
 when only one match is online. Deleted or unavailable pins remain plain text and
 produce no expanded reference. Mentions are references, not dispatch instructions.
-Pinned references carry the Role and stable target id; unpinned references name
-only the Role. The user's words determine the action. If a Session is created,
+A reference to a selected target carries the Role and stable target id; only a
+reference without a target names the Role alone. The user's words determine the
+action. If a Session is created,
 acceptance freezes the current target, shared prompt and revision.
 
 Unavailable/loading targets remain visible with their reason and cannot be

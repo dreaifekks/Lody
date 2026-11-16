@@ -66,7 +66,7 @@ export type AgentRoleMentionItem = ComposerAgentRoleItem & {
   slug: string;
   /** What the committed range carries: the instance id, marked when pinned. */
   value: string;
-  /** Runs exactly its instance (`@<token>@<machine>`); otherwise its group does. */
+  /** Chosen as `@<token>@<machine>`; every entry runs exactly its instance. */
   pinned: boolean;
   /** The machine's name as written in a token. */
   machineSlug: string;
