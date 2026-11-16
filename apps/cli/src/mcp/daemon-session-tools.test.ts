@@ -1141,12 +1141,35 @@ describe('daemon-hosted Session tools in the cloud composition', () => {
   const callTool = (name: string, args: Record<string, unknown>) =>
     runWithDaemonWorkspace(daemon, () => executeDaemonSessionTool(context(), name, args));
 
+  it('reads same-machine history after its project was removed', async () => {
+    await manager.repo.upsertDocMeta(getSessionRoomId(sessionId), {
+      project: { kind: 'local', localProjectId: 'removed-project' },
+    });
+    const backend = await createSessionBackend(await manager.getOrCreateSessionDoc(sessionId));
+    await backend.appendHistoryTurn({
+      id: 'removed-project-history',
+      role: 'user',
+      timestamp: '2026-11-16T00:00:00Z',
+      items: [{ type: 'text', text: 'History survives project removal' }],
+      fileDiff: [],
+    } as never);
+    const environment = createEnvironment();
+    const result = await runWithSessionCommandEnvironment(environment, () =>
+      executeDaemonSessionTool(context(), 'lody_session_history', { sessionId })
+    );
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.content[0]?.text).toContain('History survives project removal');
+  });
+
   it('reads history of an authorized LAN member and refuses another owner or requester', async () => {
     vi.mocked(cloudCliPort.canReadSessionForCliRequester).mockImplementation(async () => {
       throw new Error('LAN history must not ask the cloud');
     });
     const remoteSessionId = await createRemoteSession();
     const remoteMachineId = 'synthetic-other-machine' as MachineId;
+    await manager.repo.upsertDocMeta(getSessionRoomId(remoteSessionId), {
+      project: { kind: 'local', localProjectId: 'removed-project' },
+    });
     const backend = await createSessionBackend(
       await manager.getOrCreateSessionDoc(remoteSessionId)
     );

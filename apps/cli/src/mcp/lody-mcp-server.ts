@@ -2648,13 +2648,12 @@ const buildSessionHistory = async (input: SessionHistoryToolInput): Promise<unkn
         : nativeOwner !== undefined
           ? nativeOwner
           : localEnvironment
-            ? (
+            ? (requester.userId === auth.userId && session.machineId === auth.machineId) ||
+              (
                 await localEnvironment.checkMachineAccess({
                   workspaceId: workspace.id as WorkspaceId,
                   machineId: session.machineId,
                   requesterUserId: requester.userId,
-                  localProjectId:
-                    session.project?.kind === 'local' ? session.project.localProjectId : undefined,
                 })
               ).allowed
             : await canReadSessionForCliRequester({
