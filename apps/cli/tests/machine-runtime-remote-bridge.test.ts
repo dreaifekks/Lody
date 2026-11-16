@@ -1,3 +1,4 @@
+import { combineGCSessionSources, type SessionGCDeps } from '../src/lib/session-gc-manager';
 import { describe, expect, it, vi } from 'vitest';
 import { MachineRuntime, type MachineRuntimeOptions } from '../src/lib/machine-runtime';
 import type { Logger } from '../src/utils/logger';
@@ -257,4 +258,41 @@ it('requires live verified authority for encrypted ACP interaction routing', asy
   await expect(runtime.handleEncryptedFeatureRpc(request, verified)).rejects.toThrow(
     'e2ee_feature_unavailable'
   );
+});
+
+it('retains cached-only Session documents in the runtime GC candidate source', () => {
+  vi.useFakeTimers();
+  const { runtime, handler } = createHarness();
+  Object.assign(handler, {
+    getTrackedSessionIds: () => ['tracked'],
+    getGCSessionSources: () =>
+      combineGCSessionSources(
+        {
+          sessionIds: () => ['tracked'] as never,
+          has: (id) => id === 'tracked',
+          lastActivityMs: () => 100,
+        },
+        {
+          sessionIds: () => ['tracked', 'cached-only'] as never,
+          lastActivityMs: () => 200,
+        }
+      ),
+    setEvictForMemoryPressure: () => {},
+    hasNativeTurnsWrittenOutside: (id: string) => id === 'cached-only',
+  });
+  const internal = runtime as unknown as {
+    initializeGCManager(): void;
+    gcManager: { deps: SessionGCDeps; stop(): void };
+  };
+  try {
+    internal.initializeGCManager();
+    expect(internal.gcManager.deps.getSessionIds()).toEqual(['tracked', 'cached-only']);
+    expect(internal.gcManager.deps.getSessionLastActivity('cached-only' as never)).toBe(200);
+    expect(internal.gcManager.deps.hasNativeTurnsWrittenOutside?.('cached-only' as never)).toBe(
+      true
+    );
+  } finally {
+    internal.gcManager?.stop();
+    vi.useRealTimers();
+  }
 });

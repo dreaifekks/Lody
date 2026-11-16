@@ -456,7 +456,6 @@ export class MachineRuntime {
       isArchiveInFlight: (sessionId) => handler.isArchiveInFlight(sessionId),
       cleanSession: (sessionId) => handler.cleanSessionForGC(sessionId),
       hasNativeTurnsWrittenOutside: (sessionId) => handler.hasNativeTurnsWrittenOutside(sessionId),
-      getSessionIds: () => handler.getTrackedSessionIds(),
       memoryPressure: this.options.memoryPressure,
       readWasmHeapBytes: readLoroWasmHeapBytes,
       logger: this.options.logger,
