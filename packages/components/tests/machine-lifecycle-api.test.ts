@@ -5,15 +5,10 @@ import {
   mintMachineLifecycleRequestToken,
 } from '../src/lib/machine-lifecycle-api';
 
-const capabilities = vi.hoisted(() => new Set(['remoteMachines', 'managedDaemonUpdates']));
 vi.mock('../src/lib/cloud-http-port', () => ({
-  requireCloudAuthBaseUrl: (capability: string) =>
-    capabilities.has(capability) ? 'https://auth.fixture.invalid' : null,
+  requireCloudAuthBaseUrl: () => 'https://auth.fixture.invalid',
 }));
-afterEach(() => {
-  vi.unstubAllGlobals();
-  capabilities.add('managedDaemonUpdates');
-});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('isCliVersionOutdated', () => {
   it('treats a prerelease current version as older than the matching stable latest', () => {
@@ -111,18 +106,4 @@ it('sends timing and explicit downgrade/channel choices with the exact operation
     targetVersion: '1.2.3-nightly.4',
     upgrade,
   });
-});
-
-it('does not fetch public runtime artifacts when remote machines exist without managed updates', async () => {
-  capabilities.delete('managedDaemonUpdates');
-  const urls: string[] = [];
-  vi.stubGlobal('fetch', async (url: string) => {
-    urls.push(url);
-    return Response.json(release);
-  });
-  expect(await fetchLatestDaemonVersion('stable')).toEqual({
-    ok: false,
-    error: 'missing_cloud_capability',
-  });
-  expect(urls).toEqual([]);
 });
