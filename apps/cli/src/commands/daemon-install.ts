@@ -1,3 +1,4 @@
+import { getPlatformCapabilities } from '@lody/platform';
 import { randomUUID } from 'node:crypto';
 import { requestLocalCliHostUpgrade } from '@lody/shared/node/local-cli-host-lease';
 import { readPidFileRecord } from './daemon-shared';
@@ -32,6 +33,8 @@ export async function installManagedDaemon(options: {
   start?: boolean;
   autostart?: boolean;
 }): Promise<void> {
+  if (!getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'))
+    throw new Error('Managed daemon installation is unavailable; this fork uses LAN releases.');
   const context = getSeaContext();
   if (!context)
     throw new Error('Run the downloaded SEA installer; npm keeps its JavaScript entry.');
@@ -102,6 +105,8 @@ export const daemonUpgradeCommand = new Command('upgrade')
       allowChannelChange?: boolean;
       allowDowngrade?: boolean;
     }) => {
+      if (!getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'))
+        throw new Error('Managed daemon updates are unavailable; this fork uses LAN releases.');
       const record = readPidFileRecord();
       if (!record) throw new Error('Managed daemon is not running');
       const { ManagedDaemonUpgradeOptionsSchema } = await import('@lody/shared');

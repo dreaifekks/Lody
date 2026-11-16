@@ -1,3 +1,4 @@
+import { getPlatformCapabilities } from '@lody/platform';
 import { findLiveActivityPermissionAlertCandidate } from '@lody/shared';
 import { SESSION_IMAGE_ALLOWED_MIME_TYPES, SESSION_IMAGE_MAX_SIZE_BYTES } from '@lody/shared';
 import type { MachineStatusResponse } from '@lody/shared';
@@ -929,10 +930,13 @@ export class MessageHandler {
   private readonly baseMachineLifecycleCapability: MachineLifecycleCapability;
   private readonly hostsEncryptedWorkspace?: () => boolean;
   private get machineLifecycleCapability(): MachineLifecycleCapability {
-    return withMachineEncryption(
+    const capability = withMachineEncryption(
       this.baseMachineLifecycleCapability,
       this.hostsEncryptedWorkspace?.() ?? false
     );
+    return getPlatformCapabilities(this.cloudPort.kind).has('managedDaemonUpdates')
+      ? capability
+      : { ...capability, canRemoteUpgrade: false };
   }
   private readonly prepareManagedUpgrade?: (
     requestId: string,
@@ -7114,6 +7118,8 @@ export class MessageHandler {
           }
         : {}),
     };
+    if (!getPlatformCapabilities(this.cloudPort.kind).has('managedDaemonUpdates'))
+      delete capabilities[MACHINE_PROTOCOL_CAPABILITIES.managedDaemonUpdates];
     if (this.cloudPort.remoteAutomation && !this.lanWorkspace)
       capabilities.remoteAutomationControl = 1;
     capabilities[MACHINE_PROTOCOL_CAPABILITIES.realtimeVoice] = REALTIME_VOICE_PROTOCOL_VERSION;
@@ -11005,6 +11011,7 @@ export class MessageHandler {
     }
 
     if (
+      !getPlatformCapabilities(this.cloudPort.kind).has('managedDaemonUpdates') ||
       !this.machineLifecycleCapability.canRemoteUpgrade
     ) {
       return this.machineUpgradeFailure(

@@ -102,32 +102,48 @@ describe('npm to managed relay migration', () => {
 });
 
 describe('npm relay eligibility', () => {
+  const canRelayCloudInstallation = (
+    env: Record<string, string | undefined>,
+    platform: NodeJS.Platform,
+    cgroup: string | null
+  ) => canRelayNpmInstallation({ ...env, LODY_PLATFORM: 'cloud' }, platform, cgroup);
+  it.each([
+    null,
+    '0::/user.slice/user-1000.slice/user@1000.service/app.slice/lody-lan-agent.service\n',
+  ])('never converts a LAN installation even without a service-manager hint (%s)', (cgroup) => {
+    expect(canRelayNpmInstallation({ LODY_PLATFORM: 'local' }, 'linux', cgroup)).toBe(false);
+    expect(canRelayNpmInstallation({}, 'linux', cgroup)).toBe(false);
+  });
   const desktopShell =
     '0::/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-1.scope\n';
   it('relays only POSIX npm watchdogs that no service manager owns', () => {
-    expect(canRelayNpmInstallation({}, 'linux', desktopShell)).toBe(true);
-    expect(canRelayNpmInstallation({}, 'darwin', null)).toBe(true);
-    expect(canRelayNpmInstallation({}, 'win32', null)).toBe(false);
+    expect(canRelayCloudInstallation({}, 'linux', desktopShell)).toBe(true);
+    expect(canRelayCloudInstallation({}, 'darwin', null)).toBe(true);
+    expect(canRelayCloudInstallation({}, 'win32', null)).toBe(false);
     // A systemd unit's stop would kill the detached managed runner with its cgroup.
     expect(
-      canRelayNpmInstallation({ INVOCATION_ID: 'abc' }, 'linux', '0::/system.slice/lody.service\n')
+      canRelayCloudInstallation(
+        { INVOCATION_ID: 'abc' },
+        'linux',
+        '0::/system.slice/lody.service\n'
+      )
     ).toBe(false);
     // launchd jobs carry their label; GUI terminals carry `application.*` or `0`.
-    expect(canRelayNpmInstallation({ XPC_SERVICE_NAME: 'com.example.lody' }, 'darwin', null)).toBe(
-      false
-    );
+    expect(
+      canRelayCloudInstallation({ XPC_SERVICE_NAME: 'com.example.lody' }, 'darwin', null)
+    ).toBe(false);
   });
   it('does not mistake an ordinary desktop terminal for a service', () => {
-    expect(canRelayNpmInstallation({ XPC_SERVICE_NAME: '0' }, 'darwin', null)).toBe(true);
+    expect(canRelayCloudInstallation({ XPC_SERVICE_NAME: '0' }, 'darwin', null)).toBe(true);
     expect(
-      canRelayNpmInstallation(
+      canRelayCloudInstallation(
         { XPC_SERVICE_NAME: 'application.com.googlecode.iterm2.1234' },
         'darwin',
         null
       )
     ).toBe(true);
     // Terminal shells may inherit INVOCATION_ID from their user service.
-    expect(canRelayNpmInstallation({ INVOCATION_ID: 'abc' }, 'linux', desktopShell)).toBe(true);
+    expect(canRelayCloudInstallation({ INVOCATION_ID: 'abc' }, 'linux', desktopShell)).toBe(true);
   });
 });
 

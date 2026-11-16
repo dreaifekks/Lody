@@ -407,6 +407,7 @@ export function MachineAgentSettings({
   // (lifecycle token mint); machine sharing needs workspace members. Both are
   // cloud-only surfaces hidden on the local platform.
   const remoteMachinesAvailable = useAppCapability('remoteMachines');
+  const managedUpdatesAvailable = useAppCapability('managedDaemonUpdates');
   const teamSharingAvailable = useAppCapability('teamSharing');
   const { data: session } = useStableSession();
   const { activeOrganization } = useOrganization();
@@ -877,7 +878,7 @@ export function MachineAgentSettings({
     !!currentUserId &&
     selectedOwnerUserId === currentUserId;
   // Probed for the single selected machine (both mobile detail + desktop pills).
-  const selectedSupportsManagedUpdates = machineSupportsProtocolCapability(
+  const selectedSupportsManagedUpdates = managedUpdatesAvailable && machineSupportsProtocolCapability(
     resolvedSelectedMachine,
     MACHINE_PROTOCOL_CAPABILITIES.managedDaemonUpdates,
     1
@@ -968,7 +969,7 @@ export function MachineAgentSettings({
   useEffect(() => {
     // The latest-version probe only feeds the remote upgrade affordance; skip
     // the network call entirely when remote lifecycle is unavailable.
-    if (!remoteMachinesAvailable) return undefined;
+    if (!remoteMachinesAvailable || !managedUpdatesAvailable) return undefined;
     let cancelled = false;
     const releaseChannel = collectClientBuildInfo().releaseChannel;
     const channel =
@@ -980,7 +981,7 @@ export function MachineAgentSettings({
     return () => {
       cancelled = true;
     };
-  }, [remoteMachinesAvailable]);
+  }, [remoteMachinesAvailable, managedUpdatesAvailable]);
 
   const refreshCapabilities = useRefreshMachineAcpCapabilities();
 
@@ -1150,7 +1151,7 @@ export function MachineAgentSettings({
     Record<'stable' | 'next' | 'nightly', string>
   > | null>(null);
   useEffect(() => {
-    if (!batchUpdateOpen) return undefined;
+    if (!batchUpdateOpen || !managedUpdatesAvailable) return undefined;
     setLatestByChannel(null);
     let cancelled = false;
     void Promise.all(
@@ -1165,7 +1166,7 @@ export function MachineAgentSettings({
     return () => {
       cancelled = true;
     };
-  }, [batchUpdateOpen]);
+  }, [batchUpdateOpen, managedUpdatesAvailable]);
   const batchUpdateMachines = useMemo((): BatchUpdateMachine[] => {
     const running = new Map<string, number>();
     for (const meta of Object.values(sessionMetaCache)) {
@@ -1644,6 +1645,7 @@ export function MachineAgentSettings({
       <MachineListFilterButton filter={effectiveFilter} onFilterChange={setFilter} />
     ) : null;
   const batchUpdateButton =
+    managedUpdatesAvailable &&
     mode === 'machines' &&
     remoteMachinesAvailable &&
     latestCliVersion &&

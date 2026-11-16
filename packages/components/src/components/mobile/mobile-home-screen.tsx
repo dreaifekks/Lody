@@ -503,6 +503,8 @@ export type MobileHomeScreenProps = {
      actions — the payload a phone hands to a computer (the phone itself
      never navigates to it). Defaults to the production download page. */
   onboardingDownloadUrl?: string;
+  /** Product composition controls whether managed-daemon installation is supported. */
+  onboardingEnabled?: boolean;
   /** When true, the Chat tab renders the *archived* conversations
      (instead of the active ones) and the content area is tinted with
      `bg-muted` to give the "everything here is archived" feel. The
@@ -1316,6 +1318,7 @@ export function MobileHomeScreen({
   onSettingsOpen,
   onNewChat,
   onboardingDownloadUrl,
+  onboardingEnabled = true,
   showArchived = false,
   onShowArchivedToggle,
 }: MobileHomeScreenProps) {
@@ -1398,6 +1401,7 @@ export function MobileHomeScreen({
      the archive view, an active filter, or an in-progress search) so it
      only ever stands in for the genuine empty workspace. */
   const showChatOnboarding =
+    onboardingEnabled &&
     selectedTab === 'chat' &&
     !isInitialDataLoading &&
     !showArchived &&

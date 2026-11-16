@@ -52,6 +52,9 @@ Edit `AGENTS.md`; `CLAUDE.md` symlinks here.
   close. A failed token release retains its owner/Cause and blocks handoff until
   explicit recovery. Contract: [token ownership](../shared/src/loro-streams-token/AGENTS.md).
 
+- `managedDaemonUpdates` is absent locally: hide upstream daemon installation/update
+  entries and probes, and refuse npm-to-managed migration. LAN updates use fork releases.
+
 ## Managed runtime channel
 
 - Local and cloud runtime downloads use the public R2 constant in

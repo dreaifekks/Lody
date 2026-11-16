@@ -42,3 +42,7 @@ agy 调用的 daily 主机（`daily-cloudcode-pa.googleapis.com`）在 User-Agen
 `antigravity/agy/<version>` 和不带版本的写法只返回 Claude/GPT。OS/arch 部分不影响结果。
 Daemon 现在向 daily 主机发送 `antigravity/cli/1.4.2 <os>/<arch>`。版本门槛由 Google 决定且没有文档，以后的 Antigravity 版本可能需要更新版本号。
 CodexBar 出于同样原因从这个主机读取额度。
+
+## ACP 额度读取边界
+
+fork 的 registry 条目启动 agy，其 ACP 会话不公布 `/usage`。上游兼容读取器会在每次刷新时白起进程和会话，并执行插件 hooks。因此只保留直接读取 Cloud Code 的 poller；不按 registry id 推定额度查询能力，并在启动进程前拒绝通用 ACP 额度请求。共用的 Provider 额度展示仍然保留。

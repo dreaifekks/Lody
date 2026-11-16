@@ -62,3 +62,11 @@ OS/arch part did not change the answer. The daemon now sends
 `antigravity/cli/1.4.2 <os>/<arch>` to the daily host. The version gate is Google's
 and undocumented, so a later Antigravity release may require a newer version string.
 CodexBar reads the summary from the same host for the same reason.
+
+## ACP quota reader boundary
+
+The fork registry entry launches agy, whose ACP session does not advertise `/usage`.
+The upstream compatibility reader would start an unnecessary process/session and run
+plugin hooks on each refresh. Keep the direct Cloud Code poller as the sole source;
+never infer query support from the registry id, and refuse the generic ACP quota
+request before process launch. Shared provider quota presentation remains usable.

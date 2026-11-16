@@ -488,67 +488,23 @@ describe('Antigravity quota ACP compatibility', () => {
     ]);
   });
 
-  it.each(['commands', 'reply'] as const)(
-    'cancels while waiting for %s and removes scratch after the child exits',
-    async (phase) => {
-      vi.spyOn(loginShell, 'getLoginShellEnvLegacy').mockResolvedValue({});
-      vi.spyOn(setting, 'resolveACPProcessLaunchAsync').mockResolvedValue({
-        command: 'synthetic-antigravity',
-        args: [],
-      });
-      const controller = new AbortController();
-      let ready = () => {};
-      const waiting = new Promise<void>((resolve) => {
-        ready = resolve;
-      });
-      let child: ChildProcess | undefined;
-      let scratch = '';
-      const script = `
-      const readline = require('node:readline');
-      const send = value => console.log(JSON.stringify(value));
-      readline.createInterface({ input: process.stdin }).on('line', line => {
-        const r = JSON.parse(line);
-        if (r.method === 'initialize') send({ jsonrpc: '2.0', id: r.id, result: { protocolVersion: 1, agentInfo: { name: 'antigravity-acp', version: '1.4.5' } } });
-        if (r.method === 'session/new') {
-          send({ jsonrpc: '2.0', id: r.id, result: { sessionId: 'quota' } });
-          if (${JSON.stringify(phase)} === 'commands') console.error('waiting');
-          else send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'quota', update: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'usage', description: 'Quota' }] } } });
-        }
-        if (r.method === 'session/prompt') console.error('waiting');
-      });`;
-      try {
-        const outcome = queryLocalAcpRateLimits({
-          cliType: 'registry',
-          agentType: 'antigravity-acp',
-          workdir: process.cwd(),
-          env: {},
-          logger: createSilentLogger(),
-          signal: controller.signal,
-          terminalManager: {} as never,
-          onUpdateMessage: () => {},
-          onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
-          spawnImpl: ((_command, _args, options) => {
-            scratch = String(options.cwd);
-            child = spawn(process.execPath, ['-e', script], options);
-            child.stderr?.on('data', (data) => {
-              if (String(data).includes('waiting')) ready();
-            });
-            return child;
-          }) as NonNullable<Parameters<typeof queryLocalAcpRateLimits>[0]['spawnImpl']>,
-        });
-        const rejected = expect(outcome).rejects.toThrow('cancelled');
-        await waiting;
-        expect(fs.existsSync(scratch)).toBe(true);
-        expect(scratch).not.toBe(process.cwd());
-        controller.abort();
-        await rejected;
-        expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
-        expect(fs.existsSync(scratch)).toBe(false);
-      } finally {
-        vi.restoreAllMocks();
-      }
-    }
-  );
+  it('rejects fork agy quota reads before starting a process or ACP session', async () => {
+    await expect(
+      queryLocalAcpRateLimits({
+        cliType: 'registry',
+        agentType: 'antigravity-acp',
+        workdir: process.cwd(),
+        env: {},
+        logger: createSilentLogger(),
+        terminalManager: {} as never,
+        onUpdateMessage: () => {},
+        onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
+        spawnImpl: () => {
+          throw new Error('unexpected process launch');
+        },
+      })
+    ).rejects.toThrow('Antigravity quota uses Cloud Code');
+  });
 });
 
 describe('Sorbet credentials ACP handshake', () => {

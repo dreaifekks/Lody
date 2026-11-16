@@ -670,6 +670,7 @@ function WorkspaceChatLanding({
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
   const canReportBug = useAppCapability('bugReport');
   const machinePairingAvailable = useAppCapability('remoteMachines');
+  const managedDaemonUpdatesAvailable = useAppCapability('managedDaemonUpdates');
   // The hosted repository registry; GitHub settings exist only with it.
   const githubIntegrationAvailable = useAppCapability('githubIntegration');
   const localGitHubCredentialAvailable = useAppCapability('localGitHubCredential');
@@ -7092,6 +7093,7 @@ function WorkspaceChatLanding({
           onShowArchivedToggle={() => setMobileHomeShowArchived((prev) => !prev)}
           /* The localized download URL is the payload the guide's share/copy
              actions hand to the user's computer — the phone never opens it. */
+          onboardingEnabled={managedDaemonUpdatesAvailable}
           onboardingDownloadUrl={getDownloadPageUrl(i18n.resolvedLanguage ?? i18n.language)}
         />
         {multiWorkspaceAvailable ? (

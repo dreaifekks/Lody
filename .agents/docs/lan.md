@@ -105,3 +105,26 @@ that workspace back instead of creating an empty one.
 | [Usage and Prompt Shortcuts](lan-usage-and-shortcuts.md)          | The per-machine usage ledger and the usage page; shortcuts synced through the hub            |
 
 The limits of a topic close its page.
+
+## Upstream daemon, attachment and preview boundaries
+
+The local platform disables `managedDaemonUpdates`. Its npm-shaped LAN CLI installation
+never enters upstream managed-daemon migration, and the local Host lease exposes no
+upstream upgrade callback. Renderer update controls and their version probes use that
+capability too. The manifest-verified fork LAN updater remains the only update path.
+
+Same-machine attachments use the upstream local path/image preparation protocol.
+A desktop sending bytes to another LAN member uses the existing local-daemon handoff;
+the receipt names the destination member. Directory listing and attachment chunk downloads
+use the direct member RPC allowlist. The three attachment/image `*-local` operations remain
+private-socket requests to this machine; target handlers reject remote sources. `lody/host-upgrade`
+is a private local Host-lease message, not a member RPC.
+
+Ordinary preview and Markdown-link resolution both allow arbitrary paths on the local
+platform. Hosted preview retains session-root containment without implicit temporary or
+chat roots. LAN GitHub credentials continue through the tagged LAN token port and its
+session-owned credential lease.
+
+The fork's `registry/antigravity-acp` launches agy. Quota comes only from the direct
+Cloud Code client in `apps/cli/src/lib/antigravity-quota.ts`; the upstream ACP `/usage`
+reader cannot run against this entry. Provider quota presentation remains shared.

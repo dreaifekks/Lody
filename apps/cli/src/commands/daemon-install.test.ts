@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 const ports = vi.hoisted(() => ({
+  kind: 'cloud' as 'cloud' | 'local',
   login: vi.fn(),
   preflight: vi.fn(),
   host: vi.fn(),
@@ -12,7 +13,7 @@ vi.mock('@/lib/auth', () => ({
   AuthClient: class {},
   performLoginWithAuthCredential: ports.login,
 }));
-vi.mock('@/lib/cli-platform', () => ({ getCliPlatformKind: () => 'cloud' }));
+vi.mock('@/lib/cli-platform', () => ({ getCliPlatformKind: () => ports.kind }));
 vi.mock('./daemon-auth-preflight', () => ({ ensureDaemonBackendAuth: ports.preflight }));
 vi.mock('@lody/shared/node/local-cli-host-lease', () => ({
   inspectLocalCliHost: ports.host,
@@ -25,6 +26,7 @@ vi.mock('./daemon-autostart', async (original) => ({
 import { installManagedDaemon } from './daemon-install';
 const roots: string[] = [];
 beforeEach(() => {
+  ports.kind = 'cloud';
   ports.host.mockResolvedValue(null);
   ports.preflight.mockResolvedValue({ status: 'authenticated' });
 });
@@ -122,4 +124,14 @@ it('generic non-interactive installation does not bypass required authentication
   });
   await expect(installManagedDaemon({ start: true })).rejects.toThrow(/pairing credential/);
   await expect(fs.access(f.events)).rejects.toThrow();
+});
+
+it('does not install the upstream managed service on the local LAN platform', async () => {
+  const f = await fixture();
+  ports.kind = 'local';
+  await expect(installManagedDaemon({ start: true, autostart: true })).rejects.toThrow(
+    'this fork uses LAN releases'
+  );
+  await expect(fs.stat(f.service)).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(fs.stat(f.events)).rejects.toMatchObject({ code: 'ENOENT' });
 });

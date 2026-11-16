@@ -218,7 +218,6 @@ describe('MessageHandler machine registration', () => {
       expect(registeredMeta.protocolCapabilities).toEqual({
         multiRepoProject: 1,
         machineDiskStatus: 1,
-        managedDaemonUpdates: 1,
         machineIdentityRestore: 1,
         projectFileRoots: 1,
         projectRepositoryMembers: 1,
@@ -493,7 +492,9 @@ describe('MessageHandler machine registration', () => {
 });
 
 describe('MessageHandler canceled managed update', () => {
-  it('releases only the abandoned operation so later owner actions can be accepted', async () => {
+  it.each(['cloud', 'local'] as const)('gates managed updates and releases only abandoned operations (%s)', async (kind) => {
+    const network: string[] = [];
+    const networkProbe = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => { network.push(String(url)); throw new Error('unexpected upstream request'); });
     const dataDirectory = mkdtempSync(path.join(tmpdir(), 'lody-managed-lifecycle-test-'));
     vi.stubEnv('LODY_DATA_DIR', dataDirectory);
     const verification = vi
@@ -536,7 +537,7 @@ describe('MessageHandler canceled managed update', () => {
         machineId: 'synthetic-machine' as MachineId,
         machineName: 'Synthetic machine',
         cliVersion: '1.2.3',
-        cloudPort: createTestCloudPort(),
+        cloudPort: createTestCloudPort({ kind }),
         machineLifecycleCapability: {
           launchMode: 'daemon',
           canRemoteRestart: true,
@@ -565,6 +566,12 @@ describe('MessageHandler canceled managed update', () => {
         targetVersion: '1.2.4',
       });
     try {
+      if (kind === 'local') {
+        expect(await request('first')).toMatchObject({ accepted: false, disposition: 'unsupported_launch_mode' });
+        expect(actions).toEqual([]);
+        expect(network).toEqual([]);
+        return;
+      }
       expect((await request('first')).accepted).toBe(true);
       lifecycle.triggerPendingProcessLifecycleAction('first');
       const first = actions[0];
@@ -583,6 +590,7 @@ describe('MessageHandler canceled managed update', () => {
       lifecycle.triggerPendingProcessLifecycleAction('first'); // A late ACK cannot replay it.
       expect(actions.map((action) => action.requestId)).toEqual(['first', 'second']);
     } finally {
+      networkProbe.mockRestore();
       verification.mockRestore();
       await handler.cleanup();
       vi.unstubAllEnvs();

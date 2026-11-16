@@ -151,3 +151,7 @@ may finish on the machine but carries at most 512 KiB. Older machines and free
 workspaces retain the existing preview-sized downloads. Same-machine local file
 opening remains on the local IPC path; this capability adds no local-to-cloud
 fallback. See the [decision](../../../../../.agents/notes/implemented/bug-fix/2026-10-26-paid-file-download.md).
+
+Local-platform Markdown links use the same arbitrary-path policy as ordinary previews.
+Hosted links remain contained in the resolved session roots; temporary directories,
+sibling chats and the old extra-roots environment variable confer no access.

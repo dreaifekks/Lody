@@ -1,7 +1,8 @@
+import { ProductWindowIpcService } from '../product-window-ipc-service'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { getIpcContext, IpcMethod } from 'electron-ipc-decorator'
 import {
   ElectronLanAddInputSchema,
   ElectronLanIdInputSchema,
@@ -78,7 +79,7 @@ const ShareImageInputSchema = z
  * The LANs of this installation. A summary never carries a credential; only
  * `getInvite` hands one out, on an explicit request of a product window.
  */
-export class LanIpc extends IpcService {
+export class LanIpc extends ProductWindowIpcService {
   static override readonly groupName = 'lan'
 
   @IpcMethod()

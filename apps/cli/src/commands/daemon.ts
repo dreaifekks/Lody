@@ -1,3 +1,4 @@
+import { getPlatformCapabilities } from '@lody/platform';
 import {
   daemonInstallCommand,
   daemonUpdateStatusCommand,
@@ -184,9 +185,13 @@ async function reportDaemonStartBlocked(
 }
 
 export const daemonCommand = new Command('daemon')
-  .addCommand(daemonInstallCommand)
+  .addCommand(daemonInstallCommand, {
+    hidden: !getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'),
+  })
   .addCommand(daemonUpdateStatusCommand)
-  .addCommand(daemonUpgradeCommand)
+  .addCommand(daemonUpgradeCommand, {
+    hidden: !getPlatformCapabilities(getCliPlatformKind()).has('managedDaemonUpdates'),
+  })
   .description('Run lody as a background daemon service')
   .addCommand(
     new Command('start')

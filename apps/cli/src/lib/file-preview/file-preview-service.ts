@@ -372,7 +372,10 @@ export class FilePreviewService {
         workspaceRoot: workspace.workspaceRoot,
         requestedPath: request.path,
         extraRoots: this.deps.extraRoots ?? [],
-        options: { ...this.deps.pathPolicy, allowArbitraryPaths: false },
+        options: {
+          ...this.deps.pathPolicy,
+          allowArbitraryPaths: this.deps.pathPolicy?.allowArbitraryPaths === true,
+        },
       });
     const resolution = this.resolvePath(request, workspace, false);
     if (!resolution.ok) {

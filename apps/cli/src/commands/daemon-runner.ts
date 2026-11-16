@@ -35,7 +35,7 @@ const readOwnCgroup = (platform: NodeJS.Platform): string | null => {
     return null;
   }
 };
-import { getCliPlatformKind } from '@/lib/cli-platform';
+import { getCliPlatformKind, getCliPlatformCapabilities } from '@/lib/cli-platform';
 import path from 'node:path';
 import { runCommandTextLegacy } from '@lody/shared/node/process';
 import { z } from 'zod';
@@ -280,10 +280,12 @@ export const daemonRunnerCommand = new Command('daemon-runner')
   .action(async (_options: unknown, cmd: Command) => {
     createHybridLogger({ level: 'info' });
     const logger = getLogger('daemon-runner');
-    const sea = getSeaContext();
+    const updatesEnabled = getCliPlatformCapabilities().has('managedDaemonUpdates');
+    const sea = updatesEnabled ? getSeaContext() : undefined;
     // A POSIX npm installation speaks the managed Worker protocol so a remote
     // update can relay it to the managed service. Windows lacks containment.
     const npmMigration =
+      updatesEnabled &&
       !sea &&
       canRelayNpmInstallation(process.env, process.platform, readOwnCgroup(process.platform));
     const npmProduct = getCliPlatformKind() === 'cloud' ? 'lody-cloud' : 'lody-oss';

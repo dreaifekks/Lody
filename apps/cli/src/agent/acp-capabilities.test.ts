@@ -107,7 +107,7 @@ describe('fetchAcpCapabilities', () => {
     mocks.startLocalAcpAgent.mockImplementation(async () => createSuccessfulStartupResult());
   });
 
-  it('projects the official registry Antigravity quota reader without enabling custom namesakes', async () => {
+  it('does not advertise the upstream /usage quota reader for the fork agy registry entry', async () => {
     const official = await fetchAcpCapabilities(
       'registry',
       'antigravity-acp',
@@ -115,7 +115,7 @@ describe('fetchAcpCapabilities', () => {
     );
     const custom = await fetchAcpCapabilities('custom', 'antigravity-acp', createSilentLogger());
     const other = await fetchAcpCapabilities('registry', 'another-agent', createSilentLogger());
-    expect(official.rateLimits).toEqual({ version: 1, query: true });
+    expect(official.rateLimits).toBeUndefined();
     expect(custom.rateLimits).toBeUndefined();
     expect(other.rateLimits).toBeUndefined();
   });

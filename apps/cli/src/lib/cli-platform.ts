@@ -5,6 +5,8 @@ import path from 'path';
 import { Effect } from 'effect';
 import {
   LOCAL_USER_ID_PREFIX,
+  LOCAL_PLATFORM_CAPABILITIES,
+  CLOUD_PLATFORM_CAPABILITIES,
   LOCAL_WORKSPACE_ID_PREFIX,
   resolvePlatformKind,
   type PlatformKind,
@@ -25,6 +27,12 @@ import type {
  * Unrecognized values throw so a misconfigured local build fails loudly
  * instead of silently talking to the cloud.
  */
+export function getCliPlatformCapabilities() {
+  return getCliPlatformKind() === 'local'
+    ? LOCAL_PLATFORM_CAPABILITIES
+    : CLOUD_PLATFORM_CAPABILITIES;
+}
+
 export function getCliPlatformKind(): PlatformKind {
   return resolvePlatformKind(process.env.LODY_PLATFORM);
 }

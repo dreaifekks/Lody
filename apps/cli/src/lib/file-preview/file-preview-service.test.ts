@@ -404,6 +404,28 @@ describe('FilePreviewService', () => {
     });
   });
 
+  it('resolves workspace-external Markdown links for the local LAN user only', async () => {
+    const workspaceRoot = await makeDir('preview-ws-');
+    const outside = await makeDir('preview-outside-');
+    const report = path.join(outside, 'report.md');
+    await writeFile(report, '# Synthetic report');
+    const request = {
+      v: 3 as const,
+      sessionId: SESSION_ID,
+      path: report,
+      resolveMarkdownLink: true,
+    };
+    expect(
+      await createService({ workspaceRoot, pathPolicy: { allowArbitraryPaths: true } }).previewFile(
+        request
+      )
+    ).toMatchObject({ status: 'resolved-link', candidates: [{ path: report }] });
+    expect(await createService({ workspaceRoot }).previewFile(request)).toMatchObject({
+      status: 'error',
+      code: 'path_not_allowed',
+    });
+  });
+
   it('lets the same-machine Electron preview read an arbitrary external file as readonly', async () => {
     const workspaceRoot = await makeDir('preview-ws-');
     const outside = await makeDir('preview-outside-');

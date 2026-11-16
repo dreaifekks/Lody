@@ -56,3 +56,12 @@ The [installation contract](../../../../specs/daemon-upgrade-installation.md),
 boundaries. Artifact probes do not establish full Agent acceptance or production
 signing. POSIX group tracking is cooperative process ownership, not a container
 against hostile children escaping their groups.
+
+## Fork composition
+
+The LAN fork disables `managedDaemonUpdates` in local composition, including npm
+relay, explicit managed installation/update commands and renderer entry points. The
+upstream artifact service cannot identify the repository that built a fork; accepting
+its daemon releases would replace the fork and its LAN behavior. The existing LAN
+updater already binds downloads to the build repository and manifest, so it remains
+the sole update owner. No second LAN update interface is introduced.

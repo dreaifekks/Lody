@@ -45,6 +45,8 @@ export const PLATFORM_CAPABILITIES = [
   'localGitHubCredential',
   /** Dispatching work to machines other than the local one. */
   'remoteMachines',
+  /** Upstream managed daemon installation and upgrades. Fork LAN uses its own releases. */
+  'managedDaemonUpdates',
   /** Push notifications / live activity. */
   'notifications',
   /** In-app bug report upload. */
@@ -84,3 +86,7 @@ export const LOCAL_PLATFORM_CAPABILITIES: PlatformCapabilities = createCapabilit
 /** The cloud platform baseline: every capability (entitlement gating happens elsewhere). */
 export const CLOUD_PLATFORM_CAPABILITIES: PlatformCapabilities =
   createCapabilitySet(PLATFORM_CAPABILITIES);
+
+export function getPlatformCapabilities(kind: 'local' | 'cloud'): PlatformCapabilities {
+  return kind === 'local' ? LOCAL_PLATFORM_CAPABILITIES : CLOUD_PLATFORM_CAPABILITIES;
+}

@@ -592,6 +592,9 @@ export async function runLocalSorbetCredentials(
 
 /** Core queries need no session; official Antigravity /usage needs an isolated scratch session. */
 export async function queryLocalAcpRateLimits(options: StartLocalAcpAgentOptions) {
+  // This fork's registry entry launches agy, which has no /usage command.
+  // lib/antigravity-quota owns its Cloud Code quota reads without starting ACP.
+  if (isAntigravityRegistryAgent(options)) throw new Error('Antigravity quota uses Cloud Code');
   const workdir = isAntigravityRegistryAgent(options)
     ? fs.mkdtempSync(path.join(os.tmpdir(), 'lody-antigravity-quota-'))
     : undefined;

@@ -1,3 +1,4 @@
+import { getPlatformCapabilities, resolvePlatformKind } from '@lody/platform';
 /**
  * Relay an npm-installed daemon to the managed fixed service entry.
  *
@@ -20,6 +21,8 @@ export function canRelayNpmInstallation(
   /** Contents of /proc/self/cgroup on Linux; null when unavailable. */
   cgroup: string | null
 ): boolean {
+  if (!getPlatformCapabilities(resolvePlatformKind(env.LODY_PLATFORM)).has('managedDaemonUpdates'))
+    return false;
   if (platform === 'win32') return false;
   if (platform === 'darwin') {
     // GUI terminals inherit `application.<bundle>` (or `0` from Terminal.app);

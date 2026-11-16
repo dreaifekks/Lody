@@ -533,3 +533,12 @@ only when enabled; it never hot-switches a running agent. Core's negotiated resu
 is published through the workspace's ephemeral suggestion channel, using the same Streams
 hub, gateway and authentication as the workspace. No suggestion is stored in SessionMeta,
 and session/new carries no legacy `_meta.lody.promptSuggestions` setting.
+
+### Fork Antigravity quota
+
+`registry/antigravity-acp` is the fork's agy CLI entry. agy does not advertise `/usage`.
+`../lib/antigravity-quota.ts` reads Cloud Code directly without starting a provider
+process or ACP session; it is the sole quota source. Capability probing must not infer
+Core rate-limit query support from this registry id, and `queryLocalAcpRateLimits`
+refuses the entry before launch. The upstream reader remains isolated for its original
+protocol fixtures; it is not a fallback for agy.

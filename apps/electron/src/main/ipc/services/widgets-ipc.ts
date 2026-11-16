@@ -1,9 +1,10 @@
-import { getIpcContext, IpcMethod, IpcService } from 'electron-ipc-decorator'
+import { ProductWindowIpcService } from '../product-window-ipc-service'
+import { getIpcContext, IpcMethod } from 'electron-ipc-decorator'
 import { assertProductWindowSender } from '../assert-sender'
 import { disownWidgetClick, isWidgetClickRect, takeWidgetClick } from '../../services/widget-clicks'
 import { getWidgetHostUrl } from '../../services/widget-host'
 
-export class WidgetsIpc extends IpcService {
+export class WidgetsIpc extends ProductWindowIpcService {
   static override readonly groupName = 'widgets'
 
   /** Where conversation widgets are framed from; see `widget-host.ts`. */

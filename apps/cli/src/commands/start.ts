@@ -63,6 +63,7 @@ import {
 import {
   applyLocalPlatformEnv,
   getCliPlatformKind,
+  getCliPlatformCapabilities,
   loadOrCreateLocalIdentity,
   rememberImplicitLocalWorkspace,
   rememberImplicitLocalWorkspaceBeforeLan,
@@ -221,7 +222,7 @@ export const startCommand = new Command('start')
     const machineLifecycleCapability = resolveMachineLifecycleCapability(
       supervisorIdentity?.launchMode,
       {
-        managed: managedDaemonProtocol,
+        managed: managedDaemonProtocol && getCliPlatformCapabilities().has('managedDaemonUpdates'),
         encrypted: !!options.pairedWorkspace,
       }
     );

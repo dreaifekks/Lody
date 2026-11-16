@@ -2489,6 +2489,8 @@ const DIRECT_RPC_METHODS: ReadonlySet<string> = new Set([
   'code-collab/lsp-definition',
   'code-collab/lsp-references',
   'file/preview',
+  'file/list-dir',
+  'file/download-chunk',
   'local-project/git-state',
   'local-project/control',
   'machine/memory',
