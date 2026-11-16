@@ -3567,6 +3567,7 @@ export class MessageHandler {
       },
     });
     const canDownloadLargeFiles = async () => {
+      if (this.cloudPort.kind === 'local') return true;
       const entitlement = await this.cloudPort.billing?.getWorkspaceEntitlement(this.workspaceId);
       return Boolean(
         entitlement && !entitlement.checkoutPending && entitlement.effectivePlanTier !== 'free'

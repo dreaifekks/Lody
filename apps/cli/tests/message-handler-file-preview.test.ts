@@ -150,6 +150,45 @@ describe('MessageHandler file preview workspace lifecycle', () => {
     restoreCodeCollab = () => {};
   }
 
+  it.each(['local', 'cloud'] as const)(
+    'gates file downloads by the owning platform entitlement (%s)',
+    async (kind) => {
+      if (kind === 'cloud') {
+        restoreCodeCollab();
+        await handler.cleanup();
+        handler = new MessageHandler(manager, document, logger, {
+          token: 'synthetic-token',
+          workspaceId,
+          userId: 'user-1',
+          machineId,
+          machineName: 'synthetic-machine',
+          cliVersion: '0.0.0',
+          cloudPort: createTestCloudPort({ kind: 'cloud' }),
+        });
+        restoreCodeCollab = () => {};
+      }
+      const { file } = writeArtifact();
+      const response = await handler.handleLocalMachineRpc({
+        machineId,
+        workspaceId,
+        method: 'file/download-chunk',
+        params: { sessionId, path: file, offset: 0 },
+      });
+      expect(response).toMatchObject({
+        ok: true,
+        result:
+          kind === 'local'
+            ? {
+                status: 'ok',
+                data: Buffer.from(content).toString('base64'),
+                sizeBytes: Buffer.byteLength(content),
+              }
+            : { status: 'error', code: 'paid_plan_required' },
+      });
+      expect(fs.readFileSync(file, 'utf8')).toBe(content);
+    }
+  );
+
   function diskSnapshot(root = dataDir): unknown {
     return fs
       .readdirSync(root)

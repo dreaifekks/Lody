@@ -83,7 +83,7 @@ export type FilePreviewServiceOptions = {
   readonly allowGitDiscovery?: boolean;
   readonly onDiagnostic?: (event: Readonly<Record<string, unknown>>) => void;
   readonly resolveWorkspace: FilePreviewWorkspaceResolver;
-  /** Explicit paid entitlement; unavailable billing never grants the larger transfer. */
+  /** Host permission for bounded downloads; unavailable hosted billing denies. */
   readonly canDownloadLargeFiles?: () => Promise<boolean>;
   readonly resolveLocalWorkspace: FilePreviewLocalWorkspaceResolver;
   readonly limits?: Partial<typeof FILE_PREVIEW_V3_LIMITS>;

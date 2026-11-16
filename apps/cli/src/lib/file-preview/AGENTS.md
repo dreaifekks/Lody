@@ -1,10 +1,9 @@
 # CLI File Preview v3
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md` only.
+`CLAUDE.md` symlinks here; edit `AGENTS.md` only.
 Root `AGENTS.md` and `apps/cli/AGENTS.md` also apply.
 
-Serves the `file/preview` Machine RPC method: read one file, return it. File
-responsibilities and the reasoning behind these rules: [README.md](README.md).
+Serves `file/preview`: read one file. [Responsibilities and rationale](README.md).
 
 ## The invariant that justifies this directory existing
 
@@ -26,7 +25,7 @@ save path's text reads.
   never start Git or silently return an incomplete candidate set. Ordinary resolution retains its existing policy.
 
 - `file/download-chunk` is a separate `fileDownload` v1 capability. Preserve
-  owner-envelope authorization, remote path containment, positive paid-workspace
+  owner-envelope authorization, hosted path containment and positive hosted paid-workspace
   entitlement on every request, the 100 MiB ceiling and 512 KiB response chunks.
   Billing failures do not grant this larger transfer. Pin file identity/metadata
   across ranges; reject mutation instead of returning a mixed file. No watchers,
@@ -118,3 +117,5 @@ save path's text reads.
 
 Normative contract: `specs/file-preview-v3.md` (private repo). Schemas:
 `packages/shared/src/file-preview.ts`.
+
+Local-platform chunk downloads use the existing file authority without cloud billing.

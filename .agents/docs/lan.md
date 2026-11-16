@@ -120,7 +120,8 @@ capability too. The manifest-verified fork LAN updater remains the only update p
 Same-machine attachments use the upstream local path/image preparation protocol.
 A desktop sending bytes to another LAN member uses the existing local-daemon handoff;
 the receipt names the destination member. Directory listing and attachment chunk downloads
-use the direct member RPC allowlist. The three attachment/image `*-local` operations remain
+use the direct member RPC allowlist and existing local file authority, without a cloud
+subscription gate. Hosted downloads retain their entitlement checks. The three attachment/image `*-local` operations remain
 private-socket requests to this machine; target handlers reject remote sources. `lody/host-upgrade`
 is a private local Host-lease message, not a member RPC.
 
