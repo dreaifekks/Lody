@@ -484,7 +484,11 @@ is unavailable.
   Agents learn the list format from the Board prompt: every Board member except
   the main session gets `BOARD_UI_COMPARISON_GUIDE`
   (`apps/cli/src/session/session-execution-helpers.ts`) with its first message, so a
-  change to it ships with the CLI, not the renderer.
+  change to it ships with the CLI, not the renderer. The guide also covers a single
+  design draft (one HTML file, linked directly) and calls the window "Article", the
+  user's name for it. In every session, the `lody_show_widget` description sends
+  design drafts, reports and documents to a linked `.md` or `.html` file instead of
+  a widget (`apps/cli/src/mcp/agent-surface-tools.ts`).
   The window starts at 75% for a comparison and can fold the conversation away
   (`ArticleDialogThreadContext`).
 - Changes (`components/boards/article-diff.ts`, `article-review.tsx`): the first

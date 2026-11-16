@@ -149,13 +149,15 @@ export const buildPrompt = (
 };
 
 /**
- * How a Board member hands the user UI options to compare: the desktop opens a
- * `.compare.md` list beside the thread (`compare-manifest.ts` in components
- * parses it) and sends picks and comments back numbered. Threads and the
- * sessions they open get it; the main session does not build UI.
+ * How a Board member hands the user a design draft or UI options to compare:
+ * the desktop opens a linked draft, or a `.compare.md` list (`compare-manifest.ts`
+ * in components parses it), in the article window beside the thread and sends
+ * picks and comments back numbered. The user calls that window "Article", so
+ * the guide names it. Threads and the sessions they open get it; the main
+ * session does not build UI.
  */
 export const BOARD_UI_COMPARISON_GUIDE = `
-UI options for the user to compare: write each option as one complete HTML file (inline CSS, CDN scripts allowed, laid out at its design width; dark mode through prefers-color-scheme or [data-mode=dark]) or a screenshot, and beside them one \`<name>.compare.md\`; link only that list in your reply. Each list item that starts with a link to an option is one option, lettered A, B, C… in list order: \`- [Title](a.html) one-line note\`. Frontmatter \`viewport: 1280x800\` sets the default design size; \`390x844\` in an item sets that option's. Options differ only in what is being compared. Revise an option by rewriting its file in place; a new round is a new list. The user's pick and comments come back numbered at the end of a message, quoting the option as "B · Title" (plus the element, for a spot): answer each by its number.`;
+The desktop opens a linked .md or .html file in its article window ("Article") beside this conversation. A single design draft for the user to look at: one complete HTML file under the same rules as an option below, linked directly in your reply. UI options for the user to compare: write each option as one complete HTML file (inline CSS, CDN scripts allowed, laid out at its design width; dark mode through prefers-color-scheme or [data-mode=dark]) or a screenshot, and beside them one \`<name>.compare.md\`; link only that list in your reply. Each list item that starts with a link to an option is one option, lettered A, B, C… in list order: \`- [Title](a.html) one-line note\`. Frontmatter \`viewport: 1280x800\` sets the default design size; \`390x844\` in an item sets that option's. Options differ only in what is being compared. Revise an option by rewriting its file in place; a new round is a new list. The user's pick and comments come back numbered at the end of a message, quoting the option as "B · Title" (plus the element, for a spot): answer each by its number.`;
 
 function buildBoardScopeInstructions(board: BoardMeta): string {
   const scope = boardProjectScope(board);

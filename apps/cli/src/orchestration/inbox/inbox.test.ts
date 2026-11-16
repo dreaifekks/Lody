@@ -1468,7 +1468,7 @@ it('names the machine a result ran on when it is not the one the batch reaches',
     elsewhere,
   });
   expect(preview).toContain(
-    'Results of far-1, far-2 ran on mini; their file links use mini:<absolute path>.'
+    'Results of far-1, far-2 ran on mini: write their files as mini:<absolute path>.'
   );
   expect(preview).not.toContain('near');
 });

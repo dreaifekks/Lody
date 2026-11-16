@@ -37,6 +37,7 @@ export const AGENT_SURFACE_TOOL_DESCRIPTIONS = {
   ].join(' '),
   widget: [
     'Show an interactive visual inline in the conversation: a clickable flowchart, diagram, chart, or small explorable for teaching. Input: `title` and `widget_code` (an SVG or HTML fragment).',
+    'Not for a design draft, report or document the user should read, compare or annotate: write that as a .md or .html file and link it in your reply; the desktop opens it in its article window ("Article") beside the conversation.',
     'Put only the visual in widget_code; explanations go in your reply text.',
     'widget_code is a fragment: no <!DOCTYPE>, <html>, <head> or <body>. Keep backgrounds transparent and never hardcode text colors.',
     'Use the host CSS variables so it works in light and dark mode: text --text-primary, --text-secondary, --text-muted; surfaces --surface-0/1/2; borders --border, --border-strong; status --text-accent, --text-danger, --text-success, --text-warning; also --radius, --font-sans, --font-mono.',

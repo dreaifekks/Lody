@@ -12,6 +12,11 @@ import { buildSessionLink } from '@lody/shared/session-link';
  * Fork lines of a receipt batch's header (`batchPreview`), kept out of the
  * upstream header so a sync touches one call. Every line is paid on every
  * batch, so each must earn its tokens.
+ *
+ * Upstream's header only describes the results (orchestration/AGENTS.md). The
+ * fork's lines may also say how to link this turn and how to write the paths
+ * of results from other LAN members, the way the fork has always worded them;
+ * none of them asks the agent to review, verify or re-dispatch anything.
  */
 
 /** Results of a batch whose sessions ran on another machine, where their files are. */
@@ -28,10 +33,13 @@ export const batchPreviewForkLines = (turn: BatchTurn | undefined): string[] => 
   "An output marked truncated omits its middle. The complete reply is in lody_session_history under that item's target.sessionId (a board_report event's sessionId).",
   ...(turn
     ? [
-        `This reply's turn: [short label](${buildSessionLink(turn)}). Ids of other turns: lody_session_history.`,
+        // A coordinator woken by many batches refers back to earlier ones; the
+        // desktop scrolls to a linked turn and highlights it.
+        `To point the user back to this turn in a later reply, link it: [short label](${buildSessionLink(turn)}). Ids of other turns: lody_session_history.`,
+        // A path from such a result opens on this machine unless it names its own.
         ...(turn.elsewhere ?? []).map(
           ({ machine, sessionIds }) =>
-            `Results of ${sessionIds.join(', ')} ran on ${machine}; their file links use ${machine}:<absolute path>.`
+            `Results of ${sessionIds.join(', ')} ran on ${machine}: write their files as ${machine}:<absolute path>.`
         ),
       ]
     : []),

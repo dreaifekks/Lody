@@ -61,6 +61,7 @@ Root/CLI rules apply; `specs/session-orchestration.md` owns behavior.
   results: what they are, that they are reference data, and where omitted ones are read.
   They must not tell the agent to review, verify or re-dispatch them, nor to skip doing
   so: any such instruction steers every batch, and a review request starts another pass.
+  LAN fork: `batchPreviewForkLines` may say how to link this turn and write member paths.
 - `inbox/service.ts` is native Effect v4. Scope owns its signal/fibers and repository connection;
   one per-Session admission covers Stop, fresh input acceptance and actual transport start.
   Core imports no platform/consumers; registered bridges execute. Submit/settle through execution owners.
