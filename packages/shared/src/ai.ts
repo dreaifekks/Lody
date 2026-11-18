@@ -50,6 +50,13 @@ export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
  */
 export const ANTIGRAVITY_AUTO_REVIEW_MODE_ID = 'auto_review';
 /**
+ * LAN fork: a mode Lody adds to the agy CLI, which has no per-session YOLO. The
+ * session's agy process starts with `--dangerously-skip-permissions` and runs in
+ * `default` (apps/cli/src/agent/antigravity-auto-review.ts). Same id as the former
+ * server's own mode, so stored sessions and Roles keep working.
+ */
+export const ANTIGRAVITY_YOLO_MODE_ID = 'yolo';
+/**
  * Agent-config env key that opts an Antigravity provider into Claude/GPT models.
  * The former registry server (`agy_acp_server`) listed them only to clients that
  * name themselves Zed, so the daemon sends `clientInfo.name = 'zed'` while this is

@@ -1,8 +1,13 @@
 import type * as acp from '@agentclientprotocol/sdk';
 import type { AnyMessage } from '@agentclientprotocol/sdk';
 import { stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { ANTIGRAVITY_AGENT_TYPE, ANTIGRAVITY_AUTO_REVIEW_MODE_ID } from '@lody/shared';
+import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_AUTO_REVIEW_MODE_ID,
+  ANTIGRAVITY_YOLO_MODE_ID,
+} from '@lody/shared';
 import { formatErrorMessage } from '@/utils/format-error';
 import type { Logger } from '@/utils/logger';
 import {
@@ -26,9 +31,10 @@ import {
  * is not exposed over ACP.
  *
  * The registry entry now launches the agy CLI itself (`antigravity acp`), which
- * offers that Auto mode as `auto`. An agent that reports `auto` gets no added
- * mode and no Lody review: `auto_review`, still stored in sessions and Roles,
- * is sent to the agent as `auto`.
+ * offers that Auto mode as `auto` where its terminal sandbox runs (macOS, and
+ * Linux with an AppArmor profile allowing user namespaces). Lody passes `auto`
+ * through untouched and still adds `auto_review` beside it: commands in agy's
+ * sandbox have no network and see little of $HOME, so each Role picks one.
  *
  * This module sits on the ACP stream between `AgentClient` and the agent
  * process, so the rest of Lody sees an ordinary mode:
@@ -46,9 +52,49 @@ import {
  * - Every reviewer decision is written to the conversation as a `think` tool
  *   call titled "Auto Review", the way Codex shows its Guardian Review.
  *
+ * YOLO: the agy CLI skips permission requests only for a whole process
+ * (`--dangerously-skip-permissions`), and Lody starts one agy process per
+ * session. A session whose turn selects `yolo` is started with that flag
+ * ({@link antigravityLaunchArgs}); here `yolo` is added to the agent's modes and
+ * sent to it as `default`. The flag cannot change in a running process: a turn
+ * that selects the other side restarts the session's agent first
+ * ({@link antigravityYoloChanged}), and a switch inside a running turn is refused.
+ *
  * Applied in `session.ts` (sessions) and `acp-runner.ts` (capability probes and
  * other local starts), the two places an ACP stream is built for an agent.
  */
+
+/** agy's process flag: it approves its own tool permission requests. */
+export const ANTIGRAVITY_SKIP_PERMISSIONS_ARG = '--dangerously-skip-permissions';
+
+type ModeSelection = {
+  agentType: string;
+  modeId?: string;
+  configOptionValues?: Readonly<Record<string, unknown>>;
+};
+
+const selectedMode = (selection: ModeSelection): string | undefined => {
+  const mode = selection.modeId ?? selection.configOptionValues?.mode;
+  return typeof mode === 'string' ? mode : undefined;
+};
+
+const selectsYolo = (selection: ModeSelection): boolean =>
+  selection.agentType === ANTIGRAVITY_AGENT_TYPE &&
+  selectedMode(selection) === ANTIGRAVITY_YOLO_MODE_ID;
+
+/** Extra `antigravity acp` arguments for a session started for `selection`. */
+export const antigravityLaunchArgs = (selection: ModeSelection): string[] =>
+  selectsYolo(selection) ? [ANTIGRAVITY_SKIP_PERMISSIONS_ARG] : [];
+
+/**
+ * Whether a turn selects YOLO on or off against how the session's agy process
+ * was started (`started`, the session's own selection). A turn that names no
+ * mode keeps the process.
+ */
+export const antigravityYoloChanged = (started: ModeSelection, turn: ModeSelection): boolean =>
+  turn.agentType === ANTIGRAVITY_AGENT_TYPE &&
+  selectedMode(turn) !== undefined &&
+  selectsYolo(started) !== selectsYolo(turn);
 
 export type AntigravityAutoReviewOptions = {
   agentType: string;
@@ -65,8 +111,6 @@ export type AntigravityAutoReviewOptions = {
 };
 
 const UNDERLYING_MODE_ID = 'default';
-/** The agy CLI's own reviewer-backed mode. */
-const NATIVE_AUTO_MODE_ID = 'auto';
 export const AUTO_REVIEW_TIMEOUT_MS = 15_000;
 /** Consecutive reviewer refusals (ask, error, timeout) in a turn before it stops reviewing. */
 export const AUTO_REVIEW_CIRCUIT_BREAKER_LIMIT = 3;
@@ -79,6 +123,13 @@ export const ANTIGRAVITY_AUTO_REVIEW_MODE = {
   name: 'Auto Review',
   description:
     "Reviewed by Lody: reads, edits inside the workspace and read-only commands run; Lody's Gemini Flash reviewer approves other actions; destructive or uncertain ones ask you.",
+};
+
+export const ANTIGRAVITY_YOLO_MODE = {
+  id: ANTIGRAVITY_YOLO_MODE_ID,
+  name: 'YOLO',
+  description:
+    "agy approves every permission request itself (--dangerously-skip-permissions); your deny rules and agy's command denylist still apply. Switching to or from it restarts the agent.",
 };
 
 type Json = Record<string, unknown>;
@@ -104,6 +155,7 @@ type SessionState = {
 };
 
 type PendingRequest =
+  | { kind: 'initialize' }
   | { kind: 'session'; roots: string[]; requestedMode: string | undefined; sessionId?: string }
   | { kind: 'mode'; sessionId: string; review: boolean };
 
@@ -118,20 +170,6 @@ const textOf = (blocks: unknown): string =>
         .join('')
     : '';
 
-/** Mode ids in a session-start result, from both mode representations. */
-const reportedModeIds = (result: Json): unknown[] => [
-  ...(isRecord(result.modes) && Array.isArray(result.modes.availableModes)
-    ? result.modes.availableModes.map((mode: unknown) => (isRecord(mode) ? mode.id : undefined))
-    : []),
-  ...(Array.isArray(result.configOptions)
-    ? result.configOptions.flatMap((option: unknown) =>
-        isRecord(option) && option.category === 'mode' && Array.isArray(option.options)
-          ? option.options.map((entry: unknown) => (isRecord(entry) ? entry.value : undefined))
-          : []
-      )
-    : []),
-];
-
 /** Adds Auto Review after `auto_edit` in an agent-reported mode list or option list. */
 const withAutoReviewMode = <T>(entries: T[], make: () => T, idOf: (entry: T) => unknown): T[] => {
   if (!entries.some((entry) => idOf(entry) === UNDERLYING_MODE_ID)) return entries;
@@ -140,6 +178,20 @@ const withAutoReviewMode = <T>(entries: T[], make: () => T, idOf: (entry: T) => 
   const at = anchor >= 0 ? anchor + 1 : entries.length;
   return [...entries.slice(0, at), make(), ...entries.slice(at)];
 };
+
+/** Adds YOLO at the end of an agent-reported mode list or option list that has none. */
+const withYoloMode = <T>(entries: T[], make: () => T, idOf: (entry: T) => unknown): T[] =>
+  entries.some((entry) => idOf(entry) === UNDERLYING_MODE_ID) &&
+  !entries.some((entry) => idOf(entry) === ANTIGRAVITY_YOLO_MODE_ID)
+    ? [...entries, make()]
+    : entries;
+
+/**
+ * The agy CLI's own directory for one conversation: its artifacts and the scratch
+ * directory it tells the agent to use. Auto Review treats it as part of the workspace.
+ */
+const agyConversationDirectory = (sessionId: string): string =>
+  path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain', sessionId);
 
 async function findGitRepository(start: string): Promise<boolean> {
   let current = path.resolve(start);
@@ -169,8 +221,8 @@ export function withAntigravityAutoReview(
   const sessions = new Map<string, SessionState>();
   const pending = new Map<string | number, PendingRequest>();
   let reviewer: AutoReviewer | null = null;
-  /** The agent reported its own `auto` mode; one process runs one binary for every session. */
-  let nativeAuto = false;
+  /** Started with agy's skip flag: every session of this process is YOLO. */
+  const skipsPermissions = options.launch?.args.includes(ANTIGRAVITY_SKIP_PERMISSIONS_ARG) === true;
   let toAgent: TransformStreamDefaultController<AnyMessage> | null = null;
   let toClient: TransformStreamDefaultController<AnyMessage> | null = null;
 
@@ -225,46 +277,53 @@ export function withAntigravityAutoReview(
     state.active = active;
   };
 
-  /** Agent-reported mode state, with Auto Review added and reported as current while active. */
+  /** The mode Lody reports instead of the agent's current one, if any. */
+  const presentedCurrent = (
+    current: unknown,
+    state: SessionState | undefined
+  ): string | undefined => {
+    if (current !== UNDERLYING_MODE_ID) return undefined;
+    if (skipsPermissions) return ANTIGRAVITY_YOLO_MODE_ID;
+    return state?.active ? ANTIGRAVITY_AUTO_REVIEW_MODE_ID : undefined;
+  };
+
+  /** Agent-reported mode state, with Lody's modes added and reported as current while in effect. */
   const presentModes = (modes: unknown, state: SessionState | undefined): unknown => {
-    if (nativeAuto || !isRecord(modes) || !Array.isArray(modes.availableModes)) return modes;
-    const availableModes = withAutoReviewMode(
+    if (!isRecord(modes) || !Array.isArray(modes.availableModes)) return modes;
+    const idOf = (mode: unknown) => (isRecord(mode) ? mode.id : undefined);
+    const reviewed = withAutoReviewMode(
       modes.availableModes as unknown[],
       () => ({ ...ANTIGRAVITY_AUTO_REVIEW_MODE }),
-      (mode) => (isRecord(mode) ? mode.id : undefined)
+      idOf
     );
-    const current = state?.active && modes.currentModeId === UNDERLYING_MODE_ID;
-    return {
-      ...modes,
-      availableModes,
-      ...(current ? { currentModeId: ANTIGRAVITY_AUTO_REVIEW_MODE_ID } : {}),
-    };
+    const availableModes = withYoloMode(reviewed, () => ({ ...ANTIGRAVITY_YOLO_MODE }), idOf);
+    const current = presentedCurrent(modes.currentModeId, state);
+    return { ...modes, availableModes, ...(current ? { currentModeId: current } : {}) };
   };
 
   const presentConfigOptions = (
     configOptions: unknown,
     state: SessionState | undefined
   ): unknown => {
-    if (nativeAuto || !Array.isArray(configOptions)) return configOptions;
+    if (!Array.isArray(configOptions)) return configOptions;
+    const choice = (mode: { id: string; name: string; description: string }) => ({
+      value: mode.id,
+      name: mode.name,
+      description: mode.description,
+    });
     return configOptions.map((option) => {
       if (!isRecord(option) || option.category !== 'mode' || !Array.isArray(option.options))
         return option;
       if (state && option.currentValue !== UNDERLYING_MODE_ID) setActive(state, false);
-      const choices = withAutoReviewMode(
+      const idOf = (entry: unknown) => (isRecord(entry) ? entry.value : undefined);
+      const reviewed = withAutoReviewMode(
         option.options as unknown[],
-        () => ({
-          value: ANTIGRAVITY_AUTO_REVIEW_MODE.id,
-          name: ANTIGRAVITY_AUTO_REVIEW_MODE.name,
-          description: ANTIGRAVITY_AUTO_REVIEW_MODE.description,
-        }),
-        (entry) => (isRecord(entry) ? entry.value : undefined)
+        () => choice(ANTIGRAVITY_AUTO_REVIEW_MODE),
+        idOf
       );
-      const current = state?.active && option.currentValue === UNDERLYING_MODE_ID;
-      return {
-        ...option,
-        options: choices,
-        ...(current ? { currentValue: ANTIGRAVITY_AUTO_REVIEW_MODE_ID } : {}),
-      };
+      const choices = withYoloMode(reviewed, () => choice(ANTIGRAVITY_YOLO_MODE), idOf);
+      const current = presentedCurrent(option.currentValue, state);
+      return { ...option, options: choices, ...(current ? { currentValue: current } : {}) };
     });
   };
 
@@ -286,13 +345,12 @@ export function withAntigravityAutoReview(
       ? sessionConfig.configOptionValues
       : undefined;
     const requestedMode = typeof values?.mode === 'string' ? values.mode : undefined;
-    if (
-      requestedMode !== ANTIGRAVITY_AUTO_REVIEW_MODE_ID ||
-      !meta ||
-      !lody ||
-      !sessionConfig ||
-      !values
-    ) {
+    const sent =
+      requestedMode === ANTIGRAVITY_AUTO_REVIEW_MODE_ID ||
+      requestedMode === ANTIGRAVITY_YOLO_MODE_ID
+        ? UNDERLYING_MODE_ID
+        : undefined;
+    if (sent === undefined || !meta || !lody || !sessionConfig || !values) {
       return { params, requestedMode };
     }
     return {
@@ -305,10 +363,7 @@ export function withAntigravityAutoReview(
             ...lody,
             sessionConfig: {
               ...sessionConfig,
-              configOptionValues: {
-                ...values,
-                mode: nativeAuto ? NATIVE_AUTO_MODE_ID : UNDERLYING_MODE_ID,
-              },
+              configOptionValues: { ...values, mode: sent },
             },
           },
         },
@@ -316,11 +371,15 @@ export function withAntigravityAutoReview(
     };
   };
 
-  const fromClient = (message: AnyMessage): AnyMessage => {
+  /** The message to forward to the agent, or null when it is answered here. */
+  const fromClient = (message: AnyMessage): AnyMessage | null => {
     if (!('method' in message) || !isRecord(message.params)) return message;
     const params = message.params;
     const id = 'id' in message ? message.id : undefined;
     switch (message.method) {
+      case 'initialize':
+        if (id !== undefined && id !== null) pending.set(id, { kind: 'initialize' });
+        return message;
       case 'session/new':
       case 'session/load':
       case 'session/resume':
@@ -349,15 +408,30 @@ export function withAntigravityAutoReview(
         const isMode = message.method === 'session/set_mode' || params.configId === 'mode';
         const target = message.method === 'session/set_mode' ? params.modeId : params.value;
         if (!sessionId || !isMode || typeof target !== 'string') return message;
+        const yolo = target === ANTIGRAVITY_YOLO_MODE_ID;
+        if (yolo !== skipsPermissions) {
+          // The flag is fixed for this process; the session's next turn restarts
+          // its agent for the other side (antigravityYoloChanged).
+          if (id !== undefined && id !== null)
+            send(toClient, {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: -32602,
+                message: yolo
+                  ? 'YOLO starts a new agy process; it applies from your next message.'
+                  : 'This agy process runs in YOLO; the new mode applies from your next message.',
+              },
+            } as AnyMessage);
+          return null;
+        }
         const autoReview = target === ANTIGRAVITY_AUTO_REVIEW_MODE_ID;
         if (id !== undefined && id !== null)
-          pending.set(id, { kind: 'mode', sessionId, review: autoReview && !nativeAuto });
-        if (!autoReview) return message;
-        // An agent with its own Auto mode runs Auto Review there; Lody reviews nothing.
-        const sent = nativeAuto ? NATIVE_AUTO_MODE_ID : UNDERLYING_MODE_ID;
+          pending.set(id, { kind: 'mode', sessionId, review: autoReview });
+        if (!autoReview && !yolo) return message;
         return message.method === 'session/set_mode'
-          ? { ...message, params: { ...params, modeId: sent } }
-          : { ...message, params: { ...params, value: sent } };
+          ? { ...message, params: { ...params, modeId: UNDERLYING_MODE_ID } }
+          : { ...message, params: { ...params, value: UNDERLYING_MODE_ID } };
       }
       case 'session/prompt': {
         if (typeof params.sessionId !== 'string') return message;
@@ -639,15 +713,13 @@ export function withAntigravityAutoReview(
           });
           return;
         }
-        if (update?.sessionUpdate === 'current_mode_update' && state) {
-          if (update.currentModeId !== UNDERLYING_MODE_ID) setActive(state, false);
-          else if (state.active) {
+        if (update?.sessionUpdate === 'current_mode_update') {
+          if (state && update.currentModeId !== UNDERLYING_MODE_ID) setActive(state, false);
+          const current = presentedCurrent(update.currentModeId, state);
+          if (current) {
             send(toClient, {
               ...message,
-              params: {
-                ...params,
-                update: { ...update, currentModeId: ANTIGRAVITY_AUTO_REVIEW_MODE_ID },
-              },
+              params: { ...params, update: { ...update, currentModeId: current } },
             });
             return;
           }
@@ -671,12 +743,26 @@ export function withAntigravityAutoReview(
       return;
     }
     const result = message.result;
+    if (tracked.kind === 'initialize') {
+      // agy connects to Streamable HTTP MCP servers but does not advertise it.
+      const capabilities = isRecord(result.agentCapabilities) ? result.agentCapabilities : {};
+      const mcp = isRecord(capabilities.mcpCapabilities) ? capabilities.mcpCapabilities : {};
+      send(toClient, {
+        ...message,
+        result: {
+          ...result,
+          agentCapabilities: { ...capabilities, mcpCapabilities: { ...mcp, http: true } },
+        },
+      });
+      return;
+    }
     if (tracked.kind === 'session') {
-      if (reportedModeIds(result).includes(NATIVE_AUTO_MODE_ID)) nativeAuto = true;
       const sessionId = typeof result.sessionId === 'string' ? result.sessionId : tracked.sessionId;
-      const state = sessionId ? stateFor(sessionId, tracked.roots) : undefined;
+      const state = sessionId
+        ? stateFor(sessionId, [...tracked.roots, agyConversationDirectory(sessionId)])
+        : undefined;
       if (state && tracked.requestedMode !== undefined) {
-        setActive(state, tracked.requestedMode === ANTIGRAVITY_AUTO_REVIEW_MODE_ID && !nativeAuto);
+        setActive(state, tracked.requestedMode === ANTIGRAVITY_AUTO_REVIEW_MODE_ID);
       }
       send(toClient, { ...message, result: presentResult(result, state) });
       return;
@@ -690,7 +776,10 @@ export function withAntigravityAutoReview(
     start: (controller) => {
       toAgent = controller;
     },
-    transform: (message, controller) => controller.enqueue(fromClient(message)),
+    transform: (message, controller) => {
+      const forwarded = fromClient(message);
+      if (forwarded) controller.enqueue(forwarded);
+    },
   });
   const incoming = new TransformStream<AnyMessage, AnyMessage>({
     start: (controller) => {

@@ -65,6 +65,7 @@ import {
 import { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 import { TerminalManager } from './terminal-manager';
 import { resolveACPProcessLaunchAsync } from '@/agent/setting';
+import { antigravityLaunchArgs } from '@/agent/antigravity-auto-review';
 import {
   classifyManagedRuntimeFailureReason,
   formatManagedRuntimeFailureMessage,
@@ -226,6 +227,8 @@ export interface ISession {
   getAcpCapabilitySourceVersion?(): string | null;
   getProviderBinding?(): import('./automation-observations').ProviderBinding | undefined;
   getMemoryBinding?(): SessionConfig['memory'];
+  /** LAN fork: the selection this session's agent process was started for. */
+  getModeSelection?(): Pick<SessionConfig, 'agentType' | 'modeId' | 'configOptionValues'>;
   getWorkdir(): string;
   /**
    * Host-side working directory for file operations.
@@ -935,6 +938,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         customAcp: config.customAcp,
         runtimeOverrides: config.runtimeOverrides,
         env: config.env,
+        // LAN fork: Antigravity YOLO starts agy with its skip flag.
+        extraArgs: antigravityLaunchArgs(config),
         onManagedRuntimeProgress: (event) => {
           config.onPresencePhase?.('managed-runtime', formatManagedRuntimeProgressDetail(event));
           if (event.phase === 'complete' && !managedRuntimeReadyLogged) {
