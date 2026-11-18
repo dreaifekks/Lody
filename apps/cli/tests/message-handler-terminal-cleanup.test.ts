@@ -9,6 +9,7 @@ import type { NotificationPresentation } from '@lody/shared/notifications';
 import type { SessionActivePresenceControllerLegacy } from '../src/lib/loro/session-active-presence-legacy';
 
 import {
+  type AgentConfigMeta,
   getMachineRoomId,
   getWorkspaceFlockDocId,
   workspaceFlockKeys,
@@ -60,7 +61,9 @@ type MessageHandlerInternals = {
   codeCollabV2DiffStore: { close: () => Promise<void> };
   diffBlobStoreReader: { close: () => Promise<void> };
   sessionActivePresence: SessionActivePresenceControllerLegacy;
+  setupSessionLifecycleWatchers: () => void;
   handleSessionArchived: (sessionId: SessionId) => Promise<void>;
+  handleSessionRestored: (sessionId: SessionId) => Promise<void>;
   readWorktreeOwnerState: (sessionId: SessionId) => Promise<WorktreeOwnerState>;
   handleSessionDeleted: (sessionId: SessionId) => Promise<void>;
   discardLegacySessionCommands: () => Promise<void>;
@@ -98,6 +101,7 @@ function createHarness(options?: {
   includeLegacySessionArchiveRequest?: boolean;
   deletedSessionIds?: SessionId[];
   localProjectRootPaths?: Record<LocalProjectId, string>;
+  agentConfigs?: AgentConfigMeta[];
 }) {
   const sessionId = options?.sessionId ?? ('session-1' as SessionId);
   const childSessionIds = options?.childSessionIds ?? [];
@@ -139,7 +143,11 @@ function createHarness(options?: {
     setLastMessageAt: vi.fn(async () => {}),
   });
   const repo = {
-    watch: vi.fn(() => ({ unsubscribe: vi.fn() })),
+    watch: vi.fn(
+      (_listener: (event: unknown) => void, _options?: { metadataFields?: readonly string[] }) => ({
+        unsubscribe: vi.fn(),
+      })
+    ),
     getDocMeta: vi.fn(async (roomId: string) => {
       const localSessionMeta = sessionMetas.get(roomId);
       if (localSessionMeta) {
@@ -212,6 +220,8 @@ function createHarness(options?: {
     sessions: new Map<SessionId, unknown>(),
     repo,
     getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+    getAgentConfigById: async (id: string) =>
+      options?.agentConfigs?.find((config) => config.id === id) ?? null,
     isTransportConnected: vi.fn(() => true),
     markMachineFlockDocDirty: vi.fn(),
   };
@@ -618,6 +628,121 @@ describe('MessageHandler terminal cleanup', () => {
     expect(closeSessionTerminals).not.toHaveBeenCalled();
     expect(sessionManager.archiveSession).not.toHaveBeenCalled();
     expect(handler.deletedSessionIds.has(sessionId)).toBe(false);
+  });
+
+  describe.skipIf(process.platform === 'win32')('Codex thread archive', () => {
+    let codexDir: string;
+    const codexCalls = () => {
+      const file = path.join(codexDir, 'calls');
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n') : [];
+    };
+    const provider = (env: Record<string, string> = {}) =>
+      ({
+        id: 'codex-config',
+        name: 'Codex',
+        cliType: 'builtin',
+        agentType: 'codex',
+        env: { FAKE_CODEX_CALLS: path.join(codexDir, 'calls'), ...env },
+        runtimeOverrides: { codexPath: path.join(codexDir, 'codex') },
+      }) as AgentConfigMeta;
+    const codexSession = (id: string, machineId = 'machine-1') =>
+      ({
+        id: id as SessionId,
+        machineId,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        userId: 'user-1',
+        cliType: 'builtin',
+        agentType: 'codex',
+        agentConfigId: 'codex-config',
+        acpSessionId: `thread-of-${id}`,
+        status: SessionStatusFactory.idle(),
+        isArchived: true,
+      }) as SessionMeta;
+
+    beforeEach(() => {
+      vi.stubEnv('LODY_DISABLE_SHELL_ENV', '1');
+      codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-codex-archive-'));
+      // Stands in for the Codex CLI: records each `archive|unarchive <thread>` it runs.
+      fs.writeFileSync(
+        path.join(codexDir, 'codex'),
+        '#!/bin/sh\necho "$*" >> "$FAKE_CODEX_CALLS"\n[ -z "$FAKE_CODEX_FAIL" ] || exit 1\n',
+        { mode: 0o700 }
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      fs.rmSync(codexDir, { recursive: true, force: true });
+    });
+
+    it('follows archive and restore on the owned Codex thread, never creation', async () => {
+      const own = codexSession('session-1');
+      const elsewhere = codexSession('session-2', 'machine-2');
+      const claude = { ...codexSession('session-3'), agentType: 'claude' } as SessionMeta;
+      const { handler, repo } = createHarness({
+        sessionMetas: [own, elsewhere, claude],
+        agentConfigs: [provider()],
+      });
+      handler.worktreeGc = { schedule: async () => ({ removed: [] }) };
+      const started: Promise<void>[] = [];
+      for (const key of ['handleSessionArchived', 'handleSessionRestored'] as const) {
+        const handle = handler[key].bind(handler);
+        handler[key] = (id) => {
+          const run = handle(id);
+          started.push(run);
+          return run;
+        };
+      }
+      handler.setupSessionLifecycleWatchers();
+      const [onArchivedChange] =
+        repo.watch.mock.calls.find(([, options]) =>
+          options?.metadataFields?.includes('isArchived')
+        ) ?? [];
+      const emit = async (sessionId: SessionId, patch: Partial<SessionMeta>) => {
+        onArchivedChange?.({
+          kind: 'doc-metadata',
+          docId: getSessionRoomId(sessionId),
+          patch,
+          by: 'sync',
+        });
+        await Promise.all(started.splice(0));
+      };
+
+      await emit(own.id, { id: own.id, createdAt: own.createdAt, isArchived: false });
+      await emit(own.id, { isArchived: true, status: SessionStatusFactory.idle() });
+      await emit(own.id, { isArchived: false });
+      for (const other of [elsewhere, claude]) {
+        await emit(other.id, { isArchived: true });
+        await emit(other.id, { isArchived: false });
+      }
+
+      expect(codexCalls()).toEqual([
+        'archive thread-of-session-1',
+        'unarchive thread-of-session-1',
+      ]);
+    });
+
+    it('keeps the Lody archive when Codex refuses to archive the thread', async () => {
+      const session = {
+        ...codexSession('session-1'),
+        status: SessionStatusFactory.running(),
+      } as SessionMeta;
+      const { handler, isSessionActive, getSessionMeta } = createHarness({
+        activeSessionIds: [session.id],
+        sessionMetas: [session],
+        agentConfigs: [provider({ FAKE_CODEX_FAIL: '1' })],
+      });
+      handler.worktreeGc = { schedule: async () => ({ removed: [] }) };
+
+      await handler.handleSessionArchived(session.id);
+
+      expect(codexCalls()).toEqual(['archive thread-of-session-1']);
+      expect(isSessionActive(session.id)).toBe(false);
+      expect(getSessionMeta(session.id)).toMatchObject({
+        isArchived: true,
+        status: SessionStatusFactory.idle(),
+      });
+    });
   });
 
   it('closes parent and active child terminals when the session doc is deleted', async () => {

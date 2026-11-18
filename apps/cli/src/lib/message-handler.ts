@@ -369,6 +369,7 @@ import {
   type AgentNoticeResult,
 } from './agent-notice';
 import { generateTitleIsolated, sanitizeTitle } from '@/agent/title-generator';
+import { getSessionCodexThreadId, setCodexThreadArchived } from '@/agent/codex-native-archive';
 import type { AgentSessionWarning, NativeAgentWork } from '@/agent/agent-client';
 import { SessionActivePresenceControllerLegacy } from './loro/session-active-presence-legacy';
 import {
@@ -4900,7 +4901,14 @@ export class MessageHandler {
           if (event.kind !== 'doc-metadata') return;
           const sessionId = getSessionIdFromRoomId(event.docId);
           if (!sessionId) return;
-          if ((event.patch as Partial<SessionMeta>).isArchived !== true) return;
+          const patch = event.patch as Partial<SessionMeta>;
+          // Creating a Session writes `isArchived: false` together with
+          // `createdAt`; a restore writes the flag alone.
+          if (patch.isArchived === false && patch.createdAt === undefined) {
+            void this.handleSessionRestored(sessionId);
+            return;
+          }
+          if (patch.isArchived !== true) return;
           // Revoke media before unrelated ACP/Browser cleanup can fail.
           void this.iosSimulatorService.closeSession(sessionId);
           void this.androidEmulatorService.closeSession(sessionId);
@@ -5134,6 +5142,8 @@ export class MessageHandler {
     this.archiveInFlight.add(sessionId);
     try {
       await this.releaseArchivedSessionRuntime(sessionId);
+      // After the release: a live Codex process must not keep the thread open.
+      await this.syncCodexThreadArchive(sessionId, true);
     } catch (error) {
       this.logger.error(
         `[${sessionId}] Failed to release archived session runtime: ${formatErrorMessage(error)}`
@@ -5144,6 +5154,41 @@ export class MessageHandler {
     void this.worktreeGc.schedule();
     if (this.cloudPort.streamsTokens !== null)
       void compactArchivedSessionStreams(this.workspaceDocument, sessionId, this.logger);
+  }
+
+  private async handleSessionRestored(sessionId: SessionId): Promise<void> {
+    if (!(await this.isSessionOwnedByThisMachine(sessionId))) {
+      return;
+    }
+    await this.syncCodexThreadArchive(sessionId, false);
+  }
+
+  /**
+   * Keeps the archived flag in Codex's own store equal to Lody's, so Codex's
+   * session lists agree and a restored Session can resume its thread. A
+   * failure leaves Lody's archive state as it is and costs one log line.
+   */
+  private async syncCodexThreadArchive(sessionId: SessionId, archived: boolean): Promise<void> {
+    const action = archived ? 'archive' : 'unarchive';
+    try {
+      const meta = (await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId)))
+        ?.meta as SessionMeta | undefined;
+      const threadId = meta ? getSessionCodexThreadId(meta) : undefined;
+      if (!meta || !threadId) return;
+      await setCodexThreadArchived({
+        workspaceId: this.workspaceId,
+        provider: meta.agentConfigId
+          ? await this.workspaceDocument.getAgentConfigById(meta.agentConfigId, this.machineId)
+          : null,
+        threadId,
+        archived,
+      });
+      this.logger.debug(`[${sessionId}] Codex thread ${threadId}: ${action} done`);
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Codex thread ${action} failed: ${formatErrorMessage(error)}`
+      );
+    }
   }
 
   /**

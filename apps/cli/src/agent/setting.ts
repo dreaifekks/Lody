@@ -840,11 +840,8 @@ export async function resolveBuiltinAuthenticationProcessLaunch(
   }
 
   if (input.agentType === 'codex') {
-    const overridePath = trimRuntimeOverride(input.runtimeOverrides?.codexPath);
-    const codexPath =
-      overridePath ?? (await resolveManagedRuntimeForLaunch('codex', input)).command;
     return {
-      command: codexPath,
+      command: await resolveBuiltinCodexExecutable(input),
       args: input.action === 'login' ? ['login', '--device-auth'] : ['login', 'status'],
     };
   }
@@ -867,6 +864,19 @@ export async function resolveBuiltinAuthenticationProcessLaunch(
     command: claudePath,
     args: input.action === 'login' ? ['auth', 'login', '--claudeai'] : ['auth', 'status', '--json'],
   };
+}
+
+/** The Codex binary a builtin Codex Provider runs: its override, else the managed runtime. */
+export async function resolveBuiltinCodexExecutable(
+  input: Pick<
+    ResolveACPProcessLaunchInput,
+    'runtimeOverrides' | 'onManagedRuntimeProgress' | 'signal'
+  >
+): Promise<string> {
+  return (
+    trimRuntimeOverride(input.runtimeOverrides?.codexPath) ??
+    (await resolveManagedRuntimeForLaunch('codex', input)).command
+  );
 }
 
 export function resolveACPProcessLaunch(
