@@ -15,8 +15,8 @@ launches `antigravity acp` from the agy CLI's GitHub release, so a Lody session
 behaves like local `agy acp`: plugin hooks run, plugin MCP servers load, and the
 native `default`/`accept-edits`/`auto`/`plan` modes, a `thought_level` option,
 Claude/GPT models and agent-written titles are available. Lody lets that runtime
-title its own sessions and treats its Auto Review mode as the native `auto` where
-agy has one. The trade-off is that agy asks before every tool call of a
+title its own sessions and offers its Auto Review mode beside agy's own `auto`,
+whose terminal sandbox has no network. The trade-off is that agy asks before every tool call of a
 client-provided MCP server, including Lody's own `lody` server, unless an agy allow
 rule covers it, and stored `auto_edit` and `thinking_level` selections no longer
 validate. agy skips permission requests only for a whole process, so Lody's `yolo`
@@ -72,6 +72,13 @@ and macOS arm64, through Lody sessions and a minimal ACP client:
   conversation directory `~/.gemini/antigravity-cli/brain/<conversation id>/`, and the
   rules counted all of `~/.gemini/antigravity-cli/` as agent configuration. The
   conversation id is the ACP session id.
+- On devNuc with an AppArmor profile allowing agy user namespaces, agy reported `auto`.
+  With `read_file(<path>)` grants for `~/.lody-oss/session-bin`, `~/.lody-oss/run`,
+  `~/.lody-oss/workspace-catalog.json`, the node directory and
+  `~/.local/share/lody-lan`, four `lody-lan` commands ran in its sandbox without asking.
+  The sandbox has only a loopback interface, even with
+  `userSettings.sandboxAllowNetwork`: `nmem`, `curl` by name or by IP all failed, so
+  networked commands need agy's out-of-sandbox review and then the user.
 - With `--dangerously-skip-permissions` and `default`, `lody-lan` ran at once on macOS.
   The changelog says the flag only skips tool permission prompts, still blocks the
   system command denylist and keeps explicit deny rules.
@@ -88,11 +95,11 @@ accepts untagged `session_info_update` titles. agy titles each conversation in t
 prompt's language, and an isolated title session would be one more agy conversation
 running the user's hooks: an extra nmem thread and context bundle per Lody session.
 
-`withAntigravityAutoReview` checks the modes a session reports. When they include
-`auto`, it adds no mode, reviews nothing and sends a stored `auto_review` as `auto`.
-Its reviewer is a hidden session of the same binary, which on the agy CLI would run
-the user's hooks for every reviewed session. Servers without `auto` keep the
-synthetic mode, so machines still on `agy_acp_server` are unchanged until they update.
+`withAntigravityAutoReview` adds `auto_review` to the modes a session reports and
+runs agy in `default` under it; agy's own `auto` passes through untouched. agy's
+sandbox suits `lody-lan` and workspace work, while Lody Auto Review lets networked
+commands through, so a session or Role picks one. Its reviewer is a hidden session of
+the same binary, which runs the user's hooks for every reviewed session.
 
 Its rules count the session's own agy conversation directory as workspace, so
 scratch files there are reviewed like workspace edits. Other conversations'
@@ -115,9 +122,9 @@ is `full` with its warning face.
 ## Alternatives
 
 - Pinning registry 1.5.0 was rejected: it is the same server without plugins.
-- Keeping Lody Auto Review on the agy CLI's `default` mode was rejected for now
-  because every reviewed session would add a hidden agy conversation with the user's
-  hooks. It remains the option if allow-once prompts for MCP tools prove too costly.
+- Sending a stored `auto_review` as agy's `auto` where agy has one avoided the hidden
+  reviewer conversation. It was dropped because agy's sandbox has no network, which
+  made the choice per machine rather than per Role.
 - Listing `auto_review` as an alias for the native `auto` would keep stored selections
   valid. It was rejected because the ids would differ from agy's own, the mode updates
   would need translating, and only a few stored selections need editing.
@@ -136,10 +143,9 @@ is `full` with its warning face.
 ## Consequences
 
 - Roles, schedules and sessions that store `auto_edit` or `thinking_level` for this
-  entry fail at create, and continuing turns drop them and run in `default`; so does
-  `auto_review` on a machine where agy has `auto`. Use `auto` or `accept-edits` and
-  `thought_level`. A machine that gains `auto`, for example after an AppArmor profile
-  allows agy user namespaces, loses `auto_review` the same way.
+  entry fail at create, and continuing turns drop them and run in `default`. Use
+  `accept-edits` and `thought_level`.
+- Every Auto Review session adds a hidden agy conversation that runs the user's hooks.
 - Switching a session into or out of YOLO costs an agy restart at the next message.
   A switch during a turn takes effect only from the next message.
 - Session ids from `agy_acp_server` load as empty conversations, so earlier Antigravity
@@ -154,8 +160,8 @@ is `full` with its warning face.
 
 - `scripts/generate-acp-registry.test.mjs` pins the generated entry.
 - `packages/shared/tests/title-generation-defaults.test.ts` pins title ownership.
-- `apps/cli/tests/antigravity-auto-review.test.ts` pins the deferral to `auto`, the
-  YOLO mode and launch flag, the refused switch and the conversation directory rule.
+- `apps/cli/tests/antigravity-auto-review.test.ts` pins `auto_review` beside agy's
+  `auto`, the YOLO mode and launch flag, the refused switch and the conversation directory rule.
 - `apps/cli/tests/session-execution-service.test.ts` pins the restart when a turn
   switches YOLO.
 - `packages/shared/tests/permission-tier.test.ts` and `permission-mode-face.test.ts`
@@ -163,5 +169,4 @@ is `full` with its warning face.
 
 Not verified: answering a permission prompt in the desktop app, a `lody` tool call
 after approval, `accept-edits` and `plan` in a real run, launching the Windows
-archive, a YOLO session through a Lody build (only the agy process was probed), and
-agy's `auto` on Linux with user namespaces allowed.
+archive, and a YOLO session through a Lody build (only the agy process was probed).

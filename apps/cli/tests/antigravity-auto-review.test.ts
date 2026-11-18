@@ -597,12 +597,15 @@ describe('Antigravity Auto Review stream', () => {
 
   it("offers Auto Review beside the agent's own Auto mode and keeps the two apart", async () => {
     const wired = wire(neverAnswers());
-    await wired.start(agyModes, 'default');
+    await wired.start(agyModes);
+    expect(wired.toAgent[0]).toMatchObject({
+      params: { _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'default' } } } } },
+    });
     const response = wired.toClient.find((message) => 'id' in message && message.id === 1) as {
       result: { modes: unknown };
     };
     expect(response.result.modes).toEqual({
-      currentModeId: 'default',
+      currentModeId: 'auto_review',
       availableModes: [
         ...agyModes,
         expect.objectContaining({ id: 'auto_review' }),
