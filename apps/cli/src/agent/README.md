@@ -467,11 +467,11 @@ models to every client, so the Zed client identity no longer matters for it.
 - Titles: it pushes untagged `session_info_update` titles, so it uses the identity
   fallback in [Session titles](#session-titles). An isolated title session would be
   one more agy conversation running the user's plugin hooks.
-- Auto Review: `antigravity-auto-review.ts` checks the modes a session reports. When
-  `auto` is among them it adds no mode and reviews nothing, and a stored `auto_review`
-  is sent as `auto`, so the reviewer, a hidden session of the same binary, never
-  starts. Servers without `auto`, which include the agy CLI on Linux, keep the
-  synthetic mode. Its rules count the conversation's own agy directory,
+- Auto Review: `antigravity-auto-review.ts` adds `auto_review` beside whatever modes
+  the agent reports, including agy's own `auto`, which passes through untouched.
+  agy's `auto` runs commands in its sandbox, without network and with little of
+  `$HOME` readable, so a Role that needs `nmem`, `git push` or the web keeps
+  `auto_review`. Its rules count the conversation's own agy directory,
   `~/.gemini/antigravity-cli/brain/<session id>/`, where agy keeps scratch files, as
   workspace; the rest of `~/.gemini/antigravity-cli/` still asks as agent configuration.
 - YOLO: Lody adds `yolo` to the modes. A session whose turn selects it starts agy

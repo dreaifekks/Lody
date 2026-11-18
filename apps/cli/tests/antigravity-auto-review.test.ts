@@ -595,31 +595,36 @@ describe('Antigravity Auto Review stream', () => {
     { id: 'plan', name: 'Plan' },
   ];
 
-  it("runs Auto Review in the agent's own Auto mode when it has one, and reviews nothing", async () => {
+  it("offers Auto Review beside the agent's own Auto mode and keeps the two apart", async () => {
     const wired = wire(neverAnswers());
-    await wired.start(agyModes);
+    await wired.start(agyModes, 'default');
     const response = wired.toClient.find((message) => 'id' in message && message.id === 1) as {
       result: { modes: unknown };
     };
     expect(response.result.modes).toEqual({
       currentModeId: 'default',
-      availableModes: [...agyModes, expect.objectContaining({ id: 'yolo' })],
+      availableModes: [
+        ...agyModes,
+        expect.objectContaining({ id: 'auto_review' }),
+        expect.objectContaining({ id: 'yolo' }),
+      ],
     });
 
-    await wired.switchMode(3, 'auto_review', 'auto');
-    expect(wired.toAgent.at(-1)).toMatchObject({
-      method: 'session/set_config_option',
-      params: { configId: 'mode', value: 'auto' },
-    });
+    await wired.switchMode(3, 'auto_review', 'default');
+    expect(wired.toAgent.at(-1)).toMatchObject({ params: { configId: 'mode', value: 'default' } });
     expect(wired.toClient.at(-1)).toMatchObject({
       id: 3,
-      result: { configOptions: [expect.objectContaining({ currentValue: 'auto' })] },
+      result: { configOptions: [expect.objectContaining({ currentValue: 'auto_review' })] },
     });
 
-    // The agent's own reviewer already let this through to the user: no wait, no audit entry.
+    await wired.switchMode(4, 'auto');
+    expect(wired.toAgent.at(-1)).toMatchObject({ params: { configId: 'mode', value: 'auto' } });
+    // agy's own reviewer already let this through to the user: no wait, no audit entry.
     await wired.requestPermission(10, 'make build');
     expect(forwarded(wired.toClient)).toEqual([10]);
-    expect(JSON.stringify(wired.toClient)).not.toContain('Auto Review');
+    expect(
+      wired.toClient.some((message) => 'method' in message && message.method === 'session/update')
+    ).toBe(false);
   });
 
   it('reports the Streamable HTTP MCP support agy has but does not advertise', async () => {
@@ -644,7 +649,11 @@ describe('Antigravity Auto Review stream', () => {
     };
     expect(response.result.modes).toEqual({
       currentModeId: 'yolo',
-      availableModes: [...agyModes, expect.objectContaining({ id: 'yolo' })],
+      availableModes: [
+        ...agyModes,
+        expect.objectContaining({ id: 'auto_review' }),
+        expect.objectContaining({ id: 'yolo' }),
+      ],
     });
 
     await wired.switchMode(3, 'yolo', 'default');
@@ -660,6 +669,7 @@ describe('Antigravity Auto Review stream', () => {
             currentValue: 'yolo',
             options: [
               { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'auto_review' }),
               expect.objectContaining({ value: 'yolo' }),
             ],
           }),
