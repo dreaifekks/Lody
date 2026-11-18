@@ -485,6 +485,9 @@ models to every client, so the Zed client identity no longer matters for it.
   allow-once or reject-once. MCP servers from its own plugins run without asking.
   agy's allow rules in `~/.gemini/config/config.json` (`mcp(<server>/<tool>)`,
   `command(<prefix>)`) also apply to ACP sessions.
+- HTTP MCP: agy connects to Streamable HTTP servers passed over ACP but does not
+  advertise `mcpCapabilities.http`; the wrapper adds it to the initialize response, so
+  workspace HTTP servers start and the builtin `lody` server uses the shared HTTP host.
 - Stored selections: `auto_edit` and `thinking_level` are not in this catalog, nor
   `auto_review` where agy has `auto`. Create rejects them and continuing turns drop
   them. Session ids from the former server load as empty conversations.

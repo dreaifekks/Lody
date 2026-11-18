@@ -156,6 +156,7 @@ type SessionState = {
 };
 
 type PendingRequest =
+  | { kind: 'initialize' }
   | { kind: 'session'; roots: string[]; requestedMode: string | undefined; sessionId?: string }
   | { kind: 'mode'; sessionId: string; review: boolean };
 
@@ -400,6 +401,9 @@ export function withAntigravityAutoReview(
     const params = message.params;
     const id = 'id' in message ? message.id : undefined;
     switch (message.method) {
+      case 'initialize':
+        if (id !== undefined && id !== null) pending.set(id, { kind: 'initialize' });
+        return message;
       case 'session/new':
       case 'session/load':
       case 'session/resume':
@@ -765,6 +769,19 @@ export function withAntigravityAutoReview(
       return;
     }
     const result = message.result;
+    if (tracked.kind === 'initialize') {
+      // agy connects to Streamable HTTP MCP servers but does not advertise it.
+      const capabilities = isRecord(result.agentCapabilities) ? result.agentCapabilities : {};
+      const mcp = isRecord(capabilities.mcpCapabilities) ? capabilities.mcpCapabilities : {};
+      send(toClient, {
+        ...message,
+        result: {
+          ...result,
+          agentCapabilities: { ...capabilities, mcpCapabilities: { ...mcp, http: true } },
+        },
+      });
+      return;
+    }
     if (tracked.kind === 'session') {
       if (reportedModeIds(result).includes(NATIVE_AUTO_MODE_ID)) nativeAuto = true;
       const sessionId = typeof result.sessionId === 'string' ? result.sessionId : tracked.sessionId;

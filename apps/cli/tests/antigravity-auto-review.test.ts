@@ -483,6 +483,21 @@ describe('Antigravity Auto Review stream', () => {
           method: 'session/cancel',
           params: { sessionId: 's' },
         }),
+      /** Initialize, answered by the agent with `agentCapabilities`. */
+      async initialize(agentCapabilities: Record<string, unknown>) {
+        await clientWriter.write({
+          jsonrpc: '2.0',
+          id: 0,
+          method: 'initialize',
+          params: { protocolVersion: 1, clientCapabilities: {} },
+        });
+        await agentWriter.write({
+          jsonrpc: '2.0',
+          id: 0,
+          result: { protocolVersion: 1, agentCapabilities },
+        });
+        await settle();
+      },
       /** A mode switch the agent has not answered. */
       async requestMode(id: number, value: string) {
         await clientWriter.write({
@@ -605,6 +620,17 @@ describe('Antigravity Auto Review stream', () => {
     await wired.requestPermission(10, 'make build');
     expect(forwarded(wired.toClient)).toEqual([10]);
     expect(JSON.stringify(wired.toClient)).not.toContain('Auto Review');
+  });
+
+  it('reports the Streamable HTTP MCP support agy has but does not advertise', async () => {
+    const wired = wire(neverAnswers());
+    await wired.initialize({ loadSession: true, mcpCapabilities: { sse: false } });
+    expect(wired.toClient.at(-1)).toMatchObject({
+      id: 0,
+      result: {
+        agentCapabilities: { loadSession: true, mcpCapabilities: { sse: false, http: true } },
+      },
+    });
   });
 
   it('runs YOLO as default in an agy process started with the skip flag', async () => {
