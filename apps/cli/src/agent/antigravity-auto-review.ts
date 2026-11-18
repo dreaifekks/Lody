@@ -237,8 +237,6 @@ export function withAntigravityAutoReview(
   let reviewer: AutoReviewer | null = null;
   /** The agent reported its own `auto` mode; one process runs one binary for every session. */
   let nativeAuto = false;
-  /** The agent reported its own `yolo` (the former `agy_acp_server`): passed through as is. */
-  let nativeYolo = false;
   /** Started with agy's skip flag: every session of this process is YOLO. */
   const skipsPermissions = options.launch?.args.includes(ANTIGRAVITY_SKIP_PERMISSIONS_ARG) === true;
   let toAgent: TransformStreamDefaultController<AnyMessage> | null = null;
@@ -372,7 +370,7 @@ export function withAntigravityAutoReview(
         ? nativeAuto
           ? NATIVE_AUTO_MODE_ID
           : UNDERLYING_MODE_ID
-        : requestedMode === ANTIGRAVITY_YOLO_MODE_ID && !nativeYolo
+        : requestedMode === ANTIGRAVITY_YOLO_MODE_ID
           ? UNDERLYING_MODE_ID
           : undefined;
     if (sent === undefined || !meta || !lody || !sessionConfig || !values) {
@@ -430,7 +428,7 @@ export function withAntigravityAutoReview(
         const isMode = message.method === 'session/set_mode' || params.configId === 'mode';
         const target = message.method === 'session/set_mode' ? params.modeId : params.value;
         if (!sessionId || !isMode || typeof target !== 'string') return message;
-        const yolo = target === ANTIGRAVITY_YOLO_MODE_ID && !nativeYolo;
+        const yolo = target === ANTIGRAVITY_YOLO_MODE_ID;
         if (yolo !== skipsPermissions) {
           // The flag is fixed for this process; the session's next turn restarts
           // its agent for the other side (antigravityYoloChanged).
@@ -768,9 +766,7 @@ export function withAntigravityAutoReview(
     }
     const result = message.result;
     if (tracked.kind === 'session') {
-      const reported = reportedModeIds(result);
-      if (reported.includes(NATIVE_AUTO_MODE_ID)) nativeAuto = true;
-      if (reported.includes(ANTIGRAVITY_YOLO_MODE_ID)) nativeYolo = true;
+      if (reportedModeIds(result).includes(NATIVE_AUTO_MODE_ID)) nativeAuto = true;
       const sessionId = typeof result.sessionId === 'string' ? result.sessionId : tracked.sessionId;
       const state = sessionId
         ? stateFor(sessionId, [...tracked.roots, agyConversationDirectory(sessionId)])

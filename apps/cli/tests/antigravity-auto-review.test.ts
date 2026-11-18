@@ -100,6 +100,8 @@ async function startSession(
   options: {
     workdir?: string;
     configOptionValues?: Record<string, string>;
+    /** Arguments after the server, as the launch resolver appends them. */
+    launchArgs?: string[];
     resumeSessionId?: ACPSessionId;
     answer?: (request: RequestPermissionRequest) => RequestPermissionResponse;
   } = {}
@@ -126,7 +128,7 @@ async function startSession(
     cliType: 'registry',
     agentType: 'antigravity-acp',
     command: process.execPath,
-    args: [fixture],
+    args: [fixture, ...(options.launchArgs ?? [])],
     ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
     onUpdateMessage: (message: AcpSessionNotification) => updates.push(message),
     onRequestPermission: async (_requestId: string, request: RequestPermissionRequest) => {
@@ -240,11 +242,30 @@ describe('Antigravity Auto Review through the session start chain', () => {
     ).toBe('auto_review');
     await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
 
+    // This process was started without agy's skip flag; YOLO waits for a new one.
+    await expect(harness.setMode('yolo')).resolves.toEqual({
+      rejectedSelections: ['mode="yolo"'],
+      modeId: 'auto_review',
+    });
+    await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
+  });
+
+  it('runs a YOLO session in default in an agy process started with the skip flag', async () => {
+    const harness = await startSession({
+      configOptionValues: { mode: 'yolo' },
+      launchArgs: [ANTIGRAVITY_SKIP_PERMISSIONS_ARG],
+    });
+    expect(
+      harness.session.agentClient?.getConfigOptions().find((option) => option.id === 'mode')
+        ?.currentValue
+    ).toBe('yolo');
+    // The fake server, like agy, refuses a mode it does not know: `yolo` never reaches it.
+    await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
     await expect(harness.setMode('yolo')).resolves.toEqual({
       rejectedSelections: [],
       modeId: 'yolo',
     });
-    await expect(harness.prompt('report-mode')).resolves.toBe('mode=yolo');
+    await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
   });
 
   it('decides each request by rule or reviewer, and records what the reviewer did', async () => {

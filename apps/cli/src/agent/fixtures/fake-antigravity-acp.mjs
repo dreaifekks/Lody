@@ -1,8 +1,9 @@
 // A stand-in for `agy_acp_server` in its `default` mode, for the Auto Review
-// tests. Speaks ACP over stdio like the real server: three modes, a `mode`
+// tests. Speaks ACP over stdio like the real server: two modes, a `mode`
 // config option, and a permission request (allow_always / allow / deny) before
 // each tool call. It refuses any mode it does not know, so a leaked
-// `auto_review` fails the request just as the real server would.
+// `auto_review` or `yolo` fails the request just as the agy CLI would; like the
+// agy CLI it has no `yolo` of its own.
 //
 // A main-session prompt carries the tool calls to request, in order, as
 // `_meta.fixtureSteps`; the agent reports each outcome as message text
@@ -17,7 +18,6 @@ import { createInterface } from 'node:readline';
 const MODES = [
   { id: 'default', name: 'Default', description: 'Default permission prompt flow' },
   { id: 'auto_edit', name: 'Auto Edit', description: 'Auto-approve file edit tools' },
-  { id: 'yolo', name: 'YOLO', description: 'Auto-approve all tools' },
 ];
 const sessions = new Map();
 const waiting = new Map();
