@@ -17,6 +17,7 @@ context/message-flow.md "Upstream".
 | Runtime resolution | [Managed runtimes](managed-agent-runtime.ts)                             | Resolves pinned distributions and verifies their artifacts.                                |
 | Codex credentials  | [Profiles](codex-profile-store.ts), [broker](codex-credential-broker.ts) | Host-bound homes and vault generations; redirect-denying user-side API requests.           |
 | Codex process uses | [Usage records](codex-profile-process-usage.ts)                          | Independent process records for deletion cleanup; same-profile sessions remain concurrent. |
+| Codex archive      | [Native archive](codex-native-archive.ts)                                | Follows a Session's archive and restore with `codex archive`/`unarchive` on its thread.    |
 
 ## Files
 
