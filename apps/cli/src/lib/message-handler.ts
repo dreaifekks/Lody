@@ -954,10 +954,11 @@ export class MessageHandler {
   private historyWatchWaiters = 0;
   private sessionActivePresence!: SessionActivePresenceControllerLegacy;
   private readonly titleGenerationInFlight = new Map<SessionId, Promise<string | null>>();
-  // Note: titleGenerationInFlight, archiveInFlight are self-cleaning
+  // Note: titleGenerationInFlight, archiveInFlight, codexArchiveSyncs are self-cleaning
   // and stay as independent tracking. All other per-session state lives in this.store.
   private sessionLifecycleWatchHandles: RepoWatchHandle[] = [];
   private readonly archiveInFlight = new Set<SessionId>();
+  private readonly codexArchiveSyncs = new Map<SessionId, Promise<void>>();
   private readonly deletedSessionIds = new Set<SessionId>();
   /**
    * Latest output time and running tool title per Session, for on-demand live
@@ -5143,7 +5144,7 @@ export class MessageHandler {
     try {
       await this.releaseArchivedSessionRuntime(sessionId);
       // After the release: a live Codex process must not keep the thread open.
-      await this.syncCodexThreadArchive(sessionId, true);
+      await this.syncCodexThreadArchive(sessionId);
     } catch (error) {
       this.logger.error(
         `[${sessionId}] Failed to release archived session runtime: ${formatErrorMessage(error)}`
@@ -5160,21 +5161,35 @@ export class MessageHandler {
     if (!(await this.isSessionOwnedByThisMachine(sessionId))) {
       return;
     }
-    await this.syncCodexThreadArchive(sessionId, false);
+    await this.syncCodexThreadArchive(sessionId);
   }
 
   /**
    * Keeps the archived flag in Codex's own store equal to Lody's, so Codex's
-   * session lists agree and a restored Session can resume its thread. A
-   * failure leaves Lody's archive state as it is and costs one log line.
+   * session lists agree and a restored Session can resume its thread. One
+   * Session's syncs run in order, each applying the flag Lody holds when it
+   * starts: an archive that finishes releasing the runtime after a restore
+   * leaves the thread unarchived.
    */
-  private async syncCodexThreadArchive(sessionId: SessionId, archived: boolean): Promise<void> {
-    const action = archived ? 'archive' : 'unarchive';
+  private syncCodexThreadArchive(sessionId: SessionId): Promise<void> {
+    const sync = (this.codexArchiveSyncs.get(sessionId) ?? Promise.resolve()).then(() =>
+      this.applyCodexThreadArchive(sessionId)
+    );
+    this.codexArchiveSyncs.set(sessionId, sync);
+    void sync.then(() => {
+      if (this.codexArchiveSyncs.get(sessionId) === sync) this.codexArchiveSyncs.delete(sessionId);
+    });
+    return sync;
+  }
+
+  /** A failure leaves Lody's archive state as it is and costs one log line. */
+  private async applyCodexThreadArchive(sessionId: SessionId): Promise<void> {
     try {
       const meta = (await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId)))
         ?.meta as SessionMeta | undefined;
       const threadId = meta ? getSessionCodexThreadId(meta) : undefined;
       if (!meta || !threadId) return;
+      const archived = meta.isArchived === true;
       await setCodexThreadArchived({
         workspaceId: this.workspaceId,
         provider: meta.agentConfigId
@@ -5183,10 +5198,12 @@ export class MessageHandler {
         threadId,
         archived,
       });
-      this.logger.debug(`[${sessionId}] Codex thread ${threadId}: ${action} done`);
+      this.logger.debug(
+        `[${sessionId}] Codex thread ${threadId} ${archived ? 'archived' : 'unarchived'}`
+      );
     } catch (error) {
       this.logger.warn(
-        `[${sessionId}] Codex thread ${action} failed: ${formatErrorMessage(error)}`
+        `[${sessionId}] Codex thread archive sync failed: ${formatErrorMessage(error)}`
       );
     }
   }

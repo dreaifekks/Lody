@@ -699,6 +699,7 @@ describe('MessageHandler terminal cleanup', () => {
           options?.metadataFields?.includes('isArchived')
         ) ?? [];
       const emit = async (sessionId: SessionId, patch: Partial<SessionMeta>) => {
+        await repo.upsertDocMeta(getSessionRoomId(sessionId), patch);
         onArchivedChange?.({
           kind: 'doc-metadata',
           docId: getSessionRoomId(sessionId),
@@ -720,6 +721,40 @@ describe('MessageHandler terminal cleanup', () => {
         'archive thread-of-session-1',
         'unarchive thread-of-session-1',
       ]);
+    });
+
+    it('leaves the thread unarchived when a restore lands while the archive is releasing', async () => {
+      const session = codexSession('session-1');
+      const { handler, repo, sessionManager } = createHarness({
+        activeSessionIds: [session.id],
+        sessionMetas: [session],
+        agentConfigs: [provider()],
+      });
+      handler.worktreeGc = { schedule: async () => ({ removed: [] }) };
+      let terminating = () => {};
+      let finishTerminate = () => {};
+      const terminateStarted = new Promise<void>((resolve) => {
+        terminating = () => resolve();
+      });
+      const terminateReleased = new Promise<void>((resolve) => {
+        finishTerminate = () => resolve();
+      });
+      const terminate = sessionManager.terminateSession.getMockImplementation();
+      sessionManager.terminateSession.mockImplementationOnce(async (id) => {
+        terminating();
+        await terminateReleased;
+        await terminate?.(id);
+      });
+
+      const archiving = handler.handleSessionArchived(session.id);
+      await terminateStarted;
+      await repo.upsertDocMeta(getSessionRoomId(session.id), { isArchived: false });
+      await handler.handleSessionRestored(session.id);
+      finishTerminate();
+      await archiving;
+
+      expect(codexCalls()).toContain('unarchive thread-of-session-1');
+      expect(codexCalls()).not.toContain('archive thread-of-session-1');
     });
 
     it('keeps the Lody archive when Codex refuses to archive the thread', async () => {

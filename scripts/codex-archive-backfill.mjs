@@ -98,7 +98,8 @@ const details = await mapLimit(
 );
 const threads = new Map();
 for (const s of details) {
-  if (s.cliType !== 'builtin' || s.agentType !== 'codex') continue;
+  // `show` is the later read: a Session restored since `list` is skipped here.
+  if (s.isArchived !== true || s.cliType !== 'builtin' || s.agentType !== 'codex') continue;
   const threadId = s.acpSessionId ?? s.externalHistory?.sourceAcpSessionId;
   if (threadId) threads.set(threadId, { sessionId: s.id, threadId, title: s.title ?? '' });
 }
@@ -134,6 +135,11 @@ try {
   if (options.apply) {
     for (const t of toArchive) {
       try {
+        // A Session restored while this runs keeps its thread active.
+        if ((await lody('session', 'show', t.sessionId)).session.isArchived !== true) {
+          results.push({ ...t, archived: false, skipped: 'restored in Lody' });
+          continue;
+        }
         await server.request('thread/archive', { threadId: t.threadId });
         results.push({ ...t, archived: true });
       } catch (error) {
@@ -161,7 +167,13 @@ try {
     console.log(`  not found in Codex: ${missing.length}`);
     console.log(`  still active in Codex: ${toArchive.length}`);
     for (const t of options.apply ? results : toArchive) {
-      const outcome = options.apply ? (t.archived ? 'archived ' : `FAILED ${t.error} `) : '';
+      const outcome = !options.apply
+        ? ''
+        : t.archived
+          ? 'archived '
+          : t.skipped
+            ? `skipped (${t.skipped}) `
+            : `FAILED ${t.error} `;
       console.log(`  ${outcome}${t.sessionId} ${t.threadId} ${t.title}`);
     }
     if (!options.apply && toArchive.length > 0) {
