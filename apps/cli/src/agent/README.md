@@ -470,13 +470,24 @@ models to every client, so the Zed client identity no longer matters for it.
 - Auto Review: `antigravity-auto-review.ts` checks the modes a session reports. When
   `auto` is among them it adds no mode and reviews nothing, and a stored `auto_review`
   is sent as `auto`, so the reviewer, a hidden session of the same binary, never
-  starts. Older servers keep the synthetic mode.
+  starts. Servers without `auto`, which include the agy CLI on Linux, keep the
+  synthetic mode. Its rules count the conversation's own agy directory,
+  `~/.gemini/antigravity-cli/brain/<session id>/`, where agy keeps scratch files, as
+  workspace; the rest of `~/.gemini/antigravity-cli/` still asks as agent configuration.
+- YOLO: Lody adds `yolo` to the modes. A session whose turn selects it starts agy
+  with `--dangerously-skip-permissions` and runs it in `default`, so agy approves
+  its own permission requests; its deny rules and command denylist still apply. The
+  flag is fixed for a process: a turn that turns YOLO on or off restarts the
+  session's agent first (`antigravityYoloChanged`), and a switch during a turn is
+  refused until the next message.
 - Permissions: in `default` and `auto`, agy asks before every tool call of an MCP
   server the client passes (the builtin `lody` server, workspace MCP) and offers only
   allow-once or reject-once. MCP servers from its own plugins run without asking.
-- Stored selections: `yolo`, `auto_edit`, `auto_review` and `thinking_level` are not
-  in this catalog. Create rejects them and continuing turns drop them. Session ids
-  from the former server load as empty conversations.
+  agy's allow rules in `~/.gemini/config/config.json` (`mcp(<server>/<tool>)`,
+  `command(<prefix>)`) also apply to ACP sessions.
+- Stored selections: `auto_edit` and `thinking_level` are not in this catalog, nor
+  `auto_review` where agy has `auto`. Create rejects them and continuing turns drop
+  them. Session ids from the former server load as empty conversations.
 - Quota still reads the former server's sign-in, `~/.gemini/antigravity-acp/acp_token.json`;
   the agy CLI keeps its own credential.
 

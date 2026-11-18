@@ -473,6 +473,14 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
     return this.config.memory;
   }
 
+  getModeSelection(): Pick<SessionConfig, 'agentType' | 'modeId' | 'configOptionValues'> {
+    return {
+      agentType: this.config.agentType,
+      modeId: this.config.modeId,
+      configOptionValues: this.config.configOptionValues,
+    };
+  }
+
   updateEnv(env: Record<string, string | undefined>): void {
     const configEnv = this.config.env ?? {};
     for (const [key, value] of Object.entries(env)) {

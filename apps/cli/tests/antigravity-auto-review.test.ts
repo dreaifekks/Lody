@@ -38,8 +38,11 @@ vi.mock('@/agent/acp-binary-manager', async (importOriginal) => ({
 
 import { fetchAcpCapabilities } from '../src/agent/acp-capabilities';
 import {
+  ANTIGRAVITY_SKIP_PERMISSIONS_ARG,
   AUTO_REVIEW_CIRCUIT_BREAKER_LIMIT,
   AUTO_REVIEW_TIMEOUT_MS,
+  antigravityLaunchArgs,
+  antigravityYoloChanged,
   withAntigravityAutoReview,
 } from '../src/agent/antigravity-auto-review';
 import {
@@ -371,7 +374,8 @@ describe('Antigravity Auto Review stream', () => {
   /** The wrapper between a scripted client and agent, with an injected reviewer and clock. */
   const wire = (
     reviewer: AutoReviewer,
-    isGitRepository: () => Promise<boolean> = async () => true
+    isGitRepository: () => Promise<boolean> = async () => true,
+    launchArgs: string[] = ['acp']
   ) => {
     const toClient: AnyMessage[] = [];
     const toAgent: AnyMessage[] = [];
@@ -388,6 +392,7 @@ describe('Antigravity Auto Review stream', () => {
         agentType: 'antigravity-acp',
         logger: createSilentLogger(),
         label: 'test',
+        launch: { command: 'antigravity', args: launchArgs, env: {} },
         createReviewer: () => reviewer,
         isGitRepository,
       }
@@ -402,7 +407,8 @@ describe('Antigravity Auto Review stream', () => {
       toAgent,
       settle,
       async start(
-        availableModes: { id: string; name: string }[] = [{ id: 'default', name: 'Default' }]
+        availableModes: { id: string; name: string }[] = [{ id: 'default', name: 'Default' }],
+        mode = 'auto_review'
       ) {
         await clientWriter.write({
           jsonrpc: '2.0',
@@ -412,7 +418,7 @@ describe('Antigravity Auto Review stream', () => {
             cwd: workdirs.at(-1),
             mcpServers: [],
             _meta: {
-              lody: { sessionConfig: { version: 1, configOptionValues: { mode: 'auto_review' } } },
+              lody: { sessionConfig: { version: 1, configOptionValues: { mode } } },
             },
           },
         });
@@ -456,6 +462,16 @@ describe('Antigravity Auto Review stream', () => {
           method: 'session/cancel',
           params: { sessionId: 's' },
         }),
+      /** A mode switch the agent has not answered. */
+      async requestMode(id: number, value: string) {
+        await clientWriter.write({
+          jsonrpc: '2.0',
+          id,
+          method: 'session/set_config_option',
+          params: { sessionId: 's', configId: 'mode', value },
+        });
+        await settle();
+      },
       /** `reported` is the mode the agent then reports as current. */
       async switchMode(id: number, value: string, reported = value) {
         await clientWriter.write({
@@ -528,6 +544,7 @@ describe('Antigravity Auto Review stream', () => {
       availableModes: [
         { id: 'default', name: 'Default' },
         expect.objectContaining({ id: 'auto_review' }),
+        expect.objectContaining({ id: 'yolo' }),
       ],
     });
     expect(wired.toAgent[0]).toMatchObject({
@@ -535,19 +552,23 @@ describe('Antigravity Auto Review stream', () => {
     });
   });
 
+  const agyModes = [
+    { id: 'default', name: 'Default' },
+    { id: 'accept-edits', name: 'Accept edits' },
+    { id: 'auto', name: 'Auto' },
+    { id: 'plan', name: 'Plan' },
+  ];
+
   it("runs Auto Review in the agent's own Auto mode when it has one, and reviews nothing", async () => {
-    const agyModes = [
-      { id: 'default', name: 'Default' },
-      { id: 'accept-edits', name: 'Accept edits' },
-      { id: 'auto', name: 'Auto' },
-      { id: 'plan', name: 'Plan' },
-    ];
     const wired = wire(neverAnswers());
     await wired.start(agyModes);
     const response = wired.toClient.find((message) => 'id' in message && message.id === 1) as {
       result: { modes: unknown };
     };
-    expect(response.result.modes).toEqual({ currentModeId: 'default', availableModes: agyModes });
+    expect(response.result.modes).toEqual({
+      currentModeId: 'default',
+      availableModes: [...agyModes, expect.objectContaining({ id: 'yolo' })],
+    });
 
     await wired.switchMode(3, 'auto_review', 'auto');
     expect(wired.toAgent.at(-1)).toMatchObject({
@@ -563,6 +584,94 @@ describe('Antigravity Auto Review stream', () => {
     await wired.requestPermission(10, 'make build');
     expect(forwarded(wired.toClient)).toEqual([10]);
     expect(JSON.stringify(wired.toClient)).not.toContain('Auto Review');
+  });
+
+  it('runs YOLO as default in an agy process started with the skip flag', async () => {
+    const wired = wire(neverAnswers(), undefined, ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG]);
+    await wired.start(agyModes, 'yolo');
+    expect(wired.toAgent[0]).toMatchObject({
+      params: { _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'default' } } } } },
+    });
+    const response = wired.toClient.find((message) => 'id' in message && message.id === 1) as {
+      result: { modes: unknown };
+    };
+    expect(response.result.modes).toEqual({
+      currentModeId: 'yolo',
+      availableModes: [...agyModes, expect.objectContaining({ id: 'yolo' })],
+    });
+
+    await wired.switchMode(3, 'yolo', 'default');
+    expect(wired.toAgent.at(-1)).toMatchObject({
+      method: 'session/set_config_option',
+      params: { configId: 'mode', value: 'default' },
+    });
+    expect(wired.toClient.at(-1)).toMatchObject({
+      id: 3,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            currentValue: 'yolo',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+        ],
+      },
+    });
+  });
+
+  it('refuses a switch the running agy process cannot make, without telling agy', async () => {
+    const plain = wire(neverAnswers());
+    await plain.start(agyModes, 'auto');
+    const sentToPlain = plain.toAgent.length;
+    await plain.requestMode(3, 'yolo');
+    expect(plain.toAgent).toHaveLength(sentToPlain);
+    expect(plain.toClient.at(-1)).toMatchObject({
+      id: 3,
+      error: { message: expect.stringContaining('next message') },
+    });
+
+    const flagged = wire(neverAnswers(), undefined, ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG]);
+    await flagged.start(agyModes, 'yolo');
+    const sentToFlagged = flagged.toAgent.length;
+    await flagged.requestMode(3, 'auto');
+    expect(flagged.toAgent).toHaveLength(sentToFlagged);
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      id: 3,
+      error: { message: expect.stringContaining('runs in YOLO') },
+    });
+  });
+
+  it("reviews a write into the agy conversation's own directory instead of asking as configuration", async () => {
+    const reviewed: string[] = [];
+    const wired = wire({
+      prewarm: () => {},
+      close: () => {},
+      review: async (input, _signal, onStart) => {
+        onStart?.();
+        reviewed.push(String(input.command));
+        return { decision: 'allow', reason: 'requested' };
+      },
+    });
+    await wired.start();
+    const brain = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+    const own = `lody-lan session list > ${brain}/s/scratch/out.json 2>&1`;
+    await wired.requestPermission(10, own);
+    await wired.requestPermission(
+      11,
+      `lody-lan session list > ${brain}/other/scratch/out.json 2>&1`
+    );
+
+    expect(reviewed).toEqual([own]);
+    expect(wired.toAgent).toContainEqual(
+      expect.objectContaining({
+        id: 10,
+        result: { outcome: { outcome: 'selected', optionId: 'allow' } },
+      })
+    );
+    // Another conversation's directory is still agent configuration.
+    expect(forwarded(wired.toClient)).toEqual([11]);
   });
 
   it('hands a request to the user when the reviewer does not answer in time', async () => {
@@ -675,6 +784,34 @@ describe('Antigravity Auto Review stream', () => {
         (message) => 'method' in message && message.method === 'session/request_permission'
       )
     ).toBe(false);
+  });
+});
+
+describe('Antigravity YOLO launch', () => {
+  it('starts agy with its skip flag only for a session that selects YOLO', () => {
+    const agy = 'antigravity-acp';
+    expect(antigravityLaunchArgs({ agentType: agy, modeId: 'yolo' })).toEqual([
+      ANTIGRAVITY_SKIP_PERMISSIONS_ARG,
+    ]);
+    expect(antigravityLaunchArgs({ agentType: agy, configOptionValues: { mode: 'yolo' } })).toEqual(
+      [ANTIGRAVITY_SKIP_PERMISSIONS_ARG]
+    );
+    expect(antigravityLaunchArgs({ agentType: agy, modeId: 'auto' })).toEqual([]);
+    expect(antigravityLaunchArgs({ agentType: 'gemini', modeId: 'yolo' })).toEqual([]);
+
+    expect(
+      antigravityYoloChanged({ agentType: agy, modeId: 'auto' }, { agentType: agy, modeId: 'yolo' })
+    ).toBe(true);
+    expect(
+      antigravityYoloChanged({ agentType: agy, modeId: 'yolo' }, { agentType: agy, modeId: 'plan' })
+    ).toBe(true);
+    expect(antigravityYoloChanged({ agentType: agy }, { agentType: agy, modeId: 'auto' })).toBe(
+      false
+    );
+    // A turn that names no mode keeps the running process.
+    expect(antigravityYoloChanged({ agentType: agy, modeId: 'yolo' }, { agentType: agy })).toBe(
+      false
+    );
   });
 });
 

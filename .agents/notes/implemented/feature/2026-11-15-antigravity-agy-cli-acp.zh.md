@@ -13,9 +13,11 @@ registry 里的 Google Antigravity 条目原先运行 `agy_acp_server`。它不�
 agy CLI 的 GitHub release 启动 `antigravity acp`，Lody 会话因此和本地 `agy acp` 一致：
 插件 hooks 会执行，插件 MCP 服务会加载，原生 `default`/`accept-edits`/`auto`/`plan`
 模式、`thought_level` 选项、Claude/GPT 模型和 agent 自己起的标题都可用。Lody 让这个运行时
-自己给会话起标题，并把它的 Auto Review 模式当作原生 `auto`。代价是：对客户端传入的 MCP
-服务（包括 Lody 自己的 `lody`），agy 每次调用工具都会询问，而以前由 Lody 的审查模型决定；
-另外，已保存的 `yolo`、`auto_review`、`thinking_level` 选择不再通过校验。
+自己给会话起标题；agy 有 `auto` 时，把它的 Auto Review 模式当作原生 `auto`。代价是：对客户端
+传入的 MCP 服务（包括 Lody 自己的 `lody`），除非有 agy 的允许规则覆盖，agy 每次调用工具都会询问；
+另外，已保存的 `auto_edit`、`thinking_level` 选择不再通过校验。agy 只能让整个进程跳过权限询问，
+所以 Lody 的 `yolo` 模式用 `--dangerously-skip-permissions` 启动该会话的 agy，某一轮切入或切出
+YOLO 时重启它。
 
 ## 发现
 
@@ -36,7 +38,25 @@ agy CLI 的 GitHub release 启动 `antigravity acp`，Lody 会话因此和本地
   到外部主机。读取工作区外其他会话的文件前会询问；调用 `lody` 和探测用 MCP 服务的每个工具
   前都会询问，选项只有允许一次和拒绝一次。插件的 MCP 工具在 `default` 和 `auto` 下都不询问。
   在单独的 `--cli_dir_name` 设置目录里写 agy 的 `permissions.allow` 规则 `mcp(<server>/*)`
-  没能免掉询问；ACP 会话到底读不读这类规则，尚未确认。
+  没能免掉询问。更正：ACP 会话会读 agy 共享配置里的允许规则，见下面 2026-11-18 的测量。
+
+2026-11-18 测得，agy CLI 1.5.9，Linux x86_64（Ubuntu 24.04 和 26.04）与 macOS arm64，经由 Lody 会话
+和最小 ACP 客户端：
+
+- 两台 Linux 机器的 `kernel.apparmor_restrict_unprivileged_userns` 都是 1，agy 只报告 `default`、
+  `accept-edits`、`plan`，没有 `auto`；它的 changelog 说，在禁止非特权 user namespace 的 Linux 上，
+  需要终端沙箱的选项不提供。那里运行的是 Lody 合成的 Auto Review。
+- `~/.gemini/config/config.json` 里 `userSettings.globalPermissionGrants.allow` 下的允许规则，
+  例如 `command(lody-lan session list)`（按词前缀匹配）和 `mcp(lody/lody_session_status_many)`，
+  对 ACP 会话生效。Linux 上一个会话执行 `lody-lan` 命令、调用 `lody` 和 nmem 的 MCP 工具，没有一个
+  权限请求到达 Lody。macOS 的 `auto` 下，MCP 工具不再询问。
+- macOS 的 `auto` 下，`lody-lan` 在 agy 的终端沙箱里失败（"operation not permitted"）；agy 对
+  "在沙箱外执行"的审查约 40 秒没有结论，之后允许规则放行，没有询问用户。
+- Lody Auto Review 下，每条 `lody-lan … > <scratch>/out.json` 都被当作修改 agent 配置而询问用户：
+  agy 让 agent 把临时文件放在本会话目录 `~/.gemini/antigravity-cli/brain/<会话 id>/`，而规则把整个
+  `~/.gemini/antigravity-cli/` 都算作 agent 配置。这个会话 id 就是 ACP session id。
+- 加 `--dangerously-skip-permissions` 并用 `default` 时，macOS 上 `lody-lan` 立即执行。changelog 说
+  这个参数只跳过工具权限询问，系统命令黑名单照样拦截，显式的 deny 规则仍然有效。
 
 ## 决策
 
@@ -53,8 +73,18 @@ agy 会话并执行用户的 hooks，每个 Lody 会话多一条 nmem 线程和�
 上每个被审查的会话都会执行一遍用户的 hooks。没有 `auto` 的服务仍保留合成模式，所以还在用
 `agy_acp_server` 的机器在更新前行为不变。
 
+它的规则把本会话自己的 agy 会话目录算作工作区，那里的临时文件按工作区内的修改审查。其他会话的
+目录和 `~/.gemini/antigravity-cli/` 的其余部分仍会询问。
+
+YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保存的 Role 和会话因此重新通过校验。
+驱动这一轮的选择是 `yolo` 的会话，用 `--dangerously-skip-permissions` 启动 agy
+（`antigravityLaunchArgs`），以 `default` 运行，包装层把当前模式报告为 `yolo`。Lody 本来就是
+每个会话一个 agy 进程，所以这个参数按会话生效。某一轮切入或切出 YOLO 时，先退役该会话的 agent，
+再启动一个载入原对话的替代进程（会话执行服务里的 `antigravityYoloChanged`）。运行中的一轮里，
+需要换进程的模式切换会被报错拒绝，不会发给 agy。
+
 权限档位把 agy 的 `accept-edits` 归为 `edit`，输入框用 accept-edits 的图标显示它。
-`auto`、`default`、`plan` 原本已有归类。
+`auto`、`default`、`plan` 原本已有归类；`yolo` 是 `full`，带警告图标。
 
 ## 备选方案
 
@@ -63,12 +93,21 @@ agy 会话并执行用户的 hooks，每个 Lody 会话多一条 nmem 线程和�
   多一个执行用户 hooks 的隐藏 agy 会话。如果 MCP 工具逐次询问的代价太大，这是可以回头采用的方案。
 - 把 `auto_review` 列为原生 `auto` 的别名：能让已保存的选择继续有效。否决原因是 id 会和 agy
   自己的不一致，模式更新要做转换，而需要修改的已保存选择很少。
+- Provider 级的跳过参数，即上游 LodyAI/Lody#2796 给内置 `antigravity` 条目加的开关，作用于该
+  Provider 的所有会话。fork 保留按会话的模式，因为 Role 和会话是按会话选 `yolo` 的。两者最后都是
+  同一个启动参数，以后改用内置条目也不需要新机制。
+- `antigravity acp --process-per-session` 在一个父进程里为每个 ACP 会话起一个 agy worker；Lody 本来
+  就是每个会话一个进程，而且这个参数仍属于父进程。
+- agy 的 `always-proceed` 工具执行策略（它的 Turbo 预设）是对本机所有 agy 会话的设置，不是 ACP 模式。
+- 只靠允许规则，只能覆盖列出的命令和工具。它们仍作为 YOLO 以外会话的按机器配置。
 
 ## 影响
 
-- 为这个条目保存了 `yolo`、`auto_edit`、`auto_review` 或 `thinking_level` 的 Role、定时任务和会话，
-  创建时会失败；继续对话时这些选择被丢弃，以 `default` 运行。请改用 `auto` 或 `accept-edits`，
-  以及 `thought_level`。agy 没有按会话设置的 `yolo`，只有进程参数 `--dangerously-skip-permissions`。
+- 为这个条目保存了 `auto_edit` 或 `thinking_level` 的 Role、定时任务和会话，创建时会失败；继续对话时
+  这些选择被丢弃，以 `default` 运行；在 agy 有 `auto` 的机器上，`auto_review` 也是如此。请改用 `auto`
+  或 `accept-edits`，以及 `thought_level`。某台机器获得 `auto` 后（例如用 AppArmor 配置允许 agy 使用
+  user namespace），同样会失去 `auto_review`。
+- 会话切入或切出 YOLO，要在下一条消息时重启一次 agy。在一轮进行中切换，从下一条消息起生效。
 - 来自 `agy_acp_server` 的会话 id 会载入为空对话，以前的 Antigravity 会话丢失 agent 侧上下文。
 - 配额仍读取 `~/.gemini/antigravity-acp/acp_token.json`，见
   [Argon 配额决策](../bug-fix/2026-10-20-antigravity-argon-quota.zh.md)。只通过 agy CLI 登录的机器
@@ -79,8 +118,11 @@ agy 会话并执行用户的 hooks，每个 Lody 会话多一条 nmem 线程和�
 
 - `scripts/generate-acp-registry.test.mjs` 固定生成的条目。
 - `packages/shared/tests/title-generation-defaults.test.ts` 固定标题归属。
-- `apps/cli/tests/antigravity-auto-review.test.ts` 固定交给 `auto` 的行为。
+- `apps/cli/tests/antigravity-auto-review.test.ts` 固定交给 `auto` 的行为、YOLO 模式和启动参数、
+  被拒绝的切换，以及会话目录规则。
+- `apps/cli/tests/session-execution-service.test.ts` 固定某一轮切换 YOLO 时的重启。
 - `packages/shared/tests/permission-tier.test.ts` 和 `permission-mode-face.test.ts` 固定模式档位和图标。
 
 未验证：在桌面应用里回答权限请求、批准后实际调用 `lody` 工具、真跑 `accept-edits` 和 `plan`、
-启动 Linux 和 Windows 归档。
+启动 Windows 归档、经由 Lody 构建跑 YOLO 会话（只探测过 agy 进程本身），以及允许 user namespace 后
+Linux 上 agy 的 `auto`。

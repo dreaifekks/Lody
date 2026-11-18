@@ -67,7 +67,40 @@ import {
   type PromptRequest,
   type PromptResponse,
 } from '@agentclientprotocol/sdk';
-import { ACP_CAPABILITY_CACHE_VERSION, ACP_CAPABILITY_REFRESH_CACHE_TTL_MS, type AcpCapabilityCacheEntry, getMachineRoomId, getSessionRoomId, parseSessionNotification, SESSION_CANCEL_NO_ACTIVE_TURN_ERROR, buildSessionTurnInputConfig, quotaReservationIdentity, inputBlocksToHistoryItems, SessionStatusFactory, type AcpConfigOptionSummary, getAcpCapabilityCacheEntryAuthority, type ACPSessionId, type AgentConfigId, type AgentConfigMeta, type AgentRoleId, type ChatFailedReason, type LocalProjectId, type MachineFlockKey, type ProjectRef, type MachineId, type SessionGoalMessage, type SessionHistoryInput, type SessionId, type SessionInputBlock, type SessionMeta, type SessionStatus, type WorkspaceId, E2EE_INTENT_KIND, encodeE2eeIntentRecord, turnExecutionDigest } from '@lody/shared';
+import {
+  ACP_CAPABILITY_CACHE_VERSION,
+  ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
+  type AcpCapabilityCacheEntry,
+  getMachineRoomId,
+  getSessionRoomId,
+  parseSessionNotification,
+  SESSION_CANCEL_NO_ACTIVE_TURN_ERROR,
+  buildSessionTurnInputConfig,
+  quotaReservationIdentity,
+  inputBlocksToHistoryItems,
+  SessionStatusFactory,
+  type AcpConfigOptionSummary,
+  getAcpCapabilityCacheEntryAuthority,
+  type ACPSessionId,
+  type AgentConfigId,
+  type AgentConfigMeta,
+  type AgentRoleId,
+  type ChatFailedReason,
+  type LocalProjectId,
+  type MachineFlockKey,
+  type ProjectRef,
+  type MachineId,
+  type SessionGoalMessage,
+  type SessionHistoryInput,
+  type SessionId,
+  type SessionInputBlock,
+  type SessionMeta,
+  type SessionStatus,
+  type WorkspaceId,
+  E2EE_INTENT_KIND,
+  encodeE2eeIntentRecord,
+  turnExecutionDigest,
+} from '@lody/shared';
 import { pendingEventFromAgentEditEvidence } from '../src/lib/code-collab/code-collab-v2-diff-evidence';
 import { TurnPostProcessingService } from '../src/session/turn-post-processing-service';
 import Database from 'better-sqlite3';
@@ -6287,6 +6320,108 @@ describe('SessionExecutionService', () => {
     expect(deps.startSessionActivePresence).toHaveBeenCalledTimes(1);
     expect(deps.startSessionActivePresence).toHaveBeenCalledWith('session-1', 'initializing');
     expect(deps.clearSessionActivePresence).toHaveBeenCalledTimes(1);
+  });
+
+  // LAN fork: Antigravity YOLO is agy's process flag, fixed when the process starts.
+  it.each([
+    { scenario: 'turns YOLO on', started: 'auto', turn: 'yolo', restarts: true },
+    { scenario: 'turns YOLO off', started: 'yolo', turn: 'auto', restarts: true },
+    { scenario: 'keeps YOLO', started: 'yolo', turn: 'yolo', restarts: false },
+    { scenario: 'names no mode', started: 'yolo', turn: undefined, restarts: false },
+  ])('restarts the agy process only when a turn $scenario', async ({ started, turn, restarts }) => {
+    const meta = {
+      agentConfigId: capabilityConfigId,
+      acpSessionId: 'acp-1' as ACPSessionId,
+      isArchived: false,
+    };
+    let history: unknown[] = [];
+    const sessionDoc = withHistoryPort({
+      getMetaState: vi.fn(async () => meta),
+      setStatus: vi.fn(async () => {}),
+      setBaseBranch: vi.fn(async () => {}),
+      getHistory: vi.fn(() => history),
+      updateHistory: vi.fn(async (updater: (prev: unknown[]) => unknown[]) => {
+        history = updater(history);
+      }),
+    });
+    const liveSession = (modeId: string | undefined) => ({
+      sessionId: 'session-1' as SessionId,
+      acpSessionId: 'acp-1' as ACPSessionId,
+      agentClient: {
+        isCreated: vi.fn(() => true),
+        cancel: vi.fn(async () => {}),
+        prompt: vi.fn(async () => ({})),
+        currentModel: undefined,
+      },
+      terminalManager: {} as unknown,
+      getWorkdir: () => '/tmp',
+      getHostWorkdir: () => '/tmp',
+      getParentSessionId: () => undefined,
+      getModeSelection: () => ({ agentType: 'antigravity-acp', modeId }),
+      exec: vi.fn(async () => ''),
+      terminate: vi.fn(async () => {}),
+      updateGitIdentity: vi.fn(),
+      createAgent: vi.fn(async () => 'acp-1'),
+      applyExecutionPlaneLimits: vi.fn(async () => {}),
+    });
+    const running = liveSession(started);
+    const restarted = liveSession(turn);
+    let retired = false;
+    const sessionManager = {
+      getSession: vi.fn(() => (retired ? null : running)),
+      retireSessionForReconfiguration: vi.fn(async (session: unknown) => {
+        expect(session).toBe(running);
+        retired = true;
+      }),
+      getPendingSession: vi.fn(() => null),
+      createSession: vi.fn(async (config, agentStart) => {
+        expect(config.modeId).toBe(turn);
+        expect(agentStart?.resumeSessionId).toBe('acp-1');
+        return restarted as unknown;
+      }),
+      setSessionError: vi.fn(),
+      terminateSession: vi.fn(),
+      validateSessionCredentials: vi.fn(async () => {}),
+    } as unknown as SessionManager;
+    const deps = createBaseDeps({
+      sessionManager,
+      workspaceDocument: {
+        getAgentConfigById: async () =>
+          createLaunchConfig({ cliType: 'registry', agentType: 'antigravity-acp', env: {} }),
+        repo: {
+          upsertDocMeta: vi.fn(async () => {}),
+          getDocMeta: vi.fn(async () => undefined),
+        },
+        getOrCreateSessionDoc: vi.fn(async () => sessionDoc),
+        updateAcpCapabilities: vi.fn(async () => {}),
+      } as unknown as LoroDocumentManager,
+      buildAcpPromptBlocks: vi.fn(async () => [{ type: 'text', text: 'hi' }] as any),
+    });
+
+    await new SessionExecutionService(deps).continueSession({
+      type: 'session/chat',
+      sessionId: 'session-1' as SessionId,
+      machineId: 'machine-1',
+      workspaceId: 'workspace-1' as WorkspaceId,
+      acpSessionConfig: {
+        prompt: 'hi',
+        cliType: 'registry',
+        agentType: 'antigravity-acp',
+        ...(turn ? { modeId: turn } : {}),
+      },
+      userTurnId: 'turn-user-1',
+      userId: 'user-1',
+      userName: 'User',
+      userEmail: 'user@example.com',
+    });
+
+    expect(retired).toBe(restarts);
+    expect((restarts ? restarted : running).agentClient.prompt).toHaveBeenCalledWith(
+      'acp-1',
+      [{ type: 'text', text: 'hi' }],
+      { signal: expect.any(AbortSignal) }
+    );
+    expect((restarts ? running : restarted).agentClient.prompt).not.toHaveBeenCalled();
   });
 
   it('adds turns written outside Lody from the replay of a restored native session', async () => {

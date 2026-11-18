@@ -29,6 +29,8 @@ export interface SessionConfig {
   agentType: string;
   /** Config selected by the driving turn and carried into ACP session startup. */
   modelId?: SessionTurnInputConfig['modelId'];
+  /** LAN fork: the driving turn's mode; Antigravity YOLO is a flag of the agy process. */
+  modeId?: SessionTurnInputConfig['modeId'];
   configOptionValues?: SessionTurnInputConfig['configOptionValues'];
   /** Selection carried by the dispatching turn; ACP startup must not re-read history for it. */
   memory?: import('@lody/shared').MemoryBinding;

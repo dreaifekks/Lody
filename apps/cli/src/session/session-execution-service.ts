@@ -16,6 +16,7 @@ import { resolveProjectFileRoots } from './worktree/project-member-access';
 import { type AcpLauncher, resolveAcpLauncher } from '@/agent/acp-analytics';
 import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
+import { antigravityYoloChanged } from '@/agent/antigravity-auto-review';
 import { defaultAcpWorkdir } from '@/agent/acp-default-workdir';
 import { isLoroRepoDocDeleted, normalizeSessionTurnInputConfig } from '@lody/shared';
 import {
@@ -7439,6 +7440,7 @@ export class SessionExecutionService {
         agentCliType: acpSessionConfig.cliType,
         agentType: acpSessionConfig.agentType,
         modelId: acpSessionConfig.modelId,
+        modeId: acpSessionConfig.modeId,
         configOptionValues: acpSessionConfig.configOptionValues,
         memory: acpSessionConfig.memory,
         mcpServerIds: acpSessionConfig.mcpServerIds ?? [],
@@ -8187,7 +8189,12 @@ export class SessionExecutionService {
             readySession &&
             (freshAgentSession ||
               JSON.stringify(readySession.getMemoryBinding?.() ?? null) !==
-                JSON.stringify(acpSessionConfig.memory ?? null))
+                JSON.stringify(acpSessionConfig.memory ?? null) ||
+              // LAN fork: YOLO is a flag of the agy process, fixed at its start.
+              antigravityYoloChanged(
+                readySession.getModeSelection?.() ?? { agentType: acpSessionConfig.agentType },
+                acpSessionConfig
+              ))
           ) {
             yield* ctx.abortIfCancelled();
             const previousSession = readySession;
@@ -8415,6 +8422,7 @@ export class SessionExecutionService {
       agentCliType: acpSessionConfig.cliType,
       agentType: acpSessionConfig.agentType,
       modelId: acpSessionConfig.modelId,
+      modeId: acpSessionConfig.modeId,
       configOptionValues: acpSessionConfig.configOptionValues,
       memory: acpSessionConfig.memory,
       mcpServerIds: acpSessionConfig.mcpServerIds ?? [],
