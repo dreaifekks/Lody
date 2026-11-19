@@ -121,9 +121,12 @@ session, reading each conversation's last model request from
   servers runs out. Plugin MCP servers stay lazy and list only names. A tool past the
   budget is in neither list, and `call_mcp_tool` rejects it with
   `tool <name> is not enabled for server <server>`. agy's built-in flag defaults
-  include `customization-token-budget: 20000`, and its changelog says skills,
-  workflows, subagents and MCP tools share that budget; the room left for MCP tools
-  differs by machine (about 11.7k estimated tokens on the Mac mini on 2026-11-16).
+  include `customization-token-budget: 20000`, one pool that skills, subagents and
+  MCP tools fill smallest first. Skills and subagents left out are named in the
+  prompt; MCP tools left out are not. Plugin skills decide what remains for MCP: on
+  the Mac mini session the skills took about 10.2k (the `science` plugin 6.7k) and
+  MCP tools about 9k. In a probe with 120 equal tools, 86 fit; adding the `science`
+  plugin's 48 skills left 57, and `agy plugin disable science` restored 86.
 - A Mac mini chat session with `lody` and four workspace servers listed 32 of 48
   `lody` tools. The missing 16 included `lody_session_create_options`,
   `lody_session_create`, `lody_session_chat`, `lody_session_list` and
@@ -244,8 +247,11 @@ Native modes are left as the agent reports them.
 - A single dispatcher command such as `lody_call` would be the smallest listing, but
   every command would share one tool name, so agy's per-tool allow rules and the
   per-command rendering of tool calls could no longer tell them apart.
-- Raising agy's budget: `customization-token-budget` arrives as a server-side
-  experiment flag, and no local setting for it is documented.
+- Raising agy's budget: the value comes from agy's experiment flags (20000 in 1.5.9
+  and 1.5.10). Six candidate keys in `settings.json` and
+  `--include-default-customizations=false` left it at 20000, `acp` rejects
+  `--settings`, and the only local override RPC, `SetMendelFlagOverrides`, requires
+  developer mode enabled server-side. Patching the binary was not tried.
 - Keeping property names without nested schemas saves less: the create, chat and
   schedule commands would still list kilobytes of properties each.
 

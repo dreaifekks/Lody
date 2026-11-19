@@ -90,8 +90,10 @@ Linux x86_64 及一个 macOS 会话，从 `~/.gemini/antigravity-cli/conversatio
 - agy 把经 ACP 传入的每个 MCP 服务的工具声明成原生函数（`mcp_<server>_<tool>`），按声明体积从小到大放，
   直到所有服务共用的预算用完。插件的 MCP 服务仍是 lazy，只列名字。超出预算的工具两个名单都不进，
   `call_mcp_tool` 调它会报 `tool <name> is not enabled for server <server>`。agy 内置的 flag 默认值里有
-  `customization-token-budget: 20000`，它的 changelog 说 skills、workflows、subagents 和 MCP 工具共用
-  这份预算；留给 MCP 工具的余量因机器而异（2026-11-16 的 Mac mini 上约 11.7k 估算 token）。
+  `customization-token-budget: 20000`，这是 skill、子代理和 MCP 工具共用的一个池，按大小从小到大放。
+  放不下的 skill 和子代理会在提示词里点名，MCP 工具不会。留给 MCP 的空间取决于插件 skill：Mac mini 那次
+  会话 skill 约占 10.2k（`science` 插件 6.7k），MCP 工具约 9k。探针实测 120 个同样大小的工具进了 86 个；
+  加上 `science` 插件的 48 个 skill 后只剩 57 个，`agy plugin disable science` 后回到 86 个。
 - Mac mini 上一个带 `lody` 和四个工作区服务的聊天会话，48 个 `lody` 工具只列出 32 个。缺的 16 个里有
   `lody_session_create_options`、`lody_session_create`、`lody_session_chat`、`lody_session_list` 和
   `lody_session_history`，agent 调 `lody_session_create_options` 就报了上面的错。
@@ -176,7 +178,9 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 - 只向 agy 列出会话工具：其余 Lody 命令都没了，而且仍要按体积和工作区工具竞争。
 - 用 `lody_call` 这样的单个分发命令：列出的体积最小，但所有命令共用一个工具名，agy 的按工具允许规则
   和按命令显示工具调用都无法再区分它们。
-- 调高 agy 的预算：`customization-token-budget` 是服务端下发的实验 flag，没有文档记载的本地设置。
+- 调高 agy 的预算：这个值来自 agy 的实验 flag（1.5.9 和 1.5.10 都是 20000）。`settings.json` 里试了 6 种
+  键名、`--include-default-customizations=false` 都还是 20000，`acp` 不接受 `--settings`，唯一的本地覆盖
+  RPC `SetMendelFlagOverrides` 要服务端开 developer mode。没试改二进制。
 - 只保留属性名、去掉嵌套 schema：省得少，创建、对话和定时命令每个仍要列出几 KB 的属性。
 
 ## 影响
