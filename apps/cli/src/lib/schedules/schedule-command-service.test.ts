@@ -1,3 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as commandRuntime from '../command-runtime';
+import * as scheduleClient from './schedule-command-client';
 import {
   buildScheduleCreateDraft,
   buildScheduleEditDraft,
@@ -582,6 +587,68 @@ describe('proposing a schedule from a conversation', () => {
 
 describe('lody schedule --every', () => {
   const now = Date.parse('2026-11-17T08:07:00Z');
+
+  it.each(['90m', '36h'])(
+    'replays create --every %s after a lost reply with the landed anchor',
+    async (every) => {
+      const h = await fixture();
+      h.targetAvailable();
+      const directory = await mkdtemp(join(tmpdir(), 'schedule-create-retry-'));
+      const file = join(directory, 'draft.json');
+      await writeFile(file, JSON.stringify({ ...h.draft, trigger: undefined }));
+      vi.spyOn(commandRuntime, 'runOneShotCommand').mockImplementation(
+        async (_name, _options, action) => action()
+      );
+      const print = vi.spyOn(commandRuntime, 'printJson').mockImplementation(() => {});
+      let loseReply = true;
+      vi.spyOn(scheduleClient, 'sendScheduleCommand').mockImplementation(async (command) => {
+        const result = await executeScheduleCommand(h.context, command);
+        if (command.action === 'create' && loseReply) {
+          loseReply = false;
+          throw new Error('Synthetic response lost after commit');
+        }
+        return result;
+      });
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      const { scheduleCommand } = await import('../../commands/schedule');
+      const create = (step: string) =>
+        scheduleCommand.parseAsync(
+          [
+            'create',
+            '--file',
+            file,
+            '--every',
+            step,
+            '--time-zone',
+            'UTC',
+            '--request-id',
+            'retry-interval',
+            '--workspace',
+            'workspace',
+          ],
+          { from: 'user' }
+        );
+      try {
+        await expect(create(every)).rejects.toThrow('Synthetic response lost after commit');
+        const landed = await h.repository.read('retry-interval');
+        expect(landed?.definition.trigger).toEqual({
+          kind: 'interval',
+          everyMs: every === '90m' ? 90 * 60_000 : 36 * 3_600_000,
+          anchorAt: new Date(now).toISOString(),
+        });
+        clock.mockReturnValue(now + 61_000);
+        await create(every);
+        expect(print).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+        expect(await h.repository.read('retry-interval')).toEqual(landed);
+        expect(
+          (await h.repository.list()).filter((row) => row.scheduleId === 'retry-interval')
+        ).toHaveLength(1);
+        await expect(create('91m')).rejects.toThrow('Idempotency key conflict');
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('parses minute and hour steps within the shared bounds', () => {
     expect(parseScheduleEvery('90m')).toEqual({ kind: 'minutes', every: 90 });

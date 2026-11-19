@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { ScheduleCommandSchema, getDeviceTimeZone } from '@lody/shared';
+import { ScheduleCommandSchema, getDeviceTimeZone, type ScheduleTrigger } from '@lody/shared';
 import { printJson, runOneShotCommand, type CommonCommandOptions } from '@/lib/command-runtime';
 import {
   parseScheduleEvery,
@@ -37,14 +37,24 @@ async function readDraft(
   }
   if ('trigger' in draft) throw new Error('Remove "trigger" from the draft file, or omit --every');
   const step = parseScheduleEvery(options.every);
-  const previous =
-    action === 'edit'
-      ? scheduleShowTrigger(
-          await sendScheduleCommand(ScheduleCommandSchema.parse({ action: 'show', scheduleId }), {
-            workspace: options.workspace,
-          })
-        )
-      : undefined;
+  let previous: ScheduleTrigger | undefined;
+  if (action === 'edit' || options.requestId !== undefined) {
+    try {
+      previous = scheduleShowTrigger(
+        await sendScheduleCommand(ScheduleCommandSchema.parse({ action: 'show', scheduleId }), {
+          workspace: options.workspace,
+        })
+      );
+    } catch (error) {
+      // A new request has no definition yet; a landed retry keeps its anchor.
+      if (
+        action !== 'create' ||
+        !(error instanceof Error) ||
+        error.message !== 'Schedule not found'
+      )
+        throw error;
+    }
+  }
   return {
     ...draft,
     trigger: scheduleEveryTrigger(step, {
