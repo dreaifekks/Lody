@@ -2718,10 +2718,11 @@ export class AgentClient implements acp.Client {
   }
 
   /**
-   * agy ends `session/prompt` with `end_turn` while its background work still runs and then
-   * stays silent on stdout. Until that work has woken the model and finished, report
-   * `sessionActivity` so idle GC keeps the process. Only side-effect-free `session/list`
-   * is polled; agy's wakeup output is not replayed into Lody.
+   * agy ends `session/prompt` with `end_turn` while its background work still runs, and
+   * says nothing on stdout about whether that work is pending. Until that work has woken
+   * the model and finished, report `sessionActivity` so idle GC keeps the process. Only
+   * side-effect-free `session/list` is polled; agy 1.5.10 streams the wakeup's output,
+   * which reaches the finished turn like any late update.
    */
   private startAntigravityMonitor(sessionId: string): void {
     const tracker = this.antigravityTracker;

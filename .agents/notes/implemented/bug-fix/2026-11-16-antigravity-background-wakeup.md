@@ -13,7 +13,7 @@ still working. Lody now ends the turn normally and synthesizes Core `sessionActi
 until that work has woken the model and gone quiet, using only side-effect-free
 `session/list` polling. Output agy produces in those wakeups is not replayed into Lody:
 the only API that returns it, `session/load`, restarts the session's MCP servers and
-interrupted a tool call in a real run.
+interrupted a tool call in a real run. agy 1.5.10 and later stream that output live.
 
 ## Problem
 
@@ -21,8 +21,11 @@ interrupted a tool call in a real run.
 `end_turn` as soon as the model yields, even while background work it started is
 still running: `run_command` past its async threshold, `schedule` timers and crons,
 `invoke_subagent` / `send_message`, `swarm` and async `run_workflow`. When that work
-finishes, agy wakes the model inside its own session, but it no longer writes
-`session/update` or `session/request_permission` to stdout. agy does not advertise
+finishes, agy wakes the model inside its own session, but agy 1.5.9 and earlier no
+longer write `session/update` or `session/request_permission` to stdout until the next
+prompt. Correction: agy 1.5.10 and later send them at once, and Lody's late-output
+routing writes them into the finished turn
+([measurement](../feature/2026-11-15-antigravity-agy-cli-acp.md#findings)). agy does not advertise
 the Core `sessionActivity` extension, so Lody saw an idle session and
 `SessionGCManager` killed the process after the idle timeout while the work was still
 running.
@@ -90,11 +93,13 @@ activity-only release rule has not been run against a real agy.
 
 ## Limits
 
-- Output agy writes after `end_turn` does not appear in Lody. A side-effect-free read
-  from agy would allow replay without the MCP restarts.
+- With agy 1.5.9 and earlier, output agy writes after `end_turn` reaches Lody only with
+  the next prompt, inside the new turn, and never if the process is replaced first.
+  agy 1.5.10 and later send it at once.
 - Several items that wake agy in a single burst release only one item, so the
   session stays protected until the next burst or the 24-hour cap. Work the model
   starts during a wakeup is not counted.
-- A post-`end_turn` tool waiting for a permission request agy does not forward still
-  wedges that agy session until the user cancels; `realpath` negotiation removes the
-  most common trigger.
+- With agy 1.5.9 and earlier, a post-`end_turn` tool waiting for a permission request
+  agy does not forward still wedges that agy session until the user cancels;
+  `realpath` negotiation removes the most common trigger. agy 1.5.10 forwards the
+  request.

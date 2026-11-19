@@ -115,9 +115,11 @@ function hasOutput(raw: Record<string, unknown>): boolean {
  * Counts the background work an Antigravity ACP v1 turn leaves behind at `end_turn`, and
  * decides from `session/list` activity when it has woken the model and finished.
  *
- * agy reports nothing on stdout after `end_turn`, and its only side-effect-free signal is
- * `updatedAt`. Each burst of activity followed by {@link AntigravityPollTimings.wakeupQuietMs}
- * of stillness is taken as one pending item finishing. Errors lean towards protecting longer:
+ * agy never reports on stdout whether background work is still pending (1.5.9 and earlier
+ * send nothing after `end_turn`; 1.5.10 streams the wakeup itself), and its only
+ * side-effect-free signal is `updatedAt`. Each burst of activity followed by
+ * {@link AntigravityPollTimings.wakeupQuietMs} of stillness is taken as one pending item
+ * finishing. Errors lean towards protecting longer:
  * wakeups agy merges into one burst keep the session protected until the 24-hour cap.
  */
 export class AntigravitySessionTracker {

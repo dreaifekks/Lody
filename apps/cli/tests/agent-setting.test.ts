@@ -35,6 +35,7 @@ import {
   withDefaultAcpPathEntries,
 } from '../src/agent/setting';
 import {
+  ANTIGRAVITY_RUNTIME_VERSION,
   BUILTIN_CLAUDE_CAPABILITY_SOURCE_VERSION,
   BUILTIN_CODEX_CAPABILITY_SOURCE_VERSION,
   BUILTIN_GROK_CAPABILITY_SOURCE_VERSION,
@@ -920,9 +921,10 @@ describe('resolveBuiltinACPSetting', () => {
     const optedIn = { ...plain, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } };
 
     expect(getAcpClientInfo(plain)).toBeUndefined();
-    // The creation catalog hides this provider; the compatibility resolver still knows it.
+    // The creation catalog hides this provider; the compatibility resolver still knows it
+    // and runs the managed runtime's agy release.
     const sourceVersion = getAcpCapabilitySourceVersion(plain);
-    expect(sourceVersion).toBe('antigravity-acp@1.5.9+agy-usage:1');
+    expect(sourceVersion).toBe(`antigravity-acp@${ANTIGRAVITY_RUNTIME_VERSION}+agy-usage:1`);
     const oldCache = {
       cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
       ...plain,
@@ -1386,9 +1388,6 @@ describe('managed Antigravity', () => {
         ).args
       ).toEqual(['acp', '--process-per-session', '--disable-telemetry']);
       expect(REGISTRY_ACP_AGENTS.some((a) => a.id === 'antigravity-acp')).toBe(false);
-      expect(
-        getAcpCapabilitySourceVersion({ cliType: 'registry', agentType: 'antigravity-acp' })
-      ).toBe('antigravity-acp@1.5.9+agy-usage:1');
     } finally {
       manager.mockRestore();
     }

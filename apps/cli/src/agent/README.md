@@ -272,9 +272,20 @@ Authentication
 uses methods returned by ACP initialize, not a native terminal login command.
 
 New Provider discovery omits `registry/antigravity-acp`. Persisted Providers retain
-the fork’s fixed agy CLI 1.5.9 launch definition and show a Legacy label; neither Provider
-identity nor native session IDs are rewritten. Create a builtin Provider for new
-work. Compatibility of old server sessions with agy is not assumed.
+the fork’s agy CLI launch definition from agy’s GitHub releases and show a Legacy
+label; neither Provider identity nor native session IDs are rewritten. That entry
+downloads the manifest’s agy version, so both identities run the same agy release.
+Create a builtin Provider for new work. Compatibility of old server sessions with
+agy is not assumed.
+
+agy 1.5.10 and later stream what the model does after `end_turn` when background
+work wakes it (a `schedule` timer, a subagent, a `swarm` post): replies, tool calls
+and permission requests. Lody writes replies and tool calls into the finished turn
+through its late ACP routing, and the monitor below holds completion until the
+wakeup goes quiet. A permission request there is cancelled, because a finished turn
+refuses permission writes. agy 1.5.9 and earlier held this output until the next
+prompt, and lost it if the process was replaced first
+([evidence](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md#findings)).
 
 Quota refresh runs the selected agy executable with `--print /usage
 --output-format json` and its launch environment. This command reports zero model
@@ -534,8 +545,8 @@ isolated generator's own fallback is the raw prompt.
 ### Google Antigravity runs the agy CLI (LAN fork)
 
 New Providers use [managed Antigravity](#managed-antigravity). Persisted
-`registry/antigravity-acp` Providers retain the fork’s agy CLI 1.5.9 GitHub
-distribution in `setting.ts`, hidden from discovery. Both launch
+`registry/antigravity-acp` Providers retain the fork’s agy CLI GitHub distribution
+in `setting.ts`, at the managed runtime’s agy version and hidden from discovery. Both launch
 `acp --process-per-session --disable-telemetry` with automatic updates disabled;
 the legacy transition never returns to `agy_acp_server`.
 The server loads the user's agy plugins, hooks and MCP servers, and offers `default`,

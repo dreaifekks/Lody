@@ -21,7 +21,9 @@ client-provided MCP server, including Lody's own `lody` server, unless an agy al
 rule covers it, and stored `auto_edit` and `thinking_level` selections no longer
 validate. agy skips permission requests only for a whole process, so Lody's `yolo`
 mode starts the session's agy with `--dangerously-skip-permissions` and restarts it
-when a turn switches YOLO on or off.
+when a turn switches YOLO on or off. Both Antigravity identities run the same agy
+release; from 1.5.10 agy streams what a background wakeup produces after `end_turn`,
+and Lody writes it into the finished turn.
 
 Lody's Auto Review described below was removed on 2026-11-19; stored selections run
 in agy's `auto`. See the [removal decision](../simplification/2026-11-19-antigravity-auto-review-removal.md).
@@ -86,6 +88,27 @@ and macOS arm64, through Lody sessions and a minimal ACP client:
   The changelog says the flag only skips tool permission prompts, still blocks the
   system command denylist and keeps explicit deny rules.
 
+Measured on 2026-11-19 on Linux x86_64 (devNuc) with a minimal ACP client that logs
+every JSON-RPC line, `gemini-3.8-flash` at `thought_level` low, and a temporary daemon
+(`LODY_DATA_DIR`) running this change:
+
+- agy 1.5.9 holds back what the model does after `end_turn`. Asked to set a 20 s
+  `schedule` timer and answer when woken, it returned `end_turn` with the tool
+  `in_progress`; its conversation store shows the reply written 17 s later, but stdout
+  stayed silent for 90 s until the next `session/prompt`, which first carried the
+  `tool_call_update` and the reply, then the new user message. Lody would put that
+  late reply into the new turn.
+- A replacement process loses it. After the wakeup, a new 1.5.9 process answered
+  `session/load` with a replay that ends in the reply, which Lody drops as replay,
+  and the next prompt did not send it again. A Lody session on mini lost a `swarm`
+  result this way when switching to YOLO restarted agy.
+- agy 1.5.10's changelog says it now sends such replies, tool calls and permission
+  requests at once. Through the temporary daemon, the timer reply and a `swarm`
+  worker's post appeared in the finished turn's assistant entry with no new message,
+  and the session left `busy` about 30 s after the wakeup went quiet.
+- A parked coordinator wakes only for a board post that concerns it: a worker post
+  without `@coordinator` left it asleep.
+
 ## Decision
 
 The runtime, quota and session permission boundaries are recorded in the
@@ -95,8 +118,9 @@ New Providers use the upstream managed builtin Antigravity, pinned by
 `antigravity-runtime-manifest.json` to agy 1.5.10. It launches
 `acp --process-per-session --disable-telemetry` with automatic updates disabled;
 `antigravityPath` selects a user-managed executable. Persisted registry Providers
-keep the fork's known agy 1.5.9 GitHub distribution in `setting.ts`, hidden from
-new-Provider discovery. Their identities and stored conversations are not rewritten.
+keep the fork's agy GitHub distribution in `setting.ts`, hidden from new-Provider
+discovery, at the manifest's agy version, so one pin brings an agy fix to both
+identities. Their identities and stored conversations are not rewritten.
 
 The registry's Antigravity joins the Claude/Grok identity fallback for titles and
 accepts untagged `session_info_update` titles. agy titles each conversation in the
@@ -156,6 +180,16 @@ Native modes are left as the agent reports them.
   every agy session on the machine, not an ACP mode.
 - Allow rules alone cover only the listed commands and tools. They remain the
   per-machine configuration for sessions outside YOLO.
+- A separate pin for the registry entry, bumped by hand, had already fallen behind
+  the managed runtime (1.5.9 against 1.5.10) and kept existing Providers on an agy
+  that held wakeup output back.
+- Recovering held-back output inside Lody: a later prompt does deliver it, but into
+  the new turn, and a replaced process never sends it. Taking it from a
+  `session/load` replay needs the loads that restart agy's MCP servers
+  ([background work](../bug-fix/2026-11-16-antigravity-background-wakeup.md)), and
+  agy's replay carries no turn ids to align it with Lody's history.
+- Asking agy not to use its native `swarm` in Lody: unnecessary once agy streams the
+  wakeup; timers, subagents and swarms stay usable.
 
 ## Consequences
 
@@ -173,11 +207,24 @@ Native modes are left as the agent reports them.
   Code request is used. See the [quota decision](../bug-fix/2026-10-20-antigravity-argon-quota.md).
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` no longer changes the model list for this
   entry. Sending the Zed client identity is harmless.
+- A wakeup's reply lands in the turn that started the background work; Lody announces
+  that turn as finished only after the wakeup goes quiet. The managed runtime's next
+  agy version also changes the registry entry's download, and the first launch after
+  an update downloads it.
+- A permission request from a wakeup targets a finished turn, which refuses
+  permission writes, so Lody cancels it in any mode. Only what agy decides itself
+  never asks: YOLO, agy's allow rules, and commands that agy's `auto` runs in its
+  sandbox.
 
 ## Verification
 
 - `scripts/generate-acp-registry.test.mjs` verifies discovery exclusion;
   `apps/cli/src/agent/acp-runner.test.ts` covers both identities’ print-mode quota.
+- `apps/cli/tests/agent-setting.test.ts` pins the registry entry's capability source
+  to the managed runtime's agy version.
+- The 2026-11-19 runs in Findings cover agy 1.5.9's held-back output and a replaced
+  process losing it (raw ACP), and agy 1.5.10's wakeup reaching the finished turn
+  through a temporary daemon, on Linux only.
 - `packages/shared/tests/title-generation-defaults.test.ts` pins title ownership.
 - `apps/cli/tests/antigravity-acp-stream.test.ts` pins the YOLO mode and launch flag
   and the refused switch.
@@ -188,4 +235,5 @@ Native modes are left as the agent reports them.
 
 Not verified: answering a permission prompt in the desktop app, a `lody` tool call
 after approval, `accept-edits` and `plan` in a real run, launching the Windows
-archive, and a YOLO session through a Lody build (only the agy process was probed).
+archive, a YOLO session through a Lody build (only the agy process was probed),
+agy 1.5.10's wakeup on macOS, and a permission request from a wakeup.
