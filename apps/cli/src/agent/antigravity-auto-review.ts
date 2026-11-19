@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  type AcpConfigOptionSummary,
   ANTIGRAVITY_AGENT_TYPE,
   ANTIGRAVITY_AUTO_REVIEW_MODE_ID,
   ANTIGRAVITY_YOLO_MODE_ID,
@@ -111,6 +112,30 @@ export type AntigravityAutoReviewOptions = {
 };
 
 const UNDERLYING_MODE_ID = 'default';
+
+/** Undo only this wrapper's session presentation before publishing Provider defaults. */
+export function antigravityProviderConfigOptions(
+  cliType: string,
+  agentType: string,
+  options: AcpConfigOptionSummary[] | undefined
+): AcpConfigOptionSummary[] | undefined {
+  if (
+    !(
+      (cliType === 'builtin' && agentType === 'antigravity') ||
+      (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE)
+    )
+  )
+    return options;
+  // Both synthetic modes are presented only when agy reports `default`.
+  // Keep the choices and the Session snapshot, changing only the published value.
+  return options?.map((option) =>
+    option.category === 'mode' &&
+    (option.currentValue === ANTIGRAVITY_AUTO_REVIEW_MODE_ID ||
+      option.currentValue === ANTIGRAVITY_YOLO_MODE_ID)
+      ? { ...option, currentValue: UNDERLYING_MODE_ID }
+      : option
+  );
+}
 export const AUTO_REVIEW_TIMEOUT_MS = 15_000;
 /** Consecutive reviewer refusals (ask, error, timeout) in a turn before it stops reviewing. */
 export const AUTO_REVIEW_CIRCUIT_BREAKER_LIMIT = 3;

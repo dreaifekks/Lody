@@ -125,6 +125,13 @@ Permission tiers rank agy's `accept-edits` as `edit`, and the composer shows it 
 the accept-edits face. `auto`, `default` and `plan` were already classified; `yolo`
 is `full` with its warning face.
 
+Provider capability publication removes only the wrapper's virtual `yolo` and
+`auto_review` current values, restoring their underlying `default` before writing
+the shared capability snapshot and each model's option row. The live Session keeps
+its selected display value and all choices. Otherwise an unrelated new Session,
+Role or schedule can inherit another Session's bypass policy from the shared cache.
+Native modes are left as the agent reports them.
+
 ## Alternatives
 
 - Pinning registry 1.5.0 was rejected: it is the same server without plugins.

@@ -1,9 +1,12 @@
+import { buildAcpSelectorOptions } from '../../../packages/components/src/components/shared/acp-selector-options';
 import { createSessionBackend } from '@/session/session-backend';
 import { RequestError, type ContentBlock } from '@agentclientprotocol/sdk';
 import {
   ACP_CAPABILITY_CACHE_VERSION,
   ACP_CAPABILITY_REFRESH_CACHE_TTL_MS,
   getAcpCapabilityCacheEntryAuthority,
+  getMachineFlockAcpCapabilities,
+  readMachineFlockRowsFromFlock,
   getSessionRoomId,
   getWorkspaceFlockDocId,
   normalizeBoardMeta,
@@ -1055,6 +1058,36 @@ describe('SessionExecutionService', () => {
         setProbeCommands: (commands: typeof probeCommands) => {
           probeCommands = commands;
         },
+        readEntry: () =>
+          getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock))[capabilityConfigId],
+        publishSessionConfigOptions: (
+          cliType: 'builtin' | 'registry',
+          agentType: string,
+          configOptions: AcpConfigOptionSummary[]
+        ) =>
+          new Promise<void>((resolve) => {
+            onWrite = resolve;
+            service['scheduleCreatedSessionCapabilityUpdate'](
+              {
+                sessionId: 'mode-session' as SessionId,
+                getAcpCapabilities: () => ({
+                  modes: [],
+                  models: [{ modelId: 'model-a', name: 'Model A' }],
+                  configOptions,
+                  sessionFork: false,
+                  acknowledgedSteer: false,
+                }),
+                getAcpCapabilitySourceVersion: () => sourceVersion,
+              } as unknown as Parameters<
+                SessionExecutionService['scheduleCreatedSessionCapabilityUpdate']
+              >[0],
+              {
+                agentConfigId: capabilityConfigId,
+                agentCliType: cliType,
+                agentType,
+              } as SessionConfig
+            );
+          }),
         publishSessionCommands: (names: string[]) =>
           new Promise<void>((resolve) => {
             onWrite = resolve;
@@ -1090,6 +1123,82 @@ describe('SessionExecutionService', () => {
             | undefined,
       };
     };
+
+    it.each(
+      [
+        { cliType: 'builtin' as const, agentType: 'antigravity' },
+        { cliType: 'registry' as const, agentType: 'antigravity-acp' },
+      ].flatMap((agent) => ['yolo', 'auto_review', 'auto'].map((mode) => ({ ...agent, mode })))
+    )(
+      'keeps $cliType/$agentType session $mode out of shared Provider defaults',
+      async ({ cliType, agentType, mode }) => {
+        const harness = createHarness();
+        const configOptions: AcpConfigOptionSummary[] = [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'model-a',
+            options: [{ value: 'model-a', name: 'Model A' }],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: mode,
+            options: ['default', 'auto', 'auto_review', 'yolo'].map((value) => ({
+              value,
+              name: value,
+            })),
+          },
+        ];
+        await harness.publishSessionConfigOptions(cliType, agentType, configOptions);
+        const entry = await harness.readEntry();
+        const providerMode = mode === 'auto' ? 'auto' : 'default';
+        expect(
+          harness.storedEntry()?.configOptions?.find((o) => o.category === 'mode')?.currentValue
+        ).toBe(providerMode);
+        expect(
+          entry?.observedModelConfigOptions?.['model-a']?.find((o) => o.category === 'mode')
+            ?.currentValue
+        ).toBe(providerMode);
+        expect(configOptions[1]?.currentValue).toBe(mode);
+        // A new Session/Role/Schedule selector has no saved choice. Both its base
+        // snapshot and selected-model path must use the Provider's own mode.
+        for (const selectedModelId of [undefined, 'model-a']) {
+          const selection = buildAcpSelectorOptions({
+            configId: capabilityConfigId,
+            cliType,
+            agentType,
+            selectedModelId,
+            machine: { acpCapabilities: entry ? { [capabilityConfigId]: entry } : {} },
+          });
+          expect(selection.defaultModeId).toBe(cliType === 'builtin' ? 'default' : providerMode);
+        }
+        // Once another model becomes the snapshot, selecting model-a reads its
+        // separately persisted answer rather than the latest snapshot.
+        await harness.publishSessionConfigOptions(
+          cliType,
+          agentType,
+          configOptions.map((option) => ({
+            ...option,
+            currentValue: option.category === 'model' ? 'model-b' : 'default',
+          }))
+        );
+        const later = harness.readEntry();
+        const olderModel = buildAcpSelectorOptions({
+          configId: capabilityConfigId,
+          cliType,
+          agentType,
+          selectedModelId: 'model-a',
+          configOptionValues: { model: 'model-a' },
+          machine: { acpCapabilities: later ? { [capabilityConfigId]: later } : {} },
+        });
+        expect(olderModel.defaultModeId).toBe(cliType === 'builtin' ? 'default' : providerMode);
+      }
+    );
 
     it('keeps project commands out of the probe preview and refreshes that preview independently', async () => {
       const harness = createHarness();

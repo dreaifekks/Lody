@@ -551,6 +551,11 @@ models to every client, so the Zed client identity no longer matters for it.
   `auto_review`. Its rules count the conversation's own agy directory,
   `~/.gemini/antigravity-cli/brain/<session id>/`, where agy keeps scratch files, as
   workspace; the rest of `~/.gemini/antigravity-cli/` still asks as agent configuration.
+  The wrapper presents `auto_review` and `yolo` only over agy's `default`. Session
+  UI keeps that presentation, but publishing a created session's Provider cache
+  restores the underlying value before writing both the capability snapshot and
+  its per-model options. A session's synthetic mode never becomes another
+  session, Role or schedule's first-run default.
 - YOLO: Lody adds `yolo` to the modes. A session whose turn selects it starts agy
   with `--dangerously-skip-permissions` and runs it in `default`, so agy approves
   its own permission requests; its deny rules and command denylist still apply. The

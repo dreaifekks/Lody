@@ -1,4 +1,7 @@
-import { antigravityYoloChanged } from '@/agent/antigravity-auto-review';
+import {
+  antigravityProviderConfigOptions,
+  antigravityYoloChanged,
+} from '@/agent/antigravity-auto-review';
 import { machineTurnInterruptionReason, reserveMachineTurn } from './machine-turn-admission';
 import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';
@@ -9514,7 +9517,11 @@ export class SessionExecutionService {
         config.agentType,
         capabilities.modes,
         capabilities.models,
-        capabilities.configOptions,
+        antigravityProviderConfigOptions(
+          config.agentCliType,
+          config.agentType,
+          capabilities.configOptions
+        ),
         undefined,
         capabilities.sessionFork,
         sourceVersion,

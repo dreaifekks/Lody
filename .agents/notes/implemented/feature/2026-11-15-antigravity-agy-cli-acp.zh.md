@@ -95,6 +95,10 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 权限档位把 agy 的 `accept-edits` 归为 `edit`，输入框用 accept-edits 的图标显示它。
 `auto`、`default`、`plan` 原本已有归类；`yolo` 是 `full`，带警告图标。
 
+发布 Provider 能力时，只把包装层虚拟的 `yolo`、`auto_review` 当前值还原成底层的
+`default`，再写入共享能力快照及各模型配置行；当前会话仍显示自己的选择，选项列表不变。
+否则无关的新会话、Role 或定时会从共享缓存继承另一会话的免批策略。原生模式按 agent 的报告保留。
+
 ## 备选方案
 
 - 固定到 registry 1.5.0：否决，它是同一个不加载插件的服务。
