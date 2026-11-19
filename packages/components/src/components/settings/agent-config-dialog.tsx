@@ -2312,8 +2312,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   }, [isPreset, titleSelectors, formData.titleGeneration?.configOptionValues]);
 
   const isAntigravityRegistry =
-    (formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE) ||
-    (formData.cliType === 'builtin' && formData.agentType === 'antigravity');
+    formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE;
   const antigravityThirdPartyModels = formData.env[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV];
   // The opt-in is owned by its switch below, so the free-form list neither shows
   // nor drops it.

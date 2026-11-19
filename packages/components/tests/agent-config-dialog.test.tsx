@@ -794,6 +794,7 @@ describe('AgentConfigDialog', () => {
     await act(async () => option?.click());
     expect(document.body.querySelector('#custom-acp-command')).toBeNull();
     expect(getSelectedOption()?.textContent).toContain('Antigravity');
+    expect(document.body.textContent).not.toContain('Claude and GPT models');
   });
 
   it('keeps Antigravity permission bypass out of Provider settings', async () => {
@@ -808,6 +809,7 @@ describe('AgentConfigDialog', () => {
     };
     await renderDialog(mode, createMachine('Old daemon'));
     expect(document.querySelector('#antigravity-skip-permissions')).toBeNull();
+    expect(document.body.textContent).not.toContain('Claude and GPT models');
     await renderDialog(
       mode,
       createMachine('Workstation', { antigravitySkipPermissions: 1 }),
@@ -816,8 +818,37 @@ describe('AgentConfigDialog', () => {
       })
     );
     expect(document.querySelector('#antigravity-skip-permissions')).toBeNull();
+    expect(document.body.textContent).not.toContain('Claude and GPT models');
     await act(async () => getPrimaryAction('Save').click());
     expect(saved.at(-1)?.runtimeOverrides?.antigravitySkipPermissions).toBeUndefined();
+  });
+
+  it('keeps the Claude/GPT identity opt-in on persisted registry Antigravity only', async () => {
+    const saved: AgentConfigSubmitPayload[] = [];
+    await renderDialog(
+      {
+        kind: 'edit',
+        config: {
+          ...createBuiltinConfig({
+            id: 'legacy-agy' as AgentConfigId,
+            agentType: 'antigravity-acp',
+          }),
+          cliType: 'registry',
+          env: { LODY_ANTIGRAVITY_THIRD_PARTY_MODELS: '1' },
+        },
+      },
+      createMachine('Workstation'),
+      vi.fn(async (payload: AgentConfigSubmitPayload) => {
+        saved.push(payload);
+      })
+    );
+    const toggle = document.querySelector<HTMLButtonElement>(
+      '[aria-label="Offer Claude and GPT models"]'
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute('aria-checked')).toBe('true');
+    await act(async () => getPrimaryAction('Save').click());
+    expect(saved.at(-1)?.env?.LODY_ANTIGRAVITY_THIRD_PARTY_MODELS).toBe('1');
   });
 
   it('leaves Lody Agent to its own settings page even while its beta is on', async () => {
