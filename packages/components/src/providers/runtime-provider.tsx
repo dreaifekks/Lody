@@ -200,8 +200,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const sync = resolvePlatformSync(platform.sync, localWorkspace?.id ?? workspaceId);
   // A fixed gateway carries its own credential; there is no account session.
   const token = sync.streams?.token ?? accountToken;
-  const gatewayBaseUrl = sync.streams?.gatewayBaseUrl;
-  useEffect(() => startLanHubClock(gatewayBaseUrl), [gatewayBaseUrl]);
+  useEffect(() => startLanHubClock(sync.streams), [sync.streams]);
   const visibleMachineIndex = useVisibleMachineMetas({
     includeMachineFlock: false,
     syncMachineFlock: false,

@@ -68,6 +68,7 @@ function getLocalSessionStore(): MutableStore<PlatformSessionState> {
 function getLocalPlatformFollower(): LocalPlatformFollower {
   cachedFollower ??= createLocalPlatformFollower({
     read: async () => await getIpcServices()?.localPlatform.getSnapshot(),
+    readBridgeToken: async () => await getIpcServices()!.lan.getBridgeToken(),
     session: getLocalSessionStore(),
     workspaces: getLocalWorkspacesStore(),
     readPreferredSlug: readPreferredWorkspaceSlug,

@@ -11,12 +11,6 @@ import { getLanHubRendererOrigin } from '@lody/shared/lan-hub';
 /** Fallback slug for workspace routes while a workspace has none. */
 export const LOCAL_WORKSPACE_FALLBACK_SLUG = 'local';
 
-/**
- * The shell forwards the origin of a LAN to its hub and supplies the real
- * credential itself; this value only fills the transport's bearer slot.
- */
-const LAN_BEARER_PLACEHOLDER = 'lan-hub';
-
 export function getLocalWorkspaceSlug(workspace: WorkspaceSummary): string {
   return workspace.slug ?? LOCAL_WORKSPACE_FALLBACK_SLUG;
 }
@@ -58,6 +52,8 @@ export type LocalPlatformFollower = {
  */
 export function createLocalPlatformFollower(options: {
   read: () => Promise<ElectronLocalPlatformSnapshot | null | undefined>;
+  /** Product-window IPC capability, retained only for this renderer lifetime. */
+  readBridgeToken: () => Promise<string>;
   session: MutableStore<PlatformSessionState>;
   workspaces: MutableStore<WorkspacesState>;
   readPreferredSlug: () => string | null;
@@ -70,6 +66,7 @@ export function createLocalPlatformFollower(options: {
   onIdentityChanged: () => void;
   onError?: (error: unknown) => void;
 }): LocalPlatformFollower {
+  let bridgeToken: string | undefined;
   let applied: string | null = null;
   let userId: string | null = null;
   let selectedWorkspaceId: string | null = null;
@@ -129,7 +126,11 @@ export function createLocalPlatformFollower(options: {
       const snapshot = await options.read();
       // No snapshot: the CLI has not provisioned a workspace yet, or it is
       // between two sets of them. What was applied before stays in place.
-      if (snapshot) apply(snapshot);
+      if (snapshot) {
+        if (snapshot.workspaces.some((workspace) => workspace.lan))
+          bridgeToken ??= await options.readBridgeToken();
+        apply(snapshot);
+      }
     } catch (error) {
       options.onError?.(error);
       if (applied === null) {
@@ -157,9 +158,7 @@ export function createLocalPlatformFollower(options: {
     },
     resolveStreams: (workspaceId) => {
       const lanId = lans.get(workspaceId);
-      return lanId
-        ? { gatewayBaseUrl: getLanHubRendererOrigin(lanId), token: LAN_BEARER_PLACEHOLDER }
-        : null;
+      return lanId ? { gatewayBaseUrl: getLanHubRendererOrigin(lanId), token: bridgeToken! } : null;
     },
   };
 }

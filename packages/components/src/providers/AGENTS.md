@@ -144,3 +144,8 @@ snapshots. Unready Blobs stay in memory; never replay uncertain steers.
   Start native fencing at renderer cleanup; retain incomplete owners. Only overlapping
   custody/Repo namespaces wait. Device replacement shares account/workspace/genesis
   writers. First key receipt stays pending; usable epochs wake content.
+
+The LAN follower obtains its process-lifetime bridge token only through product
+IPC before publishing a LAN transport. Keep it in renderer memory, pass it to
+Streams and hub-clock reads, and never substitute a public placeholder or persist
+it in workspace state. A failed IPC read remains retryable through the next refresh.

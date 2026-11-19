@@ -24,7 +24,10 @@ import { BOOT_SHELL_MARKUP } from '../src/lib/boot-shell';
 
 const getSnapshot = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/electron-ipc-client', () => ({
-  getIpcServices: () => ({ localPlatform: { getSnapshot } }),
+  getIpcServices: () => ({
+    localPlatform: { getSnapshot },
+    lan: { getBridgeToken: async () => 'synthetic-bridge-capability' },
+  }),
 }));
 
 const state = vi.hoisted(() => ({
@@ -576,13 +579,16 @@ it('recovers the same multi-LAN provider and keeps following after bootstrap and
       name: 'LAN',
       slug: 'lan',
       role: 'owner',
-      lan: { id: 'lan-one' },
+      lan: { id: 'a'.repeat(32) },
     };
     getSnapshot.mockResolvedValue({ ...initial, workspaces: [local, lan] });
     await vi.advanceTimersByTimeAsync(2_000);
     expect(provider.workspaces.state.get()).toMatchObject({
       workspaces: [{ id: local.workspaceId }, { id: lan.workspaceId }],
     });
+    expect(provider.sync.resolve?.(lan.workspaceId).streams?.token).toBe(
+      'synthetic-bridge-capability'
+    );
     const ready = provider.workspaces.state.get();
     getSnapshot.mockRejectedValue(new Error('catalog temporarily unavailable'));
     await vi.advanceTimersByTimeAsync(2_000);

@@ -8,6 +8,7 @@ import {
 
 const HOME_LAN = 'a'.repeat(32);
 const OFFICE_LAN = 'b'.repeat(32);
+const BRIDGE_TOKEN = 'synthetic-process-capability';
 
 type SnapshotWorkspace = ElectronLocalPlatformSnapshot['workspaces'][number];
 
@@ -26,7 +27,10 @@ const workspace = (
   userId: lan ? `local:${name.toLowerCase()}` : 'local:user-1',
 });
 
-const snapshot = (userId: string, workspaces: SnapshotWorkspace[]): ElectronLocalPlatformSnapshot => {
+const snapshot = (
+  userId: string,
+  workspaces: SnapshotWorkspace[]
+): ElectronLocalPlatformSnapshot => {
   const [first] = workspaces;
   if (!first) throw new Error('a snapshot lists at least one workspace');
   const { lan: _lan, userId: _userId, ...implicit } = first;
@@ -37,7 +41,10 @@ const local = workspace('lw_local', 'Lody', 'local', null);
 const home = workspace('lw_home', 'Home', 'lan-home', HOME_LAN);
 const office = workspace('lw_office', 'Office', 'office', OFFICE_LAN);
 
-function createFollower(initial: ElectronLocalPlatformSnapshot | null | Error) {
+function createFollower(
+  initial: ElectronLocalPlatformSnapshot | null | Error,
+  readBridgeToken = async () => BRIDGE_TOKEN
+) {
   let current: ElectronLocalPlatformSnapshot | null | Error = initial;
   let preferredSlug: string | null = null;
   let reads = 0;
@@ -53,6 +60,7 @@ function createFollower(initial: ElectronLocalPlatformSnapshot | null | Error) {
       if (current instanceof Error) throw current;
       return current;
     },
+    readBridgeToken,
     session,
     workspaces,
     readPreferredSlug: () => preferredSlug,
@@ -119,13 +127,31 @@ describe('local platform follower', () => {
     expect(harness.names()).toEqual(['Home', 'Office']);
     expect(harness.follower.resolveStreams('lw_home')).toEqual({
       gatewayBaseUrl: `lody-hub://${HOME_LAN}`,
-      token: 'lan-hub',
+      token: BRIDGE_TOKEN,
     });
     expect(harness.follower.resolveStreams('lw_office')?.gatewayBaseUrl).toBe(
       `lody-hub://${OFFICE_LAN}`
     );
     // Neither the address nor the credential of a LAN is part of how it is reached.
     expect(JSON.stringify(harness.follower.resolveStreams('lw_home'))).not.toContain('invalid');
+  });
+
+  it('publishes LAN sync only after product IPC grants a bridge capability, and retries a failed read', async () => {
+    let available = false;
+    const harness = createFollower(snapshot('local:home', [home]), async () => {
+      if (!available) throw new Error('IPC unavailable');
+      return BRIDGE_TOKEN;
+    });
+    await harness.follower.refresh();
+    expect(harness.follower.isReady()).toBe(false);
+    expect(harness.follower.resolveStreams('lw_home')).toBeNull();
+    expect(harness.workspaces.get().status).toBe('error');
+    available = true;
+    await harness.follower.refresh();
+    expect(harness.follower.isReady()).toBe(true);
+    expect(harness.follower.resolveStreams('lw_home')?.token).toBe(BRIDGE_TOKEN);
+    expect(JSON.stringify(harness.workspaces.get())).not.toContain(BRIDGE_TOKEN);
+    expect(JSON.stringify(harness.session.get())).not.toContain(BRIDGE_TOKEN);
   });
 
   it('follows a LAN that is joined, renamed and left while the window is open', async () => {

@@ -32,6 +32,15 @@ on a Lody data volume. Space alone never blocks. Only relaunch/quit clears it;
 background agents keep running
 ([decision](../../../../../.agents/notes/implemented/feature/2026-10-22-desktop-disk-full-guard.md)).
 
+## LAN renderer bridge
+
+`lan-hub-protocol.ts` owns one random bridge capability per main-process lifetime.
+Only product-window IPC may expose it. `lan-hub-forward.ts` authenticates every
+non-OPTIONS request before resolving membership or forwarding, then replaces the
+bridge bearer with the member credential. Use the fixed product CORS origin, never
+`*`; previews and loopback pages have no bridge authority. Never persist or log
+this renderer capability. [Boundary](../../../../../.agents/docs/lan.md#the-desktop-bridge-admits-product-renderers).
+
 ## Public browser
 
 - `services/public-browser-service.ts` performs engine routing only, with no resolver

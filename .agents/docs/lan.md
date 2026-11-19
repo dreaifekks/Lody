@@ -50,6 +50,21 @@ each topic; the invariants stay in the scoped `AGENTS.md` files they link to.
         both read lan-hub.json of their own data directory
 ```
 
+## The desktop bridge admits product renderers
+
+The `lody-hub:` handler accepts a separate random capability generated for each
+main-process lifetime. Only a registered product window's trusted main frame
+can obtain it through `lan.getBridgeToken`. The local platform follower keeps it
+in memory and supplies it to Streams and hub-clock requests as their bearer.
+It is not the LAN membership credential and is never synchronized or logged.
+
+Before looking up a LAN or reading a body, the bridge verifies that capability
+in constant time. Missing, wrong and previous-process keys return 403; only an
+accepted request receives the member credential in main. OPTIONS handles CORS
+metadata only, and responses allow the fixed product origin rather than `*`.
+Script-enabled local HTML, Managed Preview and other embedded pages receive
+neither the capability nor product IPC. See the [security decision](../notes/implemented/bug-fix/2026-11-19-lan-renderer-bridge-authority.md).
+
 ## One LAN, one workspace
 
 The id of a LAN is derived from its credential alone, and its workspace id is

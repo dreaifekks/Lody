@@ -114,6 +114,19 @@ void test('privileged IPC rejects browser views, iframes and unknown windows bef
     }
   })
   new cli.CliIpc()
+  const bridgeToken = 'synthetic-process-only-capability'
+  const lan = await load('./services/lan-ipc.ts', {
+    'electron-ipc-decorator': decoratorExports,
+    '../product-window-ipc-service': service,
+    '../assert-sender': senderGuard,
+    '../../services/lan-hub-protocol': { getLanHubBridgeToken: () => bridgeToken },
+    '@lody/shared/electron-ipc': await import('@lody/shared/electron-ipc'),
+    '@lody/shared/node/lan-hub': {},
+    '@lody/shared/lan-share': await import('@lody/shared/lan-share'),
+    '../ipc-service-deps': {},
+    '../local-project-dispatch': {}
+  })
+  new lan.LanIpc()
   const window = () => {
     const sender = { mainFrame: { url: 'file:///app/out/renderer/index.html' } }
     const owner = { webContents: sender, isDestroyed: () => false }
@@ -137,11 +150,13 @@ void test('privileged IPC rejects browser views, iframes and unknown windows bef
     { ...primary, senderFrame: { url: 'https://example.com' } }
   ]) {
     await assert.rejects(handlers.get('cli.terminate')(event), /untrusted renderer/)
+    await assert.rejects(handlers.get('lan.getBridgeToken')(event), /untrusted renderer/)
     assert.equal(running, true)
     sends.get('terminal.input')(event, { data: 'synthetic' })
     assert.equal(running, true)
   }
   for (const event of [primary, auxiliary]) {
+    assert.equal(await handlers.get('lan.getBridgeToken')(event), bridgeToken)
     running = true
     await handlers.get('cli.terminate')(event)
     assert.equal(running, false)

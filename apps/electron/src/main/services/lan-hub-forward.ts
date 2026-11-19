@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
 import { Readable } from 'node:stream'
@@ -31,9 +32,11 @@ const HOP_BY_HOP_HEADERS = new Set([
 // The renderer's origin and credential are local details of this bridge.
 const RENDERER_ONLY_REQUEST_HEADERS = new Set(['authorization', 'host', 'origin', 'referer'])
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Expose-Headers': '*'
+function corsHeaders(rendererOrigin: string) {
+  return {
+    'Access-Control-Allow-Origin': rendererOrigin,
+    'Access-Control-Expose-Headers': '*'
+  }
 }
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304])
@@ -57,11 +60,11 @@ function isRendererRoute(method: string, pathname: string): boolean {
 const httpAgent = new http.Agent({ keepAlive: true })
 const httpsAgent = new https.Agent({ keepAlive: true })
 
-function preflightResponse(request: Request): Response {
+function preflightResponse(request: Request, rendererOrigin: string): Response {
   return new Response(null, {
     status: 204,
     headers: {
-      ...CORS_HEADERS,
+      ...corsHeaders(rendererOrigin),
       'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers':
         request.headers.get('access-control-request-headers') ?? 'Authorization, Content-Type',
@@ -70,10 +73,10 @@ function preflightResponse(request: Request): Response {
   })
 }
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, rendererOrigin: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    headers: { ...corsHeaders(rendererOrigin), 'Content-Type': 'application/json' }
   })
 }
 
@@ -88,7 +91,7 @@ function buildUpstreamHeaders(target: LanHubTarget, request: Request): Record<st
   return headers
 }
 
-function buildRendererHeaders(response: http.IncomingMessage): Headers {
+function buildRendererHeaders(response: http.IncomingMessage, rendererOrigin: string): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(response.headers)) {
     if (value === undefined || HOP_BY_HOP_HEADERS.has(name)) continue
@@ -96,11 +99,15 @@ function buildRendererHeaders(response: http.IncomingMessage): Headers {
     if (name.startsWith('access-control-') || name === 'vary') continue
     for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item)
   }
-  for (const [name, value] of Object.entries(CORS_HEADERS)) headers.set(name, value)
+  for (const [name, value] of Object.entries(corsHeaders(rendererOrigin))) headers.set(name, value)
   return headers
 }
 
-export async function forwardToLanHub(target: LanHubTarget, request: Request): Promise<Response> {
+async function forwardToLanHub(
+  target: LanHubTarget,
+  request: Request,
+  rendererOrigin: string
+): Promise<Response> {
   const source = new URL(request.url)
   // The path is set on the address of the hub, never resolved against it: a
   // path that starts with `//` would otherwise name another host, and that
@@ -109,14 +116,14 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
   upstreamUrl.pathname = source.pathname
   upstreamUrl.search = source.search
   if (!isRendererRoute(request.method, upstreamUrl.pathname)) {
-    return errorResponse(403, 'not a document route')
+    return errorResponse(403, 'not a document route', rendererOrigin)
   }
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
   let body: Buffer | null = null
   try {
     body = hasBody ? Buffer.from(await request.arrayBuffer()) : null
   } catch {
-    return errorResponse(400, 'unreadable request body')
+    return errorResponse(400, 'unreadable request body', rendererOrigin)
   }
 
   const secure = upstreamUrl.protocol === 'https:'
@@ -131,7 +138,7 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
         },
         (response) => {
           const status = response.statusCode ?? 502
-          const headers = buildRendererHeaders(response)
+          const headers = buildRendererHeaders(response, rendererOrigin)
           if (request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
             response.resume()
             resolve(new Response(null, { status, headers }))
@@ -162,7 +169,7 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
           resolve(send(true))
           return
         }
-        resolve(errorResponse(502, 'LAN is unreachable'))
+        resolve(errorResponse(502, 'LAN is unreachable', rendererOrigin))
       })
       request.signal.addEventListener('abort', () => upstream.destroy(), { once: true })
       upstream.end(body ?? undefined)
@@ -175,19 +182,25 @@ export async function forwardToLanHub(target: LanHubTarget, request: Request): P
  * application runs takes effect without installing the handler again.
  */
 export function createLanHubRequestHandler(
-  resolve: (lanId: string) => LanHubTarget | null
+  resolve: (lanId: string) => LanHubTarget | null,
+  access: { token: string; origin: string }
 ): (request: Request) => Promise<Response> {
+  const rendererOrigin = access.origin
+  const authorization = Buffer.from(`Bearer ${access.token}`)
   return async (request) => {
-    if (request.method === 'OPTIONS') return preflightResponse(request)
+    if (request.method === 'OPTIONS') return preflightResponse(request, rendererOrigin)
+    const supplied = Buffer.from(request.headers.get('authorization') ?? '')
+    if (supplied.length !== authorization.length || !timingSafeEqual(supplied, authorization))
+      return errorResponse(403, 'untrusted renderer', rendererOrigin)
     let lanId: string
     try {
       lanId = new URL(request.url).hostname
     } catch {
-      return errorResponse(400, 'invalid LAN address')
+      return errorResponse(400, 'invalid LAN address', rendererOrigin)
     }
     const target = resolve(lanId)
     // Not a gateway error: the renderer asked for a LAN that is not joined.
-    if (!target) return errorResponse(404, 'unknown LAN')
-    return await forwardToLanHub(target, request)
+    if (!target) return errorResponse(404, 'unknown LAN', rendererOrigin)
+    return await forwardToLanHub(target, request, rendererOrigin)
   }
 }

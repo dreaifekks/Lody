@@ -1,3 +1,4 @@
+import { getLanHubBridgeToken } from '../../services/lan-hub-protocol'
 import { ProductWindowIpcService } from '../product-window-ipc-service'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -81,6 +82,12 @@ const ShareImageInputSchema = z
  */
 export class LanIpc extends ProductWindowIpcService {
   static override readonly groupName = 'lan'
+
+  /** Renderer capability only; never the LAN member credential. */
+  @IpcMethod()
+  getBridgeToken(): string {
+    return getLanHubBridgeToken()
+  }
 
   @IpcMethod()
   async getState(): Promise<ElectronLanState | null> {

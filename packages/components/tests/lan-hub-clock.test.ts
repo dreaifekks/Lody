@@ -4,16 +4,21 @@ import { startLanHubClock } from '../src/providers/lan-hub-clock';
 
 const LAN = `lody-hub://${'a'.repeat(32)}`;
 const SKEW_MS = 60_000;
+const TOKEN = 'synthetic-bridge-capability';
+const gateway = (url: string) => ({ gatewayBaseUrl: url, token: TOKEN });
 
 describe('LAN hub clock in the renderer', () => {
   let asked: string[];
   let stop: () => void = () => {};
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-19T10:00:00Z'));
     resetTimeSync();
     asked = [];
     // The shell's bridge answers for the hub, whose clock runs a minute ahead.
-    vi.stubGlobal('fetch', async (url: string) => {
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
       asked.push(url);
       return new Response(JSON.stringify({ serverTime: Date.now() + SKEW_MS }), {
         status: 200,
@@ -30,8 +35,7 @@ describe('LAN hub clock in the renderer', () => {
   });
 
   it('aligns to the hub its workspace syncs through, and again after every interval', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    stop = startLanHubClock(LAN, 60_000);
+    stop = startLanHubClock(gateway(LAN), 60_000);
 
     await vi.waitFor(() => expect(isTimeSynced()).toBe(true));
     expect(asked).toEqual([`${LAN}/api/time`]);
@@ -46,7 +50,7 @@ describe('LAN hub clock in the renderer', () => {
 
   it('leaves the clock alone for a workspace without a LAN', () => {
     stop = startLanHubClock(undefined);
-    startLanHubClock('https://streams.example.invalid')();
+    startLanHubClock(gateway('https://streams.example.invalid'))();
 
     expect(asked).toEqual([]);
     expect(isTimeSynced()).toBe(false);
@@ -55,7 +59,8 @@ describe('LAN hub clock in the renderer', () => {
   it('drops a late answer of the hub of a workspace the window left', async () => {
     const OTHER = `lody-hub://${'b'.repeat(32)}`;
     let answerFormer: () => void = () => {};
-    vi.stubGlobal('fetch', async (url: string) => {
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
       asked.push(url);
       if (url.startsWith(LAN)) await new Promise<void>((resolve) => (answerFormer = resolve));
       const skew = url.startsWith(LAN) ? SKEW_MS : -30_000;
@@ -63,14 +68,14 @@ describe('LAN hub clock in the renderer', () => {
       return { ok: true, json: async () => ({ serverTime: Date.now() + skew }) };
     });
 
-    const stopFormer = startLanHubClock(LAN);
+    const stopFormer = startLanHubClock(gateway(LAN));
     await vi.waitFor(() => expect(asked).toEqual([`${LAN}/api/time`]));
     stopFormer();
-    stop = startLanHubClock(OTHER);
+    stop = startLanHubClock(gateway(OTHER));
     await vi.waitFor(() => expect(isTimeSynced()).toBe(true));
     answerFormer();
     // Everything the former answer sets off runs before the next task.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(Math.abs(getServerTimeOffset() + 30_000)).toBeLessThan(1_000);
   });

@@ -1,3 +1,4 @@
+import type { PlatformStreamsGateway } from '@lody/platform';
 import { createServerTimeFetcher, syncTime } from '@lody/shared';
 import { LAN_HUB_TIME_PATH } from '@lody/shared/lan-hub';
 import { LAN_HUB_SCHEME } from '@lody/shared/platform-kind';
@@ -13,11 +14,14 @@ export const LAN_HUB_CLOCK_SYNC_INTERVAL_MS = 5 * 60_000;
  * Any other gateway is left alone. Returns what stops it.
  */
 export function startLanHubClock(
-  gatewayBaseUrl: string | undefined,
+  streams: PlatformStreamsGateway | undefined,
   intervalMs: number = LAN_HUB_CLOCK_SYNC_INTERVAL_MS
 ): () => void {
+  const gatewayBaseUrl = streams?.gatewayBaseUrl;
   if (gatewayBaseUrl?.startsWith(`${LAN_HUB_SCHEME}://`) !== true) return () => {};
-  const fetchHubTime = createServerTimeFetcher(`${gatewayBaseUrl}${LAN_HUB_TIME_PATH}`);
+  const fetchHubTime = createServerTimeFetcher(`${gatewayBaseUrl}${LAN_HUB_TIME_PATH}`, undefined, {
+    Authorization: `Bearer ${streams!.token}`,
+  });
   let stopped = false;
   const sync = (): void => {
     syncTime(async () => {
