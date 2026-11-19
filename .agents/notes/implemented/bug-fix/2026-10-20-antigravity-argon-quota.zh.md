@@ -21,13 +21,13 @@ Antigravity 提供包括 Argon 在内的独立模型组配额。内置和已有 
 实现职责见 [CLI 库索引](../../../../apps/cli/src/lib/README.md#provider-quota)。
 
 审查发现，逐条 upsert 会在切换为不含独立桶的账号后保留 Argon。
-Poller 现在通过 workspace 和 machine 的 `replaceRateLimits` 为每个 config 提交一份完整结果。
+旧 Poller 当时通过 workspace 和 machine 的 `replaceRateLimits` 为每个 config 提交一份完整结果。
 Machine 沿用额度队列，写入当前分组并删除同 config、同 CLI 类型下本次缺失的 key，随后 flush 并标记 dirty。
 Claude/Codex 的增量写入不变。成功返回空数组会清空该快照；返回 null 或抛错则保留原值。
 
 现有 CLI、session-usage 和 provider-row 测试覆盖映射、模型选择、Ultra 合并桶及 Argon 排在首位的输入。
 Storybook Pro/compact 场景用于核对渲染标签。验证使用 fixture，不访问真实 Google 额度或账号凭证。
-Poller 测试使用真实内存 LoroRepo 和 MachineDocument，覆盖 Pro→Ultra 替换、其他 config/type 隔离、空快照，
+旧 Poller 测试使用真实内存 LoroRepo 和 MachineDocument，覆盖 Pro→Ultra 替换、其他 config/type 隔离、空快照，
 以及未登录或失败时保留旧值、恢复后替换。
 
 ## 历史测量：请求主机和 User-Agent
@@ -47,3 +47,16 @@ CodexBar 出于同样原因从这个主机读取额度。
 Provider 快照保留全部分组。存在额外 ACP 参数或 Magpie 路由时仍不支持配额读取，避免悄悄
 丢弃账户选择参数。旧 `lib/antigravity-quota.ts` reader 及其测试已移除。
 见 [agy CLI 决策](../feature/2026-11-15-antigravity-agy-cli-acp.zh.md)。
+
+设置页与 composer 对 builtin 和旧 registry Provider 都优先读取原生 `antigravity`
+额度行，保留 agy 的全部窗口标签。成功且非空的查询沿用额度队列，替换同 Provider/type
+快照并删除过时的 `gemini`、`argon`、`third-party` 行。队列打开 Flock 后、写入或删除前，
+再次检查查询 revision 未变且持久化 Provider 配置完全一致；其他 Provider 和其他类型不受影响。
+空结果或失败保留缓存，取代上文旧 Poller 的空结果清除行为。现有 machine-document 套件覆盖
+manager 参数传递、范围限定和等待期间发生 push／配置变化／删除的竞态。
+
+旧 registry 的能力 sourceVersion 增加 `+agy-usage:1`，即使 agy 二进制版本未变，
+旧的不含额度查询能力的 catalog 也会重新探测。Zed 身份仍是独立后缀和 registry 专属设置；
+builtin agy 无需 Claude/GPT 开关。`NMEM_AGENT_ID` 等普通工具变量遵循共享的
+[账号环境策略](2026-10-25-subscription-quota-environment.zh.md)，账号、home／配置发现及
+代码加载覆盖仍排除。

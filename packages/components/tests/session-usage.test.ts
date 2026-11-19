@@ -136,6 +136,48 @@ describe('session usage', () => {
     ).toBe('codex');
   });
 
+  it.each(['antigravity', ANTIGRAVITY_AGENT_TYPE])(
+    'uses the complete native %s snapshot before old model-specific buckets',
+    (agentType) => {
+      const configId = 'agy-provider' as AgentConfigId;
+      const scope = { providerId: 'antigravity' };
+      const windows = ['Gemini Models', 'Argon Models', 'Claude and GPT models'].map((label) => ({
+        label,
+        usedPercent: 25,
+        windowDurationSeconds: 18_000,
+        resetsAtEpochSeconds: null,
+      }));
+      const rateLimits: MachineRateLimits = {
+        [getRateLimitEntryKey(agentType, 'gemini', configId)]: usage({ limitId: 'gemini', scope }),
+        [getRateLimitEntryKey(agentType, 'antigravity', configId)]: usage({
+          limitId: 'antigravity',
+          scope,
+          windows,
+        }),
+      };
+      for (const modelId of ['gemini-pro', 'gemini-argon', 'claude-opus', 'gpt-5']) {
+        const entry = resolveAgentRateLimitForModel({
+          rateLimits,
+          agentType,
+          agentConfigId: configId,
+          modelId,
+        });
+        expect(
+          resolveAgentRateLimitsForModel({
+            rateLimits,
+            agentType,
+            agentConfigId: configId,
+            modelId,
+          }).map((row) => row.limitId)
+        ).toEqual(['antigravity']);
+        expect(entry?.limitId).toBe('antigravity');
+        expect(getAgentRateLimitWindows(entry!.limits).map((window) => window.label)).toEqual(
+          windows.map((window) => window.label)
+        );
+      }
+    }
+  );
+
   it('selects Antigravity Argon or Gemini quota by model and available groups', () => {
     const configId = 'antigravity-mac' as AgentConfigId;
     const scope = { providerId: ANTIGRAVITY_AGENT_TYPE };
@@ -279,6 +321,7 @@ describe('session usage', () => {
     ['claude', 'ANTHROPIC_API_KEY'],
     ['codex', 'OPENAI_API_KEY'],
     ['grok', 'XAI_API_KEY'],
+    ['antigravity', 'GOOGLE_APPLICATION_CREDENTIALS'],
   ])('treats empty %s account override %s as an account change', (agentType, key) => {
     expect(
       canShowSubscriptionRateLimits({

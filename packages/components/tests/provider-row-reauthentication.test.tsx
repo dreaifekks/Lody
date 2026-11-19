@@ -111,12 +111,13 @@ describe('ProviderRow reauthentication', () => {
     ['codex', 'OPENAI_API_KEY'],
     ['claude', 'ANTHROPIC_BASE_URL'],
     ['grok', 'XAI_API_KEY'],
+    ['antigravity', 'GOOGLE_APPLICATION_CREDENTIALS'],
   ])(
     'shows only the owning %s quota with tool env, and hides account overrides',
     async (agentType, accountKey) => {
       const config = {
         ...makeConfig({ cliType: 'builtin', agentType }),
-        env: { OP_TOKEN: 'synthetic' },
+        env: { OP_TOKEN: 'synthetic', NMEM_AGENT_ID: 'lody' },
       };
       const quotaMachine: MachineViewMeta = {
         ...machine,
@@ -159,6 +160,62 @@ describe('ProviderRow reauthentication', () => {
       expect(container.textContent).toContain('70%');
     }
   );
+
+  it.each([
+    { cliType: 'builtin' as const, agentType: 'antigravity' },
+    { cliType: 'registry' as const, agentType: ANTIGRAVITY_AGENT_TYPE },
+  ])('prefers native quota windows for $cliType Antigravity over stale rows', async (provider) => {
+    const config = makeConfig(provider);
+    const windows = ['Gemini Models', 'Argon Models', 'Claude and GPT models'].flatMap(
+      (label, index) =>
+        [18_000, 604_800].map((windowDurationSeconds) => ({
+          label,
+          usedPercent: 20 + index * 20,
+          windowDurationSeconds,
+          resetsAtEpochSeconds: null,
+        }))
+    );
+    const limit = { limitId: 'antigravity', scope: { providerId: 'antigravity' }, windows };
+    const raceLimits = Object.fromEntries(
+      ['gemini', ANTIGRAVITY_ARGON_LIMIT_ID, ANTIGRAVITY_THIRD_PARTY_LIMIT_ID].map((limitId) => [
+        getRateLimitEntryKey(provider.agentType, limitId, config.id),
+        { ...limit, limitId, windows: [{ ...windows[0]!, usedPercent: 1 }] },
+      ])
+    );
+    raceLimits[getRateLimitEntryKey(provider.agentType, 'antigravity', config.id)] = limit;
+    raceLimits[getRateLimitEntryKey(provider.agentType, 'antigravity', 'other' as AgentConfigId)] =
+      {
+        ...limit,
+        windows: [{ ...windows[0]!, usedPercent: 2 }],
+      };
+    await act(async () =>
+      root.render(
+        <ProviderRow
+          config={config}
+          onEdit={() => {}}
+          machine={{
+            ...machine,
+            raceLimits,
+            acpCapabilities: {
+              [config.id]: {
+                ...provider,
+                modes: [],
+                models: [],
+                fetchedAt: 1,
+                rateLimits: { version: 1, query: true },
+              },
+            },
+          }}
+        />
+      )
+    );
+    for (const label of windows.map((window) => window.label))
+      expect(container.textContent).toContain(label);
+    for (const remaining of ['80%', '60%', '40%'])
+      expect(container.textContent).toContain(remaining);
+    expect(container.textContent).not.toContain('99%');
+    expect(container.textContent).not.toContain('98%');
+  });
 
   // Asserts on rendered text rather than a mocked panel: the row must not grow a
   // sign-in affordance again, whichever component would provide it.

@@ -68,24 +68,19 @@ const GROK_ACCOUNT_ENV = new Set([
   'GROK_WEB_SEARCH_MODEL',
 ]);
 
-// agy ACP and its zero-turn /usage command receive the same environment.
-// Only these proxy/locale settings are known not to change credential discovery;
-// unknown keys stay ineligible until their account semantics have been audited.
-const ANTIGRAVITY_NON_ACCOUNT_ENV = new Set([
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY',
-  'LANG',
-  'LANGUAGE',
-  'LC_ALL',
-  'LC_COLLATE',
-  'LC_CTYPE',
-  'LC_MESSAGES',
-  'LC_MONETARY',
-  'LC_NUMERIC',
-  'LC_TIME',
-  'TZ',
+// agy ACP and print-mode /usage share native Google account discovery. Tool
+// settings such as NMEM_AGENT_ID do not select credentials or a Google route.
+const ANTIGRAVITY_ACCOUNT_ENV = new Set([
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_GENAI_USE_VERTEXAI',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_CLOUD_LOCATION',
+  'GOOGLE_CLOUD_QUOTA_PROJECT',
+  'CLOUDSDK_CONFIG',
+  'GEMINI_CLI_HOME',
+  'GEMINI_HOME',
 ]);
 
 /** Account eligibility only. Callers must also require the advertised quota
@@ -109,7 +104,7 @@ export function isSubscriptionQuotaEligible(config: SubscriptionQuotaConfig): bo
     case 'grok':
       return !keys.some((key) => GROK_ACCOUNT_ENV.has(key));
     case 'antigravity':
-      return keys.every((key) => ANTIGRAVITY_NON_ACCOUNT_ENV.has(key));
+      return !keys.some((key) => ANTIGRAVITY_ACCOUNT_ENV.has(key));
     default:
       // Other builtin adapters retain their existing policy until their quota
       // credential paths have been audited.

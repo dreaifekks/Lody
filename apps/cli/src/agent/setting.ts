@@ -413,9 +413,9 @@ export function getAcpCapabilitySourceVersion(
   // The client identity changes which models the agent lists, so it is part of
   // the cache key: toggling it must re-probe instead of serving the old catalog.
   const clientInfo = getAcpClientInfo(input);
-  return clientInfo
-    ? `${agent.id}@${agent.version}+client:${clientInfo.name}`
-    : `${agent.id}@${agent.version}`;
+  // Persisted registry Providers need a fresh probe for the print-mode quota capability.
+  const sourceVersion = `${agent.id}@${agent.version}${agent.id === 'antigravity-acp' ? '+agy-usage:1' : ''}`;
+  return clientInfo ? `${sourceVersion}+client:${clientInfo.name}` : sourceVersion;
 }
 
 /** Zed's identity, which unlocks Antigravity's Claude/GPT models (see the env key's doc). */

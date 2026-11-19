@@ -13,7 +13,7 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import type { LoroRepo } from 'loro-repo';
-import { MachineDocument } from './doc';
+import { LoroDocumentManager, MachineDocument } from './doc';
 import { normalizeAcpSessionCapabilities } from '@/agent/acp-capability-normalization';
 import {
   canShowSubscriptionRateLimits,
@@ -298,4 +298,121 @@ describe('MachineDocument quota publication', () => {
     );
     expect(flock.rows.get(JSON.stringify(quotaKey))?.value).toEqual(limit);
   });
+});
+
+describe('Provider quota snapshot replacement', () => {
+  const setup = (agentType: string, open: () => Promise<void> = async () => {}) => {
+    const flock = new FakeMachineFlock();
+    const configId = 'agy-provider' as AgentConfigId;
+    const otherId = 'other-provider' as AgentConfigId;
+    const config: AgentConfigMeta = {
+      id: configId,
+      machineId: 'machine-1' as MachineId,
+      name: 'Antigravity',
+      cliType: agentType === 'antigravity' ? 'builtin' : 'registry',
+      agentType,
+      env: { NMEM_AGENT_ID: 'lody' },
+    };
+    flock.set(machineFlockKeys.agentConfig(configId), config);
+    const expected = getMachineFlockAgentConfigs(readMachineFlockRowsFromFlock(flock))[configId]!;
+    const limit = (limitId: string) => ({
+      limitId,
+      scope: { providerId: 'antigravity' },
+      windows: [
+        {
+          label: 'Gemini Models',
+          usedPercent: 25,
+          windowDurationSeconds: 18_000,
+          resetsAtEpochSeconds: null,
+        },
+      ],
+    });
+    const staleKeys = ['gemini', 'argon', 'third-party'].map((id) =>
+      machineFlockKeys.rateLimit(configId, agentType, id)
+    );
+    for (const key of staleKeys) flock.set(key, limit(key[3]));
+    const independentKeys = [
+      machineFlockKeys.rateLimit(otherId, agentType, 'gemini'),
+      machineFlockKeys.rateLimit(configId, 'codex', 'codex'),
+    ];
+    for (const key of independentKeys) flock.set(key, limit(key[3]));
+    const document = new MachineDocument(
+      {
+        openFlockDoc: async () => {
+          await open();
+          return { flock, syncOnce: async () => {} };
+        },
+        flush: async () => {},
+      } as unknown as LoroRepo,
+      'workspace-1' as WorkspaceId,
+      'machine-1' as MachineId,
+      () => {}
+    );
+    const manager = { machine: document } as unknown as LoroDocumentManager;
+    const snapshot = limit('antigravity');
+    return {
+      flock,
+      configId,
+      config,
+      expected,
+      staleKeys,
+      independentKeys,
+      snapshot,
+      replace: (shouldWrite: () => boolean) =>
+        LoroDocumentManager.prototype.replaceRateLimits.call(
+          manager,
+          'machine-1' as MachineId,
+          configId,
+          agentType,
+          [snapshot],
+          shouldWrite,
+          expected
+        ),
+      snapshotKey: machineFlockKeys.rateLimit(configId, agentType, 'antigravity'),
+    };
+  };
+
+  it.each(['antigravity', 'antigravity-acp'])(
+    'replaces only %s Provider groups with the native snapshot',
+    async (agentType) => {
+      const h = setup(agentType);
+      await h.replace(() => true);
+      for (const key of h.staleKeys) expect(h.flock.rows.has(JSON.stringify(key))).toBe(false);
+      for (const key of h.independentKeys) expect(h.flock.rows.has(JSON.stringify(key))).toBe(true);
+      expect(h.flock.rows.get(JSON.stringify(h.snapshotKey))?.value).toEqual(h.snapshot);
+    }
+  );
+
+  it.each(['newer-push', 'changed-config', 'deleted-config'] as const)(
+    'preserves old quota when %s wins while the snapshot waits for its Flock',
+    async (change) => {
+      let opened!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        opened = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const h = setup('antigravity-acp', async () => {
+        opened();
+        await gate;
+      });
+      let unchanged = true;
+      const pending = h.replace(() => unchanged);
+      await entered;
+      if (change === 'newer-push') unchanged = false;
+      if (change === 'changed-config')
+        h.flock.set(machineFlockKeys.agentConfig(h.configId), {
+          ...h.config,
+          env: { HOME: '/other-account' },
+        });
+      if (change === 'deleted-config') h.flock.delete(machineFlockKeys.agentConfig(h.configId));
+      const before = getMachineFlockRateLimits(readMachineFlockRowsFromFlock(h.flock));
+      release();
+      await pending;
+      expect(getMachineFlockRateLimits(readMachineFlockRowsFromFlock(h.flock))).toEqual(before);
+      expect(h.flock.rows.has(JSON.stringify(h.snapshotKey))).toBe(false);
+    }
+  );
 });

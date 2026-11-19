@@ -38,6 +38,15 @@ existing subscription's optional `membershipVersion` also refreshes it on open
 and after changes from other devices. Refreshes keep a pending change while an
 older read settles; a cache failure never reports the approval as failed.
 
+## Antigravity Providers
+
+Builtin and persisted registry Providers prefer the `antigravity` quota snapshot in
+Settings and session usage, retaining all agy window labels. The old Gemini/Argon
+selection is used only when no native snapshot is present. The Claude/GPT identity
+opt-in belongs only to the legacy registry Provider; builtin agy already advertises
+these models and does not send the Zed identity. Quota display and refresh share the
+[account environment policy](../../../../shared/src/subscription-quota.ts).
+
 ## Agent Role summaries
 
 Role rows resolve saved model, mode and option IDs against the bound machine's

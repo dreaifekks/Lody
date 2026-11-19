@@ -613,7 +613,7 @@ Provider quota refresh uses `queryLocalAcpRateLimits`: Core providers initialize
 
 Account eligibility for both renderer display and daemon refresh lives in
 [`subscription-quota.ts`](../../../../packages/shared/src/subscription-quota.ts).
-Codex, Claude and Grok allow ordinary tool environment variables; account/config
+Codex, Claude, Grok and Antigravity allow ordinary tool environment variables; account/config
 overrides, API-key profiles, explicit brands and Magpie routes remain excluded.
 Other builtin env policies and custom adapter capability semantics are unchanged.
 Keep provider-specific key rules in that module, not in individual UI consumers.
@@ -634,4 +634,8 @@ and session/new carries no legacy `_meta.lody.promptSuggestions` setting.
 Builtin and persisted registry Antigravity share the agy print-mode reader and
 advertise its query capability through the session normalizer. The result preserves
 all named groups and windows; Cloud Code token parsing and direct HTTP polling are
-removed. [Quota decision](../../../../.agents/notes/implemented/bug-fix/2026-10-20-antigravity-argon-quota.md).
+removed. Successful nonempty Antigravity reads replace that Provider/type's complete
+snapshot, removing obsolete Gemini/Argon/third-party rows only after the query revision
+and persisted config still match. Empty or failed reads keep cached values. Legacy
+registry capability source versions include `+agy-usage:1`, invalidating old caches
+without changing their Provider id, runtime pin or selected permission mode. [Quota decision](../../../../.agents/notes/implemented/bug-fix/2026-10-20-antigravity-argon-quota.md).

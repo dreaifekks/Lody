@@ -188,6 +188,10 @@ export function ProviderRow({
   const rateLimitWindows = useMemo(() => {
     if (!showRateLimits || !machine?.raceLimits) return [];
     const entries = getAgentRateLimitEntries(machine.raceLimits, agentType, config.id);
+    if (agentType === 'antigravity' || agentType === ANTIGRAVITY_AGENT_TYPE) {
+      const snapshot = entries.find((entry) => entry.limitId === 'antigravity');
+      if (snapshot) return getAgentRateLimitWindows(snapshot.limits);
+    }
     if (agentType === ANTIGRAVITY_AGENT_TYPE) {
       // Keep Gemini first and distinguish the separate Pro Argon window.
       // Google does not count ACP use against the Claude/GPT bucket.

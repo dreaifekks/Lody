@@ -1,7 +1,20 @@
 import type { MachineAccessVerification } from '@/session/session-access-retry';
 import { createSessionBackend } from '@/session/session-backend';
 import { RequestError, type ContentBlock } from '@agentclientprotocol/sdk';
-import { getSessionRoomId, type SessionId, type SessionMeta, type WorkspaceId } from '@lody/shared';
+import {
+  getSessionRoomId,
+  getMachineFlockAgentConfigs,
+  machineFlockKeys,
+  readMachineFlockRowsFromFlock,
+  type MachineFlockKey,
+  type MachineId,
+  type AgentConfigId,
+  type SessionId,
+  type SessionMeta,
+  type WorkspaceId,
+} from '@lody/shared';
+import type { LoroRepo } from 'loro-repo';
+import { MachineDocument, type LoroDocumentManager } from '../src/lib/loro/doc';
 import {
   projectTurnAttention,
   type TurnOutcomeFact,
@@ -30,6 +43,8 @@ import { TurnPostProcessingService } from '../src/session/turn-post-processing-s
 import { composeTestSessionDoc } from './session-doc-fixture';
 import {
   capabilityConfigId,
+  createBaseDeps,
+  createLaunchConfig,
   createDeferred,
   createGitLocalProject,
   finishFirstThenRunNext,
@@ -1698,6 +1713,107 @@ describe('Operation Inbox execution boundary', () => {
 });
 
 describe('Provider quota refresh', () => {
+  it.each([
+    { cliType: 'builtin' as const, agentType: 'antigravity' },
+    { cliType: 'registry' as const, agentType: 'antigravity-acp' },
+  ])('refreshes $cliType agy with nmem tool env and replaces its old quota rows', async (agent) => {
+    const rows = new Map<string, { key: MachineFlockKey; value: unknown }>();
+    const flock = {
+      scan: (options?: { prefix?: readonly unknown[] }) =>
+        [...rows.values()].filter((row) =>
+          options?.prefix ? options.prefix.every((part, index) => row.key[index] === part) : true
+        ),
+      set: (key: MachineFlockKey, value: unknown) => {
+        rows.set(JSON.stringify(key), { key, value });
+      },
+      delete: (key: MachineFlockKey) => {
+        rows.delete(JSON.stringify(key));
+      },
+      commit: () => {},
+    };
+    flock.set(
+      machineFlockKeys.agentConfig(capabilityConfigId),
+      createLaunchConfig({
+        ...agent,
+        env: { NMEM_AGENT_ID: 'lody' },
+      })
+    );
+    const config = getMachineFlockAgentConfigs(readMachineFlockRowsFromFlock(flock))[
+      capabilityConfigId
+    ];
+    const machine = new MachineDocument(
+      {
+        openFlockDoc: async () => ({ flock, syncOnce: async () => {} }),
+        flush: async () => {},
+      } as unknown as LoroRepo,
+      'workspace-1' as WorkspaceId,
+      'machine-1' as MachineId,
+      () => {}
+    );
+    const oldLimit = (limitId: string) => ({ ...snapshot.rateLimits[0]!, limitId });
+    for (const id of ['gemini', 'argon', 'third-party']) {
+      await machine.updateRateLimits(capabilityConfigId, agent.agentType, oldLimit(id));
+    }
+    const otherId = 'other-provider' as AgentConfigId;
+    await machine.updateRateLimits(otherId, agent.agentType, oldLimit('gemini'));
+    await machine.updateRateLimits(capabilityConfigId, 'codex', oldLimit('codex'));
+    const fresh = {
+      rateLimits: [{ ...oldLimit('antigravity'), scope: { providerId: 'antigravity' } }],
+    };
+    const read = vi
+      .spyOn(quotaRunner, 'queryLocalAcpRateLimits')
+      .mockImplementation(async (options) => {
+        expect(options.cliType).toBe(agent.cliType);
+        expect(options.agentType).toBe(agent.agentType);
+        expect(options.env?.NMEM_AGENT_ID).toBe('lody');
+        return fresh;
+      });
+    const status = vi
+      .spyOn(SessionExecutionService.prototype, 'getMachineAcpBinaryStatus')
+      .mockResolvedValue({
+        type: 'machine/acp-binary-status_response',
+        machineId: 'machine-1',
+        agentType: agent.agentType,
+        success: true,
+        status: 'installed',
+      });
+    try {
+      const service = new SessionExecutionService(
+        createBaseDeps({
+          workspaceDocument: {
+            getAgentConfigForMachineLaunch: async () => config,
+            getAcpCapabilities: async () => ({ rateLimits: { version: 1, query: true } }),
+            replaceRateLimits: async (
+              _machineId: MachineId,
+              ...args: Parameters<MachineDocument['replaceRateLimits']>
+            ) => machine.replaceRateLimits(...args),
+            updateRateLimits: async (
+              _machineId: MachineId,
+              ...args: Parameters<MachineDocument['updateRateLimits']>
+            ) => machine.updateRateLimits(...args),
+          } as unknown as LoroDocumentManager,
+        })
+      );
+      expect((await service.refreshProviderRateLimits(capabilityConfigId)).success).toBe(true);
+      const ownRows = [...rows.values()].filter(
+        ({ key }) =>
+          key[0] === 'rateLimit' && key[1] === capabilityConfigId && key[2] === agent.agentType
+      );
+      expect(ownRows.map(({ value }) => value)).toEqual(fresh.rateLimits);
+      expect(
+        rows.get(JSON.stringify(machineFlockKeys.rateLimit(otherId, agent.agentType, 'gemini')))
+          ?.value
+      ).toEqual(oldLimit('gemini'));
+      expect(
+        rows.get(JSON.stringify(machineFlockKeys.rateLimit(capabilityConfigId, 'codex', 'codex')))
+          ?.value
+      ).toEqual(oldLimit('codex'));
+    } finally {
+      read.mockRestore();
+      status.mockRestore();
+    }
+  });
+
   it('publishes a cold query for its exact Provider and coalesces concurrent consumers', async () => {
     const pending = createDeferred<typeof snapshot>();
     const ready = createDeferred();

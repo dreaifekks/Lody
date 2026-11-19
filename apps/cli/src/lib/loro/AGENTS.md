@@ -109,7 +109,9 @@ persistence when changing this SDK-format compatibility boundary.
 
 ## Machine Flock writes for this machine are local-first
 
-Antigravity quota updates only its config/type; null/errors retain cache.
+Antigravity quota replaces only its config/type; empty/failed queries retain cache.
+Snapshot replacement rechecks both query revision and persisted config after opening
+Flock, before any upsert or deletion.
 
 After `repo.flush()`, call `LoroDocumentManager.markMachineFlockDocDirty(...)` (or use
 the manager as sync scheduler). Never await `handle.syncOnce()` in user/RPC paths

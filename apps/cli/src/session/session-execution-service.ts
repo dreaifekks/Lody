@@ -21,6 +21,7 @@ import { resolveProjectFileRoots } from './worktree/project-member-access';
 import { type AcpLauncher, resolveAcpLauncher } from '@/agent/acp-analytics';
 import type { LodyRateLimitsCapability } from 'acp-extension-core';
 import { queryLocalAcpRateLimits, AcpQuotaCleanupError } from '@/agent/acp-runner';
+import { isAntigravityBuiltinAgent, isAntigravityRegistryAgent } from '@/agent/antigravity-quota';
 import { defaultAcpWorkdir } from '@/agent/acp-default-workdir';
 import { isLoroRepoDocDeleted, normalizeSessionTurnInputConfig } from '@lody/shared';
 import {
@@ -1549,15 +1550,26 @@ export class SessionExecutionService {
       if (!latest || JSON.stringify(latest) !== fingerprint) return false;
       const unchanged = () =>
         (this.providerQuotaUpdates.get(configId) ?? 0) === revision && !signal.aborted;
-      for (const limit of snapshot.rateLimits) {
-        await this.deps.workspaceDocument.updateRateLimits(
+      if (isAntigravityBuiltinAgent(config) || isAntigravityRegistryAgent(config)) {
+        await this.deps.workspaceDocument.replaceRateLimits(
           this.deps.machineId,
           configId,
           config.agentType,
-          limit,
+          snapshot.rateLimits,
           unchanged,
           config
         );
+      } else {
+        for (const limit of snapshot.rateLimits) {
+          await this.deps.workspaceDocument.updateRateLimits(
+            this.deps.machineId,
+            configId,
+            config.agentType,
+            limit,
+            unchanged,
+            config
+          );
+        }
       }
       if (unchanged() && this.automationObservations) {
         await this.automationObservations

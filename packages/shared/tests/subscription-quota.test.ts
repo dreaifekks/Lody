@@ -3,7 +3,7 @@ import { isSubscriptionQuotaEligible } from '../src/subscription-quota';
 import { assertManagedCodexProfileConfig } from '../src/codex-auth-profile';
 
 describe('subscription quota account eligibility', () => {
-  it('allows only audited proxy and locale settings for builtin Antigravity', () => {
+  it('allows tool, proxy and locale settings while excluding builtin Antigravity account overrides', () => {
     expect(
       isSubscriptionQuotaEligible({
         cliType: 'builtin',
@@ -14,6 +14,9 @@ describe('subscription quota account eligibility', () => {
           LANG: 'en_US.UTF-8',
           LC_ALL: 'en_US.UTF-8',
           TZ: 'UTC',
+          NMEM_AGENT_ID: 'lody',
+          OP_TOKEN: 'synthetic-tool-token',
+          LODY_ANTIGRAVITY_THIRD_PARTY_MODELS: '1',
         },
       })
     ).toBe(true);
@@ -25,7 +28,15 @@ describe('subscription quota account eligibility', () => {
       'HOME',
       'XDG_CONFIG_HOME',
       'NODE_OPTIONS',
-      'UNRECOGNIZED_AUTH_SETTING',
+      'GEMINI_CLI_HOME',
+      'GEMINI_HOME',
+      'CLOUDSDK_CONFIG',
+      'GOOGLE_CLOUD_PROJECT',
+      'GOOGLE_CLOUD_LOCATION',
+      'GOOGLE_CLOUD_QUOTA_PROJECT',
+      'USERPROFILE',
+      'APPDATA',
+      'LOCALAPPDATA',
     ]) {
       for (const env of [{ [key]: 'synthetic' }, { [key.toLowerCase()]: '' }]) {
         expect(

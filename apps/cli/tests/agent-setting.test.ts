@@ -10,6 +10,8 @@ import {
 } from 'acp-extension-dsh/profile';
 import {
   ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
+  ACP_CAPABILITY_CACHE_VERSION,
+  getAcpCapabilityCacheStaleReason,
   REGISTRY_ACP_AGENTS,
   CODEX_PROFILE_LEGACY_LAUNCH_GUARD,
 } from '@lody/shared';
@@ -920,7 +922,21 @@ describe('resolveBuiltinACPSetting', () => {
     expect(getAcpClientInfo(plain)).toBeUndefined();
     // The creation catalog hides this provider; the compatibility resolver still knows it.
     const sourceVersion = getAcpCapabilitySourceVersion(plain);
-    expect(sourceVersion).toMatch(/^antigravity-acp@\d+\.\d+\.\d+$/);
+    expect(sourceVersion).toBe('antigravity-acp@1.5.9+agy-usage:1');
+    const oldCache = {
+      cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
+      ...plain,
+      modes: [],
+      models: [],
+      fetchedAt: 1,
+      sourceVersion: 'antigravity-acp@1.5.9',
+    };
+    expect(getAcpCapabilityCacheStaleReason(oldCache, sourceVersion)).toBe(
+      'source-version-mismatch'
+    );
+    expect(
+      getAcpCapabilityCacheStaleReason({ ...oldCache, sourceVersion }, sourceVersion)
+    ).toBeUndefined();
     expect(getAcpClientInfo(optedIn)?.name).toBe('zed');
     // A different identity lists different models, so it must not share the cache entry.
     expect(getAcpCapabilitySourceVersion(optedIn)).toBe(`${sourceVersion}+client:zed`);
@@ -1372,7 +1388,7 @@ describe('managed Antigravity', () => {
       expect(REGISTRY_ACP_AGENTS.some((a) => a.id === 'antigravity-acp')).toBe(false);
       expect(
         getAcpCapabilitySourceVersion({ cliType: 'registry', agentType: 'antigravity-acp' })
-      ).toMatch(/^antigravity-acp@\d+\.\d+\.\d+$/);
+      ).toBe('antigravity-acp@1.5.9+agy-usage:1');
     } finally {
       manager.mockRestore();
     }

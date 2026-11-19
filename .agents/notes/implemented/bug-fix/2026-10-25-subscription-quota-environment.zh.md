@@ -31,6 +31,11 @@ PR: [#1867](https://github.com/LodyAI/Lody/pull/1867)
   记录了 `XAI_API_KEY`；Lody 的 Magpie 启动器通过 `GROK_HOME`、`GROK_CONFIG` 和模型选择
   变量切换自定义路由。这些入口仍被排除，显式品牌和 Magpie gateway 同样排除。
 
+- Antigravity 的 ACP 与零回合 print `/usage` reader 使用相同启动环境。
+  内置额度允许 `NMEM_AGENT_ID`、`OP_TOKEN` 等工具变量，继续排除 Google 凭据／Vertex 路由、
+  Gemini／Cloud SDK 配置目录和通用 home／配置／代码加载覆盖。旧 registry 的 Claude/GPT
+  开关键残留在 builtin 环境中时，不会改变其账号身份。
+
 规则只检查配置键名，不记录值，并为 Windows 做大小写不敏感匹配。空账号覆盖仍排除，
 因为清空继承凭据也可能改变账号选择。通用 home／配置发现及代码加载覆盖仍被排除。
 这是一项配置策略，不是运行时账号证明：不检查继承的进程环境或原生配置文件。

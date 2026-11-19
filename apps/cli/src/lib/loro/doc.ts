@@ -2298,13 +2298,21 @@ export class LoroDocumentManager {
     machineId: MachineId,
     agentConfigId: AgentConfigId,
     cliType: string,
-    limits: RateLimit[]
+    limits: RateLimit[],
+    shouldWrite: () => boolean = () => true,
+    expectedConfig?: AgentConfigMeta
   ): Promise<void> {
     if (!this.machine) {
       this.machine = this.createMachineDocument(machineId);
       await this.machine.init();
     }
-    await this.machine.replaceRateLimits(agentConfigId, cliType, limits);
+    await this.machine.replaceRateLimits(
+      agentConfigId,
+      cliType,
+      limits,
+      shouldWrite,
+      expectedConfig
+    );
   }
 
   async updateRateLimits(
@@ -4344,10 +4352,19 @@ export class MachineDocument implements LoroDocument<{}, MachineMeta> {
   async replaceRateLimits(
     agentConfigId: AgentConfigId,
     cliType: string,
-    limits: RateLimit[]
+    limits: RateLimit[],
+    shouldWrite: () => boolean = () => true,
+    expectedConfig?: AgentConfigMeta
   ): Promise<void> {
     return this.enqueueRateLimitsUpdate(async () => {
       const handle = await this.openMachineFlockDoc();
+      if (!shouldWrite()) return;
+      if (expectedConfig) {
+        const current = getMachineFlockAgentConfigs(
+          readMachineFlockRowsFromFlock(handle.flock, { families: ['agentConfig'] })
+        )[expectedConfig.id];
+        if (!current || JSON.stringify(current) !== JSON.stringify(expectedConfig)) return;
+      }
       const limitIds = new Set(limits.map((limit) => limit.limitId));
       const staleKeys = getProviderRateLimitKeys(
         readMachineFlockRowsFromFlock(handle.flock, { families: ['rateLimit'] }),

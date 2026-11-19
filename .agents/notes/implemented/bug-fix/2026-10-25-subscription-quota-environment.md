@@ -39,6 +39,12 @@ and preserves [Provider isolation](2026-09-30-provider-rate-limit-isolation.md).
   `GROK_HOME`, `GROK_CONFIG` and model-selection variables for custom routes.
   These remain excluded, as do explicitly marked brands and Magpie gateways.
 
+- Antigravity's ACP and zero-turn print `/usage` reader share the selected launch
+  environment. Builtin quota permits tool variables such as `NMEM_AGENT_ID` and
+  `OP_TOKEN`, while excluding Google credentials/Vertex routes, Gemini/Cloud SDK
+  config directories and the common home/config/code-loading overrides. A stale
+  registry-only Claude/GPT opt-in variable does not change builtin account identity.
+
 Rules inspect configured key names, never log values, and match case-insensitively
 for Windows. An empty account override remains excluded because clearing inherited
 credentials can change account choice. Common home/config discovery and code-loading

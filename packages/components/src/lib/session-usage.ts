@@ -147,7 +147,8 @@ export function canShowSubscriptionRateLimits({
   config?: Pick<AgentConfigMeta, 'brandId' | 'env' | 'codexAuth' | 'magpieGatewayUrl'> | null;
   capability?: AcpCapabilityCacheEntry['rateLimits'];
 }): boolean {
-  // Antigravity is refreshed by the daemon rather than an ACP quota extension.
+  // Persisted registry Antigravity keeps its display eligibility while old capability
+  // caches are refreshed for the agy print-mode quota reader.
   if (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE) return true;
   return (
     capability?.version === 1 && isSubscriptionQuotaEligible({ ...config, cliType, agentType })

@@ -26,9 +26,9 @@ without changing credentials, polling cadence or provider-scoped ownership.
 Implementation responsibilities are recorded in the [CLI library index](../../../../apps/cli/src/lib/README.md#provider-quota).
 
 Review found that per-limit upserts retained Argon after switching to an account
-without that bucket. The poller now submits one complete result per config through
+without that bucket. The retired poller submitted one complete result per config through
 workspace and machine `replaceRateLimits`. The machine's existing quota queue
-writes current groups and deletes absent keys for the same config and CLI type,
+wrote current groups and deleted absent keys for the same config and CLI type,
 then flushes and marks the document dirty. Claude/Codex incremental writes are
 unchanged. A successful empty result clears that snapshot; null or thrown fetches
 leave it untouched.
@@ -37,7 +37,7 @@ Existing CLI, session-usage and provider-row suites cover mapping, model selecti
 Ultra's combined bucket and Argon-first input order. Storybook Pro/compact scenes
 exercise the rendered labels. Verification uses fixtures, not live Google quota
 or account credentials.
-The poller suite uses a real in-memory LoroRepo and MachineDocument to verify
+The former poller suite used a real in-memory LoroRepo and MachineDocument to verify
 Pro-to-Ultra replacement, other config/type isolation, empty snapshots, and
 signed-out/failed fetch preservation followed by recovery.
 
@@ -66,3 +66,20 @@ preserves all groups in one Provider snapshot. Extra ACP launch arguments and
 Magpie routing remain unsupported for quota, so account selectors are never silently
 dropped. The old `lib/antigravity-quota.ts` reader and its tests are removed.
 See the [agy CLI decision](../feature/2026-11-15-antigravity-agy-cli-acp.md).
+
+Settings and composer both prefer the native `antigravity` limit row for builtin and
+legacy registry Providers, retaining every agy window label. A successful nonempty
+query replaces that Provider/type's snapshot through the existing quota queue and
+removes obsolete `gemini`, `argon` and `third-party` rows. The queue rechecks the
+query's unchanged revision and the exact persisted Provider config after opening
+Flock, before writes or deletes; other Providers and other types are untouched.
+Empty/failed reads keep cache. This supersedes the retired poller's empty-result
+clearing behavior described above. The existing machine-document suite covers the
+manager forwarding, scoped replacement and delayed push/config/deletion races.
+
+Legacy capability source versions add `+agy-usage:1`, so old quota-incapable catalogs
+are reprobed even when the agy binary version is unchanged. Zed identity remains a
+separate suffix and a registry-only setting. Builtin agy needs no Claude/GPT switch.
+Ordinary tool variables such as `NMEM_AGENT_ID` remain eligible under the shared
+[account environment policy](2026-10-25-subscription-quota-environment.md); account,
+home/config discovery and code-loading overrides remain excluded.
