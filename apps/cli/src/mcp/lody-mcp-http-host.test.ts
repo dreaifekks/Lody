@@ -462,7 +462,10 @@ describe('MCP HTTP host wire behavior', () => {
         body: JSON.stringify(body),
       });
       return (await response.json()) as {
-        result?: { tools?: Array<{ name: string; description?: string }>; content?: unknown[] };
+        result?: {
+          tools?: Array<{ name: string; description?: string; inputSchema?: unknown }>;
+          content?: unknown[];
+        };
         error?: unknown;
       };
     };
@@ -498,6 +501,46 @@ describe('MCP HTTP host wire behavior', () => {
         ])
       );
       expect((await listNames()).filter((name) => name.startsWith('lody_board_'))).toEqual([]);
+    });
+
+    it('lists every command with an open input schema for a compact session', async () => {
+      const headers = Object.fromEntries(
+        buildLodyMcpHttpHeaders(
+          { url: baseUrl, token: TOKEN },
+          {
+            sessionId: 'session-under-test',
+            workspaceId: 'workspace-under-test',
+            machineId: 'machine-under-test',
+            workdir: '/tmp/workdir',
+            compactTools: true,
+          }
+        ).map(({ name, value }) => [name.toLowerCase(), value])
+      );
+      const list = async (extraHeaders: Record<string, string> = {}) =>
+        (
+          await legacyCall(
+            { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+            extraHeaders
+          )
+        ).result?.tools ?? [];
+      const compact = await list(headers);
+      expect(compact.map((tool) => tool.name)).toEqual((await list()).map((tool) => tool.name));
+      for (const tool of compact.filter((tool) => tool.name !== 'lody_help')) {
+        expect(tool.inputSchema).toEqual({ type: 'object' });
+      }
+      const full = (await list()).find((tool) => tool.name === 'lody_session_create');
+      expect(full?.inputSchema).toMatchObject({ properties: { workContext: expect.anything() } });
+
+      const help = await legacyCall(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'lody_help', arguments: { command: 'lody_session_create' } },
+        },
+        headers
+      );
+      expect(JSON.stringify(help.result?.content)).toContain('workContext');
     });
 
     it('lists none of them while the experiments are off', async () => {

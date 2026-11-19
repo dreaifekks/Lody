@@ -223,11 +223,13 @@ const registryAgentsById: Record<string, RegistryAcpAgent> = Object.fromEntries(
 );
 // Keep existing providers and stored turns runnable until their owner chooses
 // migration. This compatibility entry is deliberately absent from the catalog.
-const LEGACY_ANTIGRAVITY_CLI_VERSION = '1.5.9';
+// It runs the managed runtime's agy release from agy's GitHub distribution, so
+// both Antigravity identities get agy's fixes together: before 1.5.10 agy held
+// a background wakeup's output back until the next prompt.
 registryAgentsById['antigravity-acp'] = {
   id: 'antigravity-acp',
   name: 'Antigravity ACP (Legacy)',
-  version: LEGACY_ANTIGRAVITY_CLI_VERSION,
+  version: ANTIGRAVITY_RUNTIME_VERSION,
   description: 'Google’s AI coding agent',
   icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg',
   distribution: {
@@ -242,7 +244,7 @@ registryAgentsById['antigravity-acp'] = {
       }).map(([platform, archive]) => [
         platform,
         {
-          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${LEGACY_ANTIGRAVITY_CLI_VERSION}/agy_cli_${archive}`,
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_RUNTIME_VERSION}/agy_cli_${archive}`,
           cmd: platform.startsWith('windows-') ? './antigravity.exe' : './antigravity',
           args: ['acp', '--process-per-session', '--disable-telemetry'],
           env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },

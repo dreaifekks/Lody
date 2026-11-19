@@ -11,7 +11,7 @@ Translation: current
 写入，于是 Lody 的空闲 GC 会杀掉仍在工作的进程。Lody 现在照常结束 turn，并在这些工作
 唤醒模型、重新安静之前合成 Core `sessionActivity`，只使用无副作用的 `session/list` 轮询。
 agy 在这些唤醒中产生的输出不会回放到 Lody：唯一能返回它的接口 `session/load` 会重启会话
-的 MCP 服务器，并在真机运行中打断了一次工具调用。
+的 MCP 服务器，并在真机运行中打断了一次工具调用。agy 1.5.10 及之后会即时发出这些输出。
 
 ## 问题
 
@@ -19,7 +19,9 @@ agy 在这些唤醒中产生的输出不会回放到 Lody：唯一能返回它�
 结束 `session/prompt`，即使它启动的后台工作仍在运行：超过异步阈值的
 `run_command`、`schedule` 定时器与 cron、`invoke_subagent` / `send_message`、
 `swarm` 以及异步 `run_workflow`。这些工作结束后，agy 在自己的会话里唤醒模型，
-但不再向 stdout 写 `session/update` 或 `session/request_permission`。agy 没有声明
+但 agy 1.5.9 及之前直到下一个 prompt 都不再向 stdout 写 `session/update` 或
+`session/request_permission`。更正：agy 1.5.10 及之后会立即发出，Lody 的迟到输出路由把它们
+写进已结束的那一轮（[实测](../feature/2026-11-15-antigravity-agy-cli-acp.zh.md#发现)）。agy 没有声明
 Core `sessionActivity` 扩展，所以 Lody 看到的是空闲会话，`SessionGCManager` 在空闲
 超时后杀掉了仍在工作的进程。
 
@@ -71,9 +73,9 @@ Core `sessionActivity` 扩展，所以 Lody 看到的是空闲会话，`SessionG
 
 ## 局限
 
-- agy 在 `end_turn` 之后写出的输出不会出现在 Lody 中。agy 提供无副作用的读取方式后，
-  可以在不重启 MCP 的前提下回放。
+- agy 1.5.9 及之前，agy 在 `end_turn` 之后写出的输出要等下一个 prompt 才到 Lody，落进新的一轮；
+  进程先被替换时则永远不会到。agy 1.5.10 及之后会立即发出。
 - 多个待完成项在同一段活动中唤醒 agy 时只会释放一项，会话会一直受保护，直到下一段活动或
   24 小时上限。模型在唤醒中新启动的工作不会计入。
-- `end_turn` 后等待 agy 未转发的权限请求的工具，仍会卡住该 agy 会话，直到用户取消；
-  `realpath` 协商消除了最常见的触发原因。
+- agy 1.5.9 及之前，`end_turn` 后等待 agy 未转发的权限请求的工具，仍会卡住该 agy 会话，直到
+  用户取消；`realpath` 协商消除了最常见的触发原因。agy 1.5.10 会转发该请求。

@@ -17,7 +17,9 @@ agy CLI 的 GitHub release 启动 `antigravity acp`，Lody 会话因此和本地
 传入的 MCP 服务（包括 Lody 自己的 `lody`），除非有 agy 的允许规则覆盖，agy 每次调用工具都会询问；
 另外，已保存的 `auto_edit`、`thinking_level` 选择不再通过校验。agy 只能让整个进程跳过权限询问，
 所以 Lody 的 `yolo` 模式用 `--dangerously-skip-permissions` 启动该会话的 agy，某一轮切入或切出
-YOLO 时重启它。
+YOLO 时重启它。两种 Antigravity 身份运行同一个 agy 版本；从 1.5.10 起，agy 会把后台工作唤醒后
+在 `end_turn` 之后产生的内容即时发出，Lody 把它写进已结束的那一轮。agy 对客户端传入的 MCP 工具只在提示词预算内声明，其余直接丢掉，所以 Lody 给 agy
+列出的自家命令不带输入 schema，参数由 `lody_help` 提供。
 
 下文所述的 Lody Auto Review 已于 2026-11-19 删除，已保存的选择以 agy 的 `auto` 运行，见
 [删除决策](../simplification/2026-11-19-antigravity-auto-review-removal.zh.md)。
@@ -66,6 +68,48 @@ YOLO 时重启它。
 - 加 `--dangerously-skip-permissions` 并用 `default` 时，macOS 上 `lody-lan` 立即执行。changelog 说
   这个参数只跳过工具权限询问，系统命令黑名单照样拦截，显式的 deny 规则仍然有效。
 
+2026-11-19 在 Linux x86_64（devNuc）上测得，用记录全部 JSON-RPC 收发的最小 ACP 客户端，
+`gemini-3.8-flash`、`thought_level` low，以及带这次改动的临时 daemon（`LODY_DATA_DIR`）：
+
+- agy 1.5.9 会扣住模型在 `end_turn` 之后做的事。让它设一个 20 秒的 `schedule` 定时、被唤醒后回答，
+  它在工具仍为 `in_progress` 时返回 `end_turn`；会话库显示回复在 17 秒后写好，但 stdout 沉默了 90 秒，
+  直到下一个 `session/prompt`，这次先带出 `tool_call_update` 和那条回复，然后才是新的用户消息。
+  Lody 会把这条迟到的回复放进新的一轮。
+- 换了进程就会丢失。唤醒之后，新起的 1.5.9 进程回应 `session/load` 时，重放的末尾就是这条回复，
+  Lody 把它当作重放丢弃，下一个 prompt 也不会再发。mini 上的一个 Lody 会话就是这样丢了 `swarm`
+  的结果：切到 YOLO 时 agy 被重启。
+- agy 1.5.10 的 changelog 说，这类回复、工具调用和权限请求现在会立即发出。经由临时 daemon，
+  定时器的回复和 `swarm` 子代理的发帖都在没有新消息的情况下出现在已结束那一轮的 assistant 记录里；
+  唤醒安静下来约 30 秒后，会话离开 `busy`。
+- 停着的协调者只会被与它有关的发帖唤醒：子代理的帖子没有 `@coordinator` 时，它一直不醒。
+
+2026-11-19 测得，agy CLI 1.5.9 和 1.5.10（后者带 `--process-per-session --disable-telemetry` 启动），
+Linux x86_64 及一个 macOS 会话，从 `~/.gemini/antigravity-cli/conversations/<id>.db` 读各会话最后一次
+模型请求：
+
+- agy 把经 ACP 传入的每个 MCP 服务的工具声明成原生函数（`mcp_<server>_<tool>`），按声明体积从小到大放，
+  直到所有服务共用的预算用完。插件的 MCP 服务仍是 lazy，只列名字。超出预算的工具两个名单都不进，
+  `call_mcp_tool` 调它会报 `tool <name> is not enabled for server <server>`。agy 内置的 flag 默认值里有
+  `customization-token-budget: 20000`，这是 skill、子代理和 MCP 工具共用的一个池，按大小从小到大放。
+  放不下的 skill 和子代理会在提示词里点名，MCP 工具不会。留给 MCP 的空间取决于插件 skill：Mac mini 那次
+  会话 skill 约占 10.2k（`science` 插件 6.7k），MCP 工具约 9k。探针实测 120 个同样大小的工具进了 86 个；
+  加上 `science` 插件的 48 个 skill 后只剩 57 个，`agy plugin disable science` 后回到 86 个。
+- Mac mini 上一个带 `lody` 和四个工作区服务的聊天会话，48 个 `lody` 工具只列出 32 个。缺的 16 个里有
+  `lody_session_create_options`、`lody_session_create`、`lody_session_chat`、`lody_session_list` 和
+  `lody_session_history`，agent 调 `lody_session_create_options` 就报了上面的错。
+- 给 ACP 传入服务的工具加 `_meta["antigravity/alwaysLoad"]` 不能让它留在预算内：三个同样大小、
+  超出预算的工具里，不管标记加在哪一个上，agy 留下的都是同一个。
+- 输入 schema 为 `{"type": "object"}` 的工具，收到的嵌套参数原样不变。
+- 在临时 daemon 上用 Mac mini 缓存的声明回放这四个服务：`lody` 从 45 个里列出 33 个，变为精简列出后
+  45 个全部列出，工作区服务也多留下了工具（hebi8-market 19 个里从 15 到 17，mail-personal 17 个里
+  从 12 到 15）。agy 读了 `lody_help`，调用 `lody_session_create_options`，再以完整参数调用
+  `lody_session_create`；子 Tab 作答，完成结果经 Inbox 回到父会话。
+- 48 个 `lody` 声明的完整 JSON 共 65.7 KB，精简后 12.8 KB。47 个工作区工具里只有 5 个比最大的精简声明小。
+- agy 给每个声明再包上自己的字段。临时 daemon 那次请求里，45 个精简的 `lody` 工具占 25.5 KB（每个
+  509 到 712 字节）。Mac mini 那个会话里，列出的 32 个完整 `lody` 工具占了全部 MCP 工具声明 46.4 KB
+  中的 27.1 KB，和 48 个精简命令在那里大约需要的空间相当。两次里 Nowledge Mem 插件的 MCP 服务都是
+  lazy，不占这份预算。
+
 ## 决策
 
 运行时、配额及会话权限边界记录在[草稿契约](../../../../specs/antigravity-runtime.zh.md)。
@@ -73,7 +117,8 @@ YOLO 时重启它。
 新 Provider 使用上游托管的内置 Antigravity，由 `antigravity-runtime-manifest.json`
 固定到 agy 1.5.10。启动参数为 `acp --process-per-session --disable-telemetry`，
 禁用自动更新；`antigravityPath` 可指定用户维护的可执行文件。已有 registry Provider 在
-`setting.ts` 保留 fork 已使用的 agy 1.5.9 GitHub 分发，从新建列表隐藏，不改写身份或已存会话。
+`setting.ts` 保留 fork 使用的 agy GitHub 分发，从新建列表隐藏，版本跟随 manifest 的 agy 版本，
+一个固定点就能把 agy 的修复带给两种身份；不改写身份或已存会话。
 
 registry 的 Antigravity 加入 Claude/Grok 的身份兼容名单，接收不带标签的
 `session_info_update` 标题。agy 按提示词的语言给每个会话起标题；独立的标题会话会多出一个
@@ -94,6 +139,11 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 不会重启同 Provider 的其他会话。某一轮切入或切出 YOLO 时，先退役该会话的 agent，
 再启动一个载入原对话的替代进程（会话执行服务里的 `antigravityYoloChanged`）。运行中的一轮里，
 需要换进程的模式切换会被报错拒绝，不会发给 agy。
+
+对 agy（`isAntigravityServer()`，内置和 registry 都算），AgentClient 让 `lody` 服务精简列出命令
+（HTTP 用 `x-lody-mcp-compact-tools`，stdio 用 `LODY_MCP_COMPACT_TOOLS`）。每个命令保留名字、概要和
+帮助提示，输入 schema 声明为 `{"type": "object"}`；`lody_help` 返回完整 schema，服务端仍按它校验每次
+调用。工具集合和名字不变，agy 的 `mcp(lody/<tool>)` 允许规则也就不变。其他 agent 仍收到完整 schema。
 
 权限档位把 agy 的 `accept-edits` 归为 `edit`，输入框用 accept-edits 的图标显示它。
 `auto`、`default`、`plan` 原本已有归类；`yolo` 是 `full`，带警告图标。
@@ -117,6 +167,21 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
   就是每个会话一个进程，而且这个参数仍属于父进程。
 - agy 的 `always-proceed` 工具执行策略（它的 Turbo 预设）作用于整台机器上的所有 agy 会话，不是 ACP 模式。
 - 只靠允许规则，只能覆盖列出的命令和工具。它们仍作为 YOLO 以外会话的按机器配置。
+- 给 registry 条目单独固定版本、手动升级：它已经落后于托管运行时（1.5.9 对 1.5.10），
+  让已有 Provider 一直停在会扣住唤醒输出的 agy 上。
+- 在 Lody 里找回被扣住的输出：之后的 prompt 确实会带出它，但落进新的一轮；换了进程就永远不会发。
+  从 `session/load` 重放里取，需要那些会重启 agy MCP 服务的载入
+  （[后台工作](../bug-fix/2026-11-16-antigravity-background-wakeup.zh.md)），而且 agy 的重放没有
+  turn id，无法和 Lody 的历史对齐。
+- 让 agy 在 Lody 里别用原生 `swarm`：agy 即时发出唤醒内容后就没必要了；定时器、子代理和 swarm 都照常可用。
+- 给 Lody 的会话工具加 `_meta["antigravity/alwaysLoad"]`：实测对 ACP 传入的服务没有作用。
+- 只向 agy 列出会话工具：其余 Lody 命令都没了，而且仍要按体积和工作区工具竞争。
+- 用 `lody_call` 这样的单个分发命令：列出的体积最小，但所有命令共用一个工具名，agy 的按工具允许规则
+  和按命令显示工具调用都无法再区分它们。
+- 调高 agy 的预算：这个值来自 agy 的实验 flag（1.5.9 和 1.5.10 都是 20000）。`settings.json` 里试了 6 种
+  键名、`--include-default-customizations=false` 都还是 20000，`acp` 不接受 `--settings`，唯一的本地覆盖
+  RPC `SetMendelFlagOverrides` 要服务端开 developer mode。没试改二进制。
+- 只保留属性名、去掉嵌套 schema：省得少，创建、对话和定时命令每个仍要列出几 KB 的属性。
 
 ## 影响
 
@@ -129,15 +194,30 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
   保留账户环境和全部返回分组；不启动模型轮次或 ACP 配额会话，不读旧 token，也不直接请求 Cloud Code。
   见 [配额决策](../bug-fix/2026-10-20-antigravity-argon-quota.zh.md)。
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` 不再影响这个条目的模型列表，继续发送 Zed 客户端身份没有影响。
+- 唤醒后的回复落在发起后台工作的那一轮；Lody 等唤醒安静下来后才宣布这一轮结束。托管运行时的
+  agy 升级也会改变 registry 条目的下载，升级后第一次启动时下载新版本。
+- 唤醒产生的权限请求指向已结束的一轮，而已结束的一轮拒绝写入权限请求，所以不论哪种模式 Lody
+  都会取消它。只有 agy 自己做决定的情况不会发请求：YOLO、agy 的允许规则，以及 agy 的 `auto`
+  在沙箱里运行的命令。
+- agy 的函数声明里看不到 Lody 命令的参数。agy 会话依赖 `lody_help`，而 Lody 的说明本来就要求每个命令
+  执行前先读它；参数错误会带回帮助提示。预算和 Mac mini 差不多时，工作区 MCP 服务留下的空间大致不变；
+  预算更大时能多留一些工具。
 
 ## 验证
 
 - `scripts/generate-acp-registry.test.mjs` 验证新建列表排除旧条目；
   `apps/cli/src/agent/acp-runner.test.ts` 覆盖两种身份的 print 模式配额。
+- `apps/cli/tests/agent-setting.test.ts` 把 registry 条目的能力来源版本固定为托管运行时的 agy 版本。
+- 「发现」里 2026-11-19 的实测覆盖了 agy 1.5.9 扣住输出、换进程后丢失（原始 ACP），以及 agy 1.5.10
+  的唤醒内容经由临时 daemon 落进已结束的一轮；只在 Linux 上测过。
 - `packages/shared/tests/title-generation-defaults.test.ts` 固定标题归属。
 - `apps/cli/tests/antigravity-acp-stream.test.ts` 固定 YOLO 模式和启动参数，以及被拒绝的切换。
 - `apps/cli/tests/session-execution-service-startup-part-2.test.ts` 固定某一轮切换 YOLO 时的重启。
 - `packages/shared/tests/permission-tier.test.ts` 和 `permission-mode-face.test.ts` 固定模式档位和图标。
+- `apps/cli/src/mcp/tool-help.test.ts` 固定精简列出时帮助和校验仍用完整 schema，
+  `apps/cli/src/mcp/lody-mcp-http-host.test.ts` 验证请求头经 HTTP host 生效，
+  `apps/cli/tests/agent-client-plan-mode.test.ts` 固定只有 agy 会话通过 stdio 和 HTTP 请求精简列出。
 
 未验证：在桌面应用里回答权限请求、批准后实际调用 `lody` 工具、真跑 `accept-edits` 和 `plan`、
-启动 Windows 归档，以及经由 Lody 构建跑 YOLO 会话（只探测过 agy 进程本身）。
+启动 Windows 归档、经由 Lody 构建跑 YOLO 会话（只探测过 agy 进程本身）、macOS 上 agy 1.5.10
+的唤醒、唤醒产生的权限请求，以及 macOS 或 Windows 上 Lody 构建里的精简列出。

@@ -25,6 +25,14 @@ export const LODY_MCP_BOARD_ID_ENV = 'LODY_MCP_BOARD_ID';
 export const MCP_HTTP_AGENT_TOOLS_HEADER = 'x-lody-mcp-agent-tools';
 /** The stdio server's counterpart of the header above. */
 export const LODY_MCP_AGENT_TOOLS_ENV = 'LODY_MCP_AGENT_TOOLS';
+/**
+ * `1` lists every command with an open input schema; lody_help still returns the
+ * full one and calls are still validated against it. Sent for agy, whose prompt
+ * holds client MCP tools only up to a size budget and drops the rest.
+ */
+export const MCP_HTTP_COMPACT_TOOLS_HEADER = 'x-lody-mcp-compact-tools';
+/** The stdio server's counterpart of the header above. */
+export const LODY_MCP_COMPACT_TOOLS_ENV = 'LODY_MCP_COMPACT_TOOLS';
 
 /** Env vars the supervisor passes to the host subprocess. The token lives in
  * the child environment (owner-readable only), never on its command line. */
@@ -48,6 +56,7 @@ export const buildLodyMcpHttpHeaders = (
     workdir: string;
     agentTools?: readonly string[];
     boardId?: string;
+    compactTools?: boolean;
   }
 ): Array<{ name: string; value: string }> => [
   { name: 'Authorization', value: `Bearer ${endpoint.token}` },
@@ -62,4 +71,5 @@ export const buildLodyMcpHttpHeaders = (
   ...(context.agentTools && context.agentTools.length > 0
     ? [{ name: MCP_HTTP_AGENT_TOOLS_HEADER, value: context.agentTools.join(',') }]
     : []),
+  ...(context.compactTools ? [{ name: MCP_HTTP_COMPACT_TOOLS_HEADER, value: '1' }] : []),
 ];
