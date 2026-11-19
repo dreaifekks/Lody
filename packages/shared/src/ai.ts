@@ -44,16 +44,20 @@ export type CliType = BuiltinCliType;
 /** Registry provider whose subscription quota the daemon reads itself; no Lody adapter reports it. */
 export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
 /**
- * LAN fork: a mode Lody adds to an Antigravity server without its own Auto
- * mode. The agent runs in its `default` mode and the CLI reviews each permission
- * request before asking the user. It remains distinct from native `auto`
- * (apps/cli/src/agent/antigravity-auto-review.ts).
+ * LAN fork: Lody's former Antigravity Auto Review (`auto_review`) was removed;
+ * sessions, Roles and schedules saved with it run in agy's own `auto`. No other
+ * agent uses the id.
  */
-export const ANTIGRAVITY_AUTO_REVIEW_MODE_ID = 'auto_review';
+export const migrateLegacyAntigravityModeId = (modeId: string): string =>
+  modeId === 'auto_review' ? 'auto' : modeId;
+/** {@link migrateLegacyAntigravityModeId} for the `mode` option among stored option values. */
+export const migrateLegacyAntigravityModeOption = <T extends Record<string, unknown>>(
+  values: T
+): T => (values.mode === 'auto_review' ? { ...values, mode: 'auto' } : values);
 /**
  * LAN fork: a mode Lody adds to the agy CLI, which has no per-session YOLO. The
  * session's agy process starts with `--dangerously-skip-permissions` and runs in
- * `default` (apps/cli/src/agent/antigravity-auto-review.ts). Same id as the former
+ * `default` (apps/cli/src/agent/antigravity-acp-stream.ts). Same id as the former
  * server's own mode, so stored sessions and Roles keep working.
  */
 export const ANTIGRAVITY_YOLO_MODE_ID = 'yolo';
@@ -1091,7 +1095,8 @@ export function classifyPermissionModeFace(modeId: string | null | undefined): P
     case 'agent':
       return { kind: 'hidden' };
     case 'agent-auto-review':
-    case ANTIGRAVITY_AUTO_REVIEW_MODE_ID:
+    // A turn frozen in Lody's former Antigravity Auto Review still names it.
+    case 'auto_review':
       return { kind: 'auto', tone: 'neutral', render: 'auto-label' };
     case 'agent-full-access':
     case 'danger-full-access':

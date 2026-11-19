@@ -545,19 +545,11 @@ models to every client, so the Zed client identity no longer matters for it.
 - Titles: it pushes untagged `session_info_update` titles, so it uses the identity
   fallback in [Session titles](#session-titles). An isolated title session would be
   one more agy conversation running the user's plugin hooks.
-- Auto Review: `antigravity-auto-review.ts` adds `auto_review` beside whatever modes
-  the agent reports, including agy's own `auto`, which passes through untouched.
-  agy's `auto` runs commands in its sandbox, without network and with little of
-  `$HOME` readable, so a Role that needs `nmem`, `git push` or the web keeps
-  `auto_review`. Its rules count the conversation's own agy directory,
-  `~/.gemini/antigravity-cli/brain/<session id>/`, where agy keeps scratch files, as
-  workspace; the rest of `~/.gemini/antigravity-cli/` still asks as agent configuration.
-  The wrapper presents `auto_review` and `yolo` only over agy's `default`. Session
-  UI keeps that presentation, but publishing a created session's Provider cache
-  restores the underlying value before writing both the capability snapshot and
-  its per-model options. A session's synthetic mode never becomes another
-  session, Role or schedule's first-run default.
-- YOLO: Lody adds `yolo` to the modes. A session whose turn selects it starts agy
+- Modes: `antigravity-acp-stream.ts` passes agy's own modes through and adds only
+  `yolo`. Lody's former `auto_review` is removed; sessions, Roles and schedules saved
+  with it are read as `auto` (`migrateLegacyAntigravityModeId`), and the wrapper sends
+  a turn frozen with it to agy as `auto`.
+- YOLO: a session whose turn selects `yolo` starts agy
   with `--dangerously-skip-permissions` and runs it in `default`, so agy approves
   its own permission requests; its deny rules and command denylist still apply. The
   flag is fixed for a process: a turn that turns YOLO on or off restarts the
@@ -565,13 +557,26 @@ models to every client, so the Zed client identity no longer matters for it.
   refused until the next message. This applies to builtin and persisted registry
   Antigravity. Only that session's agy is replaced; other sessions of the same
   Provider keep their mode and process. The Provider-level skip-permissions setting
-  is hidden and its stored field never adds a global flag: `auto` and `auto_review`
-  cannot inherit permission bypass from it.
+  is hidden and its stored field never adds a global flag: `auto` cannot inherit
+  permission bypass from it. The wrapper presents `yolo` only over agy's `default`.
+  Session UI keeps that presentation, but publishing a created session's Provider
+  cache restores `default` before writing both the capability snapshot and its
+  per-model options, so it never becomes another session, Role or schedule's
+  first-run default.
 - Permissions: in `default` and `auto`, agy asks before every tool call of an MCP
   server the client passes (the builtin `lody` server, workspace MCP) and offers only
-  allow-once or reject-once. MCP servers from its own plugins run without asking.
-  agy's allow rules in `~/.gemini/config/config.json` (`mcp(<server>/<tool>)`,
-  `command(<prefix>)`) also apply to ACP sessions.
+  allow-once or reject-once; answering never writes a lasting rule. MCP servers from
+  its own plugins run without asking. agy's rules in `~/.gemini/config/config.json`
+  (`userSettings.globalPermissionGrants` allow/ask/deny: `mcp(<server>/<tool>)`,
+  `command(<word prefix>)`, `read_url(<domain>)`) also apply to ACP sessions.
+- Auto: agy runs commands in its sandbox (macOS; Linux needs an AppArmor profile
+  allowing its user namespaces, or agy does not offer `auto`). The sandbox has no
+  network except `read_url(<domain>)` domains and their subdomains, over ports 80 and
+  443, never an IP address; `sandboxAllowNetwork` has no effect. A command that fails
+  there (`git push` without a granted host, `nmem` on its IP and port, `lody-lan` on
+  macOS, whose sandbox blocks the daemon socket) goes to agy's reviewer before it
+  runs outside, about 20–40 s; an allow rule only keeps that review from asking the
+  user. Trusted networked work uses `yolo`.
 - HTTP MCP: agy connects to Streamable HTTP servers passed over ACP but does not
   advertise `mcpCapabilities.http`; the wrapper adds it to the initialize response, so
   workspace HTTP servers start and the builtin `lody` server uses the shared HTTP host.
@@ -582,7 +587,8 @@ models to every client, so the Zed client identity no longer matters for it.
   The daemon no longer reads the former server’s token or calls Cloud Code directly.
 
 Decision, alternatives and evidence:
-[agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md).
+[agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md),
+[Auto Review removal](../../../../.agents/notes/implemented/simplification/2026-11-19-antigravity-auto-review-removal.md).
 
 ### Local project identity
 
