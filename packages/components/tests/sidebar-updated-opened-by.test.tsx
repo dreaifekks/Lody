@@ -304,12 +304,18 @@ describe('SidebarUpdatedSessionList opened-by rendering', () => {
       expect(markOf('opener')).not.toBeNull();
     });
 
-    it('without the mode, an opener folded by the user does not draw what it hides', () => {
-      render(family({ isWaitingPermission: true, hasUnreadMessages: true, latestMessageAt: 1_100 }), {
+    it('without the mode, an opener folded by the user draws what it hides as it is', () => {
+      render(family({ isWaitingPermission: true }), { collapsed: { opener: true } });
+      expect(rowOf('opened')).toBeNull();
+      expect(markOf('opener')?.querySelector('.lucide-hand')).not.toBeNull();
+
+      // Output the opener read covers still counts: only the mode narrows it.
+      flushSync(() => root?.unmount());
+      container?.remove();
+      render(family({ hasUnreadMessages: true, latestMessageAt: 900 }), {
         collapsed: { opener: true },
       });
-      expect(rowOf('opened')).toBeNull();
-      expect(markOf('opener')).toBeNull();
+      expect(markOf('opener')?.querySelector('[data-session-unread-dot]')).not.toBeNull();
     });
   });
 

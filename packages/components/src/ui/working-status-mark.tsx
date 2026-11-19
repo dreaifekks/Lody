@@ -12,6 +12,8 @@ export type WorkingStatusMarkProps = {
   unread: boolean;
   /** Play the working → unread transition; `false` goes straight to the dot. */
   doneTransition?: boolean;
+  /** Draw the grid without motion. */
+  still?: boolean;
   /** Text colour class for the grid, transition and dot. */
   className?: string;
 };
@@ -37,6 +39,7 @@ export function WorkingStatusMark({
   working,
   unread,
   doneTransition = true,
+  still = false,
   className,
 }: WorkingStatusMarkProps) {
   const [wasWorking, setWasWorking] = useState(working);
@@ -47,7 +50,13 @@ export function WorkingStatusMark({
   }
 
   if (working) {
-    return <WorkingGrid data-session-working-indicator="" className={className} />;
+    return (
+      <WorkingGrid
+        data-session-working-indicator={still ? 'still' : ''}
+        still={still}
+        className={className}
+      />
+    );
   }
   if (unread && finishing) {
     return (

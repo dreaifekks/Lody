@@ -173,6 +173,7 @@ export function BoardThreadStatusCard({
           <span aria-hidden="true" {...stylex.props(taskStyles.mark)}>
             {session && family ? (
               <BoardThreadStatusMark
+                sessionId={sessionId}
                 status={family.status}
                 unread={sessionHasUnreadMessages(session)}
                 completed={

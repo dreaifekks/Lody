@@ -64,7 +64,8 @@ because the upstream daemon imports it during startup.
 
 Attention is this screen's matter, so the switch is per device and never synced.
 Display only: nothing is written to a session, and no CLI, push or iOS behavior
-changes. With the mode off every list is the upstream one.
+changes. With the mode off every list is the upstream one, except that a family the
+user folds draws what it hides (below).
 
 - **One row per family.** Sessions an agent opened start folded under the row of
   the Session that opened them, in the Sidebar lists and in a Board's thread list
@@ -72,15 +73,24 @@ changes. With the mode off every list is the upstream one.
   `packages/components/src/lib/low-stimulus.ts` reads the shared, in-memory
   `sidebarCollapsedOpenedBySessionsAtom`: absent means folded, `false` means the user
   unfolded it. A restart folds everything again.
-- **One mark per family.** A folded root draws `foldedFamilyActivity`
-  (`components/sidebar-folded-family.ts`) through the row's ordinary
-  `SessionRowStatusIndicator`: send failed, then waiting, working, sending, unread.
-  The row's hover card says how many of each. A hidden Session's work is the root's
-  to report, so it draws no working mark; its unread (narrowed as below), its waiting
-  and its sends count as they are. A Board root draws the same
-  (`foldedBoardThreadRoot`, `boardFamilyActivity`). The family still sits in the
-  panel group of its strongest member, so a running member keeps it under Working
-  and a failed member lifts it into "Needs you" as before.
+- **One mark per family.** A folded root, folded by the mode or by the user with the
+  mode off, draws `foldedFamilyActivity` (`components/sidebar-folded-family.ts`)
+  through the row's ordinary `SessionRowStatusIndicator`: send failed, then waiting,
+  working, sending, unread, so a folded root tells whether anything under it still
+  needs the user, still runs, or has finished. The row's hover card says how many of
+  each. A hidden Session's waiting, work and sends count as they are; in the mode its
+  unread is narrowed as below. A Board root draws the same (`foldedBoardThreadRoot`,
+  `boardFamilyActivity`). The family sits in the panel group of its strongest member,
+  so a running member keeps it under Working and a failed member lifts it into
+  "Needs you".
+- **Only a row's own work moves.** In the mode a row's working grid moves only while
+  its own Session runs (`useStillWorkingMark`). Work it reports from under it (hidden
+  members, Tabs, a Board's threads) draws the same grid standing still, so the row
+  says it is busy without adding motion. A thread's card in the coordinator's
+  conversation follows the same rule for the family it reports. The style is settled while the row works and
+  kept through the hand-over hold, so a finishing mark never changes on its way out.
+  A step of 2026-11 left hidden work off the root entirely; it was reversed because a
+  folded family then gave no sign that anything under it still ran.
 - **Reading the root clears what came before.** A hidden Session counts as unread only
   for output newer than the user's last read of the root (`hiddenSessionHasUnread`
   against `familyReadThrough`): the later of the root's `lastReadAt` and the last
@@ -94,8 +104,8 @@ changes. With the mode off every list is the upstream one.
   conversation at the later time, never put in place of what a window knows. While
   a root is on screen its family draws no unread; output after it left counts again.
 - **Tabs an agent opened belong to the family.** A child Tab with `openedBySessionId`
-  counts as a hidden member (`childTabActivity`): its work leaves the parent's row
-  still and its unread counts only past how far the parent is read, both in the
+  counts as a hidden member (`childTabActivity`): its work shows on the parent's row
+  (standing still) and its unread counts only past how far the parent is read, both in the
   row's roll-up (`getEffectiveSessionActivitySummary` given the parent's
   read-through) and on its own Tab (`useLowStimulusReadThrough`). Its messages also
   raise the parent's own `lastMessageAt` (the CLI does this for every Tab), so the
@@ -106,8 +116,10 @@ changes. With the mode off every list is the upstream one.
 - **The Dock counts only what waits.** `workspaceBadgeAtom` reports no unread; the
   bounce on a new wait is unchanged.
 
-A Board's Sidebar row counts work and unread the way its panel shows the families
-(`boardActivity` with the fold record and each root's read-through), so the two agree.
+A Board's Sidebar row counts every member's waiting and work, the coordinator's
+included, and unread the way its panel shows the families (`boardActivity` with the
+fold record and each root's read-through), so the two agree. Its grid moves only while
+the coordinator runs.
 Waiting, failures and agent notifications always pass through. Not covered: a folded
 project or machine header still counts its rows' own work and unread, their child Tabs
 included, the new-chat page's Now tiles count each Session on its own, the phone list

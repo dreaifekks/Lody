@@ -648,6 +648,54 @@ describe('Board side panel', () => {
     }
   });
 
+  it('in low-stimulus mode moves a card only for the work of its own thread', async () => {
+    const store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, true);
+    store.set(lowStimulusExperimentEnabledAtom, true);
+    const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
+    const child = makeSession('child', { openedBySessionId: thread.id });
+    store.set(
+      sessionMetaCacheAtom,
+      Object.fromEntries([thread, child].map((entry) => [getSessionRoomId(entry.id), entry]))
+    );
+    const online = {
+      machine: {
+        kind: 'machine' as const,
+        machineId: thread.machineId,
+        instanceId: 'test' as never,
+        updatedAt: 1000,
+      },
+    };
+    store.set(lodyPresenceNowMsAtom, 1000);
+    store.set(lodyPresenceSyncStateAtom, 'synced');
+    store.set(lodyPresenceStatesAtom, {
+      ...online,
+      ...live(child, { type: 'running' } as SessionStatus),
+    });
+    const view = await mount(
+      <Provider store={store}>
+        <BoardThreadStatusCard sessionId={thread.id} />
+      </Provider>
+    );
+    const mark = () =>
+      view.host
+        .querySelector('[data-session-working-indicator]')
+        ?.getAttribute('data-session-working-indicator');
+    try {
+      expect(mark()).toBe('still');
+      await act(async () =>
+        store.set(lodyPresenceStatesAtom, {
+          ...online,
+          ...live(thread, { type: 'running' } as SessionStatus),
+        })
+      );
+      expect(mark()).toBe('');
+    } finally {
+      await view.unmount();
+      localStorage.clear();
+    }
+  });
+
   it('shows a card as complete only after its entire visible family settles', async () => {
     const store = createStore();
     const thread = makeSession('thread', { lastMessageAt: 20, lastReadAt: 20 });
@@ -1314,31 +1362,35 @@ describe('Board side panel', () => {
       }
     });
 
-    it('keeps a running member under Working without drawing its work on the root', async () => {
-      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 150 }));
-      try {
-        expect(view.headers()).toEqual(['Working1']);
-        expect(view.row('root')).not.toBeNull();
-        expect(view.mark('root')).toBeNull();
-      } finally {
-        await view.unmount();
+    it('draws the work of a running member on the root, standing still, under Working', async () => {
+      // Its output, older or newer than the root read, waits until it stops.
+      for (const updatedAt of [150, 300]) {
+        const view = await mountList(family({ status: 'running', unread: true, updatedAt }));
+        try {
+          expect(view.headers()).toEqual(['Working1']);
+          expect(
+            view.row('root')!.querySelector('[data-session-working-indicator="still"]')
+          ).not.toBeNull();
+          expect(view.row('root')!.querySelector('[data-session-unread-dot]')).toBeNull();
+        } finally {
+          await view.unmount();
+        }
       }
     });
 
-    it('draws output of a running member newer than the root read as a dot, not as work', async () => {
-      const view = await mountList(family({ status: 'running', unread: true, updatedAt: 300 }));
-      try {
-        expect(view.row('root')!.querySelector('[data-session-working-indicator]')).toBeNull();
-        expect(view.row('root')!.querySelector('[data-session-unread-dot]')).not.toBeNull();
-      } finally {
-        await view.unmount();
-      }
-    });
-
-    it('draws the work of the root itself', async () => {
+    it('moves the mark for the work of the root itself', async () => {
       const view = await mountList(family({}, { status: 'running' }));
       try {
-        expect(view.row('root')!.querySelector('[data-session-working-indicator]')).not.toBeNull();
+        await act(async () => {
+          view.store.set(lodyPresenceNowMsAtom, 1000);
+          view.store.set(
+            lodyPresenceStatesAtom,
+            live(makeSession('root'), { type: 'running' } as SessionStatus)
+          );
+        });
+        expect(
+          view.row('root')!.querySelector('[data-session-working-indicator=""]')
+        ).not.toBeNull();
       } finally {
         await view.unmount();
       }
@@ -1400,19 +1452,19 @@ describe('Board side panel', () => {
       }
     });
 
-    it('leaves the work of hidden members out of the root state, but not their failure or output', () => {
-      expect(foldedBoardThreadRoot(family({ status: 'running' }), 200).status).toBe('idle');
-      expect(
-        foldedBoardThreadRoot(family({ status: 'running', unread: true, updatedAt: 300 }), 200)
-          .unread
-      ).toBe(true);
+    it('gives the root the strongest state and the output of every hidden member', () => {
+      expect(foldedBoardThreadRoot(family({ status: 'running' }), 200).status).toBe('running');
+      expect(foldedBoardThreadRoot(family({ status: 'failed' }), 200).status).toBe('failed');
       expect(
         foldedBoardThreadRoot(
           [...family({ status: 'failed' }), thread('child-2', { depth: 1, status: 'running' })],
           200
         ).status
-      ).toBe('failed');
-      expect(foldedBoardThreadRoot(family({}, { status: 'running' }), 200).status).toBe('running');
+      ).toBe('running');
+      expect(
+        foldedBoardThreadRoot(family({ status: 'running', unread: true, updatedAt: 300 }), 200)
+          .unread
+      ).toBe(true);
     });
 
     it('does not let an archived member speak for the family', () => {
@@ -1481,7 +1533,7 @@ describe('Board side panel', () => {
     expect(boardActivity(board, [root, covered], new Map()).hasUnreadMessages).toBe(true);
   });
 
-  it('in low-stimulus mode leaves the work of a folded family member off the Board row', () => {
+  it('in low-stimulus mode counts the work of a folded family member on the Board row', () => {
     const board = testBoard();
     const root = makeSession('root', { lastMessageAt: 100, lastReadAt: 100 });
     const child = makeSession('child', {
@@ -1494,25 +1546,17 @@ describe('Board side panel', () => {
     const folded = { isFolded: () => true, readThrough: receiptOnly };
     const live = (id: string, type: SessionStatus['type']) =>
       new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);
-    // Its work draws nothing; its output newer than the root read counts, running or not.
+    // Its work lights the row; its output newer than the root read counts, running or not.
     expect(boardActivity(board, [root, child], live('child', 'running'), folded)).toEqual({
       isWaitingPermission: false,
-      isWorking: false,
+      isWorking: true,
       hasUnreadMessages: true,
     });
-    // A member waiting for the user, and the root's own work, still light the row.
     expect(
       boardActivity(board, [root, child], live('child', 'requestPermission'), folded)
         .isWaitingPermission
     ).toBe(true);
-    expect(boardActivity(board, [root, child], live('root', 'running'), folded).isWorking).toBe(
-      true
-    );
-    // Unfolded, or without the mode, the member's work lights it as before.
-    const unfolded = { isFolded: () => false, readThrough: receiptOnly };
-    expect(boardActivity(board, [root, child], live('child', 'running'), unfolded).isWorking).toBe(
-      true
-    );
+    // Without the mode as well.
     expect(boardActivity(board, [root, child], live('child', 'running')).isWorking).toBe(true);
   });
 
@@ -4079,5 +4123,12 @@ describe('Board project scope picker', () => {
 });
 
 beforeEach(() => {
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  );
 });

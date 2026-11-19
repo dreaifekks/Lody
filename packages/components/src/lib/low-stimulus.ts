@@ -49,11 +49,12 @@ export function hiddenSessionHasUnread(
 /**
  * What a child Tab adds to its parent's row and to its own Tab. A Tab an agent
  * opened (`openedBySessionId`) is part of the parent's family: given how far the
- * parent is read, it counts as a hidden member does, so its work draws nothing
- * and its unread counts only past that read. Its messages also raise the
- * parent's own `lastMessageAt` (the CLI does this for every Tab), so the parent's
- * row shows them until the parent is read. Without a read-through (the mode is
- * off), and for a Tab the user opened, the Tab counts as it always did.
+ * parent is read, it counts as a hidden member does, so its work shows on the
+ * parent's row (the row draws it still, see `useStillWorkingMark`) and its
+ * unread counts only past that read. Its messages also raise the parent's own
+ * `lastMessageAt` (the CLI does this for every Tab), so the parent's row shows
+ * them until the parent is read. Without a read-through (the mode is off), and
+ * for a Tab the user opened, the Tab counts as it always did.
  */
 export function childTabActivity(
   child: Pick<
@@ -68,7 +69,7 @@ export function childTabActivity(
     return { working, unread };
   }
   return {
-    working: false,
+    working,
     unread: hiddenSessionHasUnread(unread, child.lastMessageAt ?? 0, parentReadThrough),
   };
 }

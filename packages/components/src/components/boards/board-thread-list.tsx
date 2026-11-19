@@ -17,6 +17,7 @@ import { sessionSendStatesAtom } from '@/atoms/session-send-status';
 import type { SessionSendState } from '@/lib/session-send-status';
 import { hiddenSessionHasUnread, isOpenerCollapsed } from '@/lib/low-stimulus';
 import { useWorkingHandOver } from '@/ui/working-status-mark';
+import { useStillWorkingMark } from '@/hooks/use-still-working-mark';
 import {
   UpdatedItemRow,
   useSidebarSessionMenuLabels,
@@ -94,14 +95,9 @@ function strongestBoardStatus(items: readonly Pick<BoardThreadItem, 'status'>[])
   );
 }
 
-const isBoardItemWorking = (item: Pick<BoardThreadItem, 'status'>) =>
-  GROUP_BY_STATUS[item.status] === 'active';
-
 /**
  * Low-stimulus mode's root row of a folded family: the family's strongest state
- * and merged unread, as the one mark every other row of it would have drawn. A
- * hidden member at work is the root's to report, so its work is not part of the
- * row's state (the family still sits under Working); its waiting and failure are.
+ * and merged unread, as the one mark every other row of it would have drawn.
  * Only an unread member has a last message, which is what `updatedAt` then holds.
  */
 export function foldedBoardThreadRoot(
@@ -112,10 +108,7 @@ export function foldedBoardThreadRoot(
   const hidden = items.slice(1);
   return {
     ...root,
-    status: strongestBoardStatus([
-      root,
-      ...hidden.filter((item) => item.archived !== true && !isBoardItemWorking(item)),
-    ]),
+    status: strongestBoardStatus([root, ...hidden.filter((item) => item.archived !== true)]),
     unread:
       root.unread === true ||
       hidden.some((item) =>
@@ -137,9 +130,10 @@ function boardFamilyRow(item: BoardThreadItem) {
 
 /**
  * The one mark a folded family's root draws, counted as the sidebar counts a
- * folded family: every member's live state, the hidden members' unread narrowed
- * by how far the root is read, and every member's local send state, so a hidden
- * member's failed send still outranks everything.
+ * folded family: every member's live state (a hidden member's work drawn still),
+ * the hidden members' unread narrowed by how far the root is read, and every
+ * member's local send state, so a hidden member's failed send still outranks
+ * everything.
  */
 export function boardFamilyActivity(
   items: readonly BoardThreadItem[],
@@ -223,22 +217,28 @@ const styles = stylex.create({
  * stopped) draw their own glyph, and only when none of those apply.
  */
 export function BoardThreadStatusMark({
+  sessionId,
   status,
   unread,
   completed = false,
 }: {
+  /** The thread itself: in low-stimulus mode only its own work moves the grid. */
+  sessionId: string;
   status: BoardSessionStatus;
   unread: boolean;
   /** Conversation cards only; list rows never add a resting done mark. */
   completed?: boolean;
 }) {
   const { t } = useTranslation();
-  const working = useWorkingHandOver(GROUP_BY_STATUS[status] === 'active', unread);
+  const active = GROUP_BY_STATUS[status] === 'active';
+  const working = useWorkingHandOver(active, unread);
+  const workingStill = useStillWorkingMark(sessionId, active);
   if (status === 'waiting_user' || working || unread)
     return (
       <SessionRowStatusIndicator
         isWaitingPermission={status === 'waiting_user'}
         isWorking={working}
+        workingStill={workingStill}
         hasUnreadMessages={unread}
       />
     );
@@ -347,7 +347,11 @@ const BoardThreadRow = memo(function BoardThreadRow({
         detailLine={thread.summary ?? thread.detail}
         restIcon={
           <>
-            <BoardThreadStatusMark status={thread.status} unread={thread.unread === true} />
+            <BoardThreadStatusMark
+              sessionId={thread.id}
+              status={thread.status}
+              unread={thread.unread === true}
+            />
             <span {...stylex.props(styles.time)}>{thread.updatedLabel}</span>
           </>
         }

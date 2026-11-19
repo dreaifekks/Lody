@@ -54,7 +54,8 @@ Ancestor rules apply. Edit `AGENTS.md`.
   ranks by its freshest opened Session.
 
 - `sidebarCollapsedOpenedBySessionsAtom` defaults expanded (folded in low-stimulus mode:
-  `lib/low-stimulus.ts`). Preserve both navigation directions through the tree, row
+  `lib/low-stimulus.ts`). A folded opener draws its whole family's mark
+  (`sidebar-folded-family.ts`). Preserve both navigation directions through the tree, row
   "Go to Opener Session", `SessionHeaderMenu.openedByRelations` and
   successful-create/precise-opener cards. Mobile: same two fields, per-bucket tree; see
   [mobile/AGENTS.md](mobile/AGENTS.md).

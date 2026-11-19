@@ -1782,24 +1782,25 @@ const SessionGroupSection = memo(function SessionGroupSection({
         : null,
     [group.collapsed, group.sessions, sendStates]
   );
-  // Low-stimulus mode: the one mark each folded family draws, resolved once per
-  // tree so a memoized row keeps its identity across unrelated updates.
+  // The one mark each folded family draws, resolved once per tree so a memoized
+  // row keeps its identity across unrelated updates.
   const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const familyActivityBySessionId = useMemo(() => {
-    if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
+    const folded = visibleNodes.filter((node) => node.hiddenChildren.length > 0);
+    if (folded.length === 0) return EMPTY_FAMILY_ACTIVITIES;
     return new Map(
-      visibleNodes
-        .filter((node) => node.hiddenChildren.length > 0)
-        .map((node) => [
-          node.item.sessionId,
-          foldedFamilyActivity(
-            node.item,
-            node.hiddenChildren,
-            familyReadThrough(node.item.sessionId, node.item.lastReadAt),
-            SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
-            sendStates
-          ),
-        ])
+      folded.map((node) => [
+        node.item.sessionId,
+        foldedFamilyActivity(
+          node.item,
+          node.hiddenChildren,
+          lowStimulusMode
+            ? familyReadThrough(node.item.sessionId, node.item.lastReadAt)
+            : undefined,
+          SESSION_ROW_OPENED_BY_TREE_ACCESSORS.getId,
+          sendStates
+        ),
+      ])
     );
   }, [familyReadThrough, lowStimulusMode, sendStates, visibleNodes]);
   const toggleListLabel = whetherShowFullList

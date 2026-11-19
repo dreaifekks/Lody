@@ -244,17 +244,17 @@ describe('child Tab roll-up in low-stimulus mode', () => {
         runningAgain,
         session.lastReadAt
       );
-    expect(summarize(unreadParent)).toMatchObject({ isWorking: false, hasUnreadMessages: true });
-    expect(summarize(parent)).toMatchObject({ isWorking: false, hasUnreadMessages: false });
+    expect(summarize(unreadParent)).toMatchObject({ isWorking: true, hasUnreadMessages: true });
+    expect(summarize(parent)).toMatchObject({ isWorking: true, hasUnreadMessages: false });
   });
 
-  test('draws no work for a Tab an agent opened, keeps its wait, and leaves a user Tab alone', () => {
+  test('passes the work and wait of a Tab an agent opened, and leaves a user Tab alone', () => {
     const live = (id: string, type: SessionStatus['type']) =>
       new Map<string, SessionStatus>([[id, { type } as SessionStatus]]);
     const agentOnly = buildChildSessionsByParent([parent, agentTab]);
     expect(
       getEffectiveSessionActivitySummary(parent, agentOnly, live(agentTab.id, 'running'), 300)
-    ).toMatchObject({ isWorking: false, isWaitingPermission: false });
+    ).toMatchObject({ isWorking: true, isWaitingPermission: false, hasUnreadMessages: false });
     expect(
       getEffectiveSessionActivitySummary(
         parent,
