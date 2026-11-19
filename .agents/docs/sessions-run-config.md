@@ -117,7 +117,8 @@ this page is the full text of the rules summarised there.
   instruction is frozen into the first Turn before draft promotion.
 
   **An existing session** (`useSessionAgentRole`) can NOT: its agent, machine,
-  and runtime are fixed. So it offers only Role instances on that machine that
+  and runtime are fixed (a Board coordinator changes its agent only by starting a
+  new agent conversation; see the [continuity note](../notes/implemented/feature/2026-10-17-board-coordinator-continuity.md)). So it offers only Role instances on that machine that
   use that exact Agent Config (the model provider shown by the composer), lists
   entries on other machines disabled (`other_machine`), and applies only their
   RUN CONFIG, which is exactly what transfers: model / reasoning / permission

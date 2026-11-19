@@ -591,6 +591,16 @@ type SessionDispatchOptions = {
    * resuming its ACP session, without replaying the Lody history into it.
    */
   freshAgentSession?: boolean;
+  /**
+   * Maintenance only: a Board coordinator's new conversation with another agent.
+   * The Session switches to it once this turn owns the Session, before any agent starts.
+   */
+  switchAgent?: Pick<AgentConfigMeta, 'cliType' | 'agentType'> & { agentConfigId: AgentConfigId };
+  /**
+   * Maintenance only: the user turn the run settings this turn applies are
+   * recorded against, so they become the Session's runtime baseline.
+   */
+  runtimeConfigTurnId?: string;
 };
 
 export type PreparedSessionDispatchRequest =
@@ -2309,11 +2319,25 @@ export class SessionExecutionService {
     userEmail: string;
     renewBoardInstructions?: boolean;
     freshAgentSession?: boolean;
+    /**
+     * New conversation: the agent configuration on this machine the Session
+     * continues with. The run settings this turn applies become its runtime
+     * baseline, so the user's next turn starts from them.
+     */
+    agentConfigId?: string;
   }): Promise<string> {
     const { sessionId } = request;
     const sessionDoc = await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId);
     const meta = await sessionDoc.getMetaState();
     if (!meta || meta.isArchived || !meta.cliType || !meta.agentType) return 'unavailable';
+    const switchTo =
+      request.agentConfigId && request.agentConfigId !== meta.agentConfigId
+        ? await this.deps.workspaceDocument.getAgentConfigById(
+            request.agentConfigId as AgentConfigId,
+            this.deps.machineId
+          )
+        : undefined;
+    if (switchTo === null) return 'agent-config-missing';
     const boardContext = request.renewBoardInstructions
       ? await this.boardPromptContext(sessionId, meta)
       : undefined;
@@ -2321,11 +2345,14 @@ export class SessionExecutionService {
       ? buildPrompt(request.prompt, undefined, undefined, undefined, { boardContext })
       : request.prompt;
     const resume = request.freshAgentSession ? undefined : resolveDispatchAcpSessionId(meta);
-    // The driving turn's run configuration, without its own input or delivery marker.
+    // The driving turn's run configuration, without its own input or delivery marker,
+    // and without the agent conversation it resumed: only the Session's own counts, as a
+    // new conversation since that turn may have dropped it with the agent that held it.
     const {
       inputBlocks: _blocks,
       issuePRMentions: _mentions,
       _lodyDeliveryKind: _delivery,
+      resume: _resume,
       ...config
     } = request.config as SessionTurnInputConfig & { _lodyDeliveryKind?: unknown };
     const turn = await this.prepareContinueSessionTurn(
@@ -2341,8 +2368,8 @@ export class SessionExecutionService {
         userEmail: request.userEmail,
         acpSessionConfig: {
           ...config,
-          cliType: meta.cliType,
-          agentType: meta.agentType,
+          cliType: switchTo?.cliType ?? meta.cliType,
+          agentType: switchTo?.agentType ?? meta.agentType,
           prompt,
           ...(resume ? { resume } : {}),
         },
@@ -2350,6 +2377,18 @@ export class SessionExecutionService {
       {
         dispatchSource: 'maintenance',
         ...(request.freshAgentSession ? { freshAgentSession: true } : {}),
+        ...(switchTo
+          ? {
+              switchAgent: {
+                agentConfigId: switchTo.id,
+                cliType: switchTo.cliType,
+                agentType: switchTo.agentType,
+              },
+            }
+          : {}),
+        ...(request.agentConfigId && meta.latestUserMsgId
+          ? { runtimeConfigTurnId: meta.latestUserMsgId }
+          : {}),
       },
       { sessionDoc }
     );
@@ -7988,7 +8027,7 @@ export class SessionExecutionService {
                 },
                 {
                   sessionDoc,
-                  basedOnUserTurnId: executionUserTurnId,
+                  basedOnUserTurnId: executionUserTurnId ?? dispatchOptions?.runtimeConfigTurnId,
                   signal,
                 }
               )
@@ -8309,6 +8348,10 @@ export class SessionExecutionService {
           if (incomingProjectBranch) {
             yield* self.tryPromise(() => sessionDoc.setBaseBranch(incomingProjectBranch));
           }
+          // A Board coordinator's new agent: from this turn on the Session runs it,
+          // so the agent started below and every later turn resolve its configuration.
+          const switchAgent = dispatchOptions?.switchAgent;
+          if (switchAgent) yield* self.tryPromise(() => sessionDoc.setAgentConfig(switchAgent));
           yield* ctx.openAssistantEntry({
             analytics: turnAnalytics,
             unhandledErrorContext: turnErrorContext,

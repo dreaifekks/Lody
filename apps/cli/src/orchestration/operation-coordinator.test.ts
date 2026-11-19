@@ -1955,9 +1955,10 @@ type MaintenanceTurnRequest = {
   sessionId: SessionId;
   stepTurnId: string;
   prompt: string;
-  config: { mcpServerIds?: readonly string[] };
+  config: { mcpServerIds?: readonly string[]; modelId?: string };
   renewBoardInstructions?: boolean;
   freshAgentSession?: boolean;
+  agentConfigId?: string;
 };
 
 const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean } = {}) => {
@@ -3350,6 +3351,76 @@ describe('Board coordinator continuity', () => {
       expect(h.maintenance.runs.map((run) => run.config.mcpServerIds)).toEqual([
         ['mcp-board'],
         ['mcp-board'],
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('continues with the agent chosen for the new conversation, in later maintenance too', async () => {
+    const h = await largeIdleCoordinator(40_000);
+    try {
+      await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+        acpSessionId: 'previous-agent-session',
+      });
+      h.coordinator.start();
+      await h.drain();
+      const agent = {
+        agentConfigId: 'claude-config',
+        modelId: 'claude-opus-5-5',
+        configOptionValues: { effort: 'max' },
+      };
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'switch-1',
+          {
+            boardId: h.board.id,
+            kind: 'new_conversation',
+            trigger: 'manual',
+            status: 'requested',
+            agent,
+          },
+          new Date(TEST_NOW_MS).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'done');
+      // The old agent hands over with its own settings; the new one starts with the chosen ones.
+      expect(steps(h)).toEqual(['handoff', 'renew']);
+      expect(h.maintenance.runs[0]!.agentConfigId).toBeUndefined();
+      expect(h.maintenance.runs[0]!.config.modelId).toBe('test-model');
+      expect(h.maintenance.runs[1]).toMatchObject({
+        agentConfigId: 'claude-config',
+        freshAgentSession: true,
+        config: { modelId: 'claude-opus-5-5', configOptionValues: { effort: 'max' } },
+      });
+      expect(records(h)).toEqual([
+        expect.objectContaining({ kind: 'new_conversation', status: 'done', agent }),
+      ]);
+
+      // Before the user speaks again, the driving turn still holds the old agent's settings.
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'tidy-1',
+          { boardId: h.board.id, kind: 'compact', trigger: 'manual', status: 'requested' },
+          new Date(TEST_NOW_MS + 1).toISOString()
+        )
+      );
+      await h.drain();
+      await settled(h, 'done', (record) => (record as { kind?: string }).kind === 'compact');
+      await h.drain();
+      const tidy = h.maintenance.runs.slice(2);
+      expect(tidy.map((run) => run.stepTurnId.split(':').at(-1))).toEqual([
+        'memory',
+        'compact',
+        'renew',
+      ]);
+      expect(tidy.map((run) => [run.agentConfigId, run.config.modelId])).toEqual([
+        [undefined, 'claude-opus-5-5'],
+        [undefined, 'claude-opus-5-5'],
+        [undefined, 'claude-opus-5-5'],
       ]);
     } finally {
       await h.close();

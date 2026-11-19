@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   boardMaintenanceTurn,
   getServerNow,
+  type BoardCoordinatorAgent,
   type BoardMaintenanceKind,
   type BoardMeta,
   type SessionHistory,
@@ -145,19 +146,30 @@ export function useBoardActions() {
 
 /**
  * Ask the coordinator's machine to tidy the coordinator's context now, or to
- * start it a new agent conversation. The request is the divider itself: the
- * machine picks it up once the coordinator is free and keeps it current. Needs
- * only the workspace runtime, so the conversation header can hold it.
+ * start it a new agent conversation, optionally with another agent. The request
+ * is the divider itself: the machine picks it up once the coordinator is free
+ * and keeps it current. Needs only the workspace runtime, so the conversation
+ * header can hold it.
  */
 export function useBoardMaintenanceRequest() {
   const { t } = useTranslation();
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   return useCallback(
-    async (coordinator: Pick<SessionMeta, 'id' | 'boardId'>, kind: BoardMaintenanceKind) => {
+    async (
+      coordinator: Pick<SessionMeta, 'id' | 'boardId'>,
+      kind: BoardMaintenanceKind,
+      agent?: BoardCoordinatorAgent
+    ) => {
       if (!runtime || !coordinator.boardId) return;
       const turn = boardMaintenanceTurn(
         crypto.randomUUID(),
-        { boardId: coordinator.boardId, kind, trigger: 'manual', status: 'requested' },
+        {
+          boardId: coordinator.boardId,
+          kind,
+          trigger: 'manual',
+          status: 'requested',
+          ...(agent ? { agent } : {}),
+        },
         new Date(getServerNow()).toISOString()
       );
       try {

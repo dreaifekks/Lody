@@ -8,14 +8,15 @@ import {
   toggleSidebarCollapsedOpenedBySessionAtom,
 } from '../src/atoms/focus-layer';
 import { familyReadThroughAtom, setConversationOnScreenAtom } from '../src/atoms/low-stimulus-seen';
+import { lodyPresenceNowMsAtom, lodyPresenceStatesAtom } from '../src/atoms/presence';
 import {
   experimentalFeaturesEnabledAtom,
   lowStimulusExperimentEnabledAtom,
   lowStimulusModeEnabledAtom,
 } from '../src/atoms/settings';
-import type { SessionId, SessionMeta } from '@lody/shared';
+import type { LodyPresenceStateMap, SessionId, SessionMeta } from '@lody/shared';
 import { foldedFamilyActivity } from '../src/components/sidebar-folded-family';
-import { SessionRowStatusIndicator } from '../src/components/sidebar-row-shared';
+import { SessionRowStatusIndicator, SidebarRowEndSlot } from '../src/components/sidebar-row-shared';
 import { useLowStimulusConversationSeen } from '../src/hooks/use-low-stimulus-conversation-seen';
 import {
   childTabActivity,
@@ -135,9 +136,9 @@ describe('childTabActivity', () => {
     expect(childTabActivity(tab(), true, 400)).toEqual({ working: true, unread: true });
   });
 
-  it('quiets a Tab an agent opened: no work, and unread only past the parent read', () => {
-    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: false, unread: true });
-    expect(childTabActivity(agentTab(), true, 400)).toEqual({ working: false, unread: false });
+  it('passes the work of a Tab an agent opened, and its unread only past the parent read', () => {
+    expect(childTabActivity(agentTab(), true, 200)).toEqual({ working: true, unread: true });
+    expect(childTabActivity(agentTab(), true, 400)).toEqual({ working: true, unread: false });
   });
 });
 
@@ -331,6 +332,11 @@ describe('foldedFamilyActivity', () => {
     expect(family({ ...root, hasUnreadMessages: true }, [], 50).unread).toBe(1);
   });
 
+  it('counts every hidden unread as it is without the mode', () => {
+    const child: Row = { id: 'child', latestMessageAt: 150, hasUnreadMessages: true };
+    expect(foldedFamilyActivity(root, [child], undefined, (row) => row.id, {}).unread).toBe(1);
+  });
+
   it('counts a hidden session waiting for the user however old its output is', () => {
     const activity = family(
       root,
@@ -340,17 +346,11 @@ describe('foldedFamilyActivity', () => {
     expect(activity).toMatchObject({ waiting: 1, working: 0, unread: 0 });
   });
 
-  it('draws no work for a hidden session at work, only for the root itself', () => {
-    const working: Row = { id: 'working', latestMessageAt: 1, isWorking: true };
-    expect(family(root, [working], 200).working).toBe(0);
-    expect(family({ ...root, isWorking: true }, [working], 200).working).toBe(1);
-  });
-
-  it('keeps the unread of a hidden session that runs again', () => {
+  it('counts the work of a hidden session, ahead of its unread', () => {
     const child: Row = { id: 'child', latestMessageAt: 250, hasUnreadMessages: true };
     expect(family(root, [{ ...child, isWorking: true }], 200)).toMatchObject({
-      working: 0,
-      unread: 1,
+      working: 1,
+      unread: 0,
     });
   });
 
@@ -360,6 +360,76 @@ describe('foldedFamilyActivity', () => {
       child: 'failed',
     });
     expect(activity).toMatchObject({ failed: 1, sending: 1 });
+  });
+});
+
+describe('the working mark of a row', () => {
+  const NOW = 1_000_000;
+  const folded = (working: number) => ({ failed: 0, waiting: 0, working, sending: 0, unread: 0 });
+  /** The row's own Session at work, the only live state the mark reads for its style. */
+  const runs = (sessionId: string) =>
+    ({
+      [`session:${sessionId}`]: {
+        kind: 'session',
+        sessionId,
+        machineId: 'machine-1',
+        instanceId: `instance-${sessionId}`,
+        status: { type: 'running' },
+        updatedAt: NOW,
+      },
+    }) as unknown as LodyPresenceStateMap;
+  let host: HTMLDivElement;
+  let reactRoot: Root;
+  let store: ReturnType<typeof createStore>;
+  const mountStore = (lowStimulus: boolean) => {
+    store = createStore();
+    store.set(experimentalFeaturesEnabledAtom, lowStimulus);
+    store.set(lowStimulusExperimentEnabledAtom, lowStimulus);
+    store.set(lodyPresenceNowMsAtom, NOW);
+  };
+  const row = (familyActivity: ReturnType<typeof folded>) =>
+    createElement(
+      Provider,
+      { store },
+      createElement(SidebarRowEndSlot, { sessionId: 'root', familyActivity })
+    );
+  const draw = (familyActivity: ReturnType<typeof folded>) =>
+    act(() => reactRoot.render(row(familyActivity)));
+  const grid = () =>
+    host
+      .querySelector('[data-session-working-indicator]')
+      ?.getAttribute('data-session-working-indicator');
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    reactRoot = createRoot(host);
+  });
+  afterEach(() => act(() => reactRoot.unmount()));
+
+  it('in the mode stands still for work under the row and moves while the row itself runs', () => {
+    mountStore(true);
+    draw(folded(1));
+    expect(grid()).toBe('still');
+    act(() => store.set(lodyPresenceStatesAtom, runs('root')));
+    expect(grid()).toBe('');
+  });
+
+  it('keeps a finishing mark as it was through the hand-over hold', () => {
+    mountStore(true);
+    store.set(lodyPresenceStatesAtom, runs('root'));
+    draw(folded(1));
+    // The root stops and its family with it, as one presence update reaches both.
+    act(() => {
+      store.set(lodyPresenceStatesAtom, {});
+      reactRoot.render(row(folded(0)));
+    });
+    expect(grid()).toBe('');
+  });
+
+  it('moves for any work without the mode', () => {
+    mountStore(false);
+    draw(folded(1));
+    expect(grid()).toBe('');
   });
 });
 

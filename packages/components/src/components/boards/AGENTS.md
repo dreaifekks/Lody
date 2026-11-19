@@ -21,7 +21,7 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   never acquire member documents. Live activity takes priority over waiting markers;
   without presence, only a marker newer than `lastMessageAt` means waiting. Thread
   and Board rows draw the sidebar's `SessionRowStatusIndicator` (✋, working, unread);
-  Board rows aggregate all members (in low-stimulus mode, work and unread as the panel shows
+  Board rows aggregate all members (in low-stimulus mode, unread as the panel shows
   its families: `boardActivity` with `BoardFamilyView`). Rows have no "done" mark.
   Cards alone add a 14px Check for idle `boardThreadFamilies` on
   online machines and a read thread with `lastMessageAt`. Family wait/work, then
@@ -70,7 +70,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   same Session, outside the Inbox (one divider, hidden replies, no push; neither
   they nor their late output move `lastMessageAt`). It yields to user turns and
   results, never fakes compaction (skips agents it cannot confirm) or changes
-  `coordinatorSessionId`.
+  `coordinatorSessionId`. A new conversation may name another agent on the
+  coordinator's machine; the Session switches, dropping the old agent's conversation
+  id, only once its first turn holds it.
 - A Board's entries act on the whole Board: the page's header menu
   (`SessionHeaderMenu` on a coordinator) and the sidebar row (`BoardSidebar`) rename,
   archive and restore via `useBoardActions`, which reads members when it runs; share

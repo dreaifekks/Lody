@@ -1171,33 +1171,34 @@ export const LocalProjectItem = memo(function LocalProjectItem({
       sessionsForProject,
     ]
   );
-  // Low-stimulus mode: the one mark each folded family draws, resolved once per
-  // tree so a memoized row keeps its identity across unrelated updates.
+  // The one mark each folded family draws, resolved once per tree so a memoized
+  // row keeps its identity across unrelated updates.
   const familyReadThrough = useAtomValue(familyReadThroughAtom);
   const familyActivityBySessionId = useMemo(() => {
-    if (!lowStimulusMode) return EMPTY_FAMILY_ACTIVITIES;
+    const folded = sessionNodes.filter((node) => node.hiddenChildren.length > 0);
+    if (folded.length === 0) return EMPTY_FAMILY_ACTIVITIES;
+    const readThrough = (session: SessionMeta) =>
+      lowStimulusMode ? familyReadThrough(session.id, session.lastReadAt) : undefined;
     const activityRow = (session: SessionMeta): LocalSessionActivityRow => ({
       id: session.id,
       ...getEffectiveSessionActivitySummary(
         session,
         childSessionsByParent,
         liveSessionStatuses,
-        familyReadThrough(session.id, session.lastReadAt)
+        readThrough(session)
       ),
     });
     return new Map(
-      sessionNodes
-        .filter((node) => node.hiddenChildren.length > 0)
-        .map((node) => [
-          node.item.id,
-          foldedFamilyActivity<LocalSessionActivityRow>(
-            activityRow(node.item),
-            node.hiddenChildren.map(activityRow),
-            familyReadThrough(node.item.id, node.item.lastReadAt),
-            (row) => row.id,
-            sendStates
-          ),
-        ])
+      folded.map((node) => [
+        node.item.id,
+        foldedFamilyActivity<LocalSessionActivityRow>(
+          activityRow(node.item),
+          node.hiddenChildren.map(activityRow),
+          readThrough(node.item),
+          (row) => row.id,
+          sendStates
+        ),
+      ])
     );
   }, [
     childSessionsByParent,

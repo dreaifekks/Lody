@@ -8,32 +8,35 @@ import {
 } from './sidebar-row-shared';
 
 /**
- * What a folded family's root row draws in low-stimulus mode: the root and its
- * hidden Sessions counted as a folded group counts its rows. The root counts as
- * its own row would. A hidden Session's work is the root's to report, so it
- * draws no working mark; its unread counts only past how far the root is read
- * (`hiddenSessionHasUnread`), and its waiting and its local sends count as they
- * are.
+ * What a folded family's root row draws: the root and its hidden Sessions
+ * counted as a folded group counts its rows, so whatever happens under the
+ * root shows on it: send failed, then waiting, working, sending, unread. In
+ * low-stimulus mode (`rootReadThrough` given) a hidden Session's unread counts
+ * only past how far the root is read (`hiddenSessionHasUnread`); its waiting,
+ * work and sends count as they are, and the row draws that work still
+ * (`useStillWorkingMark`).
  */
 export function foldedFamilyActivity<
   Row extends SessionRowStatusFlags & { latestMessageAt: Date | number | string },
 >(
   root: Row,
   hiddenChildren: readonly Row[],
-  rootReadThrough: number,
+  rootReadThrough: number | undefined,
   getSessionId: (row: Row) => string,
   sendStates: Readonly<Record<string, SessionSendState>>
 ): SidebarGroupActivity {
-  const narrowed = hiddenChildren.map((child) => ({
-    ...child,
-    isWorking: false,
-    hasUnreadMessages: hiddenSessionHasUnread(
-      child.hasUnreadMessages === true,
-      new Date(child.latestMessageAt).getTime(),
-      rootReadThrough
-    ),
-  }));
+  const hidden =
+    rootReadThrough === undefined
+      ? hiddenChildren
+      : hiddenChildren.map((child) => ({
+          ...child,
+          hasUnreadMessages: hiddenSessionHasUnread(
+            child.hasUnreadMessages === true,
+            new Date(child.latestMessageAt).getTime(),
+            rootReadThrough
+          ),
+        }));
   return summarizeSidebarGroupActivity(
-    withSessionSendStates([root, ...narrowed], getSessionId, sendStates)
+    withSessionSendStates([root, ...hidden], getSessionId, sendStates)
   );
 }

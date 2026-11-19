@@ -1,10 +1,13 @@
 import {
+  boardMaintenanceRenewRunId,
   boardMaintenanceStepId,
   boardMaintenanceTurn,
+  boardMaintenanceTurnId,
   compactsInBackground,
   decideBoardIdleCompaction,
   isBoardMaintenanceTurnId,
   readBoardMaintenance,
+  type BoardCoordinatorAgent,
   type BoardMaintenanceKind,
   type BoardMaintenanceMeta,
   type BoardMeta,
@@ -114,6 +117,32 @@ const renewalRecord = (record: BoardMaintenanceMeta, step: string): BoardMainten
 /** A new conversation whose old agent handed over and whose new agent has not started. */
 const isPendingSwitch = (record: BoardMaintenanceMeta): boolean =>
   record.kind === 'new_conversation' && record.status === 'running' && record.handoff !== undefined;
+
+/**
+ * A run configuration with the chosen agent's run settings in place of the
+ * previous agent's: those belong to that agent's models and options. A Role's
+ * pinned configuration goes with the agent it named.
+ */
+const withCoordinatorAgent = (
+  config: SessionTurnInputConfig,
+  agent: BoardCoordinatorAgent
+): SessionTurnInputConfig => {
+  const {
+    modelId: _model,
+    modeId: _mode,
+    configOptionValues: _options,
+    agentRoleId: _role,
+    agentRoleRevision: _revision,
+    agentRoleSnapshot: _snapshot,
+    ...rest
+  } = config;
+  return {
+    ...rest,
+    ...(agent.modelId ? { modelId: agent.modelId } : {}),
+    ...(agent.modeId ? { modeId: agent.modeId } : {}),
+    ...(agent.configOptionValues ? { configOptionValues: agent.configOptionValues } : {}),
+  };
+};
 
 /**
  * Keeps a Board coordinator one continuous conversation. When the coordinator
@@ -245,6 +274,7 @@ export class BoardContinuityWorkflow {
           kind: request.record.kind,
           trigger: 'manual',
           row: request.row,
+          ...(request.record.agent ? { agent: request.record.agent } : {}),
         });
         return;
       }
@@ -356,6 +386,8 @@ export class BoardContinuityWorkflow {
       row?: Pick<TailRow, 'timestamp'>;
       /** A pending switch resumes from its stored record. */
       record?: BoardMaintenanceMeta;
+      /** New conversation: the agent the user chose for it. */
+      agent?: BoardCoordinatorAgent;
     }
   ) {
     return this.fork(
@@ -386,7 +418,11 @@ export class BoardContinuityWorkflow {
     );
   }
 
-  /** One maintenance turn with the coordinator's own run configuration. */
+  /**
+   * One maintenance turn with the coordinator's own run configuration: its
+   * driving turn's, with the settings of an agent a new conversation switched to
+   * since then, or of `agent`, the one this turn switches to.
+   */
   private step = Effect.fnUntraced(
     function* (
       this: BoardContinuityWorkflow,
@@ -401,6 +437,8 @@ export class BoardContinuityWorkflow {
         freshAgentSession?: boolean;
         /** False once the old agent handed over: results then go to the new one. */
         yieldToInbox?: boolean;
+        /** New conversation: the agent this turn starts. */
+        agent?: BoardCoordinatorAgent;
       } = {}
     ) {
       for (;;) {
@@ -412,15 +450,18 @@ export class BoardContinuityWorkflow {
           return 'yielded';
         if (!this.ports.active()) return 'inactive';
         const driving = yield* history.readDrivingState;
+        const agent =
+          options.agent ?? (yield* this.switchedAgent(history, driving?.following ?? []));
         const config: SessionTurnInputConfig = driving?.turn.inputConfig ?? {};
         const outcome = yield* maintenance.runTurn({
           sessionId: meta.id,
           stepTurnId: boardMaintenanceStepId(runId, name),
           prompt,
-          config,
+          config: agent ? withCoordinatorAgent(config, agent) : config,
           userId: driving?.turn.userId ?? meta.userId,
           ...(options.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
           ...(options.freshAgentSession ? { freshAgentSession: true } : {}),
+          ...(options.agent ? { agentConfigId: options.agent.agentConfigId } : {}),
         });
         if (!MOMENTARY.has(outcome)) return outcome;
         yield* Effect.sleep(MOMENTARY_RETRY_MS);
@@ -429,6 +470,28 @@ export class BoardContinuityWorkflow {
       }
     }.bind(this)
   );
+
+  /**
+   * The agent the latest new conversation after the driving turn switched to:
+   * its `renew` entry came later, so that turn's run settings belong to the
+   * previous agent.
+   */
+  private switchedAgent = Effect.fnUntraced(function* (
+    history: CoordinatorHistory,
+    following: readonly SessionHistoryInput[]
+  ) {
+    for (let index = following.length - 1; index >= 0; index--) {
+      const entry = following[index];
+      const runId =
+        entry?.role === 'assistant' ? boardMaintenanceRenewRunId(entry.userTurnId) : undefined;
+      if (runId === undefined) continue;
+      const read = yield* history.readTurn(boardMaintenanceTurnId(runId));
+      const record =
+        read.state === 'ready' ? readBoardMaintenance(read.turn as SessionHistoryInput) : undefined;
+      if (record?.kind === 'new_conversation' && record.agent) return record.agent;
+    }
+    return undefined;
+  });
 
   private compact(
     maintenance: CoordinatorBoardMaintenance,
@@ -530,6 +593,7 @@ export class BoardContinuityWorkflow {
       trigger: 'idle' | 'manual';
       row?: Pick<TailRow, 'timestamp'>;
       record?: BoardMaintenanceMeta;
+      agent?: BoardCoordinatorAgent;
     }
   ) {
     const turnId = `board-maintenance:${run.runId}`;
@@ -545,6 +609,7 @@ export class BoardContinuityWorkflow {
         trigger: run.trigger,
         status: 'running',
         ...(usage ? { usedBefore: usage.used } : {}),
+        ...(run.agent ? { agent: run.agent } : {}),
       };
       maintenance.holdInbox(meta.id, true);
       if (record.handoff === undefined) {
@@ -581,7 +646,12 @@ export class BoardContinuityWorkflow {
           threads: this.threads(board),
           usage,
         }),
-        { renewBoardInstructions: true, freshAgentSession: true, yieldToInbox: false }
+        {
+          renewBoardInstructions: true,
+          freshAgentSession: true,
+          yieldToInbox: false,
+          ...(record.agent ? { agent: record.agent } : {}),
+        }
       );
       if (CONTENDED.has(started)) {
         // The user's turn went first; the switch resumes when the coordinator is free.

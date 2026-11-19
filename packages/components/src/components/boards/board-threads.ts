@@ -106,7 +106,7 @@ export type BoardFamilyView = {
  * coordinator included: someone waits for the user, someone works, someone has
  * output the user has not seen. The row draws the strongest, as a session row
  * with Tabs does. In low-stimulus mode `families` is how the panel shows the
- * thread families, and the row counts work and unread as that panel does.
+ * thread families, and the row counts unread as that panel does.
  */
 export function boardActivity(
   board: Pick<BoardMeta, 'id' | 'coordinatorSessionId'>,
@@ -119,35 +119,25 @@ export function boardActivity(
   for (const session of members) {
     const live = liveStatuses.get(session.id);
     if (awaitsUser(session, live)) activity.isWaitingPermission = true;
-    if (families) continue;
     if (live) activity.isWorking = true;
-    if (sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
+    if (!families && sessionHasUnreadMessages(session)) activity.hasUnreadMessages = true;
   }
-  return families
-    ? { ...activity, ...boardActivityAsPanelShows(board, members, liveStatuses, families) }
-    : activity;
+  if (families) activity.hasUnreadMessages = boardUnreadAsPanelShows(board, members, families);
+  return activity;
 }
 
 /**
- * The panel's rule, over the same rows it lists: the coordinator, a thread and
- * every row of an unfolded family count their own work and unread as they always
- * did; a folded family's hidden member draws no work, and its unread counts as
- * `hiddenSessionHasUnread` reads it.
+ * The panel's unread, over the same rows it lists: the coordinator, a thread and
+ * every row of an unfolded family count their own unread; a folded family's
+ * hidden member counts as `hiddenSessionHasUnread` reads it.
  */
-function boardActivityAsPanelShows(
+function boardUnreadAsPanelShows(
   board: Pick<BoardMeta, 'coordinatorSessionId'>,
   members: readonly SessionMeta[],
-  liveStatuses: ReadonlyMap<string, SessionStatus>,
   { isFolded, readThrough }: BoardFamilyView
-): Pick<BoardActivity, 'isWorking' | 'hasUnreadMessages'> {
-  let isWorking = false;
-  let hasUnreadMessages = false;
-  const countShown = (session: SessionMeta) => {
-    if (liveStatuses.get(session.id)) isWorking = true;
-    if (sessionHasUnreadMessages(session)) hasUnreadMessages = true;
-  };
+): boolean {
   const coordinator = members.find((session) => session.id === board.coordinatorSessionId);
-  if (coordinator) countShown(coordinator);
+  if (coordinator && sessionHasUnreadMessages(coordinator)) return true;
   let root: SessionMeta | undefined;
   let folded = false;
   const threads = members.filter((session) => session.id !== board.coordinatorSessionId);
@@ -156,22 +146,18 @@ function boardActivityAsPanelShows(
       root = session;
       folded = isFolded(session.id);
     }
-    if (depth === 0 || !folded || !root) {
-      countShown(session);
-      continue;
-    }
-    const rootReadThrough = readThrough(root.id, root.lastReadAt);
-    if (
-      hiddenSessionHasUnread(
-        sessionHasUnreadMessages(session),
-        session.lastMessageAt ?? 0,
-        rootReadThrough
-      )
-    ) {
-      hasUnreadMessages = true;
-    }
+    const unread = sessionHasUnreadMessages(session);
+    const shown =
+      depth === 0 || !folded || !root
+        ? unread
+        : hiddenSessionHasUnread(
+            unread,
+            session.lastMessageAt ?? 0,
+            readThrough(root.id, root.lastReadAt)
+          );
+    if (shown) return true;
   }
-  return { isWorking, hasUnreadMessages };
+  return false;
 }
 
 /** Selection follows membership, including a contained Tab with its own Board id. */

@@ -90,6 +90,8 @@ export type WorkingGridProps = Omit<ComponentPropsWithoutRef<'span'>, 'children'
    * the size floor, and the tile size a little.
    */
   lightCompensation?: boolean;
+  /** Draw the tiles without motion, as reduced motion does. */
+  still?: boolean;
 };
 
 // Light-theme compensation: how far the opacity and size floors move towards 1,
@@ -217,6 +219,7 @@ export function WorkingGrid({
   direction = 'across',
   rowPitch = 28,
   lightCompensation = true,
+  still = false,
   className,
   style,
   ...props
@@ -253,7 +256,7 @@ export function WorkingGrid({
 
   useLayoutEffect(() => {
     const root = rootRef.current;
-    if (!visible || !root || typeof root.animate !== 'function') return undefined;
+    if (still || !visible || !root || typeof root.animate !== 'function') return undefined;
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
 
     const rect = root.getBoundingClientRect();
@@ -370,6 +373,7 @@ export function WorkingGrid({
       animations.forEach((animation) => animation.cancel());
     };
   }, [
+    still,
     visible,
     size,
     scale,

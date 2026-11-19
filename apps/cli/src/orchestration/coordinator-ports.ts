@@ -58,6 +58,8 @@ export type CoordinatorBoardMaintenance = {
     userId: string;
     renewBoardInstructions?: boolean;
     freshAgentSession?: boolean;
+    /** New conversation: the agent configuration the Session switches to as this turn starts. */
+    agentConfigId?: string;
   }): Effect.Effect<string, unknown>;
 };
 export class CoordinatorPorts extends Context.Service<

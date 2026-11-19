@@ -2526,7 +2526,19 @@ describe('SessionExecutionService Board maintenance turns', () => {
     holdPrompt = false,
     promptError,
     inbox = true,
-  }: { holdPrompt?: boolean; promptError?: Error; inbox?: boolean } = {}) => {
+    metaPatch = {},
+    liveAgent = true,
+  }: {
+    holdPrompt?: boolean;
+    promptError?: Error;
+    inbox?: boolean;
+    metaPatch?: Record<string, unknown>;
+    /** False: no agent runs for the Session, as after a start that failed. */
+    liveAgent?: boolean;
+  } = {}) => {
+    let current: Record<string, unknown> = { ...meta, ...metaPatch };
+    const metaWrites: unknown[] = [];
+    const createdConfigs: unknown[] = [];
     const prompts: string[] = [];
     const promptStarted = createDeferred<void>();
     const promptReleased = createDeferred<void>();
@@ -2557,10 +2569,14 @@ describe('SessionExecutionService Board maintenance turns', () => {
       applyExecutionPlaneLimits: async () => {},
       terminate: async () => {},
     });
-    let live: ReturnType<typeof agent> | null = agent('acp-old');
+    let live: ReturnType<typeof agent> | null = liveAgent ? agent('acp-old') : null;
     const sessionDoc = withHistoryPort({
       sessionId,
-      getMetaState: async () => meta,
+      getMetaState: async () => current,
+      setAgentConfig: async (agent: Record<string, unknown>) => {
+        metaWrites.push(agent);
+        current = { ...current, ...agent, acpSessionId: undefined };
+      },
       getHistory: () => [
         { id: 'earlier', role: 'user', timestamp: '2026-10-17T00:00:00.000Z', items: [] },
       ],
@@ -2580,8 +2596,9 @@ describe('SessionExecutionService Board maintenance turns', () => {
           retired.push(session.acpSessionId);
           live = null;
         },
-        createSession: async (_config: unknown, options?: { resumeSessionId?: string }) => {
+        createSession: async (config: unknown, options?: { resumeSessionId?: string }) => {
           created.push({ ...options });
+          createdConfigs.push(config);
           live = agent('acp-fresh');
           return live;
         },
@@ -2589,7 +2606,7 @@ describe('SessionExecutionService Board maintenance turns', () => {
       workspaceDocument: {
         repo: {
           upsertDocMeta: async () => {},
-          getDocMeta: async () => ({ meta }),
+          getDocMeta: async () => ({ meta: current }),
           openFlockDoc: async () => ({
             flock: {
               scan: () => [],
@@ -2602,6 +2619,10 @@ describe('SessionExecutionService Board maintenance turns', () => {
         },
         getOrCreateSessionDoc: async () => sessionDoc,
         getOrOpenSessionCode: async () => null,
+        getAgentConfigById: async (id: string) =>
+          id === 'codex-config'
+            ? { id, cliType: 'builtin', agentType: 'codex', machineId: 'machine-1' }
+            : null,
       } as unknown as LoroDocumentManager,
       // The agent receives exactly what the turn built, replay included.
       buildAcpPromptBlocks: async ({ inputBlocks, replayPromptText }) =>
@@ -2643,6 +2664,8 @@ describe('SessionExecutionService Board maintenance turns', () => {
       promptStarted,
       lastMessageAt,
       created,
+      createdConfigs,
+      metaWrites,
       retired,
       released,
       wakes: () => wakes,
@@ -2776,5 +2799,67 @@ describe('SessionExecutionService Board maintenance turns', () => {
     expect(h.retired).toEqual(['acp-old']);
     expect(h.created).toEqual([{ resumeSessionId: undefined, requireExactResume: false }]);
     expect(h.prompts).toEqual(['Lody maintenance.']);
+  });
+
+  it('switches the Session to the chosen agent as the new conversation starts', async () => {
+    const h = createService({ metaPatch: { latestUserMsgId: 'user-latest' } });
+
+    const outcome = await h.service.runBoardMaintenanceTurn({
+      ...request,
+      config: { ...request.config, modelId: 'gpt-6.1-sol' },
+      freshAgentSession: true,
+      agentConfigId: 'codex-config',
+    });
+
+    expect(outcome).toBe('completed');
+    expect(h.metaWrites).toEqual([
+      { agentConfigId: 'codex-config', cliType: 'builtin', agentType: 'codex' },
+    ]);
+    expect(h.retired).toEqual(['acp-old']);
+    expect(h.createdConfigs).toEqual([
+      expect.objectContaining({
+        agentConfigId: 'codex-config',
+        agentType: 'codex',
+        modelId: 'gpt-6.1-sol',
+      }),
+    ]);
+    // What the new agent applied becomes the baseline the user's next turn starts from.
+    expect(h.deps.applyAcpModeAndModel).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentType: 'codex', modelId: 'gpt-6.1-sol' }),
+      expect.objectContaining({ basedOnUserTurnId: 'user-latest' })
+    );
+  });
+
+  it('resumes only the conversation the Session holds now, never the one its driving turn named', async () => {
+    // A switch whose first start failed: the new agent, with no conversation of its own yet.
+    const h = createService({
+      metaPatch: { agentConfigId: 'codex-config', agentType: 'codex', acpSessionId: undefined },
+      liveAgent: false,
+    });
+
+    const outcome = await h.service.runBoardMaintenanceTurn({
+      ...request,
+      // The user turn that last drove the coordinator resumed the previous agent's conversation.
+      config: { cliType: 'builtin', agentType: 'claude', resume: 'acp-old' },
+    });
+
+    expect(outcome).toBe('completed');
+    expect(h.created).toEqual([{ resumeSessionId: undefined, requireExactResume: false }]);
+  });
+
+  it('leaves the Session as it was when the chosen agent no longer exists', async () => {
+    const h = createService();
+
+    const outcome = await h.service.runBoardMaintenanceTurn({
+      ...request,
+      freshAgentSession: true,
+      agentConfigId: 'removed-config',
+    });
+
+    expect(outcome).toBe('agent-config-missing');
+    expect(h.metaWrites).toEqual([]);
+    expect(h.retired).toEqual([]);
+    expect(h.prompts).toEqual([]);
   });
 });

@@ -600,24 +600,26 @@ export const SidebarUpdatedSessionList = memo(function SidebarUpdatedSessionList
           collapsedOpenedBySessionIds,
           lowStimulusMode
         );
-        // Low-stimulus mode: the one mark each folded family draws, resolved
-        // here so a memoized row keeps its identity across unrelated updates.
-        const familyActivityById = lowStimulusMode
-          ? new Map(
-              nodes
-                .filter((node) => node.hiddenChildren.length > 0)
-                .map((node) => [
+        // The one mark each folded family draws, resolved here so a memoized
+        // row keeps its identity across unrelated updates.
+        const folded = nodes.filter((node) => node.hiddenChildren.length > 0);
+        const familyActivityById =
+          folded.length > 0
+            ? new Map(
+                folded.map((node) => [
                   node.item.id,
                   foldedFamilyActivity(
                     node.item,
                     node.hiddenChildren,
-                    familyReadThrough(node.item.id, node.item.lastReadAt),
+                    lowStimulusMode
+                      ? familyReadThrough(node.item.id, node.item.lastReadAt)
+                      : undefined,
                     SIDEBAR_UPDATED_OPENED_BY_TREE_ACCESSORS.getId,
                     sendStates
                   ),
                 ])
-            )
-          : EMPTY_FAMILY_ACTIVITIES;
+              )
+            : EMPTY_FAMILY_ACTIVITIES;
         return {
           collapsedActivity: null,
           overflows: updatedBucketOverflowsPreview(bucket.items),

@@ -2,6 +2,8 @@ import { currentWorkspaceSlugAtom } from '@/atoms';
 import { BoardThreadHeader } from '../boards/board-panel-view';
 import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
+import { BoardNewConversationDialog } from '../boards/board-new-conversation-dialog';
+import type { AgentRunRef } from '../shared/agent-run-ref';
 import { boardEnabledAtom } from '@/atoms/settings';
 import { useSessionOwnerAccess } from '@/hooks/use-session-owner-access';
 import { MessageQuoteAction } from '../ai-gui/message-quote-action';
@@ -1427,6 +1429,7 @@ export function SessionHeaderMenu({
   compact = false,
   openInIde,
   continuationTweaks,
+  coordinatorAgent = null,
   t,
 }: {
   session: SessionMeta;
@@ -1468,6 +1471,8 @@ export function SessionHeaderMenu({
     /** Set when the folder is on another machine: the `user@host` the editor reaches it as. */
     sshDestination?: string;
   };
+  /** A Board coordinator's agent and the run settings its composer shows: the new conversation's first choice. */
+  coordinatorAgent?: AgentRunRef | null;
   t: SessionSharingTranslator;
 }) {
   const rpcReason = useMachineRpcFeatureReason(session.machineId);
@@ -1507,6 +1512,7 @@ export function SessionHeaderMenu({
   const isBoard = boardsEnabled && session.boardRole === 'coordinator';
   const requestMaintenance = useBoardMaintenanceRequest();
   const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
 
@@ -1943,12 +1949,7 @@ export function SessionHeaderMenu({
               >
                 {t('boards.maintenance.compactNow', 'Tidy context now')}
               </Menu.Item>
-              <Menu.Item
-                icon={MessageSquarePlus}
-                onClick={() => {
-                  void requestMaintenance(session, 'new_conversation');
-                }}
-              >
+              <Menu.Item icon={MessageSquarePlus} onClick={() => setNewConversationOpen(true)}>
                 {t('boards.maintenance.newConversation', 'Start a new conversation')}
               </Menu.Item>
             </>
@@ -2187,6 +2188,14 @@ export function SessionHeaderMenu({
               )}
         </Menu.Content>
       </Menu.Root>
+      {newConversationOpen ? (
+        <BoardNewConversationDialog
+          machineId={session.machineId}
+          current={coordinatorAgent}
+          onStart={(agent) => void requestMaintenance(session, 'new_conversation', agent)}
+          onClose={() => setNewConversationOpen(false)}
+        />
+      ) : null}
       {boardMembershipOpen ? (
         <BoardMembershipDialog session={session} onClose={() => setBoardMembershipOpen(false)} />
       ) : null}
@@ -7550,6 +7559,16 @@ export const SessionChatInterface = memo(
           publicShareWorkspaceId ? () => setPublicShareSessionId(session.id) : undefined
         }
         session={session}
+        coordinatorAgent={
+          session.boardRole === 'coordinator' && session.agentConfigId
+            ? {
+                agentConfigId: session.agentConfigId,
+                ...(selectedModelId ? { modelId: selectedModelId } : {}),
+                ...(selectedModeId ? { modeId: selectedModeId } : {}),
+                ...(configOptionValues ? { configOptionValues } : {}),
+              }
+            : null
+        }
         continuationTweaks={
           continuation.value ? (
             <SessionContinuationTweaks

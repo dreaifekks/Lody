@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useAtomValue } from 'jotai';
 import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { useStillWorkingMark } from '@/hooks/use-still-working-mark';
 import { useWorkingHandOver, WorkingStatusMark } from '@/ui/working-status-mark';
 import {
   sessionSendStatusAtomFamily,
@@ -248,6 +249,7 @@ export function SessionSendProgressRing({ progress }: { progress?: number }) {
 export function SessionRowStatusIndicator({
   isWaitingPermission,
   isWorking,
+  workingStill,
   hasUnreadMessages,
   sendState,
   sendProgress,
@@ -255,6 +257,8 @@ export function SessionRowStatusIndicator({
 }: {
   isWaitingPermission?: boolean;
   isWorking?: boolean;
+  /** Draw the working grid without motion (`useStillWorkingMark`). */
+  workingStill?: boolean;
   hasUnreadMessages?: boolean;
   /** Renderer-local state of this session's held (in-memory) sends. */
   sendState?: SessionSendState | null;
@@ -283,6 +287,7 @@ export function SessionRowStatusIndicator({
         working={isWorking === true}
         unread={hasUnreadMessages === true}
         doneTransition={!lowStimulusMode}
+        still={workingStill}
         className="text-primary"
       />
     );
@@ -706,7 +711,7 @@ export function SidebarRowEndSlot({
   isWaitingPermission?: boolean;
   isWorking?: boolean;
   hasUnreadMessages?: boolean;
-  /** Low-stimulus mode's folded family: draws its one mark in place of the row's own flags. */
+  /** A folded family: draws its one mark in place of the row's own flags. */
   familyActivity?: SidebarGroupActivity;
   restIcon?: ReactNode;
   archive?: ReactNode;
@@ -714,11 +719,10 @@ export function SidebarRowEndSlot({
 }) {
   const waiting = familyActivity ? familyActivity.waiting > 0 : isWaitingPermission;
   const unread = familyActivity ? familyActivity.unread > 0 : hasUnreadMessages;
+  const working = familyActivity ? familyActivity.working > 0 : isWorking === true;
   // The end slot outlives the status mark, so the hand-over hold lives here.
-  const drawWorking = useWorkingHandOver(
-    familyActivity ? familyActivity.working > 0 : isWorking === true,
-    unread === true
-  );
+  const drawWorking = useWorkingHandOver(working, unread === true);
+  const workingStill = useStillWorkingMark(sessionId, working);
   const sendStatus = useAtomValue(sessionSendStatusAtomFamily(sessionId ?? ''));
   const sendLabel = useSessionSendLabel(sendStatus);
   const sendState = familyActivity
@@ -737,6 +741,7 @@ export function SidebarRowEndSlot({
     <SessionRowStatusIndicator
       isWaitingPermission={waiting}
       isWorking={drawWorking}
+      workingStill={workingStill}
       hasUnreadMessages={unread}
       sendState={sendState}
       sendProgress={sendStatus && sendStatus.totalBytes > 0 ? sendStatus.progress : undefined}
