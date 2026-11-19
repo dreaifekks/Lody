@@ -6601,6 +6601,8 @@
   "boards.maintenance.requestFailed": "没能通知协调者：{{reason}}",
   "boards.maintenance.compactNow": "立即整理上下文",
   "boards.maintenance.newConversation": "开始新对话",
+  "boards.maintenance.newConversationHelp": "协调者先写交接，再用这里选的 agent 开一段新的 agent 对话继续。Board、线程、笔记和指令都保留。",
+  "boards.maintenance.start": "开始",
   "boards.continuity.title": "上下文",
   "boards.continuity.idle": "空闲时整理上下文",
   "boards.continuity.idleHelper": "协调者先把要点记下来，再让 agent 压缩自己的上下文。对话记录保持完整。",

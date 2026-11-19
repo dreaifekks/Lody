@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
 import type { SessionContextWindowUsage, SessionHistoryInput } from './schema';
 
 /**
@@ -23,6 +24,14 @@ export const boardMaintenanceStepId = (runId: string, step: BoardMaintenanceStep
 /** True for a divider turn id or a maintenance step's `userTurnId`. */
 export const isBoardMaintenanceTurnId = (id: string | undefined): boolean =>
   id !== undefined && id.startsWith(BOARD_MAINTENANCE_TURN_PREFIX);
+
+/** The run whose `renew` step a maintenance `userTurnId` names, or undefined for any other id. */
+export function boardMaintenanceRenewRunId(userTurnId: string | undefined): string | undefined {
+  const suffix = ':renew';
+  return userTurnId?.startsWith(BOARD_MAINTENANCE_TURN_PREFIX) && userTurnId.endsWith(suffix)
+    ? userTurnId.slice(BOARD_MAINTENANCE_TURN_PREFIX.length, -suffix.length)
+    : undefined;
+}
 
 /** A maintenance step's assistant entry: hidden, its divider speaks for it. */
 export const isBoardMaintenanceEntry = (
@@ -106,6 +115,38 @@ export const BoardMaintenanceStatusSchema = z.enum([
   'interrupted',
 ]);
 export type BoardMaintenanceStatus = z.infer<typeof BoardMaintenanceStatusSchema>;
+/**
+ * New conversation: the agent configuration on the coordinator's machine, and
+ * its run settings, that the coordinator continues with. The limits of a
+ * schedule's agent (`ScheduleAgentSchema`), written out because
+ * `message-schemas` imports this module.
+ */
+export const BoardCoordinatorAgentSchema = z
+  .object({
+    agentConfigId: z.string().min(1),
+    modeId: z.string().min(1).optional(),
+    modelId: z.string().min(1).optional(),
+    configOptionValues: z
+      .record(
+        z
+          .string()
+          .min(1)
+          .max(100)
+          .refine(
+            (key) => !isSensitiveAcpConfigOptionId(key),
+            'Credentials belong in the Agent configuration'
+          ),
+        z.union([z.string().max(1024), z.boolean()])
+      )
+      .refine((value) => Object.keys(value).length <= 50, 'Too many config options')
+      // A record parse copies the `$cid` Mirror leaves on a stored map; it is no option.
+      .transform((values) =>
+        Object.fromEntries(Object.entries(values).filter(([key]) => key !== '$cid'))
+      )
+      .optional(),
+  })
+  .strict();
+export type BoardCoordinatorAgent = z.infer<typeof BoardCoordinatorAgentSchema>;
 export const BoardMaintenanceMetaSchema = z
   .object({
     boardId: z.string().min(1),
@@ -122,6 +163,12 @@ export const BoardMaintenanceMetaSchema = z
      * the new agent waits for a free moment.
      */
     handoff: z.string().min(1).max(200).optional(),
+    /**
+     * New conversation: the agent the user chose for it. The Session switches to
+     * it when the new agent's first turn starts; that turn's `renew` entry marks
+     * the switch in history. Absent: the coordinator keeps its agent and settings.
+     */
+    agent: BoardCoordinatorAgentSchema.optional(),
     /** A short reason code, never agent output. */
     reason: z.string().max(200).optional(),
   })

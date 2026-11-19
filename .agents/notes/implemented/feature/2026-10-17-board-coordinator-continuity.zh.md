@@ -106,3 +106,41 @@ devNuc 上 algorithm 看板的持久化历史里，11:49 和 12:09 两条手动�
 
 没有改：`CoordinatorWorkflow` 对 Operation 目标会话的历史订阅（`subscriptions`）同样不会在释放后
 重建，那条链路靠 SQLite 和元数据唤醒兜着，这次不动。
+
+## 后续决定（2026-11-19）：开始新对话时可以换 agent
+
+已有会话的 agent 是固定的，协调者的模型只能在它最初的 agent 里换。桌面上的「开始新对话」现在先
+弹出对话框（`BoardNewConversationDialog`），默认选中协调者当前的 agent 和输入框显示的设置；用户
+可以换成协调者所在机器上的其他 agent 配置，以及它的模型、模式和选项。选择随请求分隔线记为
+`agent`（`BoardCoordinatorAgentSchema`：定时任务的 agent 去掉记忆绑定）。交接仍由旧 agent 用原来
+的设置写。新 agent 的第一回合（`renew`）拿到会话之后、启动任何 agent 之前，
+`runBoardMaintenanceTurn` 才写会话的 `agentConfigId`、`cliType` 和 `agentType`
+（`SessionDocument.setAgentConfig`），于是它启动的 agent 和之后每一回合都按新配置解析。同一次
+写入去掉旧 agent 的会话 id（`acpSessionId`），因为别的 agent 无法恢复它；维护回合要恢复的会话也只看
+会话本身，不再沿用驱动它的用户回合里的 `resume`（两处都是审查中发现的：新 agent 启动失败后，下一回合
+或之后的整理上下文会把旧 id 交给新 agent 去恢复）。所以启动失败或被停止后，会话停在新 agent 上、没有
+agent 对话：用户下一回合用历史重建对话来启动它，再开一次新对话则不写交接、直接新开。机器、项目
+范围和看板说明不变。
+
+为什么等到那时：已经排队的用户回合带着旧 agent 的类型，元数据提前切换的话它会因
+`agent_type_mismatch` 失败。用户回合先到的话照常由旧 agent 回答，切换在协调者空闲后接着做。
+
+新设置在用户下次说话之前放在哪里：输入框只在运行时基线挂在最近一条用户回合上时才用它，所以新
+agent 的第一回合把它实际生效的设置记到那条回合上（`runtimeConfigTurnId`，即会话的
+`latestUserMsgId`），输入框不用加新规则就显示选中的模型。用户下次说话之前的维护回合，从驱动回合
+之后的 `renew` 条目找到切换，再读它的分隔线（`switchedAgent`）。按分隔线自己的位置判断被否掉了：
+切换挂起期间跑过的用户回合在分隔线之后、切换之前。输入框直接读分隔线也因同样的原因否掉，而且
+输入框只拿得到历史的尾部。
+
+没有做：不开新对话的切换（旧的 agent 对话换了 agent 接不上）；看板设置里的「默认协调者
+agent」，换 agent 总要开新对话，那会是同一件事的第二个入口；手机菜单仍沿用当前 agent 开始新对话。
+还没有用户回合的协调者没有回合可挂基线，输入框显示新 agent 的默认模型。Mirror 读回存储的 map 时带
+一个继承来的 `$cid`，record 解析会把它拷进来，所以 schema 从 `configOptionValues` 里去掉它，否则它
+会作为选项发给 agent。
+
+测试：`operation-coordinator.test.ts` 的「Board coordinator continuity」（交接用旧设置，新对话和
+之后的维护用选中 agent 的设置），「SessionExecutionService Board maintenance turns」（启动 agent
+之前切换元数据，基线挂到最近一条用户回合；agent 配置被删时会话保持原样；维护回合不沿用驱动回合的
+`resume`），「SessionDocument
+agent switch」（旧会话 id 随切换去掉），以及 `board-overview.test.tsx` 里头部菜单的用例。在临时
+桌面实例上用两个脚本化 agent 端到端跑过；还没有在真实 agent 上跑过。

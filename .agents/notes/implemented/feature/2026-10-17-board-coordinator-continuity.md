@@ -144,3 +144,53 @@ manual request starts and is recorded `done` in the repository replica. Without 
 Not changed: `CoordinatorWorkflow`'s history subscriptions on Operation targets
 (`subscriptions`) are not rebuilt after a release either; SQLite and metadata wakes cover that
 path, and it stays as is.
+
+## Later decision (2026-11-19): a new conversation can continue with another agent
+
+An existing Session keeps its agent, so a coordinator's model could only change within the
+agent it started with. "Start a new conversation" on the desktop now opens a dialog
+(`BoardNewConversationDialog`) seeded with the coordinator's agent and the settings its composer
+shows; the user can pick another agent configuration on the coordinator's machine, with its
+model, mode and options. The choice rides on the request divider as `agent`
+(`BoardCoordinatorAgentSchema`: a schedule's agent without a memory binding). The old agent
+writes the handoff with its own settings. Once the new agent's first turn (`renew`) holds the
+Session, and before any agent starts, `runBoardMaintenanceTurn` writes the Session's
+`agentConfigId`, `cliType` and `agentType` (`SessionDocument.setAgentConfig`), so the agent it
+starts and every later turn resolve the new configuration. The same write drops the previous
+agent's conversation id (`acpSessionId`), because no other agent can resume it, and a maintenance
+turn takes the conversation to resume from the Session only, never from the user turn that drove
+it (both found in review: after a failed start the next turn, or a later compaction through the
+driving turn's `resume`, handed the old id to the new agent). A start that fails or is stopped
+therefore leaves the Session on the new agent with no agent conversation: the user's next turn starts it with the conversation rebuilt from history, and
+another new conversation starts it fresh, without a handoff. Machine, project scope and Board
+instructions do not change.
+
+Why only then: a user turn already queued carries the old agent's types and would fail
+`agent_type_mismatch` against metadata switched earlier. A user turn that comes first still runs
+with the old agent, and the switch resumes when the coordinator is free.
+
+Where the new settings live until the user speaks: the composer takes the runtime baseline only
+when it is attached to the latest user turn, so the new agent's first turn records what it applied
+against that turn (`runtimeConfigTurnId`, the Session's `latestUserMsgId`), and the composer shows
+the chosen model with no new rule. Maintenance before the user's next turn finds the switch by the
+`renew` entry after the driving turn and reads its divider (`switchedAgent`). Keying on the
+divider's own position was rejected: a user turn that ran during a pending switch sits after the
+divider but before the switch. Reading the divider in the composer was rejected for the same
+reason, and because the composer holds only the history tail.
+
+Not done: switching without a new conversation (the old agent conversation cannot continue under
+another agent); a "default coordinator agent" Board setting, which would be a second entry for
+the same action because a different agent always needs a new conversation; the phone menu, which
+still starts a new conversation with the current agent. A coordinator with no user turn yet has no
+turn to attach the baseline to, so its composer shows the new agent's default model. Mirror hands
+a stored map back with an inherited `$cid` that a record parse copies, so the schema drops it from
+`configOptionValues`; otherwise it would reach the agent as an option.
+
+Tests: "Board coordinator continuity" in `operation-coordinator.test.ts` (handoff with the old
+settings, the chosen agent's settings for the new conversation and for maintenance after it),
+"SessionExecutionService Board maintenance turns" (metadata switched before the agent starts,
+the baseline attached to the latest user turn; a removed agent configuration leaves the Session
+as it was; a maintenance turn ignores the `resume` of its driving turn), "SessionDocument agent
+switch" (the old conversation id goes with the switch), and
+the header-menu case in `board-overview.test.tsx`. Run end to end on a temporary desktop with
+two scripted agents; not yet against real agents.

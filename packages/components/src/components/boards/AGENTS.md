@@ -70,7 +70,9 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   same Session, outside the Inbox (one divider, hidden replies, no push; neither
   they nor their late output move `lastMessageAt`). It yields to user turns and
   results, never fakes compaction (skips agents it cannot confirm) or changes
-  `coordinatorSessionId`.
+  `coordinatorSessionId`. A new conversation may name another agent on the
+  coordinator's machine; the Session switches, dropping the old agent's conversation
+  id, only once its first turn holds it.
 - A Board's entries act on the whole Board: the page's header menu
   (`SessionHeaderMenu` on a coordinator) and the sidebar row (`BoardSidebar`) rename,
   archive and restore via `useBoardActions`, which reads members when it runs; share

@@ -51,7 +51,9 @@ import {
   getSessionRoomId,
   isLoroRepoDocDeleted,
   normalizeBoardMeta,
+  readBoardMaintenance,
   readSessionOperationTargets,
+  type AgentConfigId,
   type AgentConfigMeta,
   type BoardMeta,
   type LocalProjectId,
@@ -2251,6 +2253,69 @@ it('renames and archives the whole Board from its page header menu', async () =>
     expect(left).toBe(true);
     expect(env.board('bd_test').archivedAtMs).toEqual(expect.any(Number));
     expect(await archivedIds()).toEqual(['coordinator', 'root', 'review', 'opened']);
+  } finally {
+    await view.unmount();
+    await env.destroy();
+  }
+});
+
+it('asks for a new conversation with the agent chosen in its dialog', async () => {
+  const { env, store } = await boardWithMembers();
+  const appended: SessionHistoryInput[] = [];
+  Object.assign(env.runtime.writer, {
+    appendSessionHistory: async (_id: SessionId, turn: SessionHistoryInput) => {
+      appended.push(turn);
+    },
+  });
+  const view = await mount(
+    <Provider store={store}>
+      <SessionHeaderMenu
+        session={makeSession('coordinator', { boardRole: 'coordinator' })}
+        coordinatorAgent={{
+          agentConfigId: 'claude-config' as AgentConfigId,
+          modelId: 'claude-opus-5-5',
+          configOptionValues: { effort: 'max' },
+          memory: { providerId: 'nowledge-mem', memoryId: 'coordinator-memory' },
+        }}
+        onCopyUrl={() => {}}
+        t={(_key: string, fallback: string) => fallback}
+      />
+    </Provider>
+  );
+  try {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'requestAnimationFrame'] });
+    try {
+      await act(async () => {
+        document
+          .querySelector('button[aria-label="More actions"]')!
+          .dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        await vi.advanceTimersByTimeAsync(40);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await act(async () => menuItem('Start a new conversation')!.click());
+    // Nothing is asked until the user confirms the agent.
+    expect(appended).toEqual([]);
+    const start = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+      (button) => button.textContent === 'Start'
+    )!;
+    await act(async () => start.click());
+    // The divider names the agent and its settings; the memory stays with the turns.
+    expect(appended.map(readBoardMaintenance)).toEqual([
+      {
+        boardId: 'bd_test',
+        kind: 'new_conversation',
+        trigger: 'manual',
+        status: 'requested',
+        agent: {
+          agentConfigId: 'claude-config',
+          modelId: 'claude-opus-5-5',
+          configOptionValues: { effort: 'max' },
+        },
+      },
+    ]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   } finally {
     await view.unmount();
     await env.destroy();

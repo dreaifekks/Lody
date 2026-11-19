@@ -3633,6 +3633,23 @@ export class SessionDocument implements LoroDocument<Omit<SessionDocMeta, 'histo
     });
   }
 
+  /**
+   * A Board coordinator's new conversation: the agent configuration this
+   * Session runs from now on. The previous agent's conversation id goes in the
+   * same write, since no other agent can resume it: until the new agent records
+   * its own, a turn starts it afresh, even after its first start failed.
+   */
+  async setAgentConfig(agent: {
+    agentConfigId: AgentConfigId;
+    cliType: AgentConfigCliType;
+    agentType: AgentType;
+  }) {
+    if (!this.mirror) throw new Error('SessionDocument not initialized');
+    const current = await this.repo.getDocMeta(this.roomId);
+    if (isLoroRepoDocDeleted(current)) return;
+    await this.repo.upsertDocMeta(this.roomId, { ...agent, acpSessionId: undefined });
+  }
+
   async setProject(project: ProjectRef) {
     if (!this.mirror) {
       throw new Error('SessionDocument not initialized');
