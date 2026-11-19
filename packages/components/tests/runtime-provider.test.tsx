@@ -252,6 +252,38 @@ import {
 import { editDraft, runtimeFixture } from './runtime-provider-test-helpers';
 
 describe('RuntimeProvider warm workspace preparation', () => {
+  it('syncs each LAN through its own gateway and starts no runtime for an unknown route', async () => {
+    environment.localWorkspaces = [
+      { id: 'local:workspace', slug: 'local' },
+      { id: 'local:other', slug: 'other' },
+    ];
+    environment.syncByWorkspace = {
+      'local:workspace': {
+        mode: 'dual',
+        streams: { gatewayBaseUrl: 'lody-hub://one', token: 'lan-hub' },
+      },
+      'local:other': {
+        mode: 'dual',
+        streams: { gatewayBaseUrl: 'lody-hub://two', token: 'lan-hub' },
+      },
+    };
+    await render();
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0]).toMatchObject({
+      workspaceId: 'local:workspace',
+      content: { mode: 'plaintext' },
+      syncMode: 'dual',
+      streams: environment.syncByWorkspace['local:workspace']!.streams,
+    });
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0].e2ee).toBeUndefined();
+    await act(async () => store.set(currentWorkspaceSlugAtom, 'other'));
+    expect(vi.mocked(createWorkspaceRuntime).mock.lastCall?.[0]).toMatchObject({
+      workspaceId: 'local:other',
+      streams: environment.syncByWorkspace['local:other']!.streams,
+    });
+    await act(async () => store.set(currentWorkspaceSlugAtom, 'missing'));
+    expect(store.get(runtimeAtom)).toBeNull();
+  });
+
   let root: Root;
   let container: HTMLDivElement;
   let store: ReturnType<typeof createStore>;

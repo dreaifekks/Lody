@@ -148,23 +148,26 @@ describe('assistant-turn-render-blocks', () => {
       ]);
     });
 
-    it('folds earlier text when the agent continues working and sends a later answer', () => {
-      const layout = buildAssistantTurnRenderLayout(
-        'assistant-1',
-        [
-          { type: 'text', text: 'The bug is in the parser.' },
-          tool('command-1', 'execute'),
-          { type: 'text', text: 'Confirmed by the reproduction.' },
-        ],
-        true
-      );
+    it.each(['The bug is in the parser.', 'x'.repeat(300), '# Earlier finding'])(
+      'folds earlier text before a later answer: %s',
+      (earlier) => {
+        const layout = buildAssistantTurnRenderLayout(
+          'assistant-1',
+          [
+            { type: 'text', text: earlier },
+            tool('command-1', 'execute'),
+            { type: 'text', text: 'Confirmed by the reproduction.' },
+          ],
+          true
+        );
 
-      expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
-        true,
-        true,
-        false,
-      ]);
-    });
+        expect(layout.blocks.map((block) => layout.workBlockKeys.has(block.key))).toEqual([
+          true,
+          true,
+          false,
+        ]);
+      }
+    );
 
     it('keeps every adjacent trailing text block regardless of phase', () => {
       const layout = buildAssistantTurnRenderLayout(
