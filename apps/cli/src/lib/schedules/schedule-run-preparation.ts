@@ -12,6 +12,8 @@ import {
   resolveScheduleAgentRole,
   scheduleOwnSessionId,
   snapshotAgentRole,
+  migrateLegacyAntigravityModeId,
+  migrateLegacyAntigravityModeOption,
   normalizeLegacyScheduleAgent,
   normalizeBoardMeta,
   isLoroRepoDocDeleted,
@@ -295,8 +297,12 @@ export async function resolveScheduleAgentRunConfig(
   manager: import('../loro/doc').LoroDocumentManager,
   workspaceId: WorkspaceId,
   machineId: MachineMeta['id'],
-  agent: ScheduleDefinition['agent']
+  saved: ScheduleDefinition['agent']
 ): Promise<ScheduleDefinition['agent']> {
+  // A schedule saved with Lody's former Antigravity Auto Review runs in agy's `auto`.
+  const agent = saved.modeId
+    ? { ...saved, modeId: migrateLegacyAntigravityModeId(saved.modeId) }
+    : saved;
   if (!agent.configOptionValues) return agent;
   const { readAgentAcpCapability } = await import('@/commands/session');
   const capability = await readAgentAcpCapability({
@@ -306,7 +312,10 @@ export async function resolveScheduleAgentRunConfig(
     agentConfigId: agent.agentConfigId as AgentConfigMeta['id'],
     localOnly: true,
   });
-  return normalizeLegacyScheduleAgent(agent, capability?.configOptions);
+  return normalizeLegacyScheduleAgent(
+    { ...agent, configOptionValues: migrateLegacyAntigravityModeOption(agent.configOptionValues) },
+    capability?.configOptions
+  );
 }
 
 /** The run's MCP choice, frozen on the prepared turn before the engine persists it. */

@@ -44,10 +44,11 @@ Streamable HTTP MCP 能力修补，其余原样透传 agy 的模式。`auto` 下
 强制推送仍为 `ask`），nmem 走它的 MCP 工具。
 
 已保存的选择经同一个映射读取，`migrateLegacyAntigravityModeId`（`auto_review` → `auto`，没有别的
-agent 用这个 id）：Role 运行配置和会话配置读取函数（`resolveSessionConversationConfig`、
-`resolveSessionAcpRuntimeConfig`）读的时候映射，菜单和继承的轮次显示 `auto`。冻结为
-`auto_review` 的轮次（排队的输入、定时、带签名的输入）不改写，由流包装层以 `auto` 发给 agy。
-权限档位表为这些冻结轮次保留 `auto_review` → `auto`。
+agent 用这个 id）：Role 运行配置、会话配置读取函数（`resolveSessionConversationConfig`、
+`resolveSessionAcpRuntimeConfig`）和定时到会话的边界（`resolveScheduleAgentRunConfig`）读的时候映射，
+菜单、继承的轮次和定时运行都用 `auto`，能通过普通的能力校验。定时定义及其指纹保留原值。冻结为
+`auto_review` 的轮次（排队或带签名的输入）不改写，由流包装层以 `auto` 发给 agy。权限档位表为这些
+冻结轮次保留 `auto_review` → `auto`。
 
 ## 备选方案
 
@@ -75,6 +76,8 @@ agent 用这个 id）：Role 运行配置和会话配置读取函数（`resolveS
   以及已保存的 `auto_review` 在启动、恢复和切换时让 agy 以 `auto` 运行。
 - `packages/shared/tests/agent-role.test.ts`、`session-input.test.ts`：Role 和会话读取把
   `auto_review` 映射成 `auto`。
+- `apps/cli/src/lib/schedules/schedule-session-preparation.test.ts`：存为 `auto_review` 的定时
+  （`modeId` 或 `mode` 选项）以 `auto` 准备它的轮次。
 - `packages/shared/tests/permission-tier.test.ts` 保留它的档位。
 
 未验证：带这个改动的 Lody 构建在真实机器上运行（只跑了 agy 本身和 fixture），以及旧 Auto Review

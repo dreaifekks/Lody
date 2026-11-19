@@ -59,12 +59,14 @@ commands whose review should not ask (`command(git push)`, with force pushes kep
 `ask`), and allow nmem through its MCP tools.
 
 Saved selections are read through one mapping, `migrateLegacyAntigravityModeId`
-(`auto_review` → `auto`; no other agent uses the id): Role run configs and the
-session config readers (`resolveSessionConversationConfig`,
-`resolveSessionAcpRuntimeConfig`) apply it on read, so menus and inherited turns show
-`auto`. Turns frozen with `auto_review` (queued input, schedules, signed inputs) are
-not rewritten; the stream wrapper sends them to agy as `auto`. The permission tier
-table keeps `auto_review` at `auto` for those frozen turns.
+(`auto_review` → `auto`; no other agent uses the id): Role run configs, the session
+config readers (`resolveSessionConversationConfig`, `resolveSessionAcpRuntimeConfig`)
+and the Schedule-to-Session boundary (`resolveScheduleAgentRunConfig`) apply it on
+read, so menus, inherited turns and scheduled runs use `auto` and pass the ordinary
+capability validation. Schedule definitions and their fingerprints keep what was
+saved. Turns frozen with `auto_review` (queued or signed input) are not rewritten;
+the stream wrapper sends them to agy as `auto`. The permission tier table keeps
+`auto_review` at `auto` for those frozen turns.
 
 ## Alternatives
 
@@ -101,6 +103,8 @@ table keeps `auto_review` at `auto` for those frozen turns.
   start, on resume and on a switch.
 - `packages/shared/tests/agent-role.test.ts` and `session-input.test.ts`: Role and
   session reads map `auto_review` to `auto`.
+- `apps/cli/src/lib/schedules/schedule-session-preparation.test.ts`: a schedule saved
+  with `auto_review` (as `modeId` or as the `mode` option) prepares its turn in `auto`.
 - `packages/shared/tests/permission-tier.test.ts` keeps its tier.
 
 Not verified: a Lody build with this change on a real machine (only agy itself and
