@@ -130,6 +130,7 @@ import {
   sidebarCollapsedAtom,
   sidebarLastWidthAtom,
   sidebarOrganizeModeAtom,
+  sidebarHideEmptyProjectsAtom,
   sidebarShowBranchNamesAtom,
   sidebarUpdatedShowProjectNamesAtom,
   sidebarUpdatedBucketCollapseStateAtom,
@@ -178,7 +179,10 @@ import {
   type SessionListRow,
 } from '@/components/session-list';
 import { projectEditorRequestAtom } from '@/atoms/project-editor';
-import { placeProjectGroups } from '@/lib/project-group-placement';
+import {
+  placeProjectGroups,
+  selectVisibleLocalProjectSections,
+} from '@/lib/project-group-placement';
 import {
   buildChildSessionsByParent,
   buildSessionListRows,
@@ -1707,7 +1711,7 @@ export function LoroAppSidebar({
   // The LANs are settings of the local desktop; nothing else has the page.
   const localPlatform = isLocalAppPlatform();
   const lanSettingsAvailable = isLocalAppPlatform() && isElectronRenderer();
-  const { openSettings } = useOpenSettings();
+  const { openSettings, preloadSettings } = useOpenSettings();
 
   const user = useAtomValue(userAtom);
   const userId = user?.id ?? null;
@@ -1924,6 +1928,7 @@ export function LoroAppSidebar({
     sidebarUpdatedShowProjectNamesAtom
   );
   const [showBranchNames, setShowBranchNames] = useAtom(sidebarShowBranchNamesAtom);
+  const [hideEmptyProjects, setHideEmptyProjects] = useAtom(sidebarHideEmptyProjectsAtom);
   const setSidebarCollapsed = useSetAtom(sidebarCollapsedAtom);
   const [sidebarLastWidth, setSidebarLastWidth] = useAtom(sidebarLastWidthAtom);
   const handleChatScopeChanged = useCallback(
@@ -1958,6 +1963,16 @@ export function LoroAppSidebar({
       setShowBranchNames(next);
     },
     [postHog, setShowBranchNames]
+  );
+  const handleHideEmptyProjectsChange = useCallback(
+    (next: boolean) => {
+      capturePostHogEvent(postHog, 'settings/changed', {
+        key: 'sidebar_hide_empty_projects',
+        value: next,
+      });
+      setHideEmptyProjects(next);
+    },
+    [postHog, setHideEmptyProjects]
   );
   const sessionSidebarCodeChangesOnly = useAtomValue(sessionSidebarCodeChangesOnlyAtom);
   const { archiveSession, markSessionUnread, setSessionPinned, updateSessionTitle } =
@@ -2794,6 +2809,7 @@ export function LoroAppSidebar({
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
         isWaitingPermission: task.isWaitingPermission,
+        hasFailedTurn: task.hasFailedTurn,
         externalHistoryProvider: task.externalHistoryProvider ?? null,
         owner: task.owner ?? null,
         openedBySessionId: task.openedBySessionId ?? null,
@@ -2822,6 +2838,7 @@ export function LoroAppSidebar({
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
         isWaitingPermission: task.isWaitingPermission,
+        hasFailedTurn: task.hasFailedTurn,
         prStatus: task.prStatus,
         prCiState: task.prCiState,
         prReadiness: task.prReadiness,
@@ -2861,6 +2878,7 @@ export function LoroAppSidebar({
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
         isWaitingPermission: task.isWaitingPermission,
+        hasFailedTurn: task.hasFailedTurn,
         prStatus: task.prStatus,
         prCiState: task.prCiState,
         prReadiness: task.prReadiness,
@@ -2916,6 +2934,7 @@ export function LoroAppSidebar({
             hasUnreadMessages: activity.hasUnreadMessages,
             isOffline,
             isWaitingPermission: activity.isWaitingPermission,
+            hasFailedTurn: activity.hasFailedTurn,
             prStatus: prInfo.status,
             prCiState: prInfo.ciState,
             prReadiness: prInfo.readiness,
@@ -3077,9 +3096,11 @@ export function LoroAppSidebar({
       showHeading: t('sidebar.filter.showHeading', 'Tasks'),
       organizeProject: t('sidebar.filter.organizeProject', 'Project'),
       organizeUpdated: t('sidebar.filter.organizeUpdated', 'Updated'),
+      organizeStatus: t('sidebar.filter.organizeStatus', 'Status'),
       detailsHeading: t('sidebar.filter.detailsHeading', 'Details'),
       updatedProjectNames: t('sidebar.filter.updatedProjectNames', 'Show Project'),
       showBranchNames: t('sidebar.filter.showBranchNames', 'Show Branch'),
+      hideEmptyProjects: t('sidebar.filter.hideEmptyProjects', 'Hide Empty Projects'),
       showMyTasks: t('sessions.sidebar.my', 'My Tasks'),
       showAllTasks: t('sessions.sidebar.team', 'All Tasks'),
       emptyMyTasks: t('sidebar.filter.emptyMyTasks', 'No tasks match this view'),
@@ -3113,6 +3134,8 @@ export function LoroAppSidebar({
       onShowUpdatedProjectNamesChange={handleShowUpdatedProjectNamesChange}
       showBranchNames={showBranchNames}
       onShowBranchNamesChange={handleShowBranchNamesChange}
+      hideEmptyProjects={hideEmptyProjects}
+      onHideEmptyProjectsChange={handleHideEmptyProjectsChange}
       labels={filterLabels}
       open={sidebarFilterOpen}
       onOpenChange={setSidebarFilterOpen}
@@ -3169,6 +3192,7 @@ export function LoroAppSidebar({
       .filter((project) => {
         const bound = getProjectBoundMachineId(project.members);
         return (
+          !hideEmptyProjects ||
           activeProjectIds.has(project.id) ||
           (localPlatform && bound && bound !== 'conflict' && bound !== localMachineId)
         );
@@ -3203,6 +3227,7 @@ export function LoroAppSidebar({
       ...[...removed.values()].sort((left, right) => left.name.localeCompare(right.name)),
     ];
   }, [
+    hideEmptyProjects,
     projectGroupOrder,
     projectGroupSessions,
     repoCollapseState,
@@ -3227,27 +3252,23 @@ export function LoroAppSidebar({
   );
   // Filter after pinned trees and opened-by placement have assigned each row
   // its final group. Keep the catalog above for Updated/Pinned and saved order.
+  // With "Hide Empty Projects" off, every catalog project stays listed.
   const localProjectSections = useMemo(
     () =>
-      catalogLocalProjectSections
-        .map((section) => ({
-          ...section,
-          projects: section.projects.filter(
-            (project) =>
-              (localPlatform && section.machineId !== localMachineId) ||
-              (workspaceLocalProjectSessionsByKey.get(`${section.machineId}:${project.id}`)
-                ?.length ?? 0) > 0
-          ),
-        }))
-        .filter(
-          (section) =>
-            section.projects.length > 0 ||
-            (section.machineId &&
-              ((projectGroupPlacement.byMachine.get(section.machineId)?.sessions.length ?? 0) > 0 ||
-                (projectGroupPlacement.byMachine.get(section.machineId)?.states.length ?? 0) > 0))
-        ),
+      selectVisibleLocalProjectSections({
+        sections: catalogLocalProjectSections,
+        hideEmptyProjects,
+        keepEmptyProjectsForMachine: (machineId) => localPlatform && machineId !== localMachineId,
+        sessionCountOf: (machineId, projectId) =>
+          workspaceLocalProjectSessionsByKey.get(`${machineId}:${projectId}`)?.length ?? 0,
+        projectGroupSessionCountOf: (machineId) => {
+          const group = projectGroupPlacement.byMachine.get(machineId);
+          return (group?.sessions.length ?? 0) + (group?.states.length ?? 0);
+        },
+      }),
     [
       catalogLocalProjectSections,
+      hideEmptyProjects,
       projectGroupPlacement,
       workspaceLocalProjectSessionsByKey,
       localPlatform,
@@ -4237,8 +4258,8 @@ export function LoroAppSidebar({
         },
         updated: {
           items: updatedItems,
-          collapsed: updatedBucketCollapseState.all ?? false,
-          showFull: updatedBucketShowFullState.all ?? false,
+          collapsedBuckets: updatedBucketCollapseState,
+          showFullBuckets: updatedBucketShowFullState,
         },
       }),
     [
@@ -4254,8 +4275,8 @@ export function LoroAppSidebar({
       pinnedSectionCollapsed,
       repos,
       showFullSessionGroups,
-      updatedBucketCollapseState.all,
-      updatedBucketShowFullState.all,
+      updatedBucketCollapseState,
+      updatedBucketShowFullState,
       updatedItems,
       workspaceChatSessions,
       workspaceRepoSessions,
@@ -4356,12 +4377,14 @@ export function LoroAppSidebar({
         updatedSelectedItemId={updatedSelectedItemId}
         updatedBucketsCollapsed={updatedBucketCollapseState}
         updatedShowFullBuckets={updatedBucketShowFullState}
-        updatedIsLoading={organizeMode === 'updated' && sessionsListLoading}
+        updatedIsLoading={organizeMode !== 'workspace' && sessionsListLoading}
         onOrganizeModeChange={handleOrganizeModeChange}
         showUpdatedProjectNames={showUpdatedProjectNames}
         onShowUpdatedProjectNamesChange={handleShowUpdatedProjectNamesChange}
         showBranchNames={showBranchNames}
         onShowBranchNamesChange={handleShowBranchNamesChange}
+        hideEmptyProjects={hideEmptyProjects}
+        onHideEmptyProjectsChange={handleHideEmptyProjectsChange}
         onChatScopeChange={handleChatScopeChanged}
         onSelectUpdatedItem={handleSelectUpdatedItem}
         onTogglePinnedSection={handleTogglePinnedSection}
@@ -4397,6 +4420,7 @@ export function LoroAppSidebar({
         onFeedbackClicked={handleFeedbackClicked}
         onBugReportClicked={canReportBug ? handleBugReportClicked : undefined}
         onSettingsClicked={handleSettingsClicked}
+        onSettingsIntent={() => preloadSettings()}
         settingsIcon={<E2eeSettingsIcon />}
         onInviteClicked={handleInviteClicked}
         onLinkRepoClicked={handleLinkRepoClicked}

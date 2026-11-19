@@ -72,6 +72,31 @@ Decisions:
 [display preference](../../../../.agents/notes/implemented/feature/2026-09-20-sidebar-updated-project-display-preference.md),
 and [details group](../../../../.agents/notes/implemented/feature/2026-10-18-sidebar-row-details-group.md).
 
+In the Project (Workspace) view the Details group adds a third switch, `Hide
+Empty Projects` (`sidebarHideEmptyProjectsAtom`, on by default). On, a project
+is listed only while it has Session rows after pinned-tree separation and opener
+placement, and an emptied machine section is hidden unless it still holds a
+multi-repository project with conversations; off, every registered project under
+each machine stays listed. The
+Remote LAN folders and bound project groups remain reachable before their first
+conversation even when empty local projects are hidden. The selection lives in `selectVisibleLocalProjectSections`
+(`lib/project-group-placement.ts`). Multi-repository projects that run anywhere
+sit with the GitHub repositories and stay listed only while they have
+conversations, whatever the switch says.
+
+Status organize mode lists the same rows as Updated, split into the native mobile
+Home's status groups in its order: Needs you, Just finished, Open pull requests,
+Running, Idle. `lib/sidebar-status-group.ts` classifies each row through the new-chat
+page's `homeNowReason` (`lib/home-now.ts`), so a session reads the same reason on
+both surfaces; rows that page leaves out (quiet for days, merged or closed PR) are
+Idle here. A conversation whose latest turn failed is under Needs you unless it is
+working again: the CLI writes the failed user turn into `SessionMeta.lastFailedUserMsgId`
+together with `lastHandledUserMsgId`, and `hasFailedLatestTurn` reads it only while the
+two match, so a later handled or canceled turn retires it without another write. Child
+Tabs roll their failure into the row. `buildSidebarUpdatedBuckets` feeds both the renderer and keyboard
+navigation, empty groups are skipped, and only Idle folds behind Show all. Group
+collapse and Show all share Updated's persisted per-bucket maps, keyed by group.
+
 ## Entry points and layout
 
 - Remote Add folder: `local-projects/use-remote-directory-picker.ts` owns navigation,

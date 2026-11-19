@@ -6,7 +6,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
 ## `agent-client.ts`
 
 - Consume Core extensions via `agentCapabilities._meta.lody`, session `_meta.lody`, and
-  `_lody/...`. Provider compatibility stays in `lody-acp-extension.ts` and `antigravity-quota.ts`; consumers stay neutral.
+  `_lody/...`. Provider compatibility stays in `lody-acp-extension.ts` and `antigravity-*.ts`; consumers stay neutral.
 - Grok Always Approve uses `allow_once`, never lasting grants; pending calls drain through
   the durable permission flow on accepted config changes. Questions remain interactive.
 - Builtin Grok must default `clientCapabilities.terminal` to false.
@@ -74,6 +74,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
   Tar/ZIP use the shared abort signal. ZIP cancellation destroys yauzl, joins relay/output
   and awaits the reader's real close/error before cleanup, never the destroyed endpoint.
 
+- Antigravity follows its [runtime contract](README.md#managed-antigravity).
 - Builtin Dimcode is user-installed.
 - `npx-cache.ts`: ACP `npx` spawns force `npm_config_cache`/`NPM_CONFIG_CACHE` to the active
   profile's `npm-cache`. Automatic `_npx`/`_cacache` cleanup is allowed ONLY for that Lody-owned
@@ -88,7 +89,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
 - Claude capability refresh runs its native status command first so missing credentials surface
   as structured auth-required state before adapter startup; explicit environment-authenticated
   paths bypass it.
-- Registry/custom/Devin authentication has no terminal capability; run only agent methods.
+- Protocol authentication, including builtin Antigravity, has no terminal capability; run only agent methods.
   Reject env_var; terminal auth requires an interactive Machine RPC bridge. Keep methods
   and elicitations on original request, with one pending interaction and reply ids.
   Remote authentication-input is encrypted. Bound form schemes, sizes, ids, labels,
@@ -109,7 +110,7 @@ Read [README](README.md), context/acp-protocol.md and context/acp-agent-edit-evi
 
 - Core sessionTitle v1 owns post-init titles except Codex, whose titles/settings Lody
   owns. Accept generated/explicit, never fallback/unset. Untagged titles: legacy managed
-  Claude/Grok without overrides; fork registry Antigravity. Strip internal instructions;
+  Claude/Grok without overrides; builtin and fork registry Antigravity. Strip internal instructions;
   keep user titles.
   Isolated generation accepts absent phases, prefers final answers, discards commentary/
   pre-prompt text and sanitizes output. Follow [title rules](README.md#session-titles).

@@ -45,10 +45,12 @@ final class AgentProviderEditorController: LodyFormController {
   private let advanced = AgentProviderAdvanced()
   private let testButton = UIButton(type: .system)
   private let authButton = UIButton(type: .system)
+  private let refreshButton = UIButton(type: .system)
   private var operationButtons: [String: UIButton] = [:]
   private let operationStatus = LodyFormGroup.caption()
   private let operationSpinner = UIActivityIndicatorView(style: .medium)
   private var progressObserver: NSObjectProtocol?
+  private var refreshObserver: NSObjectProtocol?
   private var activeOperation: String?
   private var detailLoading = false
   private var detailFailed = false
@@ -57,7 +59,7 @@ final class AgentProviderEditorController: LodyFormController {
   private var busy = false
   private var invalid = false
   private var uncertain = false
-  private let provider = UIButton(type: .system)
+  private let provider = UIButton.lodyFormPicker("provider-type")
   private var commandGroup: LodyFormGroup?
   private lazy var name = LodyFormField(id: "provider-name", label: text("name"), text: item?.name ?? "", limit: 200)
   private lazy var prompt = LodyFormTextView(id: "provider-prompt", label: text("prompt"), text: item?.prompt ?? "", limit: 32000, minHeight: 160)
@@ -97,8 +99,6 @@ final class AgentProviderEditorController: LodyFormController {
     }
     name.clearButtonMode = .whileEditing
     command.clearButtonMode = .whileEditing
-    provider.accessibilityIdentifier = "provider-type"
-    provider.showsMenuAsPrimaryAction = true
     provider.menu = UIMenu(children: catalog.map { option in
       UIAction(title: option.name, state: option.id == selected?.id ? .on : .off) { [weak self] _ in
         guard let self else { return }
@@ -127,7 +127,10 @@ final class AgentProviderEditorController: LodyFormController {
     configureAction(authButton, title: text("signIn"), symbol: "person.badge.key")
     authButton.accessibilityIdentifier = "provider-sign-in"
     authButton.addAction(UIAction { [weak self] _ in self?.authenticate() }, for: .touchUpInside)
-    var actionRows: [UIView] = [testButton, authButton]
+    configureAction(refreshButton, title: text("refreshModels"), symbol: "arrow.clockwise")
+    refreshButton.accessibilityIdentifier = "provider-refresh-models"
+    refreshButton.addAction(UIAction { [weak self] _ in self?.refreshModels() }, for: .touchUpInside)
+    var actionRows: [UIView] = [testButton, refreshButton, authButton]
     let symbols = ["binary-status": "shippingbox", "binary-install": "arrow.down.circle",
                    "pi-extension-scan": "puzzlepiece.extension", "rate-limits-refresh": "gauge.with.dots.needle.33percent"]
     for action in ["binary-status", "binary-install", "pi-extension-scan", "rate-limits-refresh"] {
@@ -164,6 +167,17 @@ final class AgentProviderEditorController: LodyFormController {
         self.operationStatus.text = label
       }
     }
+    refreshObserver = NotificationCenter.default.addObserver(forName: .lodyProviderRefreshProgress, object: nil, queue: .main) { [weak self] notification in
+      guard let progress = notification.object as? RuntimeContract.AgentProviderRefreshProgress else { return }
+      let eventScope = notification.userInfo?["scopeKey"] as? String
+      MainActor.assumeIsolated {
+        guard let self, self.scope.key == self.scopeKey, eventScope == self.scopeKey,
+              self.activeOperation == "refresh-models", self.item?.id == progress.id,
+              self.machine.id == progress.machineId else { return }
+        self.operationStatus.text = String.localizedStringWithFormat(
+          self.text("readingModelOptions"), progress.modelName, progress.index, progress.total)
+      }
+    }
     if item == nil {
       let hint = LodyFormGroup.caption()
       hint.text = text("setupHint")
@@ -193,7 +207,7 @@ final class AgentProviderEditorController: LodyFormController {
     command.isEnabled = editable
     args.isEditable = editable
     provider.isEnabled = editable && item == nil
-    provider.setTitle(selected?.name ?? text("provider"), for: .normal)
+    provider.configuration?.title = selected?.name ?? text("provider")
     providerHeader.update(
       name: name.trimmed.isEmpty ? (selected?.name ?? text("provider")) : name.trimmed,
       detail: [selected?.name ?? "", machine.name.isEmpty ? machine.id : machine.name].filter { !$0.isEmpty }.joined(separator: " · "),
@@ -218,6 +232,9 @@ final class AgentProviderEditorController: LodyFormController {
     authButton.isEnabled = editable && item != nil && advanced.detail?.supportsAuthentication == true
     setRow(authButton, hidden: item == nil || advanced.detail?.supportsAuthentication != true)
     setRow(testButton, hidden: isReadOnly)
+    // Refreshing reads the saved Provider; a draft is tested through Save and test.
+    refreshButton.isEnabled = editable && machine.online && item != nil
+    setRow(refreshButton, hidden: isReadOnly || item == nil)
     commandGroup?.isHidden = selected?.cliType != "custom"
     saveItem.isEnabled = editable && advanced.isValid && selected != nil && !name.trimmed.isEmpty
       && (selected?.cliType != "custom" || !command.trimmed.isEmpty)
@@ -343,6 +360,40 @@ final class AgentProviderEditorController: LodyFormController {
     }
   }
 
+  /// Starts the agent again and switches it through every model, naming each one as its
+  /// options are read. Without the machine capability this is an ordinary refresh.
+  private func refreshModels() {
+    guard refreshButton.isEnabled, !busy, !detailLoading, !detailFailed, !uncertain, !invalid, !isReadOnly,
+          item != nil, scope.key == scopeKey else { return }
+    busy = true
+    activeOperation = "refresh-models"
+    operationStatus.text = text("refreshing")
+    render()
+    var request = target
+    request.readModelOptions = true
+    Task { [weak self, details] in
+      do {
+        let result = try await details.probe(request)
+        guard let self, self.scope.key == self.scopeKey else { return }
+        self.advanced.updateCapabilities(result.capabilities)
+        var message = result.success ? "refreshDone" : "operationFailed"
+        if result.authRequired { message = "authRequired" }
+        self.finishRefresh(self.text(message))
+      } catch {
+        guard let self, self.scope.key == self.scopeKey else { return }
+        self.finishRefresh(self.text("operationUnknown"))
+      }
+    }
+  }
+
+  private func finishRefresh(_ message: String) {
+    busy = false
+    activeOperation = nil
+    operationStatus.text = message
+    render()
+    loadDetail()
+  }
+
   private func operate(_ action: String) {
     guard operationButtons[action]?.isEnabled == true, !busy, !detailLoading, !detailFailed, !uncertain, !invalid, !isReadOnly, scope.key == scopeKey else { return }
     busy = true
@@ -376,6 +427,7 @@ final class AgentProviderEditorController: LodyFormController {
 
   isolated deinit {
     if let progressObserver { NotificationCenter.default.removeObserver(progressObserver) }
+    if let refreshObserver { NotificationCenter.default.removeObserver(refreshObserver) }
   }
 
   private func authenticate() {

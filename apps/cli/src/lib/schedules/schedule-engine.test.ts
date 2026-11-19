@@ -1,31 +1,56 @@
+import {
+  getSessionRoomId,
+  ScheduleRepository,
+  sessionDocSchema,
+  type ScheduleDefinition,
+  type ScheduleRepositoryPort,
+  type SessionHistoryInput,
+} from '@lody/shared';
 import { LoroDoc } from 'loro-crdt';
-import { ScheduleRepository, type ScheduleRepositoryPort } from '@lody/shared';
-import { isScheduledMessageFile } from './scheduled-message-files';
+import { Mirror } from 'loro-mirror';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { v5 as uuidv5 } from 'uuid';
+import { withHistoryPort } from '../../../tests/history-port-fixture';
+import {
+  commitPreparedSessionDispatch,
+  isPreparedSessionDispatched,
+  materializePreparedSessionInput,
+  type PreparedSessionInput,
+} from '../prepared-session-input';
+import {
+  buildScheduleRunTarget,
+  buildScheduleSessionCreateOptions,
+  resolveScheduleMcpSelection,
+  scheduleRequiredLocalProjectId,
+} from './schedule-run-preparation';
+import { type ScheduleRun } from './schedule-store';
+import { isScheduledMessageFile } from './scheduled-message-files';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
 import {
   buildScheduleRegistryRow,
-  scheduleOwnSessionId,
-  type SessionId,
-  type SessionMeta,
   ScheduleDefinitionSchema,
+  scheduleOwnSessionId,
   zonedLocalInputToInstant,
   type ScheduleDocument,
+  type SessionId,
+  type SessionMeta,
 } from '@lody/shared';
-import { findNextDispatchableUserTurn } from '@/session/session-dispatch-logic';
-import { ScheduleStore } from './schedule-store';
-import { isScheduleRunFinished } from './schedule-workspace';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LoroDocumentManager } from '../loro/doc';
-import {
-  resolveScheduleDestinationSession,
-  type DestinationSessionState,
-} from './schedule-run-preparation';
 import {
   ScheduleConfigurationError,
   ScheduleEngine,
   type ScheduleEnginePorts,
 } from './schedule-engine';
+import {
+  resolveScheduleDestinationSession,
+  type DestinationSessionState,
+} from './schedule-run-preparation';
+import { ScheduleStore } from './schedule-store';
+import { isScheduleRunFinished } from './schedule-workspace';
 
 const document = (): ScheduleDocument => ({
   definition: ScheduleDefinitionSchema.parse({
@@ -389,16 +414,11 @@ describe('One-time complete messages', () => {
     d.message = { inputBlocks: [{ type: 'text', text: 'Frozen message' }], mcpServerIds: [] };
     return d;
   }
-  function legacyQuotaMessage(version = 1) {
+  function continuationMessage() {
     const d = message();
     const reset = 59_000;
     d.definition.scheduleId = uuidv5(
-      JSON.stringify([
-        version === 1 ? 'claude-quota-continue' : 'claude-quota-continue-v2',
-        'workspace',
-        'chat',
-        reset,
-      ]),
+      JSON.stringify(['continuation', 'workspace', 'chat', reset]),
       uuidv5.URL
     );
     d.definition.activationId = uuidv5('activation', d.definition.scheduleId);
@@ -407,28 +427,8 @@ describe('One-time complete messages', () => {
     d.message = { inputBlocks: [{ type: 'text', text: 'continue' }] };
     return d;
   }
-  it.each([1, 2])(
-    'drops a version %s unassociated quota reservation without delivering it',
-    async (version) => {
-      const d = legacyQuotaMessage(version);
-      const h = harness(d);
-      await h.engine.evaluate();
-      expect(h.store.history('workspace', d.definition.scheduleId)).toMatchObject([
-        { state: 'skipped', errorCode: 'LEGACY_QUOTA_UNASSOCIATED' },
-      ]);
-      expect(h.ports.dispatch).not.toHaveBeenCalled();
-      expect(h.ports.publish).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          messageState: 'failed',
-          blockedCode: 'LEGACY_QUOTA_UNASSOCIATED',
-        })
-      );
-      await new ScheduleEngine(h.ports).evaluate();
-      expect(h.ports.dispatch).not.toHaveBeenCalled();
-    }
-  );
-  it('preserves a legacy reservation with an already prepared or delivered input', async () => {
-    const d = legacyQuotaMessage();
+  it('dispatches an already prepared continuation input', async () => {
+    const d = continuationMessage();
     const h = harness(d);
     h.store.plan('workspace', d, buildScheduleRegistryRow(d).definitionFingerprint, 60_000);
     const run = h.store.unfinished('workspace')[0];
@@ -443,8 +443,8 @@ describe('One-time complete messages', () => {
     expect(h.store.history('workspace', d.definition.scheduleId)[0]?.state).toBe('dispatched');
     expect(h.ports.dispatch).toHaveBeenCalledOnce();
   });
-  it('reconciles an already delivered legacy input without dispatching again', async () => {
-    const d = legacyQuotaMessage();
+  it('reconciles an already delivered continuation input without dispatching again', async () => {
+    const d = continuationMessage();
     const h = harness(d);
     h.store.plan('workspace', d, buildScheduleRegistryRow(d).definitionFingerprint, 60_000);
     const run = h.store.unfinished('workspace')[0];
@@ -459,7 +459,7 @@ describe('One-time complete messages', () => {
     expect(h.ports.dispatch).not.toHaveBeenCalled();
   });
   it('keeps ordinary and edited scheduled messages', async () => {
-    const d = legacyQuotaMessage();
+    const d = continuationMessage();
     d.prompt = 'different message';
     d.message = { inputBlocks: [{ type: 'text', text: 'different message' }] };
     const h = harness(d);
@@ -785,4 +785,263 @@ describe('Frozen schedule destinations', () => {
       });
     }
   );
+});
+
+describe('Schedule handoff integration', () => {
+  /** Selectors that would put a scheduled run inside a working directory. */
+  const WORKSPACE_SELECTORS = ['repo', 'branch', 'localProject', 'worktree'] as const;
+
+  const definition = (project?: ScheduleDefinition['project']): ScheduleDefinition =>
+    ScheduleDefinitionSchema.parse({
+      scheduleId: 'chat',
+      title: 'Morning check-in',
+      ownerId: 'owner',
+      machineId: 'machine',
+      enabled: true,
+      activationId: 'activation',
+      activeFrom: 0,
+      trigger: { kind: 'once', at: '1970-01-01T00:01:00Z' },
+      misfirePolicy: { kind: 'run_once' },
+      overlapPolicy: 'queue_one',
+      agent: { agentConfigId: 'agent', modeId: 'safe' },
+      ...(project ? { project } : {}),
+      retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+      createdAt: 0,
+      updatedAt: 0,
+      createdBy: 'owner',
+    });
+
+  /**
+   * A chat-only schedule, driven through the real engine, ledger and Loro history.
+   *
+   * The point of running the whole handoff rather than only the pure builders is
+   * that "no project" has to survive the part that actually places a run: the
+   * options handed to `prepareSessionInput`, the resolved target, and the durable
+   * user turn that the ordinary dispatch watcher then owns.
+   */
+  describe('Chat-only schedule handoff', () => {
+    const run = async (
+      project: ScheduleDefinition['project'] | undefined,
+      body: (context: {
+        options: Record<string, unknown>[];
+        targets: { project?: unknown }[];
+        history: SessionHistoryInput[];
+        meta: SessionMeta | undefined;
+        sessionId: string;
+        userTurnId: string;
+        state: string | undefined;
+      }) => void,
+      selection: Pick<ScheduleDefinition, 'mcpServerIds' | 'destination'> = {
+        destination: { kind: 'new_session' },
+      }
+    ) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), 'lody-schedule-chat-'));
+      const store = new ScheduleStore<PreparedSessionInput>(path.join(directory, 'runs.sqlite'));
+      const metas = new Map<string, SessionMeta>();
+      const mirrors = new Map<string, Mirror<typeof sessionDocSchema>>();
+      const manager = {
+        isEncryptedWorkspace: () => false,
+        repo: {
+          getDocMeta: async (id: string) => (metas.has(id) ? { meta: metas.get(id) } : undefined),
+          upsertDocMeta: async (id: string, patch: Partial<SessionMeta>) => {
+            metas.set(id, { ...metas.get(id), ...patch } as SessionMeta);
+          },
+          flush: async () => {},
+          openFlockDoc: async () => ({
+            flock: {
+              scan: () => [
+                {
+                  key: ['mcpServer', 'default'],
+                  value: {
+                    id: 'default',
+                    name: 'Default',
+                    transport: 'stdio',
+                    enabledByDefault: true,
+                    createdAt: 0,
+                    updatedAt: 0,
+                  },
+                },
+                {
+                  key: ['mcpServer', 'opt-in'],
+                  value: {
+                    id: 'opt-in',
+                    name: 'Optional',
+                    transport: 'stdio',
+                    enabledByDefault: false,
+                    createdAt: 0,
+                    updatedAt: 0,
+                  },
+                },
+                {
+                  key: ['mcpServer', 'unset'],
+                  value: {
+                    id: 'unset',
+                    name: 'Unset',
+                    transport: 'stdio',
+                    createdAt: 0,
+                    updatedAt: 0,
+                  },
+                },
+              ],
+            },
+          }),
+        },
+        getOrCreateSessionDoc: async (id: string) => {
+          if (!mirrors.has(id))
+            mirrors.set(
+              id,
+              new Mirror({
+                doc: new LoroDoc(),
+                schema: sessionDocSchema,
+                initialState: { history: [] },
+              })
+            );
+          const mirror = mirrors.get(id)!;
+          return withHistoryPort({
+            getHistory: () => mirror.getState().history,
+            updateHistory: async (update: (h: SessionHistoryInput[]) => SessionHistoryInput[]) => {
+              mirror.setState({ ...mirror.getState(), history: update(mirror.getState().history) });
+            },
+          });
+        },
+      } as unknown as LoroDocumentManager;
+
+      const document: ScheduleDocument = {
+        definition: { ...definition(project), ...selection },
+        prompt: 'Say good morning.',
+        timeline: [],
+      };
+      const options: Record<string, unknown>[] = [];
+      const targets: { project?: unknown }[] = [];
+      let identity = { sessionId: '', userTurnId: '' };
+
+      const ports: ScheduleEnginePorts<PreparedSessionInput> = {
+        workspaceId: 'workspace',
+        machineId: 'machine',
+        userId: 'owner',
+        store,
+        now: () => 60_000,
+        ready: () => true,
+        disabled: () => false,
+        list: async () => [buildScheduleRegistryRow(document)],
+        read: async () => document,
+        validateTarget: async () => {
+          // Same guard the workspace runs: nothing to look up without a project.
+          expect(scheduleRequiredLocalProjectId(document.definition.project)).toBe(
+            project?.kind === 'local' ? project.localProjectId : undefined
+          );
+        },
+        prepare: async (scheduled: ScheduleRun<PreparedSessionInput>) => {
+          // The real builders, so this asserts what reaches session preparation.
+          options.push(
+            buildScheduleSessionCreateOptions({
+              sessionId: scheduled.sessionId as PreparedSessionInput['sessionId'],
+              userTurnId: scheduled.userTurnId,
+              agentConfigId: scheduled.definition.agent.agentConfigId,
+              title: scheduled.definition.title,
+              project: scheduled.definition.project,
+            })
+          );
+          targets.push(
+            buildScheduleRunTarget({
+              targetMachine: { id: 'machine' } as never,
+              agentConfig: { id: 'agent' } as never,
+              project: scheduled.definition.project,
+            })
+          );
+          identity = { sessionId: scheduled.sessionId, userTurnId: scheduled.userTurnId };
+          const prepared = {
+            sessionId: scheduled.sessionId as PreparedSessionInput['sessionId'],
+            meta: {
+              id: scheduled.sessionId,
+              machineId: 'machine',
+              userId: 'owner',
+              agentConfigId: 'agent',
+              title: scheduled.definition.title,
+              scheduleId: scheduled.scheduleId,
+            } as SessionMeta,
+            userTurn: {
+              id: scheduled.userTurnId,
+              role: 'user',
+              status: 'prepared',
+              read: true,
+              timestamp: new Date(60_000).toISOString(),
+              items: [{ type: 'text', text: scheduled.prompt }],
+              inputConfig: {
+                mcpServerIds: await resolveScheduleMcpSelection({
+                  manager,
+                  workspaceId: 'workspace' as never,
+                  localOnly: true,
+                  definition: scheduled.definition,
+                  sessionId: scheduled.sessionId as PreparedSessionInput['sessionId'],
+                }),
+              },
+              fileDiff: [],
+            },
+          } satisfies PreparedSessionInput;
+          return prepared;
+        },
+        materialize: (prepared) => materializePreparedSessionInput(manager, prepared),
+        isDispatched: (prepared) => isPreparedSessionDispatched(manager, prepared),
+        dispatch: (prepared) => commitPreparedSessionDispatch(manager, prepared),
+        isFinished: async () => false,
+        publish: async () => {},
+        onError: (error) => {
+          throw error;
+        },
+      };
+
+      const engine = new ScheduleEngine(ports);
+      try {
+        await engine.evaluate();
+        const ledger = store.unfinished('workspace')[0];
+        body({
+          options,
+          targets,
+          history: mirrors.get(identity.sessionId)?.getState().history ?? [],
+          meta: metas.get(getSessionRoomId(identity.sessionId as never)),
+          sessionId: identity.sessionId,
+          userTurnId: identity.userTurnId,
+          state: ledger?.state,
+        });
+      } finally {
+        await engine.stop();
+        store.close();
+        for (const mirror of mirrors.values()) mirror.dispose();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    };
+
+    it.each(['new_session', 'own_session'] as const)(
+      'freezes explicit, default and empty MCP selections for %s',
+      async (kind) => {
+        const destination = kind === 'own_session' ? { kind, epoch: 0 } : { kind };
+        for (const [mcpServerIds, expected] of [
+          [undefined, ['default']],
+          [['opt-in'], ['opt-in']],
+          [[], []],
+        ] as const) {
+          await run(
+            undefined,
+            (context) => {
+              const turn = findNextDispatchableUserTurn(context.history, context.meta!);
+              expect(turn?.inputConfig?.mcpServerIds).toEqual(expected);
+              expect(context.state).toBe('dispatched');
+            },
+            {
+              destination,
+              ...(mcpServerIds !== undefined ? { mcpServerIds: [...mcpServerIds] } : {}),
+            }
+          );
+        }
+      }
+    );
+  });
+
+  /**
+   * An owned chat: every run of the schedule is a new turn in ONE Session. The
+   * ids come from the same derivation the engine uses, through the real ledger
+   * and Loro history, so this fails if a retry or a second run ever creates a
+   * second chat.
+   */
 });

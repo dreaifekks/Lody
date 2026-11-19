@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -327,14 +325,61 @@ describe('MentionTwoLevelMenuBody', () => {
     expect(latest.mentions).toEqual([{ value: '#3312', start: 0, end: 5, kind: 'issue' }]);
   });
 
-  it('groups results by category when a bare term is typed', () => {
+  it('shows matching results with their source when a bare term is typed', () => {
     render('@3312');
 
     const titles = rowTitles();
-    expect(titles).toContain('Broken menu#3312');
+    expect(titles).toContain('Broken menuIssues · #3312');
     // Only the issue category matched, so the file group is absent.
     expect(titles.some((title) => title.startsWith('src/'))).toBe(false);
   });
+
+  it.each(['click', 'Enter'] as const)(
+    'puts Roles before cross-source matches and category links, then selects by %s',
+    (action) => {
+      const categories = makeCategories();
+      categories[0]!.getCandidates = () => [
+        {
+          value: 'src/review.md',
+          label: 'src/review.md',
+          title: 'review.md',
+          insertText: '@src/review.md',
+          kind: 'file',
+          icon: 'file',
+        },
+      ];
+      categories.push({
+        id: 'agent_role',
+        namespace: 'role',
+        label: 'Review Roles',
+        icon: 'agent_role',
+        status: 'ready',
+        getCandidates: () => [
+          {
+            value: 'reviewer-role',
+            label: 'Reviewer',
+            title: 'Reviewer',
+            insertText: '@Reviewer',
+            kind: 'agent_role',
+            icon: 'agent_role',
+          },
+        ],
+      });
+      const input = render('@review', categories);
+      expect(rowTitles()).toEqual(['ReviewerReview Roles', 'review.mdFiles', 'Review Roles']);
+      act(() => {
+        if (action === 'click') {
+          container?.querySelector<HTMLElement>('[data-slot="mention-item"]')?.click();
+        } else {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }
+      });
+      expect(latest.inputValue).toBe('@Reviewer ');
+      expect(latest.mentions).toEqual([
+        { value: 'reviewer-role', start: 0, end: 9, kind: 'agent_role' },
+      ]);
+    }
+  );
 
   it('renders a typed slash query as ranked rows with their sources', () => {
     const shortcuts: MentionCategory = {
@@ -440,7 +485,7 @@ describe('MentionTwoLevelMenuBody', () => {
       const input = container ? composerIn(container) : null;
       const rows = container?.querySelectorAll<HTMLElement>('[data-slot="mention-item"]');
       const issue = rows?.[3];
-      const role = rows?.[4];
+      const role = rows?.[0];
       if (!input || !issue || !role) throw new Error('Expected issue and Role candidates');
       const scroller = role.parentElement;
       if (!scroller) throw new Error('Expected candidate scroller');
@@ -451,7 +496,7 @@ describe('MentionTwoLevelMenuBody', () => {
         act(() => {
           row.dispatchEvent(new PointerEvent('pointermove', { bubbles: true }));
         });
-        const currentRole = container?.querySelectorAll('[data-slot="mention-item"]')[4];
+        const currentRole = container?.querySelectorAll('[data-slot="mention-item"]')[0];
         expect(currentRole?.parentElement?.scrollTop).toBe(240);
         expect(currentRole).toBe(role);
         expect(row.hasAttribute('data-highlighted')).toBe(true);
@@ -638,7 +683,7 @@ describe('typing a mention into the input', () => {
     press('Enter');
     expect(latest.inputValue).toBe('#3312 ');
     type('@32');
-    expect(rows()).toEqual(['Slow switch#3298']);
+    expect(rows()).toEqual(['Slow switchIssues · #3298']);
     press('Enter');
     // Two mentions, each from its own trigger.
     expect(latest.inputValue).toBe('#3312 #3298 ');
@@ -663,7 +708,7 @@ describe('typing a mention into the input', () => {
     press('Backspace');
     act(() => {
       const element = input();
-        element.edit('#3312');
+      element.edit('#3312');
       element.setSelectionRange(5, 5);
       element.dispatchEvent(new Event('input', { bubbles: true }));
     });

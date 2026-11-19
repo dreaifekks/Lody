@@ -1,6 +1,10 @@
 import { LODY_EXTENSION_METHODS } from 'acp-extension-core';
 import { parseLodyExtensionCapabilities, parseRateLimitsSnapshot } from './lody-acp-extension';
-import { createAntigravityQuotaReader, isAntigravityRegistryAgent } from './antigravity-quota';
+import {
+  parseAntigravityCliQuota,
+  isAntigravityBuiltinAgent,
+  isAntigravityRegistryAgent,
+} from './antigravity-quota';
 import {
   createSorbetAcpCustomProvider,
   deleteSorbetAcpCustomProvider,
@@ -31,6 +35,8 @@ import { z } from 'zod';
 import type { Logger } from '@/utils/logger';
 import { formatErrorMessage } from '@/utils/format-error';
 import {
+  ProcessCleanupFailed,
+  runCommandOk,
   runPromiseSquashedLegacy,
   startProcessLegacy,
   terminateChildTreeLegacy,
@@ -319,6 +325,8 @@ export type StartLocalAcpAgentOptions = {
   /** Set to false to disable terminal capability advertisement. Defaults to true. */
   terminalEnabled?: boolean;
   discoverAuthenticationMethods?: boolean;
+  onUsageUpdate?: CreateAcpClientOptions['onUsageUpdate'];
+  onContextWindowUsageUpdate?: CreateAcpClientOptions['onContextWindowUsageUpdate'];
   onUpdateMessage(message: AcpSessionNotification): void;
   onRequestPermission(
     requestId: string,
@@ -397,15 +405,11 @@ export class AcpQuotaCleanupError extends Error {
   }
 }
 
-export async function initializeAndReadAcpRateLimits(
-  stream: Stream,
-  agent?: { cliType: AgentConfigCliType; agentType: string; workdir: string }
-) {
-  const antigravity = createAntigravityQuotaReader();
+export async function initializeAndReadAcpRateLimits(stream: Stream) {
   const connection = new ClientSideConnection(
     () => ({
       requestPermission: async () => ({ outcome: { outcome: 'cancelled' as const } }),
-      sessionUpdate: antigravity.update,
+      sessionUpdate: async () => {},
     }),
     stream
   );
@@ -415,13 +419,6 @@ export async function initializeAndReadAcpRateLimits(
   });
   const capabilities = parseLodyExtensionCapabilities(initialized.agentCapabilities?._meta);
   if (capabilities.rateLimits?.query !== true) {
-    if (
-      agent &&
-      isAntigravityRegistryAgent(agent) &&
-      initialized.agentInfo?.name === 'antigravity-acp'
-    ) {
-      return antigravity.read(connection, agent.workdir);
-    }
     throw new Error('Rate-limit query unsupported');
   }
   return parseRateLimitsSnapshot(
@@ -590,60 +587,74 @@ export async function runLocalSorbetCredentials(
   }
 }
 
-/** Core queries need no session; official Antigravity /usage needs an isolated scratch session. */
+/** Core queries and agy print-mode quota reads never start a model session. */
 export async function queryLocalAcpRateLimits(options: StartLocalAcpAgentOptions) {
-  // This fork's registry entry launches agy, which has no /usage command.
-  // lib/antigravity-quota owns its Cloud Code quota reads without starting ACP.
-  if (isAntigravityRegistryAgent(options)) throw new Error('Antigravity quota uses Cloud Code');
-  const workdir = isAntigravityRegistryAgent(options)
-    ? fs.mkdtempSync(path.join(os.tmpdir(), 'lody-antigravity-quota-'))
-    : undefined;
-  let retainWorkdir = false;
-  try {
-    const started = await startLocalAcpProtocol(
-      workdir ? { ...options, workdir } : options,
-      async ({ stream, startupAbort }) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const snapshot = await Promise.race([
-            initializeAndReadAcpRateLimits(stream, {
-              ...options,
-              workdir: workdir ?? options.workdir,
-            }),
-            ...(startupAbort ? [startupAbort] : []),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error('Rate-limit query timed out')), 20_000);
-            }),
-          ]);
-          return { snapshot };
-        } finally {
-          clearTimeout(timer);
-        }
-      },
-      true
+  if (isAntigravityBuiltinAgent(options) || isAntigravityRegistryAgent(options)) {
+    // Never drop account-selecting ACP arguments and accidentally read another account.
+    if (options.extraArgs?.length || options.magpieGatewayUrl)
+      throw new Error('Antigravity quota is unavailable for custom launch arguments');
+    const launch = await resolveACPProcessLaunchAsync({
+      ...options,
+      onManagedRuntimeProgress: options.onManagedRuntimeProgress,
+    });
+    const env = withoutElectronBootstrapCredentials(
+      mergeACPProcessEnv(
+        launch,
+        mergeLoginShellEnv(options.env ?? process.env, await getLoginShellEnvLegacy())
+      )
     );
-    try {
-      await terminateAcpProcessTree(started.agentProcess, {
-        logger: options.logger,
-        sessionLabel: 'provider-rate-limits',
-        exitTimeoutMs: 3000,
-      });
-    } catch (cause) {
-      throw new AcpQuotaCleanupError(started.agentProcess, cause);
-    }
-    return started.snapshot;
-  } catch (cause) {
-    retainWorkdir = cause instanceof AcpQuotaCleanupError;
-    throw cause;
-  } finally {
-    if (workdir && !retainWorkdir) {
-      try {
-        fs.rmSync(workdir, { recursive: true, force: true });
-      } catch {
-        /* best effort */
-      }
-    }
+    let quotaChild: ChildProcess | undefined;
+    const output = await runPromiseSquashedLegacy(
+      runCommandOk({
+        command: launch.command,
+        args: ['--print', '/usage', '--output-format', 'json'],
+        cwd: os.tmpdir(),
+        env,
+        timeout: 20_000,
+        maxOutputBytes: 65_536,
+        onSpawned: (child) => {
+          quotaChild = child;
+        },
+      }).pipe(
+        Effect.provide(platformLayer(withSpawn(options.spawnImpl, { logger: options.logger })))
+      ),
+      { signal: options.signal }
+    ).catch((cause: unknown) => {
+      if (cause instanceof ProcessCleanupFailed && quotaChild)
+        throw new AcpQuotaCleanupError(quotaChild, cause);
+      throw cause;
+    });
+    return parseAntigravityCliQuota(JSON.parse(output.stdout.toString('utf8')));
   }
+  const started = await startLocalAcpProtocol(
+    options,
+    async ({ stream, startupAbort }) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const snapshot = await Promise.race([
+          initializeAndReadAcpRateLimits(stream),
+          ...(startupAbort ? [startupAbort] : []),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Rate-limit query timed out')), 20_000);
+          }),
+        ]);
+        return { snapshot };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    true
+  );
+  try {
+    await terminateAcpProcessTree(started.agentProcess, {
+      logger: options.logger,
+      sessionLabel: 'provider-rate-limits',
+      exitTimeoutMs: 3000,
+    });
+  } catch (cause) {
+    throw new AcpQuotaCleanupError(started.agentProcess, cause);
+  }
+  return started.snapshot;
 }
 
 /** Complete builtin DSH runtime selection after each caller's environment merge. */
@@ -934,6 +945,8 @@ async function startLocalAcpProtocol<T>(
         launcher,
         terminalEnabled: options.terminalEnabled,
         discoverAuthenticationMethods: options.discoverAuthenticationMethods,
+        onUsageUpdate: options.onUsageUpdate,
+        onContextWindowUsageUpdate: options.onContextWindowUsageUpdate,
         onUpdateMessage: options.onUpdateMessage,
         onRequestPermission: options.onRequestPermission,
         startupTimeouts,

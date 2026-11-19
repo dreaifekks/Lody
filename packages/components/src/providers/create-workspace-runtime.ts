@@ -1,3 +1,4 @@
+import { streamsSnapshotCodec } from '@lody/shared/streams-snapshot-codec';
 import {
   MachineAcpAuthenticateResponseSchema,
   MachineAcpAuthenticationProgressMessageSchema,
@@ -21,7 +22,6 @@ import {
 import type { AgentConfigId, MachineProviderRateLimitsRefreshResponse } from '@lody/shared';
 import { createWorkspacePendingSends } from './workspace-pending-sends';
 import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
-import { migrateLegacySessionSends } from '../lib/legacy-session-send-migration';
 import { createSessionSendResources } from '@/lib/session-send-resources';
 import { waitForScheduleWriteSync, withScheduleWrite } from './schedule-write-sync';
 import {
@@ -51,6 +51,7 @@ import {
   type MachineMeta,
   type MachineProtocolCapabilities,
   negotiatedAcpCapabilitiesRefreshForce,
+  negotiatedAcpModelOptionsRead,
 } from '@lody/shared';
 import {
   LoroRepo,
@@ -123,12 +124,10 @@ import {
   getServerNow,
   collectOnlineMachineIdsFromPresence,
   previewVisualCommentDocSchema,
-  streamsSnapshotCodec,
   base64ToBytes,
   parseLodyPresenceStates,
   LODY_PRESENCE_TTL_MS,
   type LodyPresenceStateMap,
-  type LoroStreamsTokenProviderEvent,
   type SyncReason,
   ACP_CAPABILITIES_REFRESH_CLIENT_BACKSTOP_MS,
 } from '@lody/shared';
@@ -136,6 +135,7 @@ import { LocalLoroTransportAdapter } from '@lody/shared/local-loro-transport';
 import { clientLossEffects } from '@/lib/e2ee-client-loss-effects';
 import type { ElectronCliState, WorkspaceId } from '@lody/shared';
 import { createDirectWorkspaceWriter } from './workspace-writer-impl';
+import { logTokenProviderEvent } from './loro-streams-token-diagnostics';
 import {
   createConversationSession,
   type ConversationSessionDataFactory,
@@ -183,6 +183,7 @@ import { createResilientRemoteCursorStore } from './resilient-remote-cursor-stor
 import {
   createWorkspaceStreamsTransport,
   getWorkspaceMetaStreamUrl,
+  getWorkspaceDocStreamUrl,
 } from './workspace-streams-transport';
 import { scheduleAfterStartupNavigationCooldown } from './startup-network-idle';
 import { logCodeCollabDebug } from '@/lib/code-collab-debug';
@@ -192,7 +193,8 @@ import {
   type EagerSyncHighWaterCache,
 } from '@/lib/eager-sync-high-water-cache';
 import { createEagerSyncWorkerClient } from './eager-sync-worker-client';
-import { readEagerSyncSnapshot } from './eager-sync-snapshot-cache';
+import { readEagerSyncSnapshot, type EagerSyncSnapshot } from './eager-sync-snapshot-cache';
+import { adoptEagerSyncCheckpoint } from './eager-sync-checkpoint';
 import { isRemoteCursorDebugEnabled } from '@/lib/remote-cursor-debug';
 import { META_REMOTE_CURSOR_BYPASS_STORAGE_KEY_PREFIX } from '@/lib/clear-local-cache';
 import { runStartupAcpCapabilitiesRefresh } from './startup-acp-capabilities-refresh';
@@ -621,6 +623,9 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     resolveRoomTransports: (room) =>
       resolveRoomTransportsImpl?.(room) ?? { transportIds: ['cloud'] },
   });
+  // Bound to this replica's immutable account/workspace/content admission.
+  // Cloud adapter replacement must not renew its incomplete-recovery budget.
+  const incompleteRecoveryScope = {};
   // E2E-only protected transport evidence; absent outside a probe-enabled window.
   const transportEffects = protectedContent ? clientLossEffects(deps.workspaceId) : null;
   transportEffects?.ownerOpened();
@@ -631,8 +636,9 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     transportEffects.streamAttached();
   };
   // Removal stays best-effort for its callers; only a confirmed removal ends the count.
-  const removeCloudTransport = () =>
-    repo.removeTransport('cloud', { close: true }).then(
+  const removeCloudTransport = () => {
+    durableStreamsBaseUrl = null;
+    return repo.removeTransport('cloud', { close: true }).then(
       () => {
         if (!cloudStreamCounted) return;
         cloudStreamCounted = false;
@@ -642,6 +648,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
         if (cloudStreamCounted) transportEffects?.streamRemoved(false);
       }
     );
+  };
   // Liveness invariant: opening a workspace must never wait forever on rebuildable
   // local cache. Loro Streams cursors are checkpoints, not source-of-truth data, so
   // a broken IndexedDB cursor store must fail open and let Streams bootstrap/catch up.
@@ -696,8 +703,6 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   let localPresenceUnsubscribe: (() => void) | null = null;
   let transportAttached = false;
   let authToken: string | null = null;
-  // Assigned once the send resources exist; runs after the first meta sync.
-  let startLegacySendMigration: (() => void) | null = null;
   let resumePendingInputs: (() => void) | null = null;
   let cloudTransportAttached = false;
   let cloudTransportAttachPromise: Promise<void> | null = null;
@@ -716,6 +721,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   let jsonStreamClient: LoroStreamsJsonStreamClient | null = null;
   let machineRpcStreamsClientReady: Promise<LoroStreamsJsonStreamClient> | null = null;
   let transportStreamsBaseUrl: string | null = null;
+  let durableStreamsBaseUrl: string | null = null;
   let detachMetaRoomStatusListener: (() => void) | null = null;
   let metaRoomJoinPromise: Promise<void> | null = null;
   // Meta room health tracker, registered in roomSyncRegistry like every other
@@ -885,18 +891,6 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   let eagerSyncWorkerClient: ReturnType<typeof createEagerSyncWorkerClient> | null = null;
   let cancelDelayedBackgroundSyncStart: (() => void) | null = null;
   let startBackgroundSyncCoordinator: () => void = () => {};
-
-  const logTokenProviderEvent = (event: LoroStreamsTokenProviderEvent): void => {
-    const logContext = {
-      ...event,
-      hasCachedToken: event.type === 'cache-hit',
-    };
-    if (event.type === 'fetch-failure') {
-      console.warn('Loro Streams token provider event', logContext);
-      return;
-    }
-    console.debug('Loro Streams token provider event', logContext);
-  };
 
   const markMetaRemoteCursorBypass = (reason: string): void => {
     // A new suspicion is not covered by a delete that happened before it.
@@ -1459,6 +1453,9 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   };
 
   function handleMachineAcpBinaryProgress(message: MachineAcpBinaryProgressMessage): void {
+    // Model-option reading is progress of one refresh, not runtime install
+    // state: only that refresh's caller shows it, through its own `onProgress`.
+    if (message.status === 'reading-model-options') return;
     const key = getMachineAcpBinaryPendingKey(message.machineId as MachineId, message.agentType);
     machineAcpBinaryProgressSnapshots.set(key, message);
     const listeners = machineAcpBinaryProgressListeners.get(key);
@@ -2553,6 +2550,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       const response = await client.requestMachineAcpCapabilitiesRefresh({
         configId: message.configId,
         force: message.force,
+        ...(message.readModelOptions ? { readModelOptions: true as const } : {}),
         onProgress: (progress) => {
           if (!options.signal?.aborted) {
             handleMachineAcpBinaryProgress({ ...progress, machineId: message.machineId });
@@ -2610,13 +2608,16 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     // negotiated once here rather than per transport. A daemon that did not
     // advertise the capability has no cache to opt out of, so dropping the field
     // still gives every forced caller the probe it asked for.
-    const { force: requestedForce, ...baseMessage } = message;
+    const {
+      force: requestedForce,
+      readModelOptions: requestedModelOptions,
+      ...baseMessage
+    } = message;
+    const protocolCapabilities = await getMachineProtocolCapabilities(message.machineId);
     const negotiatedMessage = {
       ...baseMessage,
-      ...negotiatedAcpCapabilitiesRefreshForce(
-        { protocolCapabilities: await getMachineProtocolCapabilities(message.machineId) },
-        requestedForce
-      ),
+      ...negotiatedAcpCapabilitiesRefreshForce({ protocolCapabilities }, requestedForce),
+      ...negotiatedAcpModelOptionsRead({ protocolCapabilities }, requestedModelOptions),
     };
     if (signal?.aborted) return null;
 
@@ -3545,6 +3546,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       jsonStreamClient = null;
       machineRpcStreamsClientReady = null;
       transportStreamsBaseUrl = null;
+      durableStreamsBaseUrl = null;
     }
     if (invalidateTokenProvider) {
       streamsTokenAbort?.abort();
@@ -3751,8 +3753,10 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
   const createStreamsDurableTransport = (
     activeStreamsTokenProvider: LoroStreamsTokenProviderLegacy,
     streamsBaseUrl: string
-  ): StreamsTransportAdapter =>
-    createWorkspaceStreamsTransport({
+  ): StreamsTransportAdapter => {
+    durableStreamsBaseUrl = streamsBaseUrl;
+    return createWorkspaceStreamsTransport({
+      incompleteRecoveryScope,
       content: deps.content,
       ...(protectedContent ? { bucketId: deps.e2ee?.bucketId() ?? undefined } : {}),
       repo,
@@ -3762,6 +3766,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       streamsBaseUrl,
       shardHostSuffix: getStreamsShardHostSuffixForProvider(activeStreamsTokenProvider),
     });
+  };
 
   const attachCloudMetaHealthTracker = (): void => {
     // The per-transport binding is stable across cloud detach/attach cycles
@@ -4044,6 +4049,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     jsonStreamClient = null;
     machineRpcStreamsClientReady = null;
     transportStreamsBaseUrl = null;
+    durableStreamsBaseUrl = null;
     streamsTokenAbort?.abort();
     streamsTokenAbort = null;
     streamsTokenProvider?.invalidate();
@@ -4137,7 +4143,6 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
           }
           initialMetaSyncCompleted = true;
           initialMetaSyncFailed = false;
-          startLegacySendMigration?.();
           resumePendingInputs?.();
           currentMetaTracker.markFirstSynced();
           // Dual watches its local binding here; its marker is cleared by the
@@ -4863,6 +4868,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
         content: { mode: deps.content.mode },
         workspaceId,
         scope: eagerSyncScope,
+        authorizationScope: deps.accountId ?? `local:${workspaceId}`,
         localConnection: createLocalLoroDataPlaneConnection,
         resolveTransport: async (roomId) => {
           await targetRouter.prepareDocTarget(roomId);
@@ -4876,19 +4882,16 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
           // Match the mounted foreground transport. `transportStreamsBaseUrl`
           // records the endpoint selected when that transport was attached.
           const baseUrl =
-            transportStreamsBaseUrl ?? getStreamsBaseUrlForProvider(streamsTokenProvider);
+            durableStreamsBaseUrl ??
+            transportStreamsBaseUrl ??
+            getStreamsBaseUrlForProvider(streamsTokenProvider);
           return {
             plane: 'cloud',
-            streamId: getLoroStreamIdForDocId(workspaceId, roomId),
-            options: {
-              bucketId: LORO_STREAMS_BUCKET_ID,
-              metaStreamId: getLoroMetaStreamId(workspaceId),
+            streamUrl: getWorkspaceDocStreamUrl(workspaceId, roomId, baseUrl),
+            shardUrls: getLoroStreamsShardUrls(
               baseUrl,
-              shardUrls: getLoroStreamsShardUrls(
-                baseUrl,
-                getStreamsShardHostSuffixForProvider(streamsTokenProvider)
-              ),
-            },
+              getStreamsShardHostSuffixForProvider(streamsTokenProvider)
+            ),
           };
         },
         auth: async (context) => {
@@ -5021,18 +5024,44 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     // of silently constructing a Loro history reader.
     // Merge bootstrap state before Repo adopts a cold document and before its
     // history reader subscribes. Existing live documents retain their identity.
-    const persistedDoc = await openSessionWithSnapshot(repo, roomId, () =>
-      readSessionBootstrapSnapshot(
-        () =>
-          withTimeout(
-            readEagerSyncSnapshot(eagerSyncScope, roomId).then(async (entry) =>
-              entry ? new Uint8Array(await entry.snapshot.arrayBuffer()) : undefined
+    let eagerSnapshot: EagerSyncSnapshot | undefined;
+    const persistedDoc = await openSessionWithSnapshot(
+      repo,
+      roomId,
+      () =>
+        readSessionBootstrapSnapshot(
+          () =>
+            withTimeout(
+              readEagerSyncSnapshot(eagerSyncScope, roomId).then(async (entry) => {
+                if (entry && (entry.scope !== eagerSyncScope || entry.roomId !== roomId))
+                  return undefined;
+                const snapshot = entry
+                  ? new Uint8Array(await entry.snapshot.arrayBuffer())
+                  : undefined;
+                eagerSnapshot = entry;
+                return snapshot;
+              }),
+              1_500,
+              'Eager-sync cache read timed out'
             ),
-            1_500,
-            'Eager-sync cache read timed out'
-          ),
-        () => windowBootstrap?.readDocument(roomId) ?? Promise.resolve(undefined)
-      )
+          () => windowBootstrap?.readDocument(roomId) ?? Promise.resolve(undefined)
+        ),
+      async (doc) => {
+        if (
+          deps.content.mode !== 'plaintext' ||
+          !durableStreamsBaseUrl ||
+          targetRouter.getReadinessTransportForRoom({ kind: 'doc', id: roomId }) !== 'cloud'
+        )
+          return;
+        await adoptEagerSyncCheckpoint(
+          eagerSnapshot,
+          eagerSyncScope,
+          roomId,
+          getWorkspaceDocStreamUrl(workspaceId, roomId, durableStreamsBaseUrl),
+          doc,
+          remoteCursorStore
+        );
+      }
     );
     const sessionDoc = persistedDoc.doc as LoroDoc;
     // Read metadata after the bootstrap merge. Otherwise a cold remote Roost
@@ -5740,6 +5769,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
         },
         registry: roomSyncRegistry,
         prefetcher: {
+          getRetryAt: (sessionId) => eagerSyncWorkerClient?.getRetryAt(getSessionRoomId(sessionId)),
           prefetch: async (sessionId, lastMessageAt, signal) => {
             if (signal.aborted || materializedSessionIds.has(sessionId)) {
               return 'skipped';
@@ -6193,30 +6223,6 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
       });
   };
   if (initialMetaSyncCompleted) resumePendingInputs();
-  if (deps.accountId && !protectedContent) {
-    const accountId = deps.accountId;
-    let migrationStarted = false;
-    startLegacySendMigration = () => {
-      if (migrationStarted || disposePromise) return;
-      migrationStarted = true;
-      void migrateLegacySessionSends({
-        accountId,
-        workspaceId,
-        runtime: {
-          repo,
-          writer: workspaceWriter,
-          sendResources,
-          requestSessionDispatchTurn,
-          requestSessionSteer,
-          contentMode: protectedContent ? 'e2ee' : 'plaintext',
-          attachmentToken: protectedContent ? deps.e2ee?.attachmentToken : undefined,
-        },
-      }).catch((error: unknown) => {
-        console.warn('Legacy pending messages could not be migrated', error);
-      });
-    };
-    if (initialMetaSyncCompleted) startLegacySendMigration();
-  }
   // All acquired connection resources have a close path before startup can fail.
   const abortInitialization = () => {
     void dispose().catch(() => {});

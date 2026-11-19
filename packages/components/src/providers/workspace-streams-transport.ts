@@ -1,3 +1,4 @@
+import { streamsSnapshotCodec } from '@lody/shared/streams-snapshot-codec';
 import type { RemoteCursorStore } from '@loro-dev/streams-crdt';
 import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
 import { RepoSyncError, RepoTransportError } from 'loro-repo';
@@ -7,7 +8,6 @@ import {
   getLoroStreamIdForDocId,
   getLoroStreamsShardUrls,
   LORO_STREAMS_BUCKET_ID,
-  streamsSnapshotCodec,
   type WorkspaceId,
 } from '@lody/shared';
 import { LAN_HUB_SCHEME } from '@lody/shared/platform-kind';
@@ -31,6 +31,8 @@ const { getLoroSyncDiagnostic } = createLoroSyncErrorTools({ RepoSyncError, Repo
 
 export type WorkspaceStreamsTransportOptions = {
   repo: LoroRepo;
+  /** Runtime-owned budget identity; never contains or shares a replica cursor. */
+  incompleteRecoveryScope?: object;
   workspaceId: WorkspaceId;
   /**
    * LoroDoc room cursors only. Meta and named Flock progress is replica-bound:
@@ -74,6 +76,18 @@ function reconnectConfigFor(streamsBaseUrl: string): ReconnectConfig | undefined
   if (!streamsBaseUrl.startsWith(`${LAN_HUB_SCHEME}://`)) return undefined;
   return { initialSyncHardTimeoutMs: LAN_INITIAL_SYNC_HARD_TIMEOUT_MS } as ReconnectConfig;
 }
+/** The document URL built from the same bucket and room mapping as the transport. */
+export const getWorkspaceDocStreamUrl = (
+  workspaceId: WorkspaceId,
+  docId: string,
+  streamsBaseUrl: string,
+  bucketId: string = LORO_STREAMS_BUCKET_ID
+): string =>
+  createLoroStreamUrl({
+    bucketId,
+    streamId: getLoroStreamIdForDocId(workspaceId, docId),
+    baseUrl: streamsBaseUrl,
+  });
 
 /** The renderer's durable Streams transport for one workspace repo. */
 export const createWorkspaceStreamsTransport = (
@@ -98,6 +112,7 @@ export const createWorkspaceStreamsTransport = (
   }
 
   return new StreamsTransportAdapter({
+    incompleteRecoveryScope: options.incompleteRecoveryScope,
     diagnostics: (event) => {
       const diagnostic = getLoroSyncDiagnostic(event);
       if (diagnostic) {

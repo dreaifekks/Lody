@@ -77,6 +77,7 @@ import {
   KeyMailbox,
   EpochStagingStore,
   EpochPublicationSource,
+  InstalledKeyStore,
 } from '@lody/e2ee-core/services';
 import {
   makeOwnedPersonalDeviceHost,
@@ -101,6 +102,8 @@ import type { E2eeWorkspaceRuntime } from '@lody/platform';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { LedgerFeedError } from '@lody/e2ee-core';
 import { toHex, fromHex } from '../../src/bytes';
+import { makeStreamsUpdateBinding } from '@lody/e2ee-core/adapters/loro-streams';
+import { encryptedWorkspaceRoom } from '@lody/shared/workspace-streams-content';
 
 // Synthetic native iroh port: records what the portable host hands it.
 const irohFixture = {
@@ -195,6 +198,36 @@ let failControl = false;
 let stagedGroup: EpochStagedGroup | null = null;
 let failStaging = false;
 let oldSession: typeof session;
+/** The runtime's retained offer after this device starts re-pairing with a new offer. */
+let runtimeRetained: PersonalPairingOffer | undefined;
+/** The installation binding before a replacement, to read its preserved originals. */
+let preservedBinding: import('@lody/e2ee-core/services').ClientCustodyBinding | undefined;
+let genuineCandidateHistory: string | null = null;
+/** Remote deadlines elapse only when a test expires them, never by wall-clock time. */
+const deadlineWaiters = new Set<() => void>();
+let deadlinesExpired = false;
+const deadlineSleep = () =>
+  Effect.callback<void>((resume) => {
+    const finish = () => resume(Effect.void);
+    if (deadlinesExpired) return finish();
+    deadlineWaiters.add(finish);
+    return Effect.sync(() => {
+      deadlineWaiters.delete(finish);
+    });
+  });
+/** A remote call that never answers until the network returns. `landed` appends first. */
+let hang: 'feed' | 'append' | 'append-landed' | 'exchange' | null = null;
+const signal = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+};
+let hangEntered = signal();
+const hung = <A>(): Effect.Effect<A> =>
+  Effect.suspend(() => {
+    hangEntered.resolve();
+    return Effect.never;
+  });
 let otherSession: typeof session;
 let trackNextReader = false;
 /** The synthetic member relay: one waiting applicant at a time, plus a call log. */
@@ -312,6 +345,35 @@ const view = () =>
     })
   );
 const retain = () => localStorage.setItem('remote-records', JSON.stringify(records.map(toHex)));
+/** The owner's other device publishes epoch 1, the next key 0x72 sealed under epoch 0's. */
+const remoteRotation = () =>
+  Effect.gen(function* () {
+    const next = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x72))),
+      genesis = Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash)));
+    const body = Result.getOrThrow(
+      encodeCbor([
+        view().head.toBytes(),
+        owner.publicKey.toBytes(),
+        [
+          7,
+          1,
+          Result.getOrThrow(commitEpochKey(genesis, 1, next)).toBytes(),
+          Result.getOrThrow(
+            sealHistoryPacket({ genesis, epoch: 1, currentKey: next, previousKey: key })
+          ),
+        ],
+      ])
+    );
+    return yield* signLedgerRecord(Result.getOrThrow(prepareLedgerRecord(view(), body)), owner);
+  });
+let raceNextAppend = false;
+const stagingDeletes: { recordHash: string; occupiedEpoch: number }[] = [],
+  stagedHashes: string[] = [];
+let feedReadAfterCalls = 0,
+  logReadFromCalls = 0,
+  logReadCalls = 0,
+  installedLoadEpochs: number[] = [],
+  extraMachineSeed = 40;
 export async function boot(
   input: typeof mode = 'create-or-open',
   controlledClose = false,
@@ -331,6 +393,11 @@ export async function boot(
   holdDeliveryRetry = false;
   putMark = 0;
   openRoundSleeps = [];
+  feedReadAfterCalls = 0;
+  logReadFromCalls = 0;
+  logReadCalls = 0;
+  installedLoadEpochs = [];
+  extraMachineSeed = 40;
   openRoundGate = new Promise((resolve) => {
     releaseOpenRound = resolve;
   });
@@ -588,6 +655,8 @@ export async function boot(
               const source = Layer.succeed(LedgerFeedSource, {
                 readAfter: (offset: string) =>
                   Effect.gen(function* () {
+                    feedReadAfterCalls++;
+                    if (hang === 'feed') return yield* hung<never>();
                     if (localStorage.getItem('synthetic-offline'))
                       return yield* new LedgerFeedError({ code: 'native-unavailable' });
                     const start = offset === '-1' ? 0 : Number(offset.split('/')[1]);
@@ -600,10 +669,21 @@ export async function boot(
                   }),
               });
               const log = Layer.succeed(LedgerLog, {
+                readFrom: (_anchor, base) =>
+                  Effect.sync(() => {
+                    logReadFromCalls++;
+                    return {
+                      records: records.slice(base.length).map((r) => new Uint8Array(r)),
+                      checkpoint: { head: view().head, length: records.length },
+                    };
+                  }),
                 read: () =>
-                  Effect.succeed({
-                    records: records.map((r) => new Uint8Array(r)),
-                    checkpoint: { head: view().head, length: records.length },
+                  Effect.sync(() => {
+                    logReadCalls++;
+                    return {
+                      records: records.map((r) => new Uint8Array(r)),
+                      checkpoint: { head: view().head, length: records.length },
+                    };
                   }),
                 appendCas: (_anchor, expected, record) =>
                   Effect.gen(function* () {
@@ -614,10 +694,18 @@ export async function boot(
                         retryAt: 3600000,
                       });
                     }
+                    if (hang === 'append') return yield* hung<never>();
+                    if (raceNextAppend) {
+                      raceNextAppend = false;
+                      records.push(yield* Effect.orDie(remoteRotation()));
+                      retain();
+                      return yield* new LedgerLogError({});
+                    }
                     if (expected.length !== records.length || !expected.head.equals(view().head))
                       return yield* new LedgerLogError({});
                     records.push(new Uint8Array(record));
                     retain();
+                    if (hang === 'append-landed') return yield* hung<never>();
                     if (loseNextAppendReply) {
                       // The record landed; only its reply is lost on the way back.
                       loseNextAppendReply = false;
@@ -646,8 +734,27 @@ export async function boot(
             failKeys = false;
             return Layer.effectContext(Effect.fail(new Error('synthetic key I/O')));
           }
+          const keyStores = Layer.effectContext(
+            Effect.gen(function* () {
+              const built = yield* Layer.build(
+                indexedDbClientKeyStores({
+                  databaseName: `${databasePrefix}-custody`,
+                  binding,
+                  mode,
+                })
+              );
+              const inner = Context.get(built, InstalledKeyStore);
+              return Context.add(built, InstalledKeyStore, {
+                ...inner,
+                load: (epoch) =>
+                  Effect.sync(() => {
+                    installedLoadEpochs.push(epoch);
+                  }).pipe(Effect.andThen(inner.load(epoch))),
+              });
+            })
+          );
           return Layer.mergeAll(
-            indexedDbClientKeyStores({ databaseName: `${databasePrefix}-custody`, binding, mode }),
+            keyStores,
             Layer.succeed(KeyMailbox, {
               // The watched device's slot holds an envelope only after this device stored one.
               status: (slot) =>
@@ -753,8 +860,9 @@ export async function boot(
               stageGroup: (group) =>
                 Effect.sync(() => {
                   stagedGroup = group;
+                  stagedHashes.push(group.recordHash);
                 }),
-              readGroup: () =>
+              readGroup: (key) =>
                 Effect.gen(function* () {
                   if (failStaging) {
                     failStaging = false;
@@ -765,9 +873,16 @@ export async function boot(
                       })
                     );
                   }
-                  return stagedGroup;
+                  return stagedGroup?.recordHash === key.recordHash ? stagedGroup : null;
                 }),
-              deleteGroup: () => Effect.void,
+              deleteGroup: (key, occupied) =>
+                Effect.sync(() => {
+                  stagingDeletes.push({
+                    recordHash: key.recordHash,
+                    occupiedEpoch: occupied.epoch,
+                  });
+                  if (stagedGroup?.recordHash === key.recordHash) stagedGroup = null;
+                }),
             }),
             Layer.succeed(EpochPublicationSource, {
               current: () => Effect.succeed(stagedGroup?.record ?? records[0]),
@@ -828,6 +943,7 @@ export async function boot(
           },
         },
         drainOld: () => (session ? session.close() : Effect.void),
+        deadlines: { sleep: deadlineSleep },
       });
       const remote = PersonalHostRemote.of({
         accountId: recoveryAccount ?? 'account',
@@ -859,6 +975,7 @@ export async function boot(
           : {}),
         exchange: (request: PersonalExchange) =>
           Effect.gen(function* () {
+            if (hang === 'exchange') return yield* hung<never>();
             const prior = localStorage.getItem('request:' + request.pairingSessionId);
             if (prior && prior !== request.requestHex) throw new Error('changed request');
             localStorage.setItem('request:' + request.pairingSessionId, request.requestHex);
@@ -1312,6 +1429,159 @@ export async function invoke(action: string) {
               access: access.workspaceId === offer.workspaceId && access.credential.length === 64,
             };
           }
+          // The owner revokes the device this host currently opened.
+          case 'revokeOpened': {
+            const command = Result.getOrThrow(
+              prepareLedgerCommand(view(), owner.publicKey, {
+                _tag: 'RevokeDevice',
+                target: session!.binding.device,
+              })
+            );
+            records.push(yield* signLedgerRecord(command, owner));
+            retain();
+            return true;
+          }
+          case 'hangFeed':
+          case 'hangAppend':
+          case 'hangAppendLanded':
+          case 'hangExchange':
+            hangEntered = signal();
+            hang = (
+              {
+                hangFeed: 'feed',
+                hangAppend: 'append',
+                hangAppendLanded: 'append-landed',
+                hangExchange: 'exchange',
+              } as const
+            )[action as 'hangFeed' | 'hangAppend' | 'hangAppendLanded' | 'hangExchange'];
+            return true;
+          // Once the hung call is entered, its deadline elapses (now or when it registers).
+          case 'expireDeadlines':
+            yield* Effect.promise(() => hangEntered.promise);
+            deadlinesExpired = true;
+            for (const finish of deadlineWaiters) finish();
+            deadlineWaiters.clear();
+            return true;
+          case 'networkBack':
+            hang = null;
+            deadlinesExpired = false;
+            return true;
+          // How many signed records revoke the owner's device: one, never a second signature.
+          case 'ownerRevocations':
+            return records.filter((bytes) => {
+              const decoded = decodeRecord(bytes);
+              return (
+                Result.isSuccess(decoded) &&
+                decoded.success.body.type === 'ordinary' &&
+                decoded.success.body.operation.type === 'revokeDevice' &&
+                decoded.success.body.operation.target.equals(owner.publicKey)
+              );
+            }).length;
+          case 'rememberBinding': {
+            const current = yield* Context.get(baseContext, ClientInstallationStore).read();
+            preservedBinding = current!.binding;
+            return toHex(current!.binding.device.toBytes());
+          }
+          // The replaced identity's original request stays retained under its own binding.
+          case 'preservedOriginal': {
+            const row = yield* Context.get(baseContext, ClientPairingOriginalStore).load({
+              ...preservedBinding!,
+              pairingSessionId: offer.pairingSessionId,
+              purpose: 'request',
+            });
+            return row
+              ? (JSON.parse(new TextDecoder().decode(row.original)).requestHex as string)
+              : null;
+          }
+          case 'currentDevice': {
+            const current = yield* Context.get(baseContext, ClientInstallationStore).read();
+            return toHex(current!.binding.device.toBytes());
+          }
+          // A relay altering one byte of the admitting record in the candidate's history.
+          case 'forgeCandidateHistory': {
+            genuineCandidateHistory = localStorage.getItem('candidate-history');
+            const pages = JSON.parse(genuineCandidateHistory!);
+            const last: string = pages[0].recordsHex.at(-1);
+            pages[0].recordsHex[pages[0].recordsHex.length - 1] =
+              last.slice(0, -2) + (last.endsWith('00') ? '01' : '00');
+            localStorage.setItem('candidate-history', JSON.stringify(pages));
+            return true;
+          }
+          case 'restoreCandidateHistory':
+            localStorage.setItem('candidate-history', genuineCandidateHistory!);
+            return true;
+          // Account pairing again after revocation: the history decides a replacement.
+          case 'accountPrepareWithHistory':
+          case 'accountPrepareWithStaleHistory':
+          case 'accountPrepareWithForgedHistory': {
+            const shown =
+              action === 'accountPrepareWithStaleHistory' ? records.slice(0, -1) : [...records];
+            const recordsHex = shown.map(toHex);
+            if (action === 'accountPrepareWithForgedHistory')
+              recordsHex[recordsHex.length - 1] = recordsHex.at(-1)!.slice(0, -2) + 'ff';
+            return yield* host.prepareAccount({
+              genesisRecordHex: offer.genesisRecordHex,
+              membershipId: offer.membershipId,
+              history: [
+                {
+                  workspaceId: offer.workspaceId,
+                  genesisHash: offer.genesisHash,
+                  checkpoint: {
+                    length: shown.length,
+                    headHash: toHex(hashRecordBytes(shown.at(-1)!).toBytes()),
+                  },
+                  startIndex: 0,
+                  recordsHex,
+                  position: 'opaque/' + shown.length,
+                  nextCursor: null,
+                },
+              ],
+            });
+          }
+          // The owner admits the prepared account replacement; this device installs it
+          // from the complete signed history.
+          case 'accountAdmitReplacement': {
+            const pin = {
+              genesisRecordHex: offer.genesisRecordHex,
+              membershipId: offer.membershipId,
+            };
+            const prepared = yield* host.prepareAccount(pin),
+              request = decodePersonalRequest(prepared.requestHex);
+            const proposal = Result.getOrThrow(
+              prepareLedgerCommand(view(), owner.publicKey, {
+                _tag: 'AdmitDevice',
+                kind: 'personal',
+                signingPublicKey: Result.getOrThrow(
+                  Bytes.signingPublicKey(fromHex(request.signingPublicKey))
+                ),
+                encryptionPublicKey: Result.getOrThrow(
+                  Bytes.encryptionPublicKey(fromHex(request.encryptionPublicKey))
+                ),
+                possessionSignature: Result.getOrThrow(
+                  Bytes.signature(fromHex(request.possessionSignature))
+                ),
+              })
+            );
+            records.push(yield* signLedgerRecord(proposal, owner));
+            retain();
+            yield* host.acceptAccountHistory({
+              ...pin,
+              pages: [
+                {
+                  workspaceId: offer.workspaceId,
+                  genesisHash: offer.genesisHash,
+                  checkpoint: { length: records.length, headHash: toHex(view().head.toBytes()) },
+                  startIndex: 0,
+                  recordsHex: records.map(toHex),
+                  position: 'opaque/' + records.length,
+                  nextCursor: null,
+                },
+              ],
+            });
+            return request.signingPublicKey;
+          }
+          case 'openedDevice':
+            return toHex(session!.binding.device.toBytes());
           case 'currentRequestForToken': {
             const p = yield* host.prepare(offer);
             localStorage.setItem('last-request', p.requestHex);
@@ -1433,6 +1703,37 @@ export async function invoke(action: string) {
               irohFixture.machine = toHex(machine.publicKey.toBytes());
             return true;
           }
+          case 'addFreshMachine': {
+            const seed = ++extraMachineSeed;
+            const machineId = `fixture-machine-${seed}`;
+            const machine = yield* importBrowserDevice({
+              signingPrivate: new Uint8Array(32).fill(seed),
+              encryptionPrivate: new Uint8Array(32).fill(seed + 40),
+            }).pipe(Scope.provide(scope));
+            const proof = yield* prepareDeviceAdmission({
+              genesis: Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash))),
+              membershipId: Result.getOrThrow(Bytes.membershipId(fromHex(offer.membershipId))),
+              encryptionPublicKey: machine.enc,
+              kind: 'machine',
+              machineId,
+              signer: machine,
+            });
+            const proposal = Result.getOrThrow(
+              prepareLedgerCommand(view(), owner.publicKey, {
+                _tag: 'AdmitDevice',
+                kind: 'machine',
+                machineId,
+                replaces: null,
+                signingPublicKey: machine.publicKey,
+                encryptionPublicKey: machine.enc,
+                possessionSignature: proof.possessionSignature,
+              })
+            );
+            records.push(yield* signLedgerRecord(proposal, owner));
+            retain();
+            irohFixture.machine = toHex(machine.publicKey.toBytes());
+            return true;
+          }
           case 'rpc':
           case 'rpcChanged':
             return yield* session!.prepareDispatch('fixture-machine', {
@@ -1458,29 +1759,16 @@ export async function invoke(action: string) {
           case 'graceExpired':
             graceElapsed = 900_000;
             return true;
-          case 'rotateRemote': {
-            const next = Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x72))),
-              genesis = Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash)));
-            const body = Result.getOrThrow(
-              encodeCbor([
-                view().head.toBytes(),
-                owner.publicKey.toBytes(),
-                [
-                  7,
-                  1,
-                  Result.getOrThrow(commitEpochKey(genesis, 1, next)).toBytes(),
-                  Result.getOrThrow(
-                    sealHistoryPacket({ genesis, epoch: 1, currentKey: next, previousKey: key })
-                  ),
-                ],
-              ])
-            );
-            records.push(
-              yield* signLedgerRecord(Result.getOrThrow(prepareLedgerRecord(view(), body)), owner)
-            );
+          case 'rotateRemote':
+            records.push(yield* remoteRotation());
             retain();
             return true;
-          }
+          // This device's next CAS loses to the owner's other device rotating the same epoch.
+          case 'raceNextRotation':
+            raceNextAppend = true;
+            return true;
+          case 'stagingDeletes':
+            return { staged: stagedHashes, deleted: stagingDeletes };
           case 'quotaThenGovern': {
             localStorage.setItem('quota-once', '1');
             const refused = yield* Effect.result(
@@ -1783,7 +2071,7 @@ export async function bootRuntime(withSharing = false) {
             })
           )
         : runtimePorts,
-      retainedOffer: () => Effect.succeed(offer),
+      retainedOffer: () => Effect.sync(() => runtimeRetained ?? offer),
       account: () =>
         accountFailure
           ? Effect.failCause(accountFailure)
@@ -2028,6 +2316,22 @@ export async function runtimeInvoke(action: string) {
       case 'prepare':
         value = await runtime.preparePersonalJoin!(offer);
         break;
+      // Re-pairing this device from a new personal pairing offer.
+      case 'repairPrepare':
+        runtimeRetained = { ...offer, pairingSessionId: '22'.repeat(16) };
+        value = await runtime.preparePersonalJoin!(runtimeRetained);
+        break;
+      case 'repairForgedGenesis':
+        value = await runtime.preparePersonalJoin!({
+          ...offer,
+          genesisHash: 'ab'.repeat(32),
+          pairingSessionId: '44'.repeat(16),
+        });
+        break;
+      case 'repairClaim':
+        value = await runtime.claimPersonalJoin!(offer.workspaceId, '22'.repeat(16));
+        break;
+
       case 'claim':
         value = await runtime.claimPersonalJoin!(offer.workspaceId, offer.pairingSessionId);
         break;
@@ -2092,11 +2396,11 @@ export async function runtimeInvoke(action: string) {
         value = await runtime.refresh(offer.workspaceId);
         break;
       case 'receive':
-        value = await runtime.refresh(offer.workspaceId, { installKeys: true });
+        value = await runtime.refresh(offer.workspaceId, { keyMode: 'full' });
         break;
       case 'keyFailure':
         failMailbox = true;
-        value = await runtime.refresh(offer.workspaceId, { installKeys: true });
+        value = await runtime.refresh(offer.workspaceId, { keyMode: 'full' });
         break;
       case 'ledger':
         value = await runtime.ledgerView(offer.workspaceId);
@@ -2158,10 +2462,10 @@ export async function runtimeInvoke(action: string) {
         };
         break;
       case 'grant':
-        value = await runtime.contentStreamsToken(offer.workspaceId, 'rejected-exact', 'doc:1');
+        value = await runtime.contentStreamsToken(offer.workspaceId, 'rejected-exact');
         break;
       case 'rpcGrant':
-        value = await runtime.contentStreamsToken(offer.workspaceId, undefined, undefined, true);
+        value = await runtime.contentStreamsToken(offer.workspaceId, undefined, true);
         break;
       case 'badGrant':
         badToken = true;
@@ -2220,6 +2524,63 @@ export async function runtimeInvoke(action: string) {
         value = { epoch: Result.getOrThrow(inspectContentFrame(sealed.sealed)).epoch };
         break;
       }
+      // The owner's other device seals at its rotated epoch 1 with that epoch's key,
+      // which this device has not received.
+      case 'sealRemoteRotated': {
+        const room = { kind: 'doc' as const, docId: '1' };
+        const descriptor = encryptedWorkspaceRoom(offer.workspaceId, room);
+        const sealed = await Effect.runPromise(
+          Effect.gen(function* () {
+            const binding = yield* makeStreamsUpdateBinding({
+              genesis: Result.getOrThrow(Bytes.genesisHash(fromHex(offer.genesisHash))),
+              resource: descriptor.resource,
+              model: descriptor.model,
+              writeEpoch: 1,
+              signer: owner,
+              ledger: () => Effect.succeed(view()),
+              readEpochKey: (epoch) =>
+                epoch === 1
+                  ? Effect.succeed(Result.getOrThrow(Bytes.epochKey(new Uint8Array(32).fill(0x72))))
+                  : Effect.fail(new Error('fixture-missing-key')),
+            });
+            return yield* binding.seal({
+              context: runtimeContext,
+              plaintext: Uint8Array.of(72, 105),
+              additionalData: () => Uint8Array.of(9),
+            });
+          }).pipe(Effect.scoped)
+        );
+        localStorage.setItem(
+          'runtime-remote-sealed',
+          JSON.stringify({ header: toHex(sealed.header), sealed: toHex(sealed.sealed) })
+        );
+        value = { epoch: Result.getOrThrow(inspectContentFrame(sealed.sealed)).epoch };
+        break;
+      }
+      case 'openRemote':
+      case 'openRemoteFarFuture': {
+        const saved = JSON.parse(localStorage.getItem('runtime-remote-sealed')!);
+        const sealed = fromHex(saved.sealed);
+        // A forged epoch beyond the bounded ledger lookahead.
+        if (action === 'openRemoteFarFuture')
+          new DataView(sealed.buffer, sealed.byteOffset).setUint32(1, 999_999, false);
+        const bytes = await runtime.openContent(offer.workspaceId, {
+          room: { kind: 'doc', docId: '1' },
+          context: runtimeContext,
+          sealed,
+          header: fromHex(saved.header),
+          additionalData: Uint8Array.of(9),
+        });
+        try {
+          value = [...bytes];
+        } finally {
+          bytes.fill(0);
+        }
+        break;
+      }
+      case 'receiveOnly':
+        value = await runtime.refresh(offer.workspaceId, { keyMode: 'receive' });
+        break;
       case 'openBody': {
         const saved = JSON.parse(localStorage.getItem('runtime-sealed')!);
         const bytes = await runtime.openContent(offer.workspaceId, {
@@ -2471,8 +2832,30 @@ export async function runtimeInvoke(action: string) {
           other: runtimeOtherOpen ? await runtimeOtherOpen : undefined,
         };
         break;
+      case 'startRefresh':
+      case 'startRepairPrepare':
+      case 'startRevokeOwner':
+        runtimeWork = (
+          action === 'startRefresh'
+            ? runtime.refresh(offer.workspaceId)
+            : action === 'startRepairPrepare'
+              ? runtime.preparePersonalJoin!({ ...offer, pairingSessionId: '22'.repeat(16) })
+              : runtime.revokeDevice!(offer.workspaceId, toHex(owner.publicKey.toBytes()))
+        ).then(
+          (v) => ({ ok: true, value: v }),
+          (error) => ({ ok: false, reason: error.code ?? error.reason })
+        );
+        value = true;
+        break;
+      case 'revokeOwner':
+        value = await runtime.revokeDevice!(offer.workspaceId, toHex(owner.publicKey.toBytes()));
+        break;
+      case 'revokeMachine':
+        value = await runtime.revokeDevice!(offer.workspaceId, irohFixture.machine!);
+        break;
+
       case 'startReceive':
-        runtimeWork = runtime.refresh(offer.workspaceId, { installKeys: true }).then(
+        runtimeWork = runtime.refresh(offer.workspaceId, { keyMode: 'full' }).then(
           (v) => ({ ok: true, value: v }),
           (error) => ({ ok: false, reason: error.code ?? error.reason })
         );
@@ -2539,6 +2922,29 @@ export async function runtimeInvoke(action: string) {
       case 'updateKeys':
         value = await runtime.updateKeys!(offer.workspaceId);
         break;
+      case 'resetTelemetry':
+        feedReadAfterCalls = 0;
+        logReadFromCalls = 0;
+        logReadCalls = 0;
+        installedLoadEpochs = [];
+        value = true;
+        break;
+      case 'telemetry':
+        value = {
+          feedReadAfterCalls,
+          logReadFromCalls,
+          logReadCalls,
+          installedLoadEpochs: [...installedLoadEpochs],
+        };
+        break;
+      case 'concurrentUpdateAndRefresh': {
+        await Promise.all([
+          runtime.updateKeys!(offer.workspaceId),
+          runtime.refresh(offer.workspaceId),
+        ]);
+        value = true;
+        break;
+      }
       case 'memberThirdApplicant':
         memberRelay.item = await Effect.runPromise(memberApplicant(75, 0x54));
         value = memberRelay.item.requestId;
@@ -2702,6 +3108,7 @@ export async function recoverBrowser(
     repair?: boolean;
     revokePersonal?: boolean;
     setup?: boolean;
+    slowRecoveryIo?: boolean;
     runtime?: boolean;
   } = {}
 ) {
@@ -2711,21 +3118,24 @@ export async function recoverBrowser(
     { readonly entryId: string; readonly revision: number; readonly body: Uint8Array }
   >();
   const journal = new Map<string, Uint8Array>();
-  let index: {
-    readonly entryId: string;
-    readonly revision: number;
-    readonly body: Uint8Array;
-  } | null = null;
+  const indices = new Map<
+    string,
+    {
+      readonly entryId: string;
+      readonly revision: number;
+      readonly body: Uint8Array;
+    }
+  >();
   const store: RecoveryVaultStore['Service'] = {
     putImmutable: (_id, entry) =>
       Effect.sync(() => {
         entries.set(entry.entryId, entry);
       }),
     readEntry: (_id, id) => Effect.succeed(entries.get(id) ?? null),
-    readIndex: () => Effect.sync(() => index),
-    compareAndSwapIndex: (_id, _expected, next) =>
+    readIndex: (id) => Effect.sync(() => indices.get(id) ?? null),
+    compareAndSwapIndex: (id, _expected, next) =>
       Effect.sync(() => {
-        index = next;
+        indices.set(id, next);
         return 'Committed' as const;
       }),
     deleteUnreferenced: () => Effect.void,
@@ -2856,18 +3266,29 @@ export async function recoverBrowser(
           retain();
         }
         if (options.tamperedPackage) entries.get(reference.entryId)!.body[25] ^= 1;
+        const expireDeadlines = () =>
+          Effect.gen(function* () {
+            deadlinesExpired = true;
+            const waiters = [...deadlineWaiters];
+            deadlineWaiters.clear();
+            for (const finish of waiters) finish();
+            yield* Effect.yieldNow;
+          });
         const pages = () =>
-          Effect.succeed([
-            {
-              workspaceId: offer.workspaceId,
-              genesisHash: offer.genesisHash,
-              checkpoint: { length: view().length, headHash: toHex(view().head.toBytes()) },
-              startIndex: 0,
-              recordsHex: records.map(toHex),
-              position: 'recovery/full',
-              nextCursor: null,
-            },
-          ]);
+          Effect.gen(function* () {
+            if (options.slowRecoveryIo) yield* expireDeadlines();
+            return [
+              {
+                workspaceId: offer.workspaceId,
+                genesisHash: offer.genesisHash,
+                checkpoint: { length: view().length, headHash: toHex(view().head.toBytes()) },
+                startIndex: 0,
+                recordsHex: records.map(toHex),
+                position: 'recovery/full',
+                nextCursor: null,
+              },
+            ];
+          });
         failKeys = options.failInstall ?? false;
         let recoveryRuntime: E2eeWorkspaceRuntime | undefined;
         if (options.runtime) {
@@ -2981,13 +3402,24 @@ export async function recoverBrowser(
         }
         session = yield* host.open(offer, false, true);
         let recoveryVerified = false;
+        let refreshedDuringSetup = false;
         if (options.setup) {
+          deadlinesExpired = false;
+          const setupVault = options.slowRecoveryIo
+            ? (yield* (yield* RecoveryVaults).create({ locator: 'abc-rotated' })).vault
+            : vault;
           const setupResult = yield* session.setupRecovery({
-            vault,
+            vault: setupVault,
             local,
             fetchCurrentEnvelope: envelope,
             submitOriginal: (record) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
+                if (options.slowRecoveryIo) {
+                  yield* expireDeadlines();
+                  deadlinesExpired = false;
+                  yield* session!.refresh();
+                  refreshedDuringSetup = true;
+                }
                 if (!records.some((old) => toHex(old) === toHex(record)))
                   records.push(record.slice());
                 retain();
@@ -3081,6 +3513,7 @@ export async function recoverBrowser(
           sealed: frame.sealed.length > 64,
           noDuplicateAdmission: records.length === admittedCount,
           recoveryVerified,
+          refreshedDuringSetup,
         };
       }).pipe(Effect.provide(layers))
     )

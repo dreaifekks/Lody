@@ -2,12 +2,14 @@
 
 Parent rules apply; see [README](README.md).
 
-- Route Session/catalog tools through daemon `session/call-tool` in every composition,
-  never a second writer, replica or child CLI. Reuse SDK-parsed arguments; validate in
-  `session-tool-router.ts` and scope identity/replica with `session-command-environment.ts`
-  ALS. Require exact workspace/machine and active Turn (local: its user).
+- Route Session/catalog tools via `session/call-tool` to the daemon repo in every
+  composition, never a second replica or child `lody` CLI. Reuse SDK-parsed arguments
+  and validate daemon inputs in `session-tool-router.ts`; scope replica/identity with
+  ALS in `session-command-environment.ts`. Require exact workspace/machine scope
+  and an active Turn (local: its user). After a clean release, the same live Agent
+  still acts for that Turn until Stop, its exit or the next Turn.
+  Cloud keeps authenticated commands/recovery.
   `cli/call-tool` permits only read-only TERMINAL_SESSION_TOOLS under daemon identity.
-  Cloud retains authenticated commands and recovery confirmation.
 
 - MCP sharing requires the active Turn user to equal the CLI authenticated account.
   Fail closed on shared-machine account mismatch; never substitute the machine owner.

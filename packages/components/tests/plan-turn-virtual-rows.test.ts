@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { MessageContent, SessionHistoryParsed, SessionId } from '@lody/shared';
-
+import type { MessageContent, SessionHistoryParsed, SessionId, SessionDoc } from '@lody/shared';
 import { buildChatVirtualRows } from '../src/components/ai-gui/view';
 import { collectSubagentTasks } from '../src/components/ai-gui/subagent-task-panel';
 import { getMessageItemPrefix } from '../src/lib/session-chat-search';
+import {
+  CODEX_COLLABORATION_MODE_CONFIG_ID,
+  CODEX_COLLABORATION_MODE_PLAN_VALUE,
+} from '../src/components/shared/acp-selector-options';
+import {
+  disableCodexPlanMode,
+  findLatestCompletedCodexProposedPlan,
+  isCodexPlanModeEnabled,
+  shouldShowCodexProposedPlanDecision,
+} from '../src/lib/codex-plan-decision';
+import {
+  hasUnansweredPlanApproval,
+  resolvePlanExitMarkdown,
+} from '../src/components/ai-gui/plan-surface';
 
 /**
  * End of the wiring, not just the layout helper: `buildChatVirtualRows` is what
@@ -391,5 +404,200 @@ describe('turns with background tasks', () => {
     );
 
     expect(visibleContentKinds(rows)).toEqual(['worked_group_header', 'content:text']);
+  });
+});
+
+describe('codex-plan-decision', () => {
+  const makeHistory = (items: unknown[], id = 'assistant-turn'): SessionDoc['history'] =>
+    [
+      {
+        id,
+        $cid: id,
+        role: 'assistant',
+        items,
+        timestamp: new Date().toISOString(),
+        fileDiff: [],
+        read: false,
+      },
+    ] as unknown as SessionDoc['history'];
+
+  describe('codex plan decision helpers', () => {
+    it('disables Core planning without changing permission, model, or reasoning', () => {
+      const config = { plan_mode: true, mode: 'agent', reasoning_effort: 'high' };
+      expect(isCodexPlanModeEnabled(config)).toBe(true);
+      const disabled = disableCodexPlanMode(config);
+      expect(disabled).toEqual({ ...config, plan_mode: false });
+      expect(isCodexPlanModeEnabled(disabled)).toBe(false);
+      expect(isCodexPlanModeEnabled({ plan_mode: false, collaboration_mode: 'plan' })).toBe(false);
+    });
+
+    it('keeps the plan entry id when a newer plain assistant reply exists', () => {
+      const history = [
+        ...makeHistory(
+          [
+            {
+              type: 'proposed_plan',
+              turnId: 'turn-plan',
+              markdown: '# Final plan',
+              status: 'completed',
+              isLatest: true,
+            },
+          ],
+          'plan-reply'
+        ),
+        ...makeHistory([{ type: 'text', text: 'A later normal reply' }], 'plain-reply'),
+      ] as SessionDoc['history'];
+
+      expect(findLatestCompletedCodexProposedPlan(history)).toEqual({
+        key: 'plan-reply:turn-plan',
+        entryId: 'plan-reply',
+        turnId: 'turn-plan',
+      });
+    });
+
+    it('keeps the completed plan decision visible after plan mode is manually disabled', () => {
+      const plan = findLatestCompletedCodexProposedPlan(
+        makeHistory([
+          {
+            type: 'proposed_plan',
+            turnId: 'turn-completed',
+            markdown: '# Final plan',
+            status: 'completed',
+            isLatest: true,
+          },
+        ])
+      );
+      const config = disableCodexPlanMode({
+        [CODEX_COLLABORATION_MODE_CONFIG_ID]: CODEX_COLLABORATION_MODE_PLAN_VALUE,
+      });
+
+      expect(isCodexPlanModeEnabled(config)).toBe(false);
+      expect(
+        shouldShowCodexProposedPlanDecision({
+          plan,
+          dismissed: false,
+          pending: false,
+          isCodexSession: true,
+          isSessionIdle: true,
+          isSessionActive: false,
+          isAgentBusy: false,
+        })
+      ).toBe(true);
+    });
+  });
+});
+describe('plan-surface', () => {
+  type ToolCallMessage = Extract<MessageContent, { type: 'tool_call' }>;
+
+  const toolCall = (overrides: Partial<ToolCallMessage>): ToolCallMessage =>
+    ({
+      type: 'tool_call',
+      toolCallId: 't',
+      kind: 'switch_mode',
+      status: 'completed',
+      ...overrides,
+    }) as ToolCallMessage;
+
+  const request = (overrides: Record<string, unknown> = {}) => ({
+    requestId: 'r',
+    options: [{ optionId: 'allow', name: 'Yes', kind: 'allow_once' }],
+    ...overrides,
+  });
+
+  /**
+   * The bundled adapters put the plan in different places. These are the shapes
+   * they actually emit, so a regression here means one agent's plan silently
+   * stops rendering (or renders twice).
+   */
+  describe('resolvePlanExitMarkdown', () => {
+    it("reads Claude's and Kimi's card-carried content block", () => {
+      expect(
+        resolvePlanExitMarkdown(
+          toolCall({
+            content: [{ type: 'content', content: { type: 'text', text: '# Plan\n1. Go' } }],
+          })
+        )
+      ).toBe('# Plan\n1. Go');
+    });
+
+    it("reads Codex's rawInput carrier", () => {
+      expect(resolvePlanExitMarkdown(toolCall({ rawInput: { plan: '# Codex plan' } }))).toBe(
+        '# Codex plan'
+      );
+    });
+
+    it.each([
+      { status: 'failed' as const, result: "The user doesn't want to proceed with this tool use." },
+      { status: 'completed' as const, result: 'User has approved your plan.' },
+    ])(
+      'keeps the submitted plan after a $status result replaces card content',
+      ({ status, result }) => {
+        const markdown = '# Plan\n1. Keep the tests.\n2. Update the parser.';
+        const pending = toolCall({
+          status: 'pending',
+          rawInput: { plan: markdown },
+          content: [{ type: 'content', content: { type: 'text', text: markdown } }],
+        });
+        expect(resolvePlanExitMarkdown(pending)).toBe(markdown);
+
+        // ACP replaces content but retains rawInput when the result omits it.
+        const settled = toolCall({
+          ...pending,
+          status,
+          content: [{ type: 'content', content: { type: 'text', text: result } }],
+          rawOutput: result,
+        });
+        expect(resolvePlanExitMarkdown(settled)).toBe(markdown);
+        // A hydrated historical card has no component-local copy of the plan.
+        expect(resolvePlanExitMarkdown(JSON.parse(JSON.stringify(settled)))).toBe(markdown);
+        expect(resolvePlanExitMarkdown({ ...settled, content: [] })).toBe(markdown);
+      }
+    );
+
+    it("takes only the first block, so Kimi's action summary stays out of the plan", () => {
+      // Kimi builds `[plan, "Requesting approval to <action>"]`; joining pasted
+      // the summary into the plan body.
+      expect(
+        resolvePlanExitMarkdown(
+          toolCall({
+            content: [
+              { type: 'content', content: { type: 'text', text: 'Plan saved to: /p\n\n# Plan' } },
+              { type: 'content', content: { type: 'text', text: 'Requesting approval to run' } },
+            ],
+          })
+        )
+      ).toBe('Plan saved to: /p\n\n# Plan');
+    });
+  });
+
+  describe('hasUnansweredPlanApproval', () => {
+    const planExit = (permissionRequest: unknown): MessageContent =>
+      ({
+        type: 'tool_call',
+        toolCallId: 'plan-exit',
+        kind: 'switch_mode',
+        status: 'pending',
+        permissionRequest,
+      }) as MessageContent;
+
+    it('holds the plan open while the approval is unanswered', () => {
+      expect(hasUnansweredPlanApproval([planExit(request())])).toBe(true);
+    });
+
+    it('lets the plan clamp once the reader has answered', () => {
+      expect(
+        hasUnansweredPlanApproval([
+          planExit(request({ outcome: { outcome: 'selected', optionId: 'allow' } })),
+        ])
+      ).toBe(false);
+    });
+
+    it('treats a withdrawn request as answered, not pending', () => {
+      // A cancelled request has nothing left to decide, so it must not pin the
+      // plan open for the rest of the session.
+      expect(
+        hasUnansweredPlanApproval([planExit(request({ outcome: { outcome: 'cancelled' } }))])
+      ).toBe(false);
+    });
   });
 });

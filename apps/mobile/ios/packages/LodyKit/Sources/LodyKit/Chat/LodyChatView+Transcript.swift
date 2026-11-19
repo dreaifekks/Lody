@@ -267,6 +267,11 @@ extension LodyChatView {
       if let state = planDecisionState, state.entryId == projected[index].entryID, state.itemId == projected[index].itemID {
         projected[index].planDecision = state
       }
+      // Web `PlanPanel`: a plan waiting on the reader's approval opens in full once; the reader
+      // may still fold it, and it clamps again as history.
+      if !projected[index].planPermissionItemID.isEmpty, awaitingPlansOpened.insert(projected[index].id).inserted {
+        expandedPlans.insert(projected[index].id)
+      }
     }
     for index in projected.indices where projected[index].kind == "proposal" {
       let row = projected[index]
@@ -282,8 +287,8 @@ extension LodyChatView {
     }
     if processEntryID.isEmpty, let pendingSend {
       for row in pendingSend.rows(entries: transcript.entries) {
-        if row.kind == "delivery", let index = projected.firstIndex(where: { $0.entryID == row.entryID }) {
-          projected.insert(row, at: index)
+        if row.kind == "delivery", let index = projected.lastIndex(where: { $0.entryID == row.entryID }) {
+          projected.insert(row, at: index + 1)
         } else {
           projected.append(row)
         }
@@ -318,14 +323,14 @@ extension LodyChatView {
     }
     if hasPositionedContent && window != nil && !UIAccessibility.isReduceMotionEnabled {
       for row in rows.values where row.kind == "delivery" && !activeIDs.contains(row.id) {
-        guard let index = projected.firstIndex(where: { $0.entryID == row.entryID }) else { continue }
+        guard let index = projected.lastIndex(where: { $0.entryID == row.entryID }) else { continue }
         if deliveryExits[row.id] == nil {
           let width = ChatReadingColumn.itemWidth(in: collection.bounds.width)
           let height = rowHeight(row, width: width)
           deliveryExits[row.id] = height
           rowHeights[row.id] = (height, 0, width)
         }
-        if rowHeights[row.id] != nil { projected.insert(row, at: index) }
+        if rowHeights[row.id] != nil { projected.insert(row, at: index + 1) }
       }
     }
     deliveryExits = deliveryExits.filter { id, _ in projected.contains { $0.id == id } }
@@ -348,6 +353,7 @@ extension LodyChatView {
     if tabClosed { projected = [] }
     let retainedIDs = Set(projected.map(\.id))
     expandedPlans.formIntersection(retainedIDs)
+    awaitingPlansOpened.formIntersection(retainedIDs)
     projected = prepareHistory(projected)
     let insertingHistory = previousHistoryStart != nil && previousHistoryStart != historyStartID
     // Starting/waiting for a page changes only the header, not the collection.

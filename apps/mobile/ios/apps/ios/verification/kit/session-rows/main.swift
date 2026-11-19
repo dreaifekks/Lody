@@ -1,5 +1,24 @@
 import Foundation
 
+let badgeCurrent = SessionItem(id: "current", lastMessageAt: 2, lastReadAt: 1)
+var badgeOther = SessionItem(id: "other")
+for status in ["running", "waiting", "error", "completed"] {
+  badgeOther.status = status
+  badgeOther.lastMessageAt = nil
+  precondition(!DirectoryTabs.hasBackgroundUnread([badgeCurrent, badgeOther], currentId: "current"), "Activity and the current Tab never light the header dot")
+  badgeOther.lastMessageAt = 2
+  badgeOther.lastReadAt = 1
+  precondition(DirectoryTabs.hasBackgroundUnread([badgeCurrent, badgeOther], currentId: "current"), "Unread output lights the dot regardless of activity")
+}
+badgeOther.lastViewedMessageAt = 2
+precondition(!DirectoryTabs.hasBackgroundUnread([badgeCurrent, badgeOther], currentId: "current"), "A local visit clears the dot before its read receipt arrives")
+badgeOther.lastMessageAt = 3
+precondition(DirectoryTabs.hasBackgroundUnread([badgeCurrent, badgeOther], currentId: "current"), "Later background output restores the dot")
+precondition(!DirectoryTabs.hasBackgroundUnread([badgeOther], currentId: "other"), "Selecting the unread Tab excludes it")
+badgeOther.isTabClosed = true
+precondition(!DirectoryTabs.hasBackgroundUnread([badgeCurrent, badgeOther], currentId: "current"), "Closed Tabs do not light the header dot")
+print("PASS: header dot reflects only unseen output in other open Tabs")
+
 let hour = 3_600_000.0
 let now = Date().timeIntervalSince1970 * 1000
 
@@ -84,6 +103,7 @@ precondition(openRow.menuActions.map(\.id) == ["rename", "pin", "archive", "shar
 precondition(row.preview == "session" && row.navigates && row.action && row.diff == ["add": 3, "del": 1])
 precondition(SessionRows.row(child).modelName == "session.notRun")
 var viewed = root
+viewed.archived = false
 viewed.lastViewedMessageAt = root.lastMessageAt
 precondition(!SessionRows.row(viewed).unread && SessionRows.isUnread(viewed), "A local view clears emphasis without changing the server watermark")
 precondition(SessionRows.row(viewed).actions.map(\.id) == ["archive"], "Viewed output must not offer Mark Read")
@@ -170,38 +190,9 @@ precondition(!inbox.flatMap(\.rows).contains { $0.id == "archived" }, "Archived 
 precondition(InboxSections.inbox(inboxCatalog, keyword: "archived", now: midday).flatMap(\.rows).map(\.id) == ["archived"])
 precondition(inbox[2].rows[0].imageTint == "blue" && inbox[4].rows[0].imageTint.isEmpty && inbox[1].rows[1].imageTint == "danger")
 precondition(inbox[1].rows[0].subtitle == "lody-ios" && inbox.flatMap(\.rows).allSatisfy { $0.diff.isEmpty })
-precondition(InboxSections.inbox(inboxCatalog, chatOnly: true, now: midday).isEmpty)
 
 let many = SessionCatalog(projects: [SessionProject(id: "p", name: "lody-ios", rootPath: "/Users/me/git/lody-ios"), SessionProject(id: "empty", name: "Empty")],
   sessions: (0..<6).map { item("s\($0)", at: midday - Double($0) * hour) } + [item("c1", project: "m:unassigned"), item("pin") { $0.pinned = true }])
-let projects = InboxSections.projects(many, now: midday)
-precondition(projects.map(\.id) == ["pinned", "empty", "p", "chat"], "\(projects.map(\.id))")
-precondition(projects[0].rows.map(\.id) == ["toggle:pinned", "pin"] && projects[0].headerExpanded == true)
-precondition(projects[1].rows[0].id == "project:empty" && projects[1].rows[0].badge == "0" && projects[1].rows[0].navigates)
-let lody = projects[2]
-precondition(lody.rows[0].id == "toggle:p" && lody.rows[0].subtitle == "~/git/lody-ios" && lody.rows[0].monogram == "l")
-precondition(lody.rows.dropFirst().map(\.id) == ["s0", "s1", "s2", "s3", "s4", "project:p"] && lody.rows.last?.title == "inbox.project.more")
-precondition(projects[3].rows.map(\.id) == ["toggle:chat", "c1"] && projects[3].rows[0].menuActions.map(\.id) == ["newChat"])
-let collapsed = InboxSections.projects(many, expanded: ["p": false], now: midday)[2]
-precondition(collapsed.headerExpanded == false && collapsed.rows[0].badge == "6" && collapsed.rows.count == lody.rows.count)
-
-var urgent = many
-urgent.projects.append(SessionProject(id: "z", name: "zeta"))
-urgent.sessions.append(item("z1", "waiting", project: "z", at: midday - 90 * day))
-precondition(InboxSections.projects(urgent, sort: .urgency, now: midday).map(\.id) == ["pinned", "z", "p", "empty", "chat"])
-precondition(InboxSections.projects(urgent, sort: .activity, now: midday).map(\.id) == ["pinned", "p", "z", "empty", "chat"])
-let spaced = InboxSections.projects(urgent, sort: .urgency, now: midday)
-precondition(spaced.dropFirst().map(\.gap) == [.group, .section, .section, .group],
-             "Pinned and Chat stand apart from the projects; projects sit a smaller step apart: \(spaced.map(\.gap))")
-var unpinnedCatalog = many
-unpinnedCatalog.sessions.removeAll { $0.pinned }
-precondition(InboxSections.projects(unpinnedCatalog, now: midday).filter { $0.id != "chat" }.allSatisfy { $0.gap == .section },
-             "Without a pinned group, projects only use the smaller step")
-let zetaParent = InboxSections.projects(urgent, now: midday).first { $0.id == "z" }!.rows[0]
-precondition(zetaParent.value == "inbox.project.attention" && zetaParent.imageTint == "warning")
-
-precondition(InboxSections.reconcilePinOrder(["b", "gone", "a"], pinned: ["a", "b", "c", "d"]) { ["c": 1, "d": 2][$0] ?? 0 } == ["d", "c", "b", "a"])
-precondition(InboxSections.orderPinned([item("x") { $0.pinned = true }, item("y", at: midday + 1) { $0.pinned = true }], pinOrder: ["x"]).map(\.id) == ["x", "y"])
 
 let hits = InboxSections.match(many, keyword: "LODY")
 precondition(hits.projectIds == ["p"] && hits.sessions.count == 7)
@@ -263,9 +254,8 @@ sidePanel.id = "side"
 sidePanel.childSessionPlacement = "side-panel"
 let directoryFamily = DirectoryTabs.sessions(current: directoryTab, all: [openedChat, sidePanel, directoryTab, tabRoot])
 precondition(directoryFamily.map(\.id) == ["root", "tab"])
-precondition(DirectoryTabs.symbol([live, chat]) == "hand.raised")
 precondition(DirectoryTabs.sessions(current: tabRoot, all: [tabRoot, openedChat]).count == 1)
-print("PASS: directory Tabs exclude opened chats and side panels, and waiting outranks running")
+print("PASS: directory Tabs exclude opened chats and side panels")
 
 var closedRoot = tabRoot
 closedRoot.isTabClosed = true

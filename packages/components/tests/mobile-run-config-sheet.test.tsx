@@ -1,7 +1,5 @@
 import { singleMachineRole, composerItemsOf } from './agent-role-fixture';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement, useState, type ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';

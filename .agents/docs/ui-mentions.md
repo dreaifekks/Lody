@@ -94,13 +94,23 @@ a character-aligned mirror whenever the two laid out differently, as with a
 scrollbar narrowing only the textarea
 ([decision](../notes/implemented/architecture/2026-11-10-composer-lexical-editor.md)).
 A committed mention is an inline decorator node that renders the chip through
-`getMentionChip`. The owner still holds a plain string and UTF-16 ranges;
+`getMentionChip`. Icons and labels use normal layout; canonical label delimiters
+never occupy invisible character boxes. Chips paint one selected surface while
+text uses the native range selection, and pointer drags or Shift-click do not
+activate their preview. The owner still holds a plain string and UTF-16 ranges;
 `ui/mention/composer-document.ts` converts between that model and the editor's
 single paragraph. Callers read and write text and caret only through
 `ui/mention/composer-input.ts`. A composer without mention sources keeps a plain
 `@lody/ui` textarea, which that API serves too.
 
 ## Ranking
+
+Typed `@` searches merge the capped source results into one list. Selectable
+matches come first, Agent Roles take priority, and fuzzy scores order the
+remaining matches across sources. Equal scores retain source order. Each row
+shows its source, with matching category links after the results; source loading
+and error messages remain visible. Bare `@` and namespaced searches retain their
+category navigation and source-specific ordering.
 
 File menus use `useMentionFileSearch`: a Worker owns the file/directory index,
 path metadata, and matching. The registry reads only the bounded current result.
@@ -226,9 +236,8 @@ so a stale Role never expands to a usable reference.
 A Role mention borrows the session mention's shape with a different payload. The
 emoji replaces the category glyph because the category header already says these
 are Agent Roles, so a second generic glyph only crowds out the Role's own mark;
-the emoji is boxed and clipped because the icon slot covers one character of real
-text and an emoji glyph is wider than a latin one. The committed range carries
-only the instance id, and only the composer holds the live catalog, which is why the
+the emoji uses the same layout box as other mention icons. The committed range
+carries the selected target instance id, and only the composer holds the live catalog, which is why the
 composer wraps the caller's chip resolver.
 
 The transcript freezes the mark with the span so renaming or re-marking a Role

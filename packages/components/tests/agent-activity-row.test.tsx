@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SessionId } from '@lody/shared';
@@ -149,7 +147,17 @@ describe('live agent status', () => {
   /** Moves the clock and every interval (the live tickers) together. */
   const useTickingClock = (iso: string) => {
     vi.useRealTimers();
-    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    // jsdom drives native rAF with setInterval. Fake both so restoring the
+    // ticker clock cannot strand its native frame queue for the next suite.
+    vi.useFakeTimers({
+      toFake: [
+        'Date',
+        'setInterval',
+        'clearInterval',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+      ],
+    });
     vi.setSystemTime(new Date(iso));
   };
   const advance = (ms: number) => act(async () => vi.advanceTimersByTime(ms));

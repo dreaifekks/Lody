@@ -120,10 +120,6 @@ import type {
   SessionCancelResponse,
   SessionGoalAction,
   SessionGoalResponse,
-  SessionPreparationCancelSpec,
-  SessionPreparationSpec,
-  SessionPrepareCancelResponse,
-  SessionPrepareResponse,
   SessionTerminateResponse,
   SessionDispatchTurnResponse,
   SessionEditAndResendResponse,
@@ -180,10 +176,6 @@ import {
   MachinePreviewControlResponseSchema,
   MachineUpgradeResponseSchema,
   SessionCancelResponseSchema,
-  SessionPreparationCancelSpecSchema,
-  SessionPreparationSpecSchema,
-  SessionPrepareCancelResponseSchema,
-  SessionPrepareResponseSchema,
   SessionTerminateResponseSchema,
   SessionDispatchTurnResponseSchema,
   SessionEditAndResendResponseSchema,
@@ -335,8 +327,6 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'session/fork',
   'session/edit-and-resend',
   'session/dispatch-turn',
-  'session/prepare',
-  'session/prepare-cancel',
   'session/history-read',
   'session/history-watch',
   'session/history-write',
@@ -452,6 +442,7 @@ export const LoroMachineAcpCapabilitiesRefreshRpcRequestSchema = BaseRpcRequestS
     .object({
       configId: AgentConfigIdSchema,
       force: z.boolean().optional(),
+      readModelOptions: z.literal(true).optional(),
     })
     .strict(),
 }).strict();
@@ -761,16 +752,6 @@ export const LoroSessionDispatchTurnRpcRequestSchema = BaseRpcRequestSchema.exte
     .strict(),
 }).strict();
 
-export const LoroSessionPrepareRpcRequestSchema = BaseRpcRequestSchema.extend({
-  method: z.literal('session/prepare'),
-  params: SessionPreparationSpecSchema,
-}).strict();
-
-export const LoroSessionPrepareCancelRpcRequestSchema = BaseRpcRequestSchema.extend({
-  method: z.literal('session/prepare-cancel'),
-  params: SessionPreparationCancelSpecSchema,
-}).strict();
-
 /** Roost history payloads are encrypted with the owner-session envelope. */
 export const LoroSessionHistoryReadRpcRequestSchema = BaseRpcRequestSchema.extend({
   method: z.literal('session/history-read'),
@@ -936,8 +917,6 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroSessionForkRpcRequestSchema,
   LoroSessionEditAndResendRpcRequestSchema,
   LoroSessionDispatchTurnRpcRequestSchema,
-  LoroSessionPrepareRpcRequestSchema,
-  LoroSessionPrepareCancelRpcRequestSchema,
   LoroSessionHistoryReadRpcRequestSchema,
   LoroSessionHistoryWatchRpcRequestSchema,
   LoroSessionHistoryWriteRpcRequestSchema,
@@ -1060,10 +1039,6 @@ export type LoroSessionTerminateRpcRequest = z.infer<typeof LoroSessionTerminate
 export type LoroSessionForkRpcRequest = z.infer<typeof LoroSessionForkRpcRequestSchema>;
 export type LoroSessionEditAndResendRpcRequest = z.infer<
   typeof LoroSessionEditAndResendRpcRequestSchema
->;
-export type LoroSessionPrepareRpcRequest = z.infer<typeof LoroSessionPrepareRpcRequestSchema>;
-export type LoroSessionPrepareCancelRpcRequest = z.infer<
-  typeof LoroSessionPrepareCancelRpcRequestSchema
 >;
 export type LoroSessionHistoryReadRpcRequest = z.infer<
   typeof LoroSessionHistoryReadRpcRequestSchema
@@ -1795,8 +1770,6 @@ export type LoroMachineRpcResult =
   | SessionForkResponse
   | SessionEditAndResendResponse
   | SessionDispatchTurnResponse
-  | SessionPrepareResponse
-  | SessionPrepareCancelResponse
   | SessionHistoryReadResponse
   | SessionHistoryWriteResponse
   | SessionPreviewCreateResponse
@@ -1853,7 +1826,6 @@ const toLegacyRpcErrorResponse = (
     type?: LocalProjectControlRequest['type'];
   },
   dispatchContext?: { sessionId: string; userTurnId: string },
-  preparationContext?: { preparationId: string; sessionId: string },
   historyContext?: { sessionId: string; operation?: SessionHistoryWriteOperation },
   historyFailure?: SessionHistoryRpcFailure
 ): LoroMachineRpcResult => {
@@ -2068,28 +2040,6 @@ const toLegacyRpcErrorResponse = (
       sessionId: (dispatchContext?.sessionId ?? '') as SessionDispatchTurnResponse['sessionId'],
       userTurnId: dispatchContext?.userTurnId ?? '',
       accepted: false,
-      disposition: 'error',
-      error: `${error.code}: ${error.message}`,
-    };
-  }
-
-  if (method === 'session/prepare') {
-    return {
-      type: 'session/prepare_response',
-      preparationId: preparationContext?.preparationId ?? '',
-      sessionId: (preparationContext?.sessionId ?? '') as SessionPrepareResponse['sessionId'],
-      accepted: false,
-      disposition: 'error',
-      error: `${error.code}: ${error.message}`,
-    };
-  }
-
-  if (method === 'session/prepare-cancel') {
-    return {
-      type: 'session/prepare-cancel_response',
-      preparationId: preparationContext?.preparationId ?? '',
-      sessionId: (preparationContext?.sessionId ?? '') as SessionPrepareCancelResponse['sessionId'],
-      cancelled: false,
       disposition: 'error',
       error: `${error.code}: ${error.message}`,
     };
@@ -2325,14 +2275,6 @@ const parseRpcSuccessResult = async (
     const parsed = SessionDispatchTurnResponseSchema.safeParse(response.result);
     return parsed.success ? (parsed.data as SessionDispatchTurnResponse) : null;
   }
-  if (response.method === 'session/prepare') {
-    const parsed = SessionPrepareResponseSchema.safeParse(response.result);
-    return parsed.success ? (parsed.data as SessionPrepareResponse) : null;
-  }
-  if (response.method === 'session/prepare-cancel') {
-    const parsed = SessionPrepareCancelResponseSchema.safeParse(response.result);
-    return parsed.success ? (parsed.data as SessionPrepareCancelResponse) : null;
-  }
   if (isOwnerScopedEncryptedRpcMethod(response.method)) {
     const envelope = CodeCollabV2RpcContentEnvelopeSchema.safeParse(response.result);
     if (!envelope.success) {
@@ -2439,7 +2381,6 @@ export type LoroStreamsRpcPendingRegistration = {
     type?: LocalProjectControlRequest['type'];
   };
   dispatchContext?: { sessionId: string; userTurnId: string };
-  preparationContext?: { preparationId: string; sessionId: string };
   historyContext?: { sessionId: string; operation?: SessionHistoryWriteOperation };
   codeCollabOwnerSessionId?: string;
   onAcpBinaryProgress?: (message: MachineAcpBinaryProgressMessage) => void;
@@ -2968,7 +2909,6 @@ export class LoroStreamsRpcResponseDispatcher {
           finalPending.previewContext,
           finalPending.localProjectContext,
           finalPending.dispatchContext,
-          finalPending.preparationContext,
           finalPending.historyContext,
           {
             source: error === parsed.data.error ? 'remote' : 'protocol',
@@ -3008,7 +2948,6 @@ export class LoroStreamsRpcResponseDispatcher {
           finalPending.previewContext,
           finalPending.localProjectContext,
           finalPending.dispatchContext,
-          finalPending.preparationContext,
           finalPending.historyContext,
           {
             source: 'protocol',
@@ -3238,6 +3177,8 @@ export class LoroStreamsMachineRpcClient {
   async requestMachineAcpCapabilitiesRefresh(options: {
     configId: AgentConfigId;
     force?: boolean;
+    /** Only for a daemon that advertised `acpModelOptionsRead`; its params are strict. */
+    readModelOptions?: true;
     onProgress?: (message: MachineAcpBinaryProgressMessage) => void;
     signal?: AbortSignal;
     timeoutMs?: number;
@@ -3250,6 +3191,7 @@ export class LoroStreamsMachineRpcClient {
       params: {
         configId: options.configId,
         ...(options.force ? { force: true } : {}),
+        ...(options.readModelOptions ? { readModelOptions: true } : {}),
       },
     })) as MachineAcpCapabilitiesRefreshResponse | null;
   }
@@ -4300,16 +4242,6 @@ export class LoroStreamsMachineRpcClient {
           };
         }
       | {
-          method: 'session/prepare';
-          timeoutMs: number;
-          params: SessionPreparationSpec;
-        }
-      | {
-          method: 'session/prepare-cancel';
-          timeoutMs: number;
-          params: SessionPreparationCancelSpec;
-        }
-      | {
           method: 'session/history-read' | 'session/history-watch';
           timeoutMs: number;
           ownerSessionId: string;
@@ -4587,13 +4519,6 @@ export class LoroStreamsMachineRpcClient {
         args.method === 'session/dispatch-turn'
           ? { sessionId: args.params.sessionId, userTurnId: args.params.userTurnId }
           : undefined,
-      preparationContext:
-        args.method === 'session/prepare' || args.method === 'session/prepare-cancel'
-          ? {
-              preparationId: args.params.preparationId,
-              sessionId: args.params.sessionId,
-            }
-          : undefined,
       previewContext:
         args.method === 'session/preview-create' ||
         args.method === 'session/preview-revoke' ||
@@ -4742,12 +4667,6 @@ export class LoroStreamsMachineRpcClient {
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'session/dispatch-turn':
-          request = { ...envelope, method: args.method, params: args.params };
-          break;
-        case 'session/prepare':
-          request = { ...envelope, method: args.method, params: args.params };
-          break;
-        case 'session/prepare-cancel':
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'session/history-read':
@@ -4981,7 +4900,6 @@ export class LoroStreamsMachineRpcClient {
         pending.previewContext,
         pending.localProjectContext,
         pending.dispatchContext,
-        pending.preparationContext,
         pending.historyContext,
         {
           source: 'transport',

@@ -62,11 +62,16 @@ write the protocol relies on for authority.
 
 - `read(anchor)` returns every record from genesis and the checkpoint the log
   claims. The library re-verifies all of it.
+- Optional `readFrom(anchor, base)` returns only the untrusted suffix after a genuine
+  verified view. Submission verifies the suffix and its checkpoint; unsupported adapters,
+  older parents and pins before retained history use `read`. Server status never
+  establishes commitment.
 - `appendCas(anchor, expected, record)` appends **only if** the log still ends
   at `expected`. It must never append unconditionally. Appending the same bytes
   twice must be idempotent or rejected.
-- Failures are `LedgerLogError`. After any failure the library reads back to
-  learn the outcome, so a lost response is safe.
+- Failures are `LedgerLogError`. The library reads back to learn uncertain outcomes.
+  Only an explicitly qualified first-attempt self-service quota refusal can release
+  its unsent original; a lost response always retains the exact original for retry.
 
 ### LedgerFeedSource
 
@@ -107,6 +112,13 @@ Stores encrypted recovery vaults: immutable entries plus an index replaced by
 compare-and-swap. It never receives the unlock secret, the vault master key or
 a private recovery key. Wire schemas are in `@lody/e2ee-core/host`; see the
 [backend guide](backend-guide.md#5-recovery-vault).
+
+Optional `RecoveryVaultStore.readEntries` reads 1–8 distinct ids in request order,
+with null for missing entries and a 256 KiB combined body budget. Password unlock
+uses it for its fixed eight slots, validates count and ids, then performs the same
+candidate selection, Argon2id, active-index authentication and rollback checks.
+Adapters use four concurrent original reads only when the endpoint is definitively
+absent on an older deployment; other refusals and malformed replies remain failures.
 
 `RecoveryVault.readEntry` borrows its own temporary master-key copy under the
 session lock, then releases that lock before fetching immutable ciphertext. A
@@ -238,6 +250,10 @@ record this device's own publication, and verifies it first. Typically a
 backwards scan of your local feed.
 
 ### LedgerSync
+
+Optional `ingest(page, checkpoint)` sends inline originals through the same feed
+verification and persistence as ordinary reads. The caller supplies the independent
+checkpoint and exact current request offset. It grants no authority or freshness.
 
 `refresh()` selects the target checkpoint independently and reads the local
 feed up to it; `current()` returns the stored state. `WorkspaceControl` and

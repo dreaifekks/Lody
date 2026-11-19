@@ -1,7 +1,5 @@
 import { flushSync } from 'react-dom';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import type { SessionSharingState } from '../src/lib/session-sharing';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';

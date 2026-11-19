@@ -20,7 +20,7 @@ export type ProjectRunMember = {
   access?: 'worktree' | 'additional' | 'link';
   repoFullName?: string;
   branch?: string;
-  diff?: { add: number; del: number };
+  diff?: { add: number; del: number; files?: number };
   dirty?: boolean;
   unpushed?: boolean;
   /** The member repository's current PR: the last one recorded for it. */
@@ -60,13 +60,20 @@ export type Session = {
   lastReadAt?: number;
   lastRunningSeen?: number;
   awaitingUserSince?: number;
+  /** Latest user turn the machine finished (session meta `lastHandledUserMsgId`). */
+  lastHandledUserMsgId?: string;
+  /**
+   * Latest user turn that ended in failure (session meta `lastFailedUserMsgId`). The
+   * conversation is failed only while it equals `lastHandledUserMsgId`.
+   */
+  lastFailedUserMsgId?: string;
   branchName?: string;
   /** Web `session.baseBranch || project.branch`: the branch the session started from. */
   baseBranch?: string;
   iosSimulatorPreviewRequestId?: string;
   androidEmulatorPreviewRequestId?: string;
   pullRequests?: import('./pull-request').PullRequestReference[];
-  diff?: { add: number; del: number };
+  diff?: { add: number; del: number; files?: number };
   /** Uncommitted changes / local commits the remote lacks; drive the action bar's Commit & Push. */
   workspaceDirty?: boolean;
   workspaceUnpushed?: boolean;

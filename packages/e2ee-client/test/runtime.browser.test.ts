@@ -19,6 +19,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { KEY_DELIVERY_RETRY_DELAYS } from '../src/account-requester';
 
 type Fixture = typeof import('./browser/host-fixture');
 type Surface = typeof globalThis & { HostFixture: Fixture };
@@ -26,6 +27,7 @@ const raw = (page: Page, action: string) =>
   page.evaluate((a) => (globalThis as Surface).HostFixture.invoke(a), action);
 const call = (page: Page, action: string) =>
   page.evaluate((a) => (globalThis as Surface).HostFixture.runtimeInvoke(a), action);
+const record = (result: { value?: unknown }) => result.value as Record<string, string>;
 const good = async (page: Page, action: string) => {
   const result = await call(page, action);
   expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -158,6 +160,14 @@ function bundleControlRoute() {
             builder.onResolve(
               { filter: /^react(?:-dom)?(?:\/.*)?$|^effect$|^@lody\/e2ee-core\/protocol$/ },
               ({ path }) => ({ path: testRequire.resolve(path) })
+            );
+            // Relatively imported lost-access display page and hosted workspace removal.
+            builder.onResolve(
+              {
+                filter:
+                  /^(?:\.\/|(?:\.\.\/)+components\/pages\/)e2ee-(?:lost-access|workspace-removal)$/,
+              },
+              () => ({ path: ports })
             );
             builder.onResolve(
               {
@@ -351,18 +361,30 @@ it.each(['chromium', 'webkit'] as const)(
       expect(iroh.targets).toEqual([iroh.machine]);
       await savesSignedSchedule(page);
       expect((await raw(page, 'rotateRemote')).ok).toBe(true);
+      // Another device's frame at an epoch this device's verified ledger does not hold
+      // yet (Streams ahead of the ledger feed) is retryable lag within the bounded
+      // lookahead; a forged far-future epoch keeps its original failure. Once the
+      // ledger holds the epoch, the read stays retryable until the key arrives.
+      expect(await good(page, 'sealRemoteRotated')).toEqual({ epoch: 1 });
+      expect((await call(page, 'openRemote')).reason).toBe('key-pending');
+      const farFuture = await call(page, 'openRemoteFarFuture');
+      expect(farFuture.ok).toBe(false);
+      expect(farFuture.reason).not.toBe('key-pending');
       expect(await good(page, 'refresh')).toMatchObject({
         epoch: 1,
         hasCurrentKey: false,
         writeEpoch: 0,
       });
+      expect((await call(page, 'openRemote')).reason).toBe('key-pending');
       expect((await raw(page, 'graceLastMillisecond')).ok).toBe(true);
       expect(await good(page, 'sealOldHint')).toEqual({ epoch: 0 });
       expect((await raw(page, 'graceExpired')).ok).toBe(true);
       expect((await call(page, 'seal')).reason).toBe('key-update-required');
       expect(await good(page, 'openBody')).toEqual([72, 105]);
       expect((await raw(page, 'stageCurrent')).ok).toBe(true);
-      expect(await good(page, 'receive')).toMatchObject({ hasCurrentKey: true, writeEpoch: 1 });
+      // The shared reader's reception round installs the key; the pending read succeeds.
+      expect(await good(page, 'receiveOnly')).toMatchObject({ hasCurrentKey: true, writeEpoch: 1 });
+      expect(await good(page, 'openRemote')).toEqual([72, 105]);
       expect(await good(page, 'sealOldHint')).toEqual({ epoch: 1 });
       expect(await good(page, 'openBody')).toEqual([72, 105]);
       // Team management on the portable runtime: invite, list, admit exactly the shown
@@ -468,9 +490,9 @@ it.each(['chromium', 'webkit'] as const)(
       await page.evaluate(() => (globalThis as Surface).HostFixture.bootRuntime());
       expect(await good(page, 'open')).toMatchObject({ writeEpoch: 1 });
       expect((await raw(page, 'revoke')).ok).toBe(true);
-      await good(page, 'refresh');
-      expect((await call(page, 'seal')).ok).toBe(false);
-      expect((await call(page, 'grant')).ok).toBe(false);
+      expect((await call(page, 'refresh')).reason).toBe('e2ee_device_revoked');
+      expect((await call(page, 'seal')).reason).toBe('e2ee_device_revoked');
+      expect((await call(page, 'grant')).reason).toBe('e2ee_device_revoked');
       expect(
         ((await good(page, 'ledger')) as { status: { length: number } }).status.length
       ).toBeGreaterThan(2);
@@ -597,6 +619,100 @@ it('an owner removes with the key update and an administrator removes plainly, t
 // The approval's first key round ends with the applicant's slot still NeedsEnvelope. The
 // runtime retries on its own after the injected backoff, without the approver pressing
 // retry, and the applicant's envelope is stored.
+// Another device's rotation wins this device's key-update CAS: acknowledging the lost
+// candidate first deletes its staged envelope group, now proven obsolete.
+it('a key update that loses its epoch to another rotation deletes its staged envelope group', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lody-rotation-conflict-'));
+  let context: BrowserContext | undefined;
+  try {
+    const opened = await openedOwnerRuntime(directory);
+    context = opened.context;
+    const page = opened.page;
+    expect((await raw(page, 'addMachine')).ok).toBe(true);
+    await good(page, 'refresh');
+    await good(page, 'revokeMachine');
+    expect(await good(page, 'refresh')).toMatchObject({ epoch: 0, rotationRequired: true });
+    expect((await raw(page, 'raceNextRotation')).ok).toBe(true);
+    // The candidate settles as Conflict; its group goes before the acknowledgement.
+    expect((await call(page, 'updateKeys')).reason).toBe('conflict');
+    const { staged, deleted } = (await raw(page, 'stagingDeletes')).value as {
+      staged: string[];
+      deleted: { recordHash: string; occupiedEpoch: number }[];
+    };
+    expect(staged).toHaveLength(1);
+    expect(deleted).toEqual([{ recordHash: staged[0], occupiedEpoch: 1 }]);
+    // The acknowledged conflict no longer blocks key updates at the winning epoch.
+    expect(await good(page, 'refresh')).toMatchObject({ epoch: 1, rotationRequired: false });
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('multi-epoch updateKeys skips historical key unwraps and redundant feed/log round-trips while keeping historical decrypts usable', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lody-update-keys-perf-'));
+  let context: BrowserContext | undefined;
+  try {
+    const opened = await openedOwnerRuntime(directory);
+    context = opened.context;
+    const page = opened.page;
+    expect(await good(page, 'seal')).toEqual({ epoch: 0 });
+    expect(await good(page, 'openBody')).toEqual([72, 105]);
+
+    // Advance from epoch 0 to epoch 2 so historical epochs 0 and 1 exist.
+    for (const expectedEpoch of [1, 2]) {
+      expect((await raw(page, 'addFreshMachine')).ok).toBe(true);
+      await good(page, 'refresh');
+      await good(page, 'revokeMachine');
+      await good(page, 'updateKeys');
+      expect(await good(page, 'refresh')).toMatchObject({
+        epoch: expectedEpoch,
+        rotationRequired: false,
+        hasCurrentKey: true,
+      });
+    }
+
+    // Prepare epoch 2 -> 3 rotation with current key already installed, then measure updateKeys.
+    expect((await raw(page, 'addFreshMachine')).ok).toBe(true);
+    await good(page, 'refresh');
+    await good(page, 'revokeMachine');
+    await good(page, 'resetTelemetry');
+    await good(page, 'updateKeys');
+    expect(await good(page, 'refresh')).toMatchObject({
+      epoch: 3,
+      rotationRequired: false,
+      hasCurrentKey: true,
+    });
+    const metrics = (await good(page, 'telemetry')) as {
+      feedReadAfterCalls: number;
+      logReadFromCalls: number;
+      logReadCalls: number;
+      installedLoadEpochs: number[];
+    };
+    expect(metrics.logReadCalls).toBe(0);
+    expect(metrics.logReadFromCalls).toBeLessThanOrEqual(1);
+    expect(metrics.feedReadAfterCalls).toBeLessThanOrEqual(3);
+    expect(metrics.installedLoadEpochs.every((epoch) => epoch >= 2)).toBe(true);
+
+    // Historical decryption at epoch 0 still works on demand after skipping history during updateKeys.
+    expect(await good(page, 'openBody')).toEqual([72, 105]);
+
+    // Concurrent updateKeys + refresh serialize cleanly under the single session permit.
+    expect((await raw(page, 'addFreshMachine')).ok).toBe(true);
+    await good(page, 'refresh');
+    await good(page, 'revokeMachine');
+    await good(page, 'concurrentUpdateAndRefresh');
+    expect(await good(page, 'refresh')).toMatchObject({
+      epoch: 4,
+      rotationRequired: false,
+      hasCurrentKey: true,
+    });
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('a member key delivery that fails its first round is retried and delivered without user action', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'lody-member-key-retry-'));
   let context: BrowserContext | undefined;
@@ -609,8 +725,8 @@ it('a member key delivery that fails its first round is retried and delivered wi
       })
       .toEqual([{ requestId: opened.requestId, state: 'delivered' }]);
     const settled = (await good(opened.page, 'memberDeliveries')) as Deliveries;
-    // One bounded backoff, the first step of the desktop schedule, then the stored envelope.
-    expect(settled.sleeps).toEqual([10_000]);
+    // One bounded backoff, the schedule's short first step, then the stored envelope.
+    expect(settled.sleeps).toEqual([KEY_DELIVERY_RETRY_DELAYS[0]]);
     expect(settled.envelopes[0]).toBe(false);
     expect(settled.envelopes.at(-1)).toBe(true);
   } finally {
@@ -1324,6 +1440,7 @@ it.each(['chromium', 'webkit'] as const)(
         format: 'iife',
         globalName: 'CustodyCacheFixture',
         target: 'safari16.4',
+        external: ['node:fs/promises'],
         write: false,
         logLevel: 'silent',
         alias: { '@': fileURLToPath(new URL('../../components/src', import.meta.url)) },
@@ -1724,7 +1841,7 @@ it('one key round sends every envelope waiting at the current epoch', async () =
       .poll(async () => ((await good(page, 'memberDeliveries')) as Deliveries).sleeps, {
         timeout: 30_000,
       })
-      .toEqual([10_000, 10_000]);
+      .toEqual([KEY_DELIVERY_RETRY_DELAYS[0], KEY_DELIVERY_RETRY_DELAYS[0]]);
     await good(page, 'memberAcceptKeys');
     await good(page, 'receive');
     expect(((await good(page, 'memberDeliveries')) as Deliveries).storedSinceAccept).toBe(2);
@@ -1821,6 +1938,184 @@ it('reopening after another device rotated the key installs it and delivers to t
       })
       .toBe(1);
     expect(await good(page, 'status')).toMatchObject({ epoch: 1, hasCurrentKey: true });
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+/** A fresh Chromium page with the host fixture, booted with an owned host and runtime. */
+async function bootedFixture(directory: string, qualifyHistory = false) {
+  const output = await build({
+    entryPoints: [fileURLToPath(new URL('./browser/host-fixture.ts', import.meta.url))],
+    bundle: true,
+    platform: 'browser',
+    format: 'iife',
+    globalName: 'HostFixture',
+    target: 'safari16.4',
+    write: false,
+    logLevel: 'silent',
+  });
+  const file = join(directory, 'index.html');
+  await writeFile(
+    file,
+    '<!doctype html><script>' +
+      output.outputFiles[0].text.replaceAll('</script', '<\\/script') +
+      '</script>'
+  );
+  const context = await chromium.launchPersistentContext(join(directory, 'profile'), {
+    headless: true,
+  });
+  const page = await context.newPage();
+  await page.goto(pathToFileURL(file).href);
+  await page.evaluate(async (qualify) => {
+    if (qualify) localStorage.setItem('qualify-approval-history', 'true');
+    await (globalThis as Surface).HostFixture.boot();
+    await (globalThis as Surface).HostFixture.bootRuntime();
+  }, qualifyHistory);
+  return { context, page };
+}
+
+it('a revoked personal device reports exact revocation, then re-pairs with a verified replacement', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lody-revoked-repair-'));
+  let context: BrowserContext | undefined;
+  try {
+    const booted = await bootedFixture(directory);
+    context = booted.context;
+    const page = booted.page;
+    const first = (await raw(page, 'prepare')).value as { requestHex: string };
+    expect((await raw(page, 'approve')).ok).toBe(true);
+    expect((await raw(page, 'claim')).ok).toBe(true);
+    expect((await raw(page, 'open')).ok).toBe(true);
+    const old = await good(page, 'open');
+    expect(await good(page, 'receive')).toMatchObject({ hasCurrentKey: true });
+    expect((await raw(page, 'rememberBinding')).value).toBe(
+      (old as { signingPublicKey: string }).signingPublicKey
+    );
+    // The owner revokes this device. Every admitted operation reports the exact loss
+    // from the verified ledger; ledger reads stay usable for the control page.
+    expect((await raw(page, 'revokeOpened')).ok).toBe(true);
+    expect((await call(page, 'refresh')).reason).toBe('e2ee_device_revoked');
+    expect((await call(page, 'status')).reason).toBe('e2ee_device_revoked');
+    expect((await call(page, 'grant')).reason).toBe('e2ee_device_revoked');
+    expect((await call(page, 'seal')).reason).toBe('e2ee_device_revoked');
+    expect(await good(page, 'ledger')).toMatchObject({ status: { membershipId: null } });
+    await good(page, 'close');
+    expect((await call(page, 'open')).reason).toBe('e2ee_device_revoked');
+    // A forged genesis never prepares an identity.
+    expect((await call(page, 'repairForgedGenesis')).reason).toBe('scope-mismatch');
+    // A new offer prepares a replacement identity; retries reuse it exactly.
+    const candidate = (await good(page, 'repairPrepare')) as { signingPublicKey: string };
+    expect(candidate.signingPublicKey).not.toBe(
+      (old as { signingPublicKey: string }).signingPublicKey
+    );
+    expect(await good(page, 'repairPrepare')).toEqual(candidate);
+    expect(await good(page, 'repairClaim')).toEqual({ ready: false, status: 'pending' });
+    // Approval evidence must be the complete genuine history admitting the candidate.
+    expect((await raw(page, 'approveCandidate')).ok).toBe(true);
+    expect((await raw(page, 'forgeCandidateHistory')).ok).toBe(true);
+    expect((await call(page, 'repairClaim')).ok).toBe(false);
+    expect((await raw(page, 'currentDevice')).value).toBe(
+      (old as { signingPublicKey: string }).signingPublicKey
+    );
+    expect((await raw(page, 'restoreCandidateHistory')).ok).toBe(true);
+    expect(await good(page, 'repairClaim')).toEqual({ ready: true, status: 'approved' });
+    // Opening activates it: the old incarnation drains and the current identity switches
+    // atomically, while the replaced identity's originals stay retained.
+    expect(await good(page, 'open')).toMatchObject({
+      signingPublicKey: candidate.signingPublicKey,
+    });
+    expect((await raw(page, 'currentDevice')).value).toBe(candidate.signingPublicKey);
+    expect((await raw(page, 'preservedOriginal')).value).toBe(first.requestHex);
+    expect(await good(page, 'receive')).toMatchObject({ hasCurrentKey: true });
+    expect((await call(page, 'seal')).ok).toBe(true);
+    await good(page, 'close');
+    await page.evaluate(() => (globalThis as Surface).HostFixture.stop());
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('account pairing replaces a revoked identity only on verified history evidence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lody-account-repair-'));
+  let context: BrowserContext | undefined;
+  try {
+    const booted = await bootedFixture(directory, true);
+    context = booted.context;
+    const page = booted.page;
+    expect((await raw(page, 'accountApproveAndAccept')).ok).toBe(true);
+    expect((await raw(page, 'accountOpen')).ok).toBe(true);
+    const old = (await raw(page, 'openedDevice')).value as string;
+    expect((await raw(page, 'rememberBinding')).value).toBe(old);
+    expect((await raw(page, 'revokeOpened')).ok).toBe(true);
+    // Without verified evidence of the loss, the retained identity is reused.
+    expect(record(await raw(page, 'accountPrepare')).signingPublicKey).toBe(old);
+    expect(record(await raw(page, 'accountPrepareWithStaleHistory')).signingPublicKey).toBe(old);
+    expect((await raw(page, 'accountPrepareWithForgedHistory')).ok).toBe(false);
+    expect((await raw(page, 'currentDevice')).value).toBe(old);
+    // The complete signed history shows the revocation: a fresh identity, never the old key.
+    const replacement = record(await raw(page, 'accountPrepareWithHistory'));
+    expect(replacement.signingPublicKey).not.toBe(old);
+    expect(record(await raw(page, 'accountPrepare')).signingPublicKey).toBe(
+      replacement.signingPublicKey
+    );
+    expect((await raw(page, 'accountAdmitReplacement')).value).toBe(replacement.signingPublicKey);
+    expect((await raw(page, 'accountOpen')).ok).toBe(true);
+    expect((await raw(page, 'openedDevice')).value).toBe(replacement.signingPublicKey);
+    expect((await raw(page, 'currentDevice')).value).toBe(replacement.signingPublicKey);
+    // Reopening finds the activated identity under its own account offer.
+    expect((await raw(page, 'accountOpen')).ok).toBe(true);
+    expect((await raw(page, 'openedDevice')).value).toBe(replacement.signingPublicKey);
+    await page.evaluate(() => (globalThis as Surface).HostFixture.stop());
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('a stalled remote round times out, releases the workspace and resumes its exact originals', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lody-stalled-round-'));
+  let context: BrowserContext | undefined;
+  try {
+    const booted = await bootedFixture(directory);
+    context = booted.context;
+    const page = booted.page;
+    expect((await raw(page, 'prepare')).ok).toBe(true);
+    expect((await raw(page, 'approve')).ok).toBe(true);
+    expect((await raw(page, 'claim')).ok).toBe(true);
+    await good(page, 'open');
+    await good(page, 'receive');
+    // A refresh whose ledger read never answers ends at its deadline as retryable, and
+    // the next refresh runs at once instead of waiting behind it.
+    expect((await raw(page, 'hangFeed')).ok).toBe(true);
+    await good(page, 'startRefresh');
+    expect((await raw(page, 'expireDeadlines')).ok).toBe(true);
+    expect(await good(page, 'workResult')).toEqual({ ok: false, reason: 'network' });
+    expect((await raw(page, 'networkBack')).ok).toBe(true);
+    expect(await good(page, 'refresh')).toMatchObject({ hasCurrentKey: true });
+    // A pairing exchange that never answers releases the host; the retry resends the
+    // exact retained request (the relay refuses a changed one) with the same identity.
+    expect((await raw(page, 'hangExchange')).ok).toBe(true);
+    await good(page, 'startRepairPrepare');
+    expect((await raw(page, 'expireDeadlines')).ok).toBe(true);
+    expect(await good(page, 'workResult')).toEqual({ ok: false, reason: 'network' });
+    expect((await raw(page, 'networkBack')).ok).toBe(true);
+    const candidate = await good(page, 'repairPrepare');
+    expect(await good(page, 'repairPrepare')).toEqual(candidate);
+    // A governance append that landed but never answered: its original stays journaled.
+    // The retry settles those exact bytes and is not signed a second time.
+    expect((await raw(page, 'hangAppendLanded')).ok).toBe(true);
+    await good(page, 'startRevokeOwner');
+    expect((await raw(page, 'expireDeadlines')).ok).toBe(true);
+    expect(await good(page, 'workResult')).toEqual({ ok: false, reason: 'network' });
+    expect((await raw(page, 'networkBack')).ok).toBe(true);
+    expect((await raw(page, 'ownerRevocations')).value).toBe(1);
+    await good(page, 'revokeOwner');
+    expect((await raw(page, 'ownerRevocations')).value).toBe(1);
+    expect(await good(page, 'refresh')).toMatchObject({ hasCurrentKey: true });
+    await good(page, 'close');
+    await page.evaluate(() => (globalThis as Surface).HostFixture.stop());
   } finally {
     await context?.close();
     await rm(directory, { recursive: true, force: true });

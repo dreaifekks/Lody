@@ -100,7 +100,7 @@ final class LodyChatView: LodyAppearanceView, UICollectionViewDelegateFlowLayout
   var onComposerOptionChange: ([String: Any]) -> Void = { _ in }
   var onMentionBrowse: ([String: Any]) -> Void = { _ in }
   let titleButton = ChatNavigationTitleButton()
-  var pageOwnsHeader = false
+  var pageOwnsHeader = false { didSet { composer.fullScreenTopInset = pageHeaderHeight } }
   var pageHeaderHeight: CGFloat { pageOwnsHeader ? 56 : 0 }
   var tabsAnchorView: UIView { titleButton }
   private var navigationTitle = ""
@@ -130,6 +130,8 @@ final class LodyChatView: LodyAppearanceView, UICollectionViewDelegateFlowLayout
   let overlay = ChatOverlay()
   var localAttachments: [String: [ChatMessageAttachment]] = [:]
   var expandedPlans = Set<String>()
+  /// Plans already opened in full for a pending approval, so a reader's fold sticks.
+  var awaitingPlansOpened = Set<String>()
   var expandedMessages = Set<String>()
   /// Finished turns whose "Worked for …" fold the reader opened in place.
   var expandedWork = Set<String>()
@@ -1026,6 +1028,7 @@ final class LodyChatView: LodyAppearanceView, UICollectionViewDelegateFlowLayout
     incoming.onComposerOptionChange = old.onComposerOptionChange
     incoming.onDraftChange = old.onDraftChange
     incoming.allowsFullScreen = old.allowsFullScreen
+    incoming.fullScreenTopInset = old.fullScreenTopInset
     // The conversation's run config, not the creation page's, answers the chip from here on.
     incoming.onRunConfig = old.onRunConfig
     incoming.cardStyle = old.cardStyle

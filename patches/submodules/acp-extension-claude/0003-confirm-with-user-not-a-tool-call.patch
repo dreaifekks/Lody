@@ -1,8 +1,8 @@
 diff --git a/src/acp-agent.ts b/src/acp-agent.ts
-index a807e4c..5be9457 100644
+index 76d557f..8311488 100644
 --- a/src/acp-agent.ts
 +++ b/src/acp-agent.ts
-@@ -11058,7 +11058,8 @@ export class ClaudeAcpAgent {
+@@ -11059,7 +11059,8 @@ export class ClaudeAcpAgent {
      if (
        !parentToolUseId &&
        notificationSessionId === sessionId &&
@@ -12,7 +12,7 @@ index a807e4c..5be9457 100644
      ) {
        recordForegroundToolCall(session, toolCallId);
      }
-@@ -14595,6 +14596,9 @@ function recordToolCallParent(session: Session, toolCallId: string, parentToolUs
+@@ -14596,6 +14597,9 @@ function recordToolCallParent(session: Session, toolCallId: string, parentToolUs
  
  const MAX_DISPATCHED_TOOL_CALLS = 1000;
  

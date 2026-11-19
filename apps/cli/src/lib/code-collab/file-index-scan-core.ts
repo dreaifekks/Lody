@@ -13,6 +13,7 @@ import type {
   CodeCollabV2AllChangesState,
   CodeCollabV2AllChangesValue,
   CodeCollabV2FileTreeValue,
+  SessionDiffStats,
 } from '@lody/shared';
 
 // The shared facade directly: the CLI one loads the daemon's winston logger.
@@ -253,6 +254,26 @@ function parseIgnoredGitPaths(stdout: string): GitTreePath[] {
 
 export type ProjectGitMember = { readonly path: string; readonly base: string };
 
+export type WorkspaceDiffSummary = {
+  readonly files: number;
+  readonly allChange: SessionDiffStats['allChange'] | null;
+};
+
+/** File presence remains known even when some text line counts cannot be read. */
+export function summarizeAllChanges(changes: CodeCollabV2AllChangesState): WorkspaceDiffSummary {
+  let add = 0;
+  let del = 0;
+  let complete = true;
+  for (const change of Object.values(changes)) {
+    if (change === true || change.diff === undefined) complete = false;
+    else {
+      add += change.diff[0];
+      del += change.diff[1];
+    }
+  }
+  return { files: Object.keys(changes).length, allChange: complete ? { add, del } : null };
+}
+
 export async function resolveProjectGitDirectory(
   root: string,
   memberPath: string
@@ -345,7 +366,7 @@ export async function computeAllChanges(
   const nameStatus = nameStatusResult.value;
   const untracked = untrackedResult.value;
   if (!numstat.ok && !nameStatus.ok && !untracked.ok) {
-    return {};
+    throw new Error('Git workspace comparison could not be read.');
   }
 
   const deletedPaths = nameStatus.ok
@@ -361,8 +382,10 @@ export async function computeAllChanges(
       if (!filePath) continue;
       const normalizedPath = normalizeGitPath(filePath);
       if (addRaw === '-' || delRaw === '-') {
-        // Binary: no line counts, but a deletion must stay a deletion.
-        changes[normalizedPath] = deletedPaths.has(normalizedPath) ? { del: true } : true;
+        // A confirmed binary contributes no text lines, but remains a changed path.
+        changes[normalizedPath] = deletedPaths.has(normalizedPath)
+          ? { diff: [0, 0], del: true }
+          : { diff: [0, 0] };
         continue;
       }
       const add = Number(addRaw);
@@ -461,7 +484,7 @@ async function lineStatsForUntrackedFile(
   try {
     const absolutePath = path.resolve(workspaceRoot, workspacePath);
     const bytes = await readFile(absolutePath, { signal });
-    if (hasBinaryNul(bytes)) return true;
+    if (hasBinaryNul(bytes)) return { diff: [0, 0] };
     const text = decodeUtf8(bytes);
     return { diff: [countTextLines(text), 0] };
   } catch {

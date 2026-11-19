@@ -51,11 +51,13 @@ Shared React UI serves browser-shaped, Electron and responsive mobile hosts. Rea
   intentionally public or narrowly token-scoped DTO.
 - Renderer and worker builds that cannot use native top-level await must use
   `vite-top-level-await-fixed.ts`. Do not bypass its audited-version assertion.
-- Keep test imports light. Never re-export heavy leaves from `src/ui/index.ts`;
-  deep-import `date-fns/locale/<tag>`. Isolate the icon `new URL` glob in
-  `src/components/icons/file-icons/asset-url.ts` for the test alias.
-  See the [module graph note](../../.agents/notes/implemented/testing/2026-09-10-components-test-module-graph.md).
-
+- Keep accidental weight out of the test module graph: Vitest 5.0.2 reuses safe
+  graphs and disk transforms; module-mocked and long-lived owners stay isolated. Do not re-export a heavy leaf from
+  `src/ui/index.ts`, deep-import `date-fns/locale/<tag>` rather than the barrel,
+  and keep the icon-asset `new URL` glob alone in
+  `src/components/icons/file-icons/asset-url.ts` so the test alias can replace
+  it. Rationale and measurements:
+  [module graph note](../../.agents/notes/implemented/testing/2026-09-10-components-test-module-graph.md).
 - `vitest.config.ts` deliberately omits `vite-plugin-top-level-await` and
   `vite-tsconfig-paths`; `vite.config.ts` keeps both because the product bundle
   needs them. The plugin reads `tsconfig.vite.json`; keep the type-only React

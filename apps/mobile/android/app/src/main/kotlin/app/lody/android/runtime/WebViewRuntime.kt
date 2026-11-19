@@ -34,7 +34,9 @@ open class WebViewRuntime internal constructor(
     }
     override suspend fun execute(command: RuntimeCommand): RuntimeResult = when (command) {
         is RuntimeCommand.ProviderDetail -> RuntimeResult.ProviderDetail(ProviderDetailsJson.detail(call("agentProviderDetail", JSONArray().put(ProviderDetailsJson.target(command.machineId, command.id)), CommandDeadline.QUERY) as JSONObject))
-        is RuntimeCommand.ProviderProbe -> RuntimeResult.ProviderProbe(ProviderDetailsJson.probe(call("agentProviderProbe", JSONArray().put(ProviderDetailsJson.target(command.machineId, command.id)), CommandDeadline.PROVIDER_PROBE) as JSONObject))
+        is RuntimeCommand.ProviderProbe -> RuntimeResult.ProviderProbe(ProviderDetailsJson.probe(call("agentProviderProbe",
+            JSONArray().put(ProviderDetailsJson.target(command.machineId, command.id, command.readModelOptions)),
+            if (command.readModelOptions) CommandDeadline.PROVIDER_REFRESH else CommandDeadline.PROVIDER_PROBE) as JSONObject))
         is RuntimeCommand.ProviderOperation -> RuntimeResult.ProviderOperation(ProviderDetailsJson.operation(call("agentProviderOperation", JSONArray().put(ProviderDetailsJson.operationParams(command)), CommandDeadline.PROVIDER_OPERATION) as JSONObject))
         is RuntimeCommand.ProviderAuth -> RuntimeResult.ProviderAuth(ProviderDetailsJson.auth(call("agentProviderAuth", JSONArray().put(ProviderDetailsJson.authRequest(command.request)), CommandDeadline.PROVIDER_AUTH) as JSONObject))
         is RuntimeCommand.AgentProviders -> RuntimeResult.AgentProviders(AgentProviderJson.result(call("agentProviders", JSONArray().put(AgentProviderJson.request(command.action)), CommandDeadline.PROVIDER_PROBE) as JSONObject))
@@ -64,7 +66,7 @@ open class WebViewRuntime internal constructor(
             val value = call("createTab", JSONArray().put(command.parentId).put(command.id).put(command.title).put(backend.preferRoost).put(command.billing ?: JSONObject.NULL), CommandDeadline.WRITE) as JSONObject
             RuntimeResult.Created(CreationReceipt(command.id, value.getString("state"), value.optString("reason").ifBlank { null }))
         }
-        is RuntimeCommand.GetCreationOptions -> RuntimeResult.Options(CreationJson.options(call("creationOptions", JSONArray().put(command.projectId ?: JSONObject.NULL).put(command.agentConfigId ?: JSONObject.NULL), CommandDeadline.QUERY) as JSONObject))
+        is RuntimeCommand.GetCreationOptions -> RuntimeResult.Options(CreationJson.options(call("creationOptions", JSONArray().put(command.projectId ?: JSONObject.NULL).put(command.agentConfigId ?: JSONObject.NULL).put(command.includeOffline), CommandDeadline.QUERY) as JSONObject))
         RuntimeCommand.ListAgentRoles -> RuntimeResult.Roles(CreationJson.roles(call("agentRoles", deadline = CommandDeadline.QUERY) as JSONObject))
         RuntimeCommand.ListProjectGroups -> {
             val rows = (call("projectGroups", deadline = CommandDeadline.QUERY) as JSONObject).optJSONArray("groups") ?: JSONArray()
@@ -86,8 +88,10 @@ open class WebViewRuntime internal constructor(
             })
         }
         // Schedule failures arrive in-band as `{error}` (business faults with the runtime's code).
-        RuntimeCommand.ListSchedules -> RuntimeResult.Schedules(ScheduleJson.list(ScheduleJson.checked(call("schedules", deadline = CommandDeadline.QUERY))))
-        is RuntimeCommand.ScheduleDetail -> RuntimeResult.Schedule(ScheduleJson.detail(ScheduleJson.checked(call("scheduleDetail", JSONArray().put(command.scheduleId), CommandDeadline.QUERY))))
+        // Reads replay the whole registry stream under the runtime's own 40 s budget (45 s contract,
+        // which iOS waits for); this deadline only fences a lost reply and must not end first.
+        RuntimeCommand.ListSchedules -> RuntimeResult.Schedules(ScheduleJson.list(ScheduleJson.checked(call("schedules", deadline = CommandDeadline.SCHEDULE_READ))))
+        is RuntimeCommand.ScheduleDetail -> RuntimeResult.Schedule(ScheduleJson.detail(ScheduleJson.checked(call("scheduleDetail", JSONArray().put(command.scheduleId), CommandDeadline.SCHEDULE_READ))))
         is RuntimeCommand.ScheduleCommand -> {
             val value = ScheduleJson.checked(call("scheduleCommand", JSONArray().put(ScheduleJson.command(command.request)), CommandDeadline.WRITE))
             RuntimeResult.ScheduleWritten(value.optString("scheduleId").ifEmpty { command.request.scheduleId })
@@ -98,6 +102,16 @@ open class WebViewRuntime internal constructor(
             // Failures arrive in-band as `{error}` with the runtime's code, like schedule writes.
             val value = ScheduleJson.checked(call("decideProposal", JSONArray().put(request), CommandDeadline.WRITE))
             RuntimeResult.ProposalDecided(value.optString("outcome"), value.optString("scheduleId").ifEmpty { null })
+        }
+        is RuntimeCommand.RespondPermission -> {
+            val answers = command.answers?.let { values ->
+                JSONObject().apply { values.forEach { (key, value) -> put(key, if (value is List<*>) JSONArray(value) else value) } }
+            }
+            val args = JSONArray().put(command.sessionId).put(command.entryId).put(command.itemId).put(command.requestId).put(command.optionId)
+                .put(answers ?: JSONObject.NULL)
+            // Failures arrive in-band as `{error}` with the runtime's code, like proposal decisions.
+            val value = ScheduleJson.checked(call("respondPermission", args, CommandDeadline.WRITE))
+            RuntimeResult.PermissionAnswered(value.optString("state").ifEmpty { throw RuntimeException(runtimeFault("invalid_permission_reply")) })
         }
         is RuntimeCommand.ShortcutBody -> RuntimeResult.Shortcut(call("shortcutBody", JSONArray().put(command.id), CommandDeadline.QUERY) as JSONObject)
         is RuntimeCommand.LocalProjects -> {

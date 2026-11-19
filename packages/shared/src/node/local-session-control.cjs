@@ -57,6 +57,10 @@ function isConfigOptionValueRecord(value) {
   );
 }
 
+function isOptionalPositiveInteger(value) {
+  return typeof value === 'undefined' || (Number.isInteger(value) && value > 0);
+}
+
 function isOptionalString(value) {
   return typeof value === 'undefined' || typeof value === 'string';
 }
@@ -452,6 +456,7 @@ function isACPSessionConfig(value) {
   // this literal aligned with the TS source and its Bub parity test when
   // changing this feature.
   const isBuiltinAgentType =
+    agentType === 'antigravity' ||
     agentType === 'claude' ||
     agentType === 'codex' ||
     agentType === 'kimi' ||
@@ -581,6 +586,7 @@ function isLocalSessionControlRequest(value) {
       typeof value.configId === 'string' &&
       value.configId.trim().length > 0 &&
       (typeof value.force === 'undefined' || typeof value.force === 'boolean') &&
+      (typeof value.readModelOptions === 'undefined' || value.readModelOptions === true) &&
       typeof value.cliType === 'undefined' &&
       typeof value.agentType === 'undefined' &&
       typeof value.customAcp === 'undefined' &&
@@ -657,16 +663,6 @@ function isLocalSessionControlRequest(value) {
       typeof value.workspaceId === 'string' &&
       typeof value.agentType === 'string' &&
       value.agentType.trim().length > 0
-    );
-  }
-
-  if (value.type === 'session/code-collab-host-start') {
-    return (
-      typeof value.machineId === 'string' &&
-      typeof value.workspaceId === 'string' &&
-      typeof value.sessionId === 'string' &&
-      typeof value.requestedByUserId === 'string' &&
-      value.requestedByUserId.trim().length > 0
     );
   }
 
@@ -1112,7 +1108,8 @@ function isLocalSessionControlResponse(value) {
         value.status === 'installed' ||
         value.status === 'unsupported-platform' ||
         value.status === 'incompatible-host' ||
-        value.status === 'error') &&
+        value.status === 'error' ||
+        value.status === 'reading-model-options') &&
       (typeof value.downloadedBytes === 'undefined' ||
         (typeof value.downloadedBytes === 'number' &&
           Number.isInteger(value.downloadedBytes) &&
@@ -1128,22 +1125,12 @@ function isLocalSessionControlResponse(value) {
       isOptionalString(value.current) &&
       isOptionalString(value.required) &&
       isOptionalString(value.command) &&
-      isOptionalString(value.error)
-    );
-  }
-
-  if (value.type === 'session/code-collab-host-start_response') {
-    return (
-      typeof value.sessionId === 'string' &&
-      typeof value.success === 'boolean' &&
-      (typeof value.status === 'undefined' ||
-        value.status === 'started' ||
-        value.status === 'already-running' ||
-        value.status === 'disabled' ||
-        value.status === 'failed' ||
-        value.status === 'stopped') &&
       isOptionalString(value.error) &&
-      isOptionalString(value.message)
+      isOptionalString(value.configId) &&
+      isOptionalString(value.modelId) &&
+      isOptionalString(value.modelName) &&
+      isOptionalPositiveInteger(value.modelIndex) &&
+      isOptionalPositiveInteger(value.modelCount)
     );
   }
 

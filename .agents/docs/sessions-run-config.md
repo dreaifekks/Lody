@@ -22,6 +22,13 @@ Older agents advertising `collaboration_mode` retain
 their `default`/`plan` select values; do not rewrite those cached contracts into
 new wire ids. A live `configOptions` snapshot determines the current controls.
 
+A capability snapshot's `configOptions` describe only the model that was current
+when it was taken. A refresh a person asks for on a built-in agent switches the
+probe session to every model and stores each model's own options in
+`acpModelConfigOptions` rows, one stored list shared by every model that reported it; selectors and CLI/MCP validation compose the selected
+model's options from them, falling back to the snapshot for an unrecorded model
+([design](../notes/proposed/architecture/2026-11-11-observed-model-config-options.md)).
+
 Scope: `packages/components/src/components/sessions`. Binding rules and the
 pointer to this page live in
 [that directory's AGENTS.md](../../packages/components/src/components/sessions/AGENTS.md);
@@ -196,10 +203,10 @@ this page is the full text of the rules summarised there.
   agent itself reported — otherwise a Role that will not take says so only by
   its name missing from the composer. Its machine is passed
   in rather than looked up, so the pane stays renderable without the workspace's
-  machine-visibility context. Its two
-  panes grow with their content up to 14rem, then scroll
-  independently. Create stays at the bottom of the Role list pane while its
-  rows scroll; it has no separator above it. The detail pane's header flows
+  machine-visibility context. The two-pane submenu has a fixed 14rem height so
+  previewing another Role does not resize it; its panes scroll independently.
+  The compact list grows with its content up to 14rem. Create stays at the bottom
+  of the Role list pane while its rows scroll; it has no separator above it. The detail pane's header flows
   into the pinned values without a divider. The parent, permission, and Role
   menus retain the shared `@lody/ui` popup inset; neither list compensates for
   it with custom horizontal margins. The Role editor is a Dialog and is

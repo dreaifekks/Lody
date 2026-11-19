@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
   mkdtemp,
   mkdir,
@@ -17,10 +18,12 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { Worker } from 'node:worker_threads'
 import {
+  fetchNativeBinaryPackage,
   roostPrebuildFileName,
   stageRoostBinding,
   stageLoroRuntimePackage
 } from './cli-native-deps.mjs'
+import { withoutLibraryValidation } from './sparkle-packaging.mjs'
 import { probeRoostRuntime } from './roost-runtime-probe.mjs'
 
 const publishedSource = await realpath(
@@ -289,4 +292,80 @@ test('stages an exact downloaded split package and preserves the previous bindin
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+function fakeSpawn(calls) {
+  return (_command, args, options) => {
+    calls.push({ args, options })
+    const prefix = args[args.indexOf('--prefix') + 1]
+    const packageDir = path.join(prefix, 'node_modules', '@loro-dev', 'roost-node-darwin-arm64')
+    fs.mkdirSync(packageDir, { recursive: true })
+    fs.writeFileSync(path.join(packageDir, 'package.json'), '{}')
+    return { status: 0 }
+  }
+}
+
+void test('native binary install disables prefer-offline for its npm child', () => {
+  const calls = []
+  const result = fetchNativeBinaryPackage(
+    '@loro-dev/roost-node-darwin-arm64',
+    '0.3.1',
+    fakeSpawn(calls),
+    {}
+  )
+  try {
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.env.npm_config_prefer_offline, 'false')
+  } finally {
+    result.cleanup()
+  }
+})
+
+void test('the inherited environment is preserved except for prefer-offline', () => {
+  const calls = []
+  const result = fetchNativeBinaryPackage(
+    '@loro-dev/roost-node-darwin-arm64',
+    '0.3.1',
+    fakeSpawn(calls),
+    {
+      PATH: process.env.PATH,
+      npm_config_registry: 'https://registry.npmjs.org/',
+      npm_config_prefer_offline: 'true'
+    }
+  )
+  try {
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.env.npm_config_registry, 'https://registry.npmjs.org/')
+    assert.equal(calls[0].options.env.npm_config_prefer_offline, 'false')
+  } finally {
+    result.cleanup()
+  }
+})
+
+function readEntitlements(document) {
+  const body = /<dict>([\s\S]*)<\/dict>/u.exec(document.replace(/<!--[\s\S]*?-->/gu, ''))
+  assert.ok(body, 'the document holds a dictionary')
+  return Object.fromEntries(
+    [...body[1].matchAll(/<key>([^<]+)<\/key>\s*<(true|false)\/>/gu)].map(([, key, value]) => [
+      key,
+      value === 'true'
+    ])
+  )
+}
+
+void test('a self-signed application keeps its entitlements and may load what carries no Team ID', () => {
+  const read = (name) => fs.readFileSync(new URL(`../build/${name}`, import.meta.url), 'utf8')
+  const application = read('entitlements.mac.plist')
+  const exception = 'com.apple.security.cs.disable-library-validation'
+
+  // The checked-in entitlements stay strict: a build signed with a Team ID uses them as they are.
+  assert.equal(exception in readEntitlements(application), false)
+  assert.deepEqual(readEntitlements(withoutLibraryValidation(application)), {
+    ...readEntitlements(application),
+    [exception]: true
+  })
+
+  const nested = read('entitlements.mac.inherit.plist')
+  assert.equal(withoutLibraryValidation(nested), nested)
+  assert.throws(() => withoutLibraryValidation('<plist version="1.0"></plist>'), /no dictionary/u)
 })

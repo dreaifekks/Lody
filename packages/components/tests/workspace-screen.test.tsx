@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import {
   createRouter,
   createRootRoute,
@@ -17,6 +15,7 @@ import {
   LOCAL_PLATFORM_CAPABILITIES,
   type PlatformE2eeWorkspaces,
   type PlatformProvider,
+  type CloudApi,
 } from '@lody/platform';
 import { PlatformContext } from '@lody/platform/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

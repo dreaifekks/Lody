@@ -7,15 +7,12 @@ Translation: current
 
 ## 摘要
 
-Antigravity Pro 提供独立的 Argon 周额度，但模型名称匹配会选中更长的 Gemini 名称，Provider 行也只显示一个分组。
-Daemon 现在把 `gemini-argon-wtu` 映射为共享的 `argon` 额度 ID 和 Argon 标签。
-会话用量为 Argon 模型优先选择独立额度；若不存在该桶，则使用 Gemini，适用于 Ultra。
-Provider 行同时显示 Gemini 和 Argon；紧凑视图已有独立分行及窗口标签，无需修改。
-成功轮询会替换该 Provider 的额度快照，切换到 Ultra 时删除残留 Argon；失败或未登录时保留旧快照。
-后续更正把请求改成 agy CLI 用的主机和 User-Agent：原请求拿不到 Argon 组，也拿不到真实用量。
-之后输入框的用量弹窗也在 Gemini 旁列出 Argon，会话模型所属的组排在前面；触发按钮的百分比仍只取该组。
+Antigravity 提供包括 Argon 在内的独立模型组配额。内置和已有 registry Provider 现在都通过
+选中的 agy 可执行文件运行 `--print /usage --output-format json`，保留全部具名周窗口与
+五小时窗口；不解析旧 ACP 凭据，也不直接请求 Cloud Code。下方保留的旧 reader 测量说明，
+为什么不能退回旧端点或把各组虚构成一个总额度。
 
-## 决定与证据
+## 旧直接读取器的决定与证据
 
 脱敏三组响应包含 `gemini-argon-wtu-weekly`、周窗口及剩余比例 `0.5653113126754761`，映射为已用 43.5%。
 显式 ID 避免 Gemini/Argon 名称重叠及 Provider 选择受输入顺序影响。
@@ -33,16 +30,20 @@ Storybook Pro/compact 场景用于核对渲染标签。验证使用 fixture，�
 Poller 测试使用真实内存 LoroRepo 和 MachineDocument，覆盖 Pro→Ultra 替换、其他 config/type 隔离、空快照，
 以及未登录或失败时保留旧值、恢复后替换。
 
-## 更正：请求主机和 User-Agent
+## 历史测量：请求主机和 User-Agent
 
 首版沿用正式主机和不带版本的 `antigravity` User-Agent。2026-10-20 用同一账号实测，这个请求只返回 Gemini 和 Claude/GPT 两组，
 每个窗口都是剩余 100%、重置恰好在七天后：这是一个从未开始的窗口，不是账号的用量。同一账号的 agy `/usage` 显示真实的 Gemini 用量和 Argon 组。
 agy 调用的 daily 主机（`daily-cloudcode-pa.googleapis.com`）在 User-Agent 写明带版本的客户端时两者都会返回：
 `antigravity/cli/<version> <os>/<arch>` 和 `antigravity/hub/3.0.0` 可以；`antigravity/hub/2.9.1` 有真实 Gemini 用量但没有 Argon；
 `antigravity/agy/<version>` 和不带版本的写法只返回 Claude/GPT。OS/arch 部分不影响结果。
-Daemon 现在向 daily 主机发送 `antigravity/cli/1.4.2 <os>/<arch>`。版本门槛由 Google 决定且没有文档，以后的 Antigravity 版本可能需要更新版本号。
+已移除的 reader 曾向 daily 主机发送 `antigravity/cli/1.4.2 <os>/<arch>`。版本门槛由 Google 决定且没有文档，以后的 Antigravity 版本可能需要更新版本号。
 CodexBar 出于同样原因从这个主机读取额度。
 
-## ACP 额度读取边界
+## 当前配额读取边界
 
-fork 的 registry 条目启动 agy，其 ACP 会话不公布 `/usage`。上游兼容读取器会在每次刷新时白起进程和会话，并执行插件 hooks。因此只保留直接读取 Cloud Code 的 poller；不按 registry id 推定额度查询能力，并在启动进程前拒绝通用 ACP 额度请求。共用的 Provider 额度展示仍然保留。
+内置和已有 registry 条目都启动 agy。配额不以 ACP prompt 发送 `/usage`，也不建立配额对话。
+`queryLocalAcpRateLimits` 用所选启动环境运行 print 模式，校验 `num_turns: 0`，在同一个
+Provider 快照保留全部分组。存在额外 ACP 参数或 Magpie 路由时仍不支持配额读取，避免悄悄
+丢弃账户选择参数。旧 `lib/antigravity-quota.ts` reader 及其测试已移除。
+见 [agy CLI 决策](../feature/2026-11-15-antigravity-agy-cli-acp.zh.md)。

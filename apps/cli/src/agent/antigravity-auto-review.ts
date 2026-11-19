@@ -24,8 +24,8 @@ import {
 } from './antigravity-auto-review-reviewer';
 
 /**
- * LAN fork: Antigravity Auto Review, a permission mode Lody adds to the
- * `antigravity-acp` registry agent. `agy_acp_server` (1.4.x, 1.5.0) offers only
+ * LAN fork: Antigravity Auto Review, a permission mode Lody adds to builtin and persisted
+ * `antigravity-acp` registry agents. `agy_acp_server` (1.4.x, 1.5.0) offers only
  * `default` (every step asks), `auto_edit` (also approves edits outside the
  * workspace, unasked) and `yolo`; its terminal CLI's reviewer-backed Auto mode
  * is not exposed over ACP.
@@ -79,7 +79,7 @@ const selectedMode = (selection: ModeSelection): string | undefined => {
 };
 
 const selectsYolo = (selection: ModeSelection): boolean =>
-  selection.agentType === ANTIGRAVITY_AGENT_TYPE &&
+  (selection.agentType === ANTIGRAVITY_AGENT_TYPE || selection.agentType === 'antigravity') &&
   selectedMode(selection) === ANTIGRAVITY_YOLO_MODE_ID;
 
 /** Extra `antigravity acp` arguments for a session started for `selection`. */
@@ -92,7 +92,7 @@ export const antigravityLaunchArgs = (selection: ModeSelection): string[] =>
  * mode keeps the process.
  */
 export const antigravityYoloChanged = (started: ModeSelection, turn: ModeSelection): boolean =>
-  turn.agentType === ANTIGRAVITY_AGENT_TYPE &&
+  (turn.agentType === ANTIGRAVITY_AGENT_TYPE || turn.agentType === 'antigravity') &&
   selectedMode(turn) !== undefined &&
   selectsYolo(started) !== selectsYolo(turn);
 
@@ -213,7 +213,8 @@ export function withAntigravityAutoReview(
   stream: acp.Stream,
   options: AntigravityAutoReviewOptions
 ): acp.Stream {
-  if (options.agentType !== ANTIGRAVITY_AGENT_TYPE) return stream;
+  if (options.agentType !== ANTIGRAVITY_AGENT_TYPE && options.agentType !== 'antigravity')
+    return stream;
   const { logger, label } = options;
   const setTimer = options.setTimeout ?? setTimeout;
   const clearTimer = options.clearTimeout ?? clearTimeout;

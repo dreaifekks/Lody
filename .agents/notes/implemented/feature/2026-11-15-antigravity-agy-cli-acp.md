@@ -85,10 +85,15 @@ and macOS arm64, through Lody sessions and a minimal ACP client:
 
 ## Decision
 
-`scripts/generate-acp-registry.mjs` replaces only the `antigravity-acp` entry: the
-version is `ANTIGRAVITY_CLI_VERSION`, each platform downloads `agy_cli_<os>_<arch>`
-from that GitHub release, and the command is `./antigravity` (`.exe` on Windows) with
-`acp`. A version bump is manual because agy releases almost daily.
+The runtime, quota and session permission boundaries are recorded in the
+[draft contract](../../../../specs/antigravity-runtime.md).
+
+New Providers use the upstream managed builtin Antigravity, pinned by
+`antigravity-runtime-manifest.json` to agy 1.5.10. It launches
+`acp --process-per-session --disable-telemetry` with automatic updates disabled;
+`antigravityPath` selects a user-managed executable. Persisted registry Providers
+keep the fork's known agy 1.5.9 GitHub distribution in `setting.ts`, hidden from
+new-Provider discovery. Their identities and stored conversations are not rewritten.
 
 The registry's Antigravity joins the Claude/Grok identity fallback for titles and
 accepts untagged `session_info_update` titles. agy titles each conversation in the
@@ -109,7 +114,8 @@ YOLO is a mode Lody adds to agy's list, keeping the former server's id so stored
 Roles and sessions validate again. A session whose driving turn selects `yolo`
 starts agy with `--dangerously-skip-permissions` (`antigravityLaunchArgs`) and runs
 it in `default`; the wrapper reports `yolo` as current. Lody already starts one agy
-process per session, so the flag is per session. A turn that switches YOLO on or off
+process per session, so the flag is per session for both builtin and registry
+Antigravity. Other sessions of the same Provider are not restarted. A turn that switches YOLO on or off
 retires the session's agent and starts a replacement that loads the conversation
 (`antigravityYoloChanged` in the session execution service). A mode switch inside a
 running turn that would need the other process is refused with an error, and agy
@@ -128,10 +134,11 @@ is `full` with its warning face.
 - Listing `auto_review` as an alias for the native `auto` would keep stored selections
   valid. It was rejected because the ids would differ from agy's own, the mode updates
   would need translating, and only a few stored selections need editing.
-- A Provider-level skip flag, as upstream LodyAI/Lody#2796 adds for its builtin
-  `antigravity` entry, applies to every session of the Provider. The fork keeps a
-  per-session mode because Roles and sessions select `yolo` per session. Both end in
-  the same launch flag, so adopting the builtin entry later needs no new mechanism.
+- The Provider-level skip flag from upstream LodyAI/Lody#2796 would make every
+  session bypass approval, including sessions selecting `auto` or `auto_review`.
+  The fork hides that setting and ignores its stored runtime override. The schema
+  and protocol field remain compatible, but only the session's `yolo` selection
+  adds the launch flag, for both builtin and persisted registry Providers.
 - `antigravity acp --process-per-session` runs one agy worker per ACP session inside
   one parent; Lody already runs one process per session, and the flag would still
   belong to the parent.
@@ -150,15 +157,17 @@ is `full` with its warning face.
   A switch during a turn takes effect only from the next message.
 - Session ids from `agy_acp_server` load as empty conversations, so earlier Antigravity
   sessions lose their agent-side context.
-- Quota still reads `~/.gemini/antigravity-acp/acp_token.json`, as described in the
-  [Argon quota decision](../bug-fix/2026-10-20-antigravity-argon-quota.md). A machine
-  signed in only through the agy CLI reports no quota.
+- Builtin and legacy registry quota runs the selected agy executable with
+  `--print /usage --output-format json`, preserving its account environment and all
+  reported groups. No model turn, ACP quota session, old token read or direct Cloud
+  Code request is used. See the [quota decision](../bug-fix/2026-10-20-antigravity-argon-quota.md).
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` no longer changes the model list for this
   entry. Sending the Zed client identity is harmless.
 
 ## Verification
 
-- `scripts/generate-acp-registry.test.mjs` pins the generated entry.
+- `scripts/generate-acp-registry.test.mjs` verifies discovery exclusion;
+  `apps/cli/src/agent/acp-runner.test.ts` covers both identities’ print-mode quota.
 - `packages/shared/tests/title-generation-defaults.test.ts` pins title ownership.
 - `apps/cli/tests/antigravity-auto-review.test.ts` pins `auto_review` beside agy's
   `auto`, the YOLO mode and launch flag, the refused switch and the conversation directory rule.

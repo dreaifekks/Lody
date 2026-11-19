@@ -21,9 +21,18 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
   private let source: SessionSource
   private let service: ScheduleService
   private let chrome = InboxChrome(searchPlaceholder: String(localized: "schedules.search", bundle: .lody))
+  /// Regular width shows Schedules in the detail column, as the desktop main area: a titled page
+  /// whose schedules open in a sheet (the desktop's 720 px dialog) instead of pushing.
+  var inDetailColumn = false {
+    didSet {
+      guard inDetailColumn != oldValue else { return }
+      chrome.setDetailTitle(inDetailColumn ? String(localized: "schedules.title", bundle: .lody) : nil)
+    }
+  }
   private var list: UICollectionView!
   private var data: UICollectionViewDiffableDataSource<Section, String>!
   private let refresh = UIRefreshControl()
+  private let topBackdrop = LodyPinnedLabelBackdrop()
   private var cache = ScheduleCache()
   private var result: RuntimeContract.SchedulesResult? {
     get { cache.result }
@@ -63,12 +72,22 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
     configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
       self?.swipeActions(at: indexPath)
     }
-    let layout = UICollectionViewCompositionalLayout.list(using: configuration)
+    // Group labels pin under the bar over the same blurred backdrop as Chats.
+    let layout = UICollectionViewCompositionalLayout { _, environment in
+      let section = NSCollectionLayoutSection.list(using: configuration, layoutEnvironment: environment)
+      section.boundarySupplementaryItems.forEach {
+        $0.pinToVisibleBounds = true
+        $0.zIndex = 2
+      }
+      return section
+    }
     // Group spacing belongs between sections, as in Chats.
     let layoutConfiguration = UICollectionViewCompositionalLayoutConfiguration()
     layoutConfiguration.interSectionSpacing = LodySpacing.md
     layout.configuration = layoutConfiguration
-    list = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+    let list = ChatListCollectionView(frame: view.bounds, collectionViewLayout: layout)
+    list.onLayout = { [weak self] in self?.updateBackdrop() }
+    self.list = list
     list.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     list.backgroundColor = .clear
     list.alwaysBounceVertical = true
@@ -78,6 +97,9 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
     refresh.addAction(UIAction { [weak self] _ in self?.reload() }, for: .valueChanged)
     list.refreshControl = refresh
     view.addSubview(list)
+    topBackdrop.layer.zPosition = 1
+    topBackdrop.isHidden = true
+    list.addSubview(topBackdrop)
     let cell = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, id in
       guard let self, let item = self.items[id] else { return }
       self.configure(cell, item)
@@ -88,6 +110,7 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
       header.contentConfiguration = UIHostingConfiguration { ScheduleSectionTitle(text: section.label) }
         .margins(.all, 0)
       header.backgroundConfiguration = .clear()
+      header.layer.zPosition = 2
       header.accessibilityIdentifier = "schedules-section:" + section.rawValue
     }
     data = UICollectionViewDiffableDataSource(collectionView: list) { collection, indexPath, id in
@@ -129,6 +152,10 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
     } else {
       chrome.detach()
     }
+  }
+
+  private func updateBackdrop() {
+    topBackdrop.update(in: list, pinsLabels: true)
   }
 
   // MARK: Loading
@@ -210,6 +237,8 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
     chrome.openSettings = { [weak self] in LodyShell.shared.openPage("settings", options: ["present": true], from: self?.parent) }
     chrome.openDebug = { [weak self] in LodyShell.shared.openPage("debug", from: self?.parent) }
     chrome.newSession = { [weak self] in self?.newSchedule() }
+    chrome.destination = .schedules
+    chrome.selectDestination = { HomeController.current?.selectTab($0) }
     chrome.searchChanged = { [weak self] text in
       guard let self, text != self.query else { return }
       self.query = text
@@ -228,8 +257,7 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
       accountEmail: state.accountEmail,
       workspaces: state.workspaces, selected: state.workspace,
       devices: InboxDevices(catalog: state.catalog, presence: state.presence),
-      running: state.catalog.sessions.filter { !$0.archived && SessionState($0) == .live }.count,
-      mode: 0, sort: .activity, connection: Self.connection(state)
+      connection: Self.connection(state)
     ))
   }
 
@@ -261,7 +289,9 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
       return reconfigure || before != items[id]
     }
     snapshot.reconfigureItems(changed)
-    data.apply(snapshot, animatingDifferences: view.window != nil && !UIAccessibility.isReduceMotionEnabled)
+    data.apply(snapshot, animatingDifferences: view.window != nil && !UIAccessibility.isReduceMotionEnabled) { [weak self] in
+      self?.updateBackdrop()
+    }
     setNeedsUpdateContentUnavailableConfiguration()
   }
 
@@ -356,7 +386,8 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
 
   // MARK: Actions
 
-  /// The tab bar's "+": a new schedule's editor, pushed over the list.
+  /// The tab bar's (or iPad bottom bar's) create action: a new schedule's editor, pushed over the
+  /// list, or in a sheet over it when Schedules fills the regular-width detail column.
   func newSchedule() {
     let state = source.state
     guard state.workspace != nil, !state.workspaceId.isEmpty else {
@@ -378,8 +409,19 @@ final class SchedulesController: UIViewController, UICollectionViewDelegate {
       self.render(reconfigure: true)
       self.reload()
     }
-    editor.openChat = { [weak self] item in self?.openChat(item) }
-    LodyShell.shared.pushNative(editor, title: item?.title ?? ScheduleFormat.text("new"), from: self)
+    let title = item?.title ?? ScheduleFormat.text("new")
+    guard inDetailColumn else {
+      editor.openChat = { [weak self] item in self?.openChat(item) }
+      LodyShell.shared.pushNative(editor, title: title, from: self)
+      return
+    }
+    // The chat replaces Schedules in the detail column, so the sheet closes first.
+    editor.openChat = { [weak self, weak editor] item in
+      LodyShell.shared.close(from: editor)
+      self?.openChat(item)
+    }
+    let height = min(860, (view.window?.bounds.height ?? 900) - 80)
+    LodyShell.shared.presentNative(editor, title: title, size: CGSize(width: 720, height: height))
   }
 
   /// Owner-only commands; resume and run also need a computer whose CLI runs schedules.

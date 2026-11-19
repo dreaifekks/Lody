@@ -1,5 +1,11 @@
 # apps/cli/src/session
 
+`CLAUDE.md` links here; edit this file.
+
+The 1,340-word ceiling preserves complete dispatch identity, commit identity precedence and
+output-lifetime rules alongside existing authorization and execution boundaries, including
+encrypted starts that run only signed input; the default ceiling had no room for those rules.
+
 [Docs](README.md); [worktree rules](worktree/AGENTS.md).
 
 ## Identity
@@ -7,9 +13,15 @@
 - Authorize machines through injected access with the source CLI token; MCP verifies the frozen Turn requester under [MCP rules](../mcp/AGENTS.md).
 
 - Never send an untrusted requester through workspace Machine RPC: it authenticates no member identity.
-- Read live status from target-daemon RPC, never durable metadata.
-- Freeze human identity and persist pre-launch humanInputReceipts; recovery uses receipts, never role/author. Follow [orchestration rules](../orchestration/AGENTS.md).
-- Scope credentials to the host. Frozen Turn identity owns attribution, authorization and commits; conversation owner owns GitHub auth. Only the owner reads local Git config, without profile queries. CloudPort profiles have a 60s deadline, retry failures and reject placeholders. Attribution changes never restart ACP; owner changes retire it.
+- Live status is a target-daemon Machine RPC read; durable metadata never substitutes for it.
+- Require frozen human identity and pre-launch `humanInputReceipts`; recover via receipts,
+  never role/author. [Rules](../orchestration/AGENTS.md).
+- Host-scope Machine/Provider credentials. Use frozen Turn identity for attribution,
+  authorization and commits; trusted conversation owner for GitHub network auth.
+- Git: the owner's repository identity, an approved requester, the owner's native config,
+  then LodyAI. Only a decided identity is exported as env. Non-owners never read machine config.
+  `CloudPort` profiles: 60s deadline, retry failures, reject placeholders.
+  Commit attribution never restarts ACP; owner changes retire the runtime.
 
 ## Dispatch
 
@@ -35,20 +47,37 @@
   pre-owner awaits; sealed requests retain pending history and Inbox inputs without
   marking them handled, failed or canceled. Registered Turns block recovery even
   before presence publication.
-- Gate LIST writes on user-entry sync (`turn-history-gate.ts`, 20s), including pre-open
+- Gate LIST writes on user-entry sync (`turn-history-gate.ts`, 60s), including pre-open
   writes, never status/meta. Timeout preserves live metadata creation; disposal aborts it and releases waiters.
 - Goals obey [this contract](../../../../specs/session-goal-control.md).
-- Stop ends steer waits, not the owner fiber. Reuse an Agent only after raw ACP drains or termination is confirmed. Failed release detaches that Agent, returns its slot and reports bounded background cleanup; the next input creates a new ACP. Follow [Inbox admission](../orchestration/AGENTS.md) with fixed execution ids. Assistant ids use userTurnId; invocation owns source/requester/config and is replaced by steer.
-
-- Only producers publish latestUserMsgId with appendUserTurn or Roost's accept_input_and_dispatch queue. Save human provenance first; guard live history/meta and newer activation, retaining producer tombstones. Execution writes only processingUserMsgId/lastHandledUserMsgId; start/terminal paths never read-await-rewrite the other slots.
-- Never steer after cancellation or infer delivery from it. Stop and access revocation preserve/discard; Stop also cancels prior queued eligibility. Edit & Resend preserves/ keeps. Create/restore fences apply only during initialization. Promote only proven non-delivery via steerTurnStatuses; unknown never replays and RPC ACKs cannot revive history. Surface recovery errors.
-- Use the config owner's signal and fence mutations after interrupt. Resume reopens only the in-progress assistant entry, clearing finished/endedAt/permissionWaitMs; teardown never writes finished=false.
-- Keep transport matching in acp-error-classification.ts: disposed/stale -32603 means agent_disconnected; Harness compression mismatch means acp_session_storage_incompatible. Retry stale ACP once before any event, retaining turn and cleanup after retirement. Never retry submitted Inbox inputs, including human-plus-batch.
-
+- Stop ends steer waits, not the owner fiber. Drain raw ACP or confirm termination before
+  reusing an Agent. If release fails, detach that Agent, return the turn slot and report
+  bounded background cleanup; the next input creates a new ACP. [Inbox admission](../orchestration/AGENTS.md); execution IDs stay fixed.
+  Assistant ids use `userTurnId`; `invocation` owns source/requester/config; steer replaces it.
+- Only dispatch producers publish `latestUserMsgId`, with history in `appendUserTurn`
+  or Roost's `accept_input_and_dispatch` writer queue. Save human provenance first;
+  guard live history/meta and newer activation; keep producer-specific tombstones.
+- Turn execution writes only `processingUserMsgId` and `lastHandledUserMsgId`; no start
+  or terminal path may read-await-rewrite the other slots.
+- Never steer after cancellation or infer delivery from it. Stop uses
+  preserve/discard and cancels pre-Stop queued eligibility; Edit & Resend uses preserve/keep,
+  access revocation preserve/discard. Limit create/restore fences to initialization.
+- Promote only proven non-delivery via `steerTurnStatuses`, never producer pointers.
+  Unknown never replays; RPC ACKs never revive history. Encrypted recovery preserves terminal
+  decisions and newer pointers, closes partial replies with one notice, and isolates unrelated failures.
+- MCP selection changes retire ACP between prompts; changed-selection steer returns to dispatch for a new turn.
+- Config uses its owner signal; fence mutations after interrupt.
+- Resume must REOPEN the in-progress assistant entry, clearing
+  `finished`/`endedAt`/`permissionWaitMs` there only; never write `finished=false` from teardown.
+- Keep JSON-RPC/transport matching in `acp-error-classification.ts`: disposed/stale `-32603` =
+  `agent_disconnected`, Harness compression mismatch = `acp_session_storage_incompatible`.
+- Stale ACP: retry once before any event; retire, retain cleanup, keep the turn. Never retry submitted
+  Inbox inputs (human-plus-batch too).
 - Completion publication follows [notification ownership](../lib/notifications/AGENTS.md).
-- Without content, use recordSilentTurnFailure, never setDispatchHandled. Await turnProducedVisibleOutput before finalizeTurn; finalize, advance pointers and fail open.
-
-- Use CLI-local ACP diff evidence and PR-compare GitHub diffStats. session-diff-stats-target.ts skips good totals, never overwrites them.
+- No content: `recordSilentTurnFailure`, not `setDispatchHandled`. Await
+  `turnProducedVisibleOutput` before `finalizeTurn`; finalize, advance pointers, fail open.
+- Turn summaries and diff content share CLI-local ACP evidence. Git statistics never populate turn history.
+  Workspace totals follow [Code Collab rules](../lib/code-collab/AGENTS.md#invariants).
 
 ## Lifecycle
 
@@ -63,14 +92,25 @@
 
 ## Sagas
 
-- Start ACP/worktrees only at dispatch. session/prepare and -cancel return no-ops without access checks (prepare: accepted duplicate).
-
-- Credential leases release on creation failure; local has none.
-- Reject nested Tabs; resolve ownership one hop.
-- Fork/continuation use resolveSessionAcpTargetId; copy runtime config only at its matching User fence.
-- Fork commits via persistPendingChanges, never cloud sync. Persist placeholders before ACP; failed commits terminate/delete targets durably. Post-commit display stays outside compensation. Active forks require `_meta.lody.forkAtTurn = { version: 1 }`; forward `_meta.lody.turnId` unchanged as acpTurnId. Source Git identity requires an exact requester. New-worktree forks need native support and durable forkOperation before return; publish meta after commit. Failure cleans ACP/worktree/branch with durable receipts; retry is idempotent. Recovery fails closed, using local withForkOperationLock markers only, never room scans/unowned-document cleanup.
-
-- Edit-and-resend prepares forkAtTurn (session/new for the first User), cancels the exact turn, joins release, then commits history/meta. Block promotion/dispatch/steer meanwhile. Keep queue/attribution/config/attachments; allocate new Turn/ACP ids. Never replay transcripts or roll back files.
+- ACP processes and worktrees start at dispatch, never while a draft is typed
+  ([decision](../../../../.agents/notes/implemented/simplification/2026-10-16-remove-draft-session-preparation.md)).
+- Credentials are runtime leases: a failed creation releases that generation; local has none.
+- Nested child Sessions are rejected: ownership resolves one parent hop only.
+- Fork and continuation share `resolveSessionAcpTargetId`; source runtime config copies only at its matching user-turn fence.
+- Fork commits at `persistPendingChanges()`, never cloud sync. Persist its placeholder
+  before ACP; failed commits terminate and durably delete the target. Post-commit
+  display projections stay outside compensation.
+- Active-turn fork requires advertised `_meta.lody.forkAtTurn = { version: 1 }`; pass adapter
+  `_meta.lody.turnId` unchanged as `acpTurnId`, and reuse source Git identity only for an exact requester.
+  New-worktree forks require native support, persist target-doc `forkOperation` before return,
+  publish target meta only after final commit, clean ACP/worktree/branch with a durable failed
+  receipt, and stay idempotent on retry.
+- Fork recovery fail-closes interrupted operations and finds them ONLY in machine-local markers
+  under `withForkOperationLock`; never enumerate rooms/open docs for candidates or clean an unowned doc.
+- Edit-and-resend prepares `forkAtTurn` (`session/new` for the first User), cancels the exact
+  turn, waits for release, then commits history/meta. Its barrier excludes queue promotion,
+  dispatch and steer. Keep the queue, User attribution/config/attachments; use new turn/ACP ids.
+  Never replay transcript or roll back files.
 
 ## Access
 

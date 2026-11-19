@@ -136,6 +136,9 @@ of its Session doc and of its file index as soon as the archive reaches it
 `uploadDocSnapshot` of the fork's `loro-repo` patch), and the hub deletes what
 it replaced when it next starts. A file index that never had a row, or whose
 stream expired, is skipped, as joining its room would create the stream again.
+The pinned repository and transport patches retain the same guarded snapshot path
+across dependency upgrades; see the [archive snapshot decision](../notes/implemented/bug-fix/2026-11-19-archived-streams-snapshot-upgrade.md).
+
 For the Sessions archived before this, each agent service does the same once
 per workspace replica, four at a time, and writes `archived-streams-compacted`
 beside the replica when none failed (`archived-session-streams.ts`).

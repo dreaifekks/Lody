@@ -8,7 +8,11 @@ import {
   projectGroupDirectory,
   resolveProjectGroupRepositories,
 } from './worktree/project-worktrees';
-import { resolveGitIdentityPolicyLegacy } from './git-identity-policy';
+import {
+  resolveApprovedOwnerIdentityLegacy,
+  resolveGitIdentityPolicyLegacy,
+} from './git-identity-policy';
+import { sessionUserProfileFromCloud } from './session-user-resolver';
 import {
   acquireSessionCredentialsLegacy,
   createLanSessionCredentials,
@@ -48,6 +52,7 @@ import {
   isLoroRepoDocDeleted,
   type SessionMeta,
   encodeProjectPreparationProgress,
+  isMissingEmail,
 } from '@lody/shared';
 import { Logger } from '@/utils/logger';
 import { SessionConfig, SessionOutputEvent, SessionErrorEvent, SessionExitEvent } from './types';
@@ -140,11 +145,6 @@ import {
   type SessionWorkspaceSettings,
 } from '@/agent/session-mcp-resolver';
 import { waitForMcpCatalogBaseline } from '@/lib/workspace-mcp-store';
-import {
-  claimLegacySpeculativeWorktree,
-  completeLegacySpeculativeWorktreeSetup,
-  recoverLegacySpeculativeWorktrees,
-} from './worktree/legacy-speculative-worktrees';
 
 function formatManagedRuntimeProgressDetail(event: ManagedRuntimeProgressEvent): string {
   const runtimeLabel =
@@ -210,6 +210,13 @@ const tryDeriveGitHubRepoFromUrl = (rawUrl?: string): string | null => {
 const PENDING_CREATE_TERMINATE_TIMEOUT_MS = 300_000;
 const PENDING_CREATE_TERMINATE_TIMED_OUT = Symbol('pending-create-terminate-timed-out');
 
+export type GitIdentityOptions = {
+  preferMachineIdentity: boolean;
+  personalIdentityEnabled: boolean;
+  /** The approved owner's account identity; owner dispatch profiles are placeholders. */
+  personalIdentity?: { name: string; email: string };
+};
+
 type SessionWorktreeTarget = {
   manager: WorktreeManager;
   managerConfig: Omit<WorktreeManagerConfig, 'logger'>;
@@ -229,6 +236,7 @@ export interface ISession {
   getMemoryBinding?(): SessionConfig['memory'];
   /** LAN fork: the selection this session's agent process was started for. */
   getModeSelection?(): Pick<SessionConfig, 'agentType' | 'modeId' | 'configOptionValues'>;
+  getMcpServerIds?(): Readonly<SessionConfig['mcpServerIds']>;
   getWorkdir(): string;
   /**
    * Host-side working directory for file operations.
@@ -245,6 +253,8 @@ export interface ISession {
   getMonitorRuntimeInfo(): Promise<SessionMonitorRuntimeInfo>;
   exec(command: string, args: string[], workdir: string, isAI: boolean): Promise<string>;
   terminate(force?: boolean): Promise<void>;
+  /** False once the agent process has exited or termination has started. */
+  hasLiveAgentProcess?(): boolean;
   /**
    * Update git identity for commits made in this session.
    * This should be called when a new user sends a chat request to an existing session.
@@ -253,7 +263,7 @@ export interface ISession {
     userName: string,
     userEmail: string,
     userId: string | undefined,
-    options: { preferMachineIdentity: boolean }
+    options: GitIdentityOptions
   ): void;
   /**
    * Return the already-resolved effective git identity only when it belongs to
@@ -409,12 +419,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private readonly sessionSandboxFactory: SessionSandboxFactory;
   private readonly cloudPort: CloudPort;
   private readonly lanEnv: (() => Readonly<Record<string, string>>) | undefined;
-  private detachSpeculativeWorktreeRecovery: (() => void) | null = null;
-  private speculativeWorktreeRecoveryChain: Promise<void> = Promise.resolve();
   readonly mcpAuthentication: McpAuthenticationLegacy;
-  /** Coalescing latch for {@link enqueueSpeculativeWorktreeRecovery}. */
-  private speculativeWorktreeRecoveryQueued = false;
-  private speculativeWorktreeRecoveryGeneration = 0;
   // Rebalance requests are serialized because the per-session limit is derived from a
   // shared machine-wide budget. This avoids create/exit races briefly applying stale
   // shares of the 90% execution-plane budget. See docs/exec-sandbox.md.
@@ -629,64 +634,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   async initialize(): Promise<void> {
-    const recoveryGeneration = ++this.speculativeWorktreeRecoveryGeneration;
-    this.detachSpeculativeWorktreeRecovery?.();
-    this.detachSpeculativeWorktreeRecovery = this.workspaceDocument.onMetaRoomSynced((reason) => {
-      if (this.speculativeWorktreeRecoveryGeneration === recoveryGeneration) {
-        this.enqueueSpeculativeWorktreeRecovery(`meta-room-synced:${reason}`);
-      }
-    });
-    void this.workspaceDocument
-      .waitUntilMetaSynced({ reason: 'legacy-speculative-worktree-recovery' })
-      .then((synced) => {
-        if (synced && this.speculativeWorktreeRecoveryGeneration === recoveryGeneration) {
-          this.enqueueSpeculativeWorktreeRecovery('initialize');
-        }
-      })
-      .catch((error: unknown) => {
-        this.logger.debug(
-          `Failed to wait for metadata sync before speculative worktree recovery: ${formatErrorMessage(
-            error
-          )}`
-        );
-      });
     this.logger.debug('Session manager initialized');
-  }
-
-  private enqueueSpeculativeWorktreeRecovery(reason: string): void {
-    // Bound a burst to one running + one queued pass. This is an O(sessions)
-    // filesystem sweep on a recovery signal, and without a latch every
-    // transport edge appended another full pass to the chain — the dispatch
-    // bootstrap scan has had this latch all along, this one was missing it.
-    if (this.speculativeWorktreeRecoveryQueued) {
-      return;
-    }
-    this.speculativeWorktreeRecoveryQueued = true;
-    this.speculativeWorktreeRecoveryChain = this.speculativeWorktreeRecoveryChain
-      .then(async () => {
-        // Released before the sweep runs, so a signal arriving DURING it still
-        // gets its own follow-up pass and nothing is silently skipped.
-        this.speculativeWorktreeRecoveryQueued = false;
-        await recoverLegacySpeculativeWorktrees({
-          workspaceId: this.workspaceId,
-          machineId: this.machineId,
-          logger: this.logger,
-          isActiveSession: (sessionId) =>
-            this.pendingSessionCreates.has(sessionId) || this.sessions.has(sessionId),
-          isDurableSession: async (sessionId) => {
-            const record = await this.workspaceDocument.repo.getDocMeta(
-              getSessionRoomId(sessionId)
-            );
-            return !!record?.meta && !isLoroRepoDocDeleted(record);
-          },
-        });
-      })
-      .catch((error: unknown) => {
-        this.speculativeWorktreeRecoveryQueued = false;
-        this.logger.debug(
-          `Failed speculative worktree recovery (${reason}): ${formatErrorMessage(error)}`
-        );
-      });
   }
 
   private buildCreateAgentConfig(
@@ -1176,26 +1124,45 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /**
    * Commit identity follows the same precedence as GitHub credentials: a
-   * requester who enabled "Act as you" commits as themselves; otherwise the
-   * machine owner may use the machine's global Git identity. Policy lookup
-   * failures degrade to "not enabled" rather than blocking the turn.
+   * requester who approved "Act as you" commits as themselves; otherwise the
+   * machine owner keeps the machine's Git configuration, and everyone else
+   * commits as LodyAI. Lookup failures degrade to "not approved" rather than
+   * blocking the turn.
    */
   async resolveGitIdentityOptions(
     requesterUserId: string,
     signal?: AbortSignal,
     sessionId?: SessionId
-  ): Promise<{ preferMachineIdentity: boolean; personalIdentityEnabled: boolean }> {
+  ): Promise<GitIdentityOptions> {
     signal?.throwIfAborted();
     const preferMachineIdentity = requesterUserId === this.cloudPort.identity.userId;
     const tokenManager = this.getGitHubTokenManager();
     if (!tokenManager) return { preferMachineIdentity, personalIdentityEnabled: false };
+    const context = sessionId ?? 'git-identity';
     const policy = await resolveGitIdentityPolicyLegacy(
       () => tokenManager.getCredentialPolicy({ requesterUserId, machineId: this.machineId }),
       this.logger,
-      sessionId ?? 'git-identity',
+      context,
       signal
     );
-    return { preferMachineIdentity, personalIdentityEnabled: policy.personalEnabled };
+    if (!policy.personalEnabled || !preferMachineIdentity) {
+      return { preferMachineIdentity, personalIdentityEnabled: policy.personalEnabled };
+    }
+    const personalIdentity = await resolveApprovedOwnerIdentityLegacy(
+      async () => {
+        const profile = await this.cloudPort.access.resolveWorkspaceUser({
+          workspaceId: this.workspaceId,
+          userId: requesterUserId,
+        });
+        if (!profile) return null;
+        const { name, email } = sessionUserProfileFromCloud(requesterUserId, profile);
+        return isMissingEmail(email) ? null : { name, email };
+      },
+      this.logger,
+      context,
+      signal
+    );
+    return { preferMachineIdentity, personalIdentityEnabled: true, personalIdentity };
   }
 
   private async prepareGitHubRepoSessionConfig(config: SessionConfig): Promise<SessionCredentials> {
@@ -1876,25 +1843,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       this.logger.debug(
         `[${config.sessionId}] Preparing worktree (repoId=${worktreeTarget.managerConfig.repoId} sessionId=${config.sessionId}) in host`
       );
-      // An older daemon may have prepared this Session's worktree for a draft.
-      // Claim before probing the directory: a mismatched one is removed here.
-      const legacyTarget = {
-        repoId: worktreeTarget.managerConfig.repoId,
-        source: worktreeTarget.managerConfig.source ?? {
-          kind: 'github' as const,
-          repoUrl: worktreeTarget.managerConfig.repoUrl,
-        },
-        ...(config.branch ? { baseBranch: config.branch } : {}),
-      };
-      const legacyClaim = await claimLegacySpeculativeWorktree({
-        sessionId: config.sessionId!,
-        workspaceId: config.workspaceId,
-        machineId: this.machineId,
-        target: legacyTarget,
-        restoreBranchName: config.restoreBranchName,
-        logger: this.logger,
-      });
-      const legacySetupPending = legacyClaim === 'setup-pending';
       const worktreeAlreadyExisted = worktreeManager.hasWorktree(config.sessionId!);
       const worktreeInfo = await worktreeManager.createWorktree(
         config.sessionId!,
@@ -1916,7 +1864,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       this.logger.debug(
         `[${config.sessionId}] Worktree details (branch=${worktreeInfo.branch} head=${worktreeInfo.headSha ?? 'unknown'}): host=${worktreeInfo.hostPath}`
       );
-      if (config.resume && worktreeAlreadyExisted && !legacySetupPending) {
+      if (config.resume && worktreeAlreadyExisted) {
         this.logger.debug(
           `[${config.sessionId}] Skipping worktree setup for restored session because the worktree already exists`
         );
@@ -1951,13 +1899,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
             onEnd: (event) => setupHistory.onEnd?.(event),
           },
         });
-        if (legacySetupPending) {
-          await completeLegacySpeculativeWorktreeSetup({
-            sessionId: config.sessionId!,
-            workspaceId: config.workspaceId,
-            machineId: this.machineId,
-          });
-        }
       }
     } else if (config.parentSessionId) {
       const parentSessionDoc = await this.workspaceDocument.getOrCreateSessionDoc(
@@ -2014,9 +1955,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   async cleanUp(options: { keepWorkspaceDocumentOpen?: boolean } = {}) {
-    this.speculativeWorktreeRecoveryGeneration += 1;
-    this.detachSpeculativeWorktreeRecovery?.();
-    this.detachSpeculativeWorktreeRecovery = null;
     const failures: unknown[] = [];
     const attempt = async (step: () => Promise<unknown>) => {
       try {
@@ -2025,7 +1963,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         failures.push(error);
       }
     };
-    await attempt(() => this.speculativeWorktreeRecoveryChain);
     await attempt(() => this.cleanupSessions());
     // MessageHandler drains final callbacks between these two cleanup phases.
     if (!options.keepWorkspaceDocumentOpen) {

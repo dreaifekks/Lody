@@ -2,9 +2,9 @@
 
 `CLAUDE.md` links here; ancestor rules apply.
 
-`CloudPlatformProvider` renders login without Convex auth. Its authenticated child
-owns organization/E2EE inbox queries; the router supplies context, workspace actions
-and owner/admin inboxes.
+Standalone login must render without authenticated Convex context; keep protected
+queries and E2EE hosts in its optional authenticated child.
+Commands and imperative subscriptions follow [cloud auth admission](../hooks/README.md#cloud-query-recovery).
 
 ## Synced mirrors tolerate unknown roots
 
@@ -26,17 +26,18 @@ Test: `packages/shared/tests/session-doc-forward-compat.test.ts`.
 
 ## Workspace switching
 
-- Prompt Shortcuts belong to one initialization effect. Retire before durable close;
-  never reuse retired instances. Fence platform/cloud capability/retry generation.
-  Legacy admission gates cloud discovery/store/token/writes: unknown waits, encrypted
-  disables. Preserve local access.
-
-- `$workspaceName` owns the render target. Before singleton reads, match route,
-  runtime and runtime-owned doc-meta scope. Under `WorkspaceRouteTargetProvider`,
-  visibility/sharing hooks default to empty projections on mismatch, disabling
-  queries, Machine Flock, sharing and eager-sync. External `RuntimeProvider`
-  consumers keep their defaults. `workspaceId`/`enabled` cannot bypass this fence.
-
+- Prompt Shortcut instances retire on effect cleanup and never cross platform, capability,
+  retry generation, account/session or workspace boundaries. Legacy admission gates cloud
+  work: unknown waits, encrypted disables; preserve local stores. V2 token owners retain
+  local retry counts and one diagnostic per fault until success, notify auth recovery,
+  and never cache authorization; see [retry reporting](../../../../.agents/notes/implemented/bug-fix/2026-11-17-shortcut-token-retry-diagnostics.md).
+- The `$workspaceName` route owns the render-time target slug. Workspace-scoped UI must
+  require that target, the active runtime, and the runtime-owned doc-meta snapshot to agree
+  before reading singleton caches. Shared visibility and sharing hooks enforce this gate by
+  default when mounted under `WorkspaceRouteTargetProvider`; scope mismatch returns an empty
+  projection and disables queries, Machine Flock, sharing, and eager-sync inputs. Provider-
+  external consumers such as `RuntimeProvider` retain their existing default behavior. Explicit
+  `workspaceId` / `enabled` options remain fenced by the route scope and cannot reopen stale work.
 - Each `resolveWorkspaceDataScope` wait names its `blocker`; keep scan failures on the scope.
   [Stuck report](../../../../.agents/notes/implemented/feature/2026-09-26-workspace-sync-stuck-telemetry.md).
 
@@ -52,18 +53,23 @@ Test: `packages/shared/tests/session-doc-forward-compat.test.ts`.
   Sessions, gating receipts/ownership/autofocus/external-history refresh until
   presentation. Background prefetch has no exception.
 
-- Prefetch never acquires UI Session stores/Mirrors. One worker per renderer owns
-  raw Doc I/O and rebuildable snapshots keyed by workspace/room across windows.
-  Terminate before slot release; detach peers on cancel. Check durable activity
-  before constructing workers. The pre-queue timestamp high-water filter loads no
-  snapshots/Docs/history/foreground cursors. Foreground acquisition cancels room
-  prefetch and merges into the live Repo, preserving unsent edits. Workers never
-  share UI persistence/cursors.
-  [Intent](../../../../specs/session-background-prefetch.zh.md).
-
-- Keep one Repo view across auth refresh and unrelated mode-cache changes;
-  `WorkspaceTargetRouter` owns target/transport selection.
-  Never restore a second writer or proxy-authoring/write-intent mirror.
+- Background prefetch keeps raw Doc import/export in one disposable worker per renderer
+  with a separate rebuildable snapshot cache. Never acquire UI Session stores or Mirrors.
+  Terminate workers before releasing slots or workspace/room/authorization/plane
+  locks; cancellation detaches local peers. Recheck checkpoints under the claim before
+  constructing workers; skip unavailable locks. Bound metadata waits; retries
+  never confirm sync. Classify `apply_incomplete` separately from network failures; checkpoints retain
+  its 24-hour cap (`eager-sync-admission.ts`).
+  Scope cross-window cache rows by workspace/room. Queue filtering uses
+  timestamp-only high-water marks, never snapshots, Docs, histories or foreground cursors.
+  Foreground acquisition cancels that room's prefetch and merges cached binary
+  into its existing Repo document, preserving unsent edits. Keep worker/UI
+  persistence and cursors separate. Seed empty foreground cursors only after
+  durable merges under cross-window exclusion. Intent:
+  [background prefetch](../../../../specs/session-background-prefetch.zh.md).
+- Keep one Repo view and recovery owner across auth refresh, adapter replacement
+  and unrelated mode-cache changes. `WorkspaceTargetRouter` owns target/transport selection.
+  Never restore proxy-authoring/write-intent mirrors or additional writers.
 - Runtime close retries recoverable cleanup, retaining fencing until confirmed Repo destruction.
   Failed startup shares this close path.
 - Bootstrap exchanges only owned same-workspace CRDT snapshots. Check disk first;
@@ -95,32 +101,29 @@ Test: `packages/shared/tests/session-doc-forward-compat.test.ts`.
 
 - Select transport per room, never merge. Use `getReadinessTransportForRoom`;
   hooks without the router use `src/lib/room-readiness.ts`. Keep rules aligned.
-- Electron's atomic local-platform snapshot supplies the CLI catalog's persistent
-  `local:*` identity. Never substitute constant/temporary users.
-
-- Locally resolved machines use Electron local session control regardless of
-  cloud-token/sync state. Local bridge failure never falls back to remote RPC.
-
-- Cloud Electron waits for the first **Run local agent** snapshot before runtime
-  creation. Enabled uses dual sync; disabled uses cloud-only sync without local
-  data-plane attachment or reconnect UI.
-
-- Meta attachment is single-flight. Token/network/visibility edges may trigger one
-  immediate recovery without resetting outage history. Only sustained health resets
-  backoff; all later attempts, including rotation, are `recovery`.
-
-- Ownerless workspace rooms use platform fallback transport; never disable sync by
-  returning no transport.
-
-- Resource monitoring uses owner-local or optional remote transport; unknown owners
-  remain pending.
-
-- Local presence origin/absence wins over cloud. UI uses display state; recovery
-  uses raw state. Encrypted presence uses its authorized bucket/minimal plaintext
-  allowlist on publish/cloud/local reads; unsupported protected channels stay disabled.
-
-- Merge overlapping bootstrap/watch metadata per field with live values winning
-  (`mergeBootstrapMetaCache`); snapshots never undo live archives.
+- The local renderer identity comes atomically from the Electron local-platform snapshot
+  and uses the CLI catalog's persistent `local:*` id. Do not substitute a constant or
+  temporary user.
+- Controls for a machine resolved as local use Electron local session control,
+  independent of cloud-token or sync state. A failed local bridge is an error; never
+  fall back to a remote RPC path.
+- Cloud Electron dual runtimes await the first **Run local agent** snapshot; encrypted
+  runtimes always sync through cloud and ignore the setting. Enabled uses dual sync;
+  disabled uses cloud-only sync without the local data plane or reconnect state.
+- Meta-room attachment is single-flight per runtime. Token, network, and visibility edges may
+  force one immediate recovery attempt, but they must preserve the current outage's retry history;
+  only a sustained healthy dwell resets backoff. Every attempt after the first is a `recovery`
+  phase, including one prompted by a rotated token.
+- Workspace-level rooms without a machine owner use the platform fallback.
+  Returning no transport silently disables synchronization for those rooms.
+- Resource monitoring follows machine ownership: local or optional remote transport;
+  unknown ownership remains pending.
+- Presence: local origin/absence wins over cloud; UI uses display state, recovery raw state.
+  Encrypted presence uses its authorized bucket and shared minimal plaintext allowlist
+  on publish/cloud/local read; unimplemented protected side channels stay disabled.
+- Doc-metadata bootstrap and the live repo watch overlap by design: merge per field with
+  live winning (`mergeBootstrapMetaCache`), never letting the snapshot undo an archive
+  already applied live.
 
 ## Attachment transfer ownership
 

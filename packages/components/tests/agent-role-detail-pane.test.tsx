@@ -1,7 +1,5 @@
 import { getAgentRoleTargets } from '@lody/shared';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement, type ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';

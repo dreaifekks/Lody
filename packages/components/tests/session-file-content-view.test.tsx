@@ -1,7 +1,5 @@
 import { SaveTextConflictError } from '../src/hooks/use-code-collab-save-text';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {

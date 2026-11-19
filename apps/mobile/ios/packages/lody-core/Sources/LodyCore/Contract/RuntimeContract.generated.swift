@@ -686,11 +686,13 @@ extension RuntimeContract {
     public var userId: String
     public var machineId: String
     public var id: String
-    public init(workspaceId: String, userId: String, machineId: String, id: String) {
+    public var readModelOptions: Bool?
+    public init(workspaceId: String, userId: String, machineId: String, id: String, readModelOptions: Bool? = nil) {
       self.workspaceId = workspaceId
       self.userId = userId
       self.machineId = machineId
       self.id = id
+      self.readModelOptions = readModelOptions
     }
     public init(from decoder: any Decoder) throws {
       let c = try decoder.container(keyedBy: Key.self)
@@ -698,6 +700,7 @@ extension RuntimeContract {
       self.userId = try c.decode(String.self, forKey: Key("userId"))
       self.machineId = try c.decode(String.self, forKey: Key("machineId"))
       self.id = try c.decode(String.self, forKey: Key("id"))
+      self.readModelOptions = try c.decodeIfPresent(Bool.self, forKey: Key("readModelOptions"))
     }
     public func encode(to encoder: any Encoder) throws {
       var c = encoder.container(keyedBy: Key.self)
@@ -705,6 +708,7 @@ extension RuntimeContract {
       try c.encode(self.userId, forKey: Key("userId"))
       try c.encode(self.machineId, forKey: Key("machineId"))
       try c.encode(self.id, forKey: Key("id"))
+      try c.encodeIfPresent(self.readModelOptions, forKey: Key("readModelOptions"))
     }
   }
 
@@ -728,6 +732,41 @@ extension RuntimeContract {
       try c.encode(self.success, forKey: Key("success"))
       try c.encode(self.authRequired, forKey: Key("authRequired"))
       try c.encode(self.capabilities, forKey: Key("capabilities"))
+    }
+  }
+
+  public struct AgentProviderRefreshProgress: Codable, Sendable, Equatable {
+    public var machineId: String
+    public var id: String
+    public var modelId: String
+    public var modelName: String
+    public var index: Int
+    public var total: Int
+    public init(machineId: String, id: String, modelId: String, modelName: String, index: Int, total: Int) {
+      self.machineId = machineId
+      self.id = id
+      self.modelId = modelId
+      self.modelName = modelName
+      self.index = index
+      self.total = total
+    }
+    public init(from decoder: any Decoder) throws {
+      let c = try decoder.container(keyedBy: Key.self)
+      self.machineId = try c.decode(String.self, forKey: Key("machineId"))
+      self.id = try c.decode(String.self, forKey: Key("id"))
+      self.modelId = try c.decode(String.self, forKey: Key("modelId"))
+      self.modelName = try c.decode(String.self, forKey: Key("modelName"))
+      self.index = try c.decode(Int.self, forKey: Key("index"))
+      self.total = try c.decode(Int.self, forKey: Key("total"))
+    }
+    public func encode(to encoder: any Encoder) throws {
+      var c = encoder.container(keyedBy: Key.self)
+      try c.encode(self.machineId, forKey: Key("machineId"))
+      try c.encode(self.id, forKey: Key("id"))
+      try c.encode(self.modelId, forKey: Key("modelId"))
+      try c.encode(self.modelName, forKey: Key("modelName"))
+      try c.encode(self.index, forKey: Key("index"))
+      try c.encode(self.total, forKey: Key("total"))
     }
   }
 
@@ -2725,22 +2764,26 @@ extension RuntimeContract {
     public var workspaceId: String
     public var projectId: String?
     public var agentConfigId: String?
-    public init(workspaceId: String, projectId: String? = nil, agentConfigId: String? = nil) {
+    public var includeOffline: Bool?
+    public init(workspaceId: String, projectId: String? = nil, agentConfigId: String? = nil, includeOffline: Bool? = nil) {
       self.workspaceId = workspaceId
       self.projectId = projectId
       self.agentConfigId = agentConfigId
+      self.includeOffline = includeOffline
     }
     public init(from decoder: any Decoder) throws {
       let c = try decoder.container(keyedBy: Key.self)
       self.workspaceId = try c.decode(String.self, forKey: Key("workspaceId"))
       self.projectId = try c.decodeIfPresent(String.self, forKey: Key("projectId"))
       self.agentConfigId = try c.decodeIfPresent(String.self, forKey: Key("agentConfigId"))
+      self.includeOffline = try c.decodeIfPresent(Bool.self, forKey: Key("includeOffline"))
     }
     public func encode(to encoder: any Encoder) throws {
       var c = encoder.container(keyedBy: Key.self)
       try c.encode(self.workspaceId, forKey: Key("workspaceId"))
       try c.encodeIfPresent(self.projectId, forKey: Key("projectId"))
       try c.encodeIfPresent(self.agentConfigId, forKey: Key("agentConfigId"))
+      try c.encodeIfPresent(self.includeOffline, forKey: Key("includeOffline"))
     }
   }
 
@@ -6334,6 +6377,27 @@ extension RuntimeContract {
     }
   }
 
+  public enum RetryPendingInputResultState: String, Codable, Sendable, Equatable, CaseIterable {
+    case pending = "pending"
+    case accepted = "accepted"
+    case settled = "settled"
+  }
+
+  public struct RetryPendingInputResult: Codable, Sendable, Equatable {
+    public var state: RetryPendingInputResultState
+    public init(state: RetryPendingInputResultState) {
+      self.state = state
+    }
+    public init(from decoder: any Decoder) throws {
+      let c = try decoder.container(keyedBy: Key.self)
+      self.state = try c.decode(RetryPendingInputResultState.self, forKey: Key("state"))
+    }
+    public func encode(to encoder: any Encoder) throws {
+      var c = encoder.container(keyedBy: Key.self)
+      try c.encode(self.state, forKey: Key("state"))
+    }
+  }
+
   public struct RuntimeError: Codable, Sendable, Equatable {
     public var code: String
     public var retryable: Bool
@@ -8628,7 +8692,7 @@ extension RuntimeContract {
       public typealias Params = RuntimeContract.AgentProviderProbeParams
       public typealias Result = RuntimeContract.AgentProviderProbeResult
       public static let method = "agentProviderProbe"
-      public static let timeout: Double = 135
+      public static let timeout: Double = 1215
       public static func result(_ value: RuntimeContract.CallResult) -> Result? {
         if case .agentProviderProbe(let result) = value { return result }
         return nil
@@ -9016,7 +9080,7 @@ extension RuntimeContract {
     }
     public enum RetryPendingInput: RuntimeCall {
       public typealias Params = RuntimeContract.ForgetPendingInputParams
-      public typealias Result = RuntimeContract.Empty
+      public typealias Result = RuntimeContract.RetryPendingInputResult
       public static let method = "retryPendingInput"
       public static let timeout: Double = 30
       public static func result(_ value: RuntimeContract.CallResult) -> Result? {
@@ -9226,7 +9290,7 @@ extension RuntimeContract {
     case renameSession(RuntimeContract.Empty)
     case respondPermission(RuntimeContract.RespondPermissionResult)
     case restoreSessions(RuntimeContract.Empty)
-    case retryPendingInput(RuntimeContract.Empty)
+    case retryPendingInput(RuntimeContract.RetryPendingInputResult)
     case scheduleCommand(RuntimeContract.ScheduleCommandResult)
     case scheduleDetail(RuntimeContract.ScheduleDetail)
     case schedules(RuntimeContract.SchedulesResult)
@@ -9260,6 +9324,7 @@ extension RuntimeContract {
   public enum Event: Sendable, Equatable {
     case agentProviderAuthChanged(RuntimeContract.AgentProviderAuthState)
     case agentProviderOperationProgress(RuntimeContract.AgentProviderOperationProgress)
+    case agentProviderRefreshProgress(RuntimeContract.AgentProviderRefreshProgress)
     case agentProvidersChanged(RuntimeContract.AgentProvidersChangedEvent)
     case catalog(RuntimeContract.CatalogEvent)
     case creationOptionsChanged(RuntimeContract.Empty)
@@ -9346,7 +9411,7 @@ extension RuntimeContract {
         case "renameSession": message = .result(id: id, .renameSession(try c.decode(RuntimeContract.Empty.self, forKey: Key("payload"))))
         case "respondPermission": message = .result(id: id, .respondPermission(try c.decode(RuntimeContract.RespondPermissionResult.self, forKey: Key("payload"))))
         case "restoreSessions": message = .result(id: id, .restoreSessions(try c.decode(RuntimeContract.Empty.self, forKey: Key("payload"))))
-        case "retryPendingInput": message = .result(id: id, .retryPendingInput(try c.decode(RuntimeContract.Empty.self, forKey: Key("payload"))))
+        case "retryPendingInput": message = .result(id: id, .retryPendingInput(try c.decode(RuntimeContract.RetryPendingInputResult.self, forKey: Key("payload"))))
         case "scheduleCommand": message = .result(id: id, .scheduleCommand(try c.decode(RuntimeContract.ScheduleCommandResult.self, forKey: Key("payload"))))
         case "scheduleDetail": message = .result(id: id, .scheduleDetail(try c.decode(RuntimeContract.ScheduleDetail.self, forKey: Key("payload"))))
         case "schedules": message = .result(id: id, .schedules(try c.decode(RuntimeContract.SchedulesResult.self, forKey: Key("payload"))))
@@ -9368,6 +9433,7 @@ extension RuntimeContract {
         switch method {
         case "agentProviderAuthChanged": message = .event(.agentProviderAuthChanged(try c.decode(RuntimeContract.AgentProviderAuthState.self, forKey: Key("payload"))))
         case "agentProviderOperationProgress": message = .event(.agentProviderOperationProgress(try c.decode(RuntimeContract.AgentProviderOperationProgress.self, forKey: Key("payload"))))
+        case "agentProviderRefreshProgress": message = .event(.agentProviderRefreshProgress(try c.decode(RuntimeContract.AgentProviderRefreshProgress.self, forKey: Key("payload"))))
         case "agentProvidersChanged": message = .event(.agentProvidersChanged(try c.decode(RuntimeContract.AgentProvidersChangedEvent.self, forKey: Key("payload"))))
         case "catalog": message = .event(.catalog(try c.decode(RuntimeContract.CatalogEvent.self, forKey: Key("payload"))))
         case "creationOptionsChanged": message = .event(.creationOptionsChanged(try c.decode(RuntimeContract.Empty.self, forKey: Key("payload"))))

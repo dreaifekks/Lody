@@ -1,3 +1,6 @@
+import { useOptionalAuthenticatedConvex } from '@/hooks/use-authenticated-convex';
+import { ShortcutTokenAttempts, shortcutTokenDiagnostic } from '@/lib/shortcut-token-attempt';
+import { deferredPostHog } from '@/lib/deferred-posthog';
 import { useLegacyWorkspaceQueryStatus } from '@/hooks/use-workspace-feature';
 import {
   useLegacyWorkspaceQuery,
@@ -104,8 +107,15 @@ export function PromptShortcutProvider({
   const userId = session.status === 'authenticated' ? session.user.id : null;
   const cloud = platform.capabilities.has('cloudAccount');
   const legacyStatus = useLegacyWorkspaceQueryStatus(scope.workspaceId);
+  const auth = useOptionalAuthenticatedConvex();
+  const tokenSession = useRef({ userId, id: auth?.authSessionId ?? null });
+  // A userless/refetching auth response is not another login or a new outage.
+  if (tokenSession.current.userId !== userId || auth?.confirmedUnauthenticated)
+    tokenSession.current = { userId, id: auth?.authSessionId ?? null };
+  else if (auth?.authSessionId) tokenSession.current.id = auth.authSessionId;
+  const authSessionId = tokenSession.current.id;
   const workspaceId =
-    (!cloud || legacyStatus === 'allowed') &&
+    (!cloud || (!auth?.confirmedUnauthenticated && legacyStatus === 'allowed')) &&
     scope.enabled &&
     scope.workspaceId === workspaceRuntime?.workspaceId
       ? scope.workspaceId
@@ -116,12 +126,35 @@ export function PromptShortcutProvider({
   const revoke = useLegacyWorkspaceMutation(api.promptShortcuts.revokeShortcut);
   const settle = useLegacyWorkspaceMutation(api.promptShortcuts.settleDocument);
   const grant = useLegacyWorkspaceAction(api.promptShortcuts.getStreamToken);
+  const attempt = useLegacyWorkspaceAction(api.promptShortcuts.getStreamTokenV2);
   const directory = useLegacyWorkspaceQuery(
     api.promptShortcuts.listAccessibleDocuments,
     cloud && workspaceId && userId ? { workspaceId } : 'skip'
   );
-  const current = useRef({ workspaceId, userId, stage, activate, revoke, grant, settle });
-  current.current = { workspaceId, userId, stage, activate, revoke, grant, settle };
+  const current = useRef({
+    workspaceId,
+    userId,
+    stage,
+    activate,
+    revoke,
+    grant,
+    attempt,
+    auth,
+    authSessionId,
+    settle,
+  });
+  current.current = {
+    workspaceId,
+    userId,
+    stage,
+    activate,
+    revoke,
+    grant,
+    attempt,
+    auth,
+    authSessionId,
+    settle,
+  };
   const [generation, setGeneration] = useState(0);
   const [instance, setInstance] = useState<{
     runtime: PromptShortcutRuntime;
@@ -169,12 +202,33 @@ export function PromptShortcutProvider({
         disposed ||
         current.current.workspaceId !== workspaceId ||
         current.current.userId !== userId ||
+        current.current.authSessionId !== authSessionId ||
         identity.status !== 'authenticated' ||
         identity.user.id !== userId
       )
         throw new Error('Shortcut identity changed');
     };
     const restartOwnIndex = () => void ownIndex?.start();
+    const tokenAttempts = new ShortcutTokenAttempts({
+      attempt: (request) => current.current.attempt(request),
+      legacy: (request) => current.current.grant(request),
+      active: () => {
+        const identity = platform.identity.session.get();
+        return (
+          !disposed &&
+          current.current.workspaceId === workspaceId &&
+          current.current.userId === userId &&
+          current.current.authSessionId === authSessionId &&
+          identity.status === 'authenticated' &&
+          identity.user.id === userId
+        );
+      },
+      authRejected: () => current.current.auth?.requestAuthRecovery(),
+      report: (failure) => {
+        const diagnostic = shortcutTokenDiagnostic(failure);
+        deferredPostHog.captureException(diagnostic.error, diagnostic.properties);
+      },
+    });
     const opening = (async () => {
       await previousClose;
       check();
@@ -192,7 +246,7 @@ export function PromptShortcutProvider({
             now: Date.now,
             grant: async (resource, write) => {
               check();
-              const result = await current.current.grant({
+              const result = await tokenAttempts.grant({
                 workspaceId,
                 write,
                 target:
@@ -295,7 +349,7 @@ export function PromptShortcutProvider({
         platform,
         cloud,
         gateway,
-        isActive: () => !disposed,
+        isActive: () => !disposed && current.current.authSessionId === authSessionId,
       });
       void owned.flush();
       if (lanSync) {
@@ -312,6 +366,7 @@ export function PromptShortcutProvider({
     return () => {
       disposed = true;
       window.removeEventListener('online', restartOwnIndex);
+      tokenAttempts.dispose();
       // Identity can return before the replacement finishes opening. Retire this
       // effect's instance immediately, even while its durable close is pending.
       setInstance((value) => (value?.runtime === owned ? null : value));
@@ -328,7 +383,7 @@ export function PromptShortcutProvider({
         if (closingDatabases.get(databaseName) === closing) closingDatabases.delete(databaseName);
       });
     };
-  }, [workspaceId, userId, cloud, gateway, platform, generation]);
+  }, [workspaceId, userId, authSessionId, cloud, gateway, platform, generation]);
 
   useEffect(() => {
     if (runtime && directory) void runtime.setDirectory(directory);

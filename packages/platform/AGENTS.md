@@ -39,7 +39,10 @@ Edit `AGENTS.md`; `CLAUDE.md` symlinks here.
   a route commit cannot override an outstanding lease.
 - Automatic exceptions in those scopes use a fixed diagnostic vocabulary. Shared
   main/daemon processes cannot infer one workspace mode and always use that
-  vocabulary. Preserve detailed local, user-submitted support reports.
+  vocabulary. Restricted diagnostics retain only allowlisted category/source/runtime
+  fields, consumer-specific operation/stage/status values and bounded numeric versions; grouping uses these fixed fields, never
+  hashes of original messages/stacks. Reprojection must preserve safe diagnostics.
+  Preserve detailed local, user-submitted support reports.
   [SDK buffering rationale](../../.agents/notes/implemented/bug-fix/2026-10-29-workspace-telemetry-privacy.md).
 
 ## Streams token capability
@@ -114,6 +117,10 @@ Edit `AGENTS.md`; `CLAUDE.md` symlinks here.
 - Optional `memberProfiles` is a display directory scoped to the live account and
   workspace. Resolve its crypto user IDs through verified ledger members; it cannot
   grant permissions, pin keys, identify the creator, or block ledger availability.
+- Device display profiles are optional, untrusted labels keyed by the original
+  device signing public key. Attach owner names only through that device's verified
+  ledger member. Report only the current host's metadata; missing fields never borrow
+  another device's values. Labels cannot alter admission, keys or revocation targets.
 - Optional `subscribeLedgerHead` belongs to an open control reader. Its values are
   refresh hints, never verified checkpoints or permission grants; callers fetch
   and verify original suffixes and unsubscribe when their scope closes. Absence or

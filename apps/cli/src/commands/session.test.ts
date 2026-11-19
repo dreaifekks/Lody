@@ -107,7 +107,6 @@ import {
   resolveLocalProjectRefOrThrow,
   selectTargetMachineForCreate,
   shouldWaitForSessionCompletion,
-  selectWorkspaceSummary,
   sortSessionMetas,
   toSessionTranscriptEntries,
   updateSessionActivityTimestamps,
@@ -272,7 +271,7 @@ describe('session command helpers', () => {
 
   it('throws when workspace selection is ambiguous', () => {
     expect(() =>
-      selectWorkspaceSummary([
+      commandRuntime.selectWorkspaceSummary([
         { id: 'ws-1', slug: 'alpha', name: 'Alpha', role: 'member' },
         { id: 'ws-2', slug: 'beta', name: 'Beta', role: 'member' },
       ])
@@ -911,6 +910,53 @@ describe('session command helpers', () => {
       modelId: undefined,
       configOptionValues: { model: 'model-b', reasoning_effort: 'xhigh' },
     });
+  });
+
+  it('validates options against the target model’s own observed list (LodyAI/Lody#1215)', () => {
+    const thoughtLevel = (values: string[]) => ({
+      id: 'thought_level',
+      name: 'Thinking',
+      category: 'thought_level',
+      type: 'select' as const,
+      currentValue: values[0] ?? '',
+      options: values.map((value) => ({ value, name: value })),
+    });
+    // Probed on swe-2-high, whose ladder lacks `low`.
+    const capability: AcpCapabilityCacheEntry = {
+      ...createAcpCapability(),
+      agentType: 'devin',
+      models: [],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'swe-2-high',
+          options: [
+            { value: 'swe-2-high', name: 'SWE 2' },
+            { value: 'fusion', name: 'Fusion' },
+          ],
+        },
+        thoughtLevel(['medium', 'high', 'max']),
+      ],
+    };
+    const resolve = (cache: AcpCapabilityCacheEntry, effort: string) =>
+      resolveEffectiveSessionChatDispatchConfig({
+        dispatchConfig: { modelId: 'fusion', configOptionValues: { thought_level: effort } },
+        target: createSessionMeta(),
+        capability: cache,
+      });
+
+    // Unknown target model: dispatched for the agent to decide, as before.
+    expect(resolve(capability, 'low').configOptionValues).toEqual({ thought_level: 'low' });
+    const observed = {
+      ...capability,
+      observedModelConfigOptions: { fusion: [thoughtLevel(['low', 'medium', 'xhigh', 'max'])] },
+    };
+    expect(resolve(observed, 'low').configOptionValues).toEqual({ thought_level: 'low' });
+    // Once the agent has answered for the target model, its list decides.
+    expect(() => resolve(observed, 'high')).toThrow('Invalid reasoning effort for model fusion');
   });
 
   it('lets explicit selector config options replace inherited top-level selectors', () => {

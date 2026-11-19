@@ -26,6 +26,7 @@ import {
 } from './deepseek-harness';
 
 export const MANAGED_BUILTIN_RUNTIMES = [
+  { runtimeName: 'antigravity', agentType: 'antigravity', displayName: 'Antigravity' },
   { runtimeName: 'kimi-code', agentType: 'kimi', displayName: 'Kimi Code' },
   { runtimeName: 'devin', agentType: 'devin', displayName: 'Devin' },
   { runtimeName: 'grok-build', agentType: 'grok', displayName: 'Grok' },
@@ -45,8 +46,8 @@ export const ANTIGRAVITY_AGENT_TYPE = 'antigravity-acp';
 /**
  * LAN fork: a mode Lody adds to an Antigravity server without its own Auto
  * mode. The agent runs in its `default` mode and the CLI reviews each permission
- * request before asking the user. Where the agent offers `auto` (the agy CLI),
- * this id stands for that mode (apps/cli/src/agent/antigravity-auto-review.ts).
+ * request before asking the user. It remains distinct from native `auto`
+ * (apps/cli/src/agent/antigravity-auto-review.ts).
  */
 export const ANTIGRAVITY_AUTO_REVIEW_MODE_ID = 'auto_review';
 /**
@@ -96,12 +97,13 @@ export type AgentType = string;
  *
  * - `none` — Lody generates titles unless the runtime advertises ownership.
  *   Builtin Codex always uses Lody's configurable isolated title session.
- * - `untagged` — legacy Claude/Grok runtimes publish authoritative untagged titles.
+ * - `untagged` — Claude/Grok and agy runtimes publish authoritative untagged titles.
  *   Claude uses its SDK; Grok generates titles in the official runtime.
  *
  * Exhaustive on purpose: adding a builtin agent must not silently default it.
  */
 const BUILTIN_ACP_TITLE_OWNERSHIP: Record<BuiltinAgentType, 'none' | 'untagged'> = {
+  antigravity: 'untagged',
   pi: 'none',
   devin: 'none',
   claude: 'untagged',
@@ -185,6 +187,7 @@ export type CustomAcpLaunchSpec = {
  * manages the official runtime binary for the selected builtin agent.
  */
 export type BuiltinRuntimeOverrides = {
+  antigravityPath?: string;
   codexPath?: string;
   claudeCodeExecutable?: string;
   kimiPath?: string;
@@ -192,6 +195,13 @@ export type BuiltinRuntimeOverrides = {
   devinPath?: string;
   piPath?: string;
   piExtensions?: string[];
+  /**
+   * Retained for upstream wire compatibility. The LAN fork ignores this
+   * Provider-wide policy: only the current session's `yolo` mode adds the
+   * skip-permissions argument. This is not a runtime replacement, so it does
+   * not count as an override in {@link hasBuiltinRuntimeOverrideValues}.
+   */
+  antigravitySkipPermissions?: boolean;
 };
 
 export const PI_EXTENSIONS_MAX_SELECTIONS = 32;
@@ -202,6 +212,7 @@ export const isBuiltinRuntimeOverrides = (value: unknown): value is BuiltinRunti
     return false;
   }
   const record = value as {
+    antigravityPath?: unknown;
     codexPath?: unknown;
     claudeCodeExecutable?: unknown;
     kimiPath?: unknown;
@@ -209,8 +220,12 @@ export const isBuiltinRuntimeOverrides = (value: unknown): value is BuiltinRunti
     devinPath?: unknown;
     piPath?: unknown;
     piExtensions?: unknown;
+    antigravitySkipPermissions?: unknown;
   };
   return (
+    (record.antigravitySkipPermissions === undefined ||
+      typeof record.antigravitySkipPermissions === 'boolean') &&
+    (record.antigravityPath === undefined || typeof record.antigravityPath === 'string') &&
     (record.codexPath === undefined || typeof record.codexPath === 'string') &&
     (record.claudeCodeExecutable === undefined ||
       typeof record.claudeCodeExecutable === 'string') &&
@@ -230,6 +245,13 @@ export const isBuiltinRuntimeOverrides = (value: unknown): value is BuiltinRunti
   );
 };
 
+/**
+ * Whether a runtime path or Pi extension selection replaces what Lody would
+ * launch by default. Launch policies such as `antigravitySkipPermissions` are
+ * excluded: they keep the managed runtime, static capabilities, title ownership
+ * and Provider setup. Use {@link hasPersistedBuiltinRuntimeOverrides} to decide
+ * whether the field is worth persisting.
+ */
 export const hasBuiltinRuntimeOverrideValues = (
   runtimeOverrides: BuiltinRuntimeOverrides | undefined
 ): boolean =>
@@ -237,6 +259,13 @@ export const hasBuiltinRuntimeOverrideValues = (
   Object.values(runtimeOverrides).some((value) =>
     Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value.trim().length > 0
   );
+
+/** Whether `runtimeOverrides` carries anything a stored Provider must keep. */
+export const hasPersistedBuiltinRuntimeOverrides = (
+  runtimeOverrides: BuiltinRuntimeOverrides | undefined
+): boolean =>
+  hasBuiltinRuntimeOverrideValues(runtimeOverrides) ||
+  runtimeOverrides?.antigravitySkipPermissions === true;
 
 export const getBuiltinRuntimeOverrideSourceVersionSuffix = (
   runtimeOverrides: BuiltinRuntimeOverrides | undefined
@@ -481,6 +510,12 @@ export type AcpCapabilityCacheEntry = {
    * stored in the capability row itself; see `acp-model-capabilities.ts`.
    */
   declaredModelControls?: Record<string, AcpModelControls>;
+  /**
+   * Each model's own option list from the config's `acpModelConfigOptions`
+   * rows, attached by `getMachineFlockAcpCapabilities`. Never stored in the
+   * capability row itself; see `acp-model-config-options.ts`.
+   */
+  observedModelConfigOptions?: Record<string, AcpConfigOptionSummary[]>;
   /** Probe commands shown before a session reports its own list; [] confirms an empty probe. */
   availableCommands?: AcpCommandSummary[];
   /**
@@ -815,6 +850,7 @@ export type StaticBuiltinAcpCapabilities = {
 export const CODEX_AUTO_REVIEW_MODE_ID = 'agent-auto-review';
 
 const BUILTIN_DEFAULT_MODE_IDS = {
+  antigravity: 'default',
   kimi: 'auto',
   // Grok advertises `default` / `plan`, not Codex `agent`. Injecting `agent`
   // makes Role/MCP session create fail with "Unsupported ACP mode".

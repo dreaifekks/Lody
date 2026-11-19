@@ -118,3 +118,8 @@ The latter own build, packaging, native dependencies and OSS composition.
   Register its protocol after app load; keep business imports out of the early local protocol.
   Each Range carries the initial revision; changes return 409. Save through an adjacent
   `.part` stream, never a whole-file buffer.
+- Direct HTML preview (`local-html-preview.ts`) is the one exception: after user
+  consent it serves a local HTML file's folder from a random per-preview
+  `lody-html-preview://` origin. Scripts run only when the user allowed them. Preview frames
+  cannot navigate off that scheme and receive no permissions. It never
+  serves dot-files or paths outside that folder, including through symlinks, and its tokens share the resource owner's lifetime.

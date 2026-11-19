@@ -133,6 +133,8 @@ const SESSION_LIST_VISIBLE_KEYS: readonly (keyof SessionMeta)[] = [
   'openedBySessionId',
   'openedByRootSessionId',
   'latestUserMsgId',
+  'lastHandledUserMsgId',
+  'lastFailedUserMsgId',
   'awaitingUserSince',
   'lastCanceledTurn',
   'agentNotice',

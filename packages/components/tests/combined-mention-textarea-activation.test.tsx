@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-
 import React, { act, useState } from 'react';
 import { Provider, createStore } from 'jotai';
 import { boardExperimentEnabledAtom, experimentalFeaturesEnabledAtom } from '../src/atoms/settings';

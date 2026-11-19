@@ -13,16 +13,16 @@ The main Session initializes before the title ownership decision. Live capabilit
 support applies to builtin, registry and custom Providers, including runtime
 overrides, even without a prior capability probe. The existing managed
 Claude/Grok identity fallback remains for older runtimes; overrides disable
-that fallback. In the LAN fork the registry's Google Antigravity gets the same
-fallback, because that entry runs the agy CLI, which titles its own conversations
+that fallback. In the LAN fork managed Antigravity and the legacy registry entry
+get the same fallback, because both run the agy CLI, which titles its own conversations
 without advertising the capability. Other runtimes retain isolated generation.
 
 The Provider pushes standard `session_info_update` notifications with `title` and
 `_meta.lody.titleSource`. `generated` requires the advertised capability;
 `explicit` remains accepted for compatibility. `fallback`, `unset`, malformed
 source tags, empty titles and notifications for another ACP Session are rejected.
-Untagged titles remain supported only for legacy Claude/Grok and that Antigravity
-entry. Lody sanitizes accepted titles and updates only draft/generated titles,
+Untagged titles remain supported only for legacy Claude/Grok and those Antigravity
+Providers. Lody sanitizes accepted titles and updates only draft/generated titles,
 preserving user renames.
 Provider failure leaves the draft title; no timeout starts a duplicate generator.
 

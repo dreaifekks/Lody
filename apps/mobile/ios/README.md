@@ -162,8 +162,9 @@ the system back circle. The transparent header registers its controls with UIKit
 top-edge blur. A noninteractive 55% semantic canvas tint protects the title and
 machine subtitle, fading to transparent over 32 pt below the header rather than
 adding an opaque chrome material. The transcript scrolls underneath;
-content/find insets keep initial content and search below the controls. The shell hides native navigation only for conversations;
-detail pages retain their native bars. Back uses the existing navigation/split
+content/find insets keep initial content and search below the controls. The shell hides native navigation for conversations; iPhone
+pages opened from a Home tab carry their native bar inside the page (`LodyPageStackHost`);
+other detail pages retain the shell's native bars. Back uses the existing navigation/split
 owner, and controls retain native glass styling and accessibility labels. The book-layout
 conversation list popover anchors to the visible page sidebar button and its bounds;
 native navigation-bar controls retain their bar-item anchors.
@@ -171,27 +172,30 @@ native navigation-bar controls retain their bar-item anchors.
 Conversation titles use 16 pt semibold system text, fading at the trailing edge
 only on overflow rather than inserting an ellipsis. VoiceOver retains the full title. User bubbles fill the available
 reading width beside the avatar; long-press offers Copy, plus Edit for the last
-eligible user message, without inline action buttons. Below the conversation title,
-secondary-gray machine text starts with a presence icon; tapping the header opens
+eligible user message, without inline action buttons. Delivery status appears below
+the complete user message, including attachments, and stays there during history
+takeover and confirmation dismissal. Below the conversation title, secondary-gray
+machine text starts with a presence icon; tapping the header opens
 the panel with name and presence, owner avatar and name, then
 private/shared visibility. Visibility comes from the public machine-registration
 query on opening; unavailable data is shown as unknown, never inferred as private.
 The bottom machine capsule is omitted. The trailing Tabs button appears only with
-other open Tabs; More retains closed-Tab recovery and New current working directory
+other open Tabs. Its corner dot indicates unread output in other Tabs, respecting
+local visits; activity remains on each row in the expanded panel. More retains closed-Tab recovery and New current working directory
 conversation, using the existing create-Tab operation.
 Chat inline code matches the body size in a monospaced face. Prose blocks use
 secondary-label grey (links use web’s muted light/dark blue); fenced code retains its own sizing
 and colours. With MarkdownView's shared code colour, a list or quote containing a
 fence keeps its original code colours throughout that block.
 
-In compact Chats Home, project grouping reveals an opaque project index while
-scrolling, over the existing full-width list. Tap a logo or scrub the rail to jump
+In Chats Home (compact, and the iPad / iPhone Duo split column), project grouping
+reveals an opaque project index while scrolling, over the list. Tap a logo or scrub the rail to jump
 through committed rendered sections, including Pinned and unassigned chats. Only
 the visible 56 pt rail intercepts touches; no index recognizer is installed on rows.
 It stays visible through dragging/deceleration and for 0.8 seconds after scrolling
 or scrubbing ends. Renewed interaction invalidates pending dismissal. Snapshot
 replacement, backgrounding, detachment and size changes cancel the interaction.
-Search, time/status groupings and the iPad sidebar retain their existing lists.
+Search and time/status groupings retain their existing lists.
 VoiceOver adjustment follows rendered group order. Repository identities flow from
 catalog `repoFullName` through the root row to cached GitHub owner avatars, displayed
 in dedicated 24 pt image views at full opacity; projects without artwork use one

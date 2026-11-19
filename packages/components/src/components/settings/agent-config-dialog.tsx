@@ -96,6 +96,8 @@ import { AgentIcon } from '@/components/icons/agent-icon';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { useKeyboardAwareScrollIntoView } from '@/hooks/use-keyboard-aware-scroll-into-view';
 import { useMachineAcpBinaryProgress } from '@/hooks/use-machine-acp-binary-progress';
+import type { AcpModelOptionsRefreshProgress } from '@/hooks/use-refresh-machine-acp-capabilities';
+import { formatModelOptionsProgressText } from './model-options-progress';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { Button } from '@lody/ui/button';
 import { AlertDialog, Dialog } from '@/ui/dialog';
@@ -104,6 +106,7 @@ import { Collapsible } from '@lody/ui/collapsible';
 import { Input } from '@lody/ui/input';
 import { Field as UiField } from '@lody/ui/field';
 import { Textarea } from '@lody/ui/textarea';
+
 import { Select } from '@lody/ui/select';
 import { Tabs } from '@lody/ui/tabs';
 import { OptionSelector } from '@/components/shared/option-selector';
@@ -381,6 +384,17 @@ const styles = stylex.create({
   stack: { display: 'flex', flexDirection: 'column', gap: space[3], minWidth: 0 },
   stackTight: { display: 'flex', flexDirection: 'column', gap: space[2], minWidth: 0 },
   actionRow: { display: 'flex', alignItems: 'center', gap: space[2] },
+  /** A setting named on the left with its switch on the right. */
+  switchRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: space[3],
+    minWidth: 0,
+  },
+  switchText: { display: 'flex', flexDirection: 'column', gap: space[1], minWidth: 0 },
+  switchControl: { flexShrink: 0 },
+  switchWarning: { margin: 0, fontSize: '11px', lineHeight: 1.375, color: colors.warning },
   /** A field and the one button that checks it, on one row. */
   inputWithTest: { display: 'flex', alignItems: 'center', gap: space[2], minWidth: 0 },
   /** Two glyphs in one box, cross-faded: the button changes what it says, not where. */
@@ -646,8 +660,6 @@ const styles = stylex.create({
 // Preset definitions
 // =============================================================================
 
-export const DEEPSEEK_CLAUDE_PRESET_ID = 'deepseek-over-claude-code';
-export const DEEPSEEK_REASONIX_PRESET_ID = 'deepseek-reasonix';
 const LEGACY_DSH_MODELS_ENV = 'ACP_EXTENSION_DSH_MODELS';
 type DeepSeekEndpointMode = 'official' | 'custom';
 export const MIMO_CLAUDE_PRESET_ID = 'mimo-over-claude-code';
@@ -660,8 +672,6 @@ export const GLM_BIGMODEL_CREDENTIAL_MODE_ID = 'bigmodel';
 export const GLM_ZAI_CREDENTIAL_MODE_ID = 'zai';
 
 type PresetId =
-  | typeof DEEPSEEK_CLAUDE_PRESET_ID
-  | typeof DEEPSEEK_REASONIX_PRESET_ID
   | typeof MIMO_CLAUDE_PRESET_ID
   | typeof MINIMAX_CLAUDE_PRESET_ID
   | typeof GLM_CLAUDE_PRESET_ID;
@@ -734,56 +744,6 @@ type PresetDefinition = {
   credentialModeGroupLabelDefault?: string;
   credentialModeGroupHintKey?: string;
   credentialModeGroupHintDefault?: string;
-};
-
-const DEEPSEEK_CLAUDE_PRESET: PresetDefinition = {
-  id: DEEPSEEK_CLAUDE_PRESET_ID,
-  brandId: 'deepseek',
-  label: 'DeepSeek over Claude Code',
-  labelKey: 'settings.agent.dialog.preset.deepseekClaude.label',
-  descriptionKey: 'settings.agent.dialog.preset.deepseekClaude.description',
-  descriptionDefault: 'Route Claude Code through DeepSeek — just paste your API token.',
-  cliType: 'builtin',
-  agentType: 'claude',
-  badge: 'Preset',
-  tokenLabelKey: 'settings.agent.dialog.preset.deepseekClaude.tokenLabel',
-  tokenLabelDefault: 'DeepSeek API token',
-  tokenPlaceholderKey: 'settings.agent.dialog.preset.deepseekClaude.tokenPlaceholder',
-  tokenPlaceholderDefault: 'sk-XXXXXXXXXXXX',
-  tokenHelpKey: 'settings.agent.dialog.preset.deepseekClaude.tokenHelp',
-  tokenHelpDefault: 'Create or copy one at platform.deepseek.com.',
-  tokenEnvKey: 'ANTHROPIC_AUTH_TOKEN',
-  fixedEnv: {
-    ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
-    ANTHROPIC_MODEL: 'deepseek-v4-pro[1m]',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-pro',
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-    CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
-    CLAUDE_CODE_EFFORT_LEVEL: 'max',
-  },
-};
-
-const DEEPSEEK_REASONIX_PRESET: PresetDefinition = {
-  id: DEEPSEEK_REASONIX_PRESET_ID,
-  brandId: 'deepseek',
-  label: 'DeepSeek Reasonix',
-  labelKey: 'settings.agent.dialog.preset.deepseekReasonix.label',
-  descriptionKey: 'settings.agent.dialog.preset.deepseekReasonix.description',
-  descriptionDefault: 'Run DeepSeek Reasonix through ACP — just paste your API token.',
-  cliType: 'registry',
-  agentType: 'reasonix',
-  badge: 'Preset',
-  tokenLabelKey: 'settings.agent.dialog.preset.deepseekReasonix.tokenLabel',
-  tokenLabelDefault: 'DeepSeek API token',
-  tokenPlaceholderKey: 'settings.agent.dialog.preset.deepseekReasonix.tokenPlaceholder',
-  tokenPlaceholderDefault: 'sk-XXXXXXXXXXXX',
-  tokenHelpKey: 'settings.agent.dialog.preset.deepseekReasonix.tokenHelp',
-  tokenHelpDefault: 'Create or copy one at platform.deepseek.com.',
-  tokenEnvKey: 'DEEPSEEK_API_KEY',
-  fixedEnv: {},
 };
 
 const MIMO_TOKEN_PLAN_BASE_URL_OPTIONS: PresetBaseUrlOption[] = [
@@ -982,13 +942,7 @@ const GLM_CLAUDE_PRESET: PresetDefinition = {
   ],
 };
 
-const PRESETS: PresetDefinition[] = [
-  DEEPSEEK_CLAUDE_PRESET,
-  DEEPSEEK_REASONIX_PRESET,
-  MIMO_CLAUDE_PRESET,
-  MINIMAX_CLAUDE_PRESET,
-  GLM_CLAUDE_PRESET,
-];
+const PRESETS: PresetDefinition[] = [GLM_CLAUDE_PRESET, MIMO_CLAUDE_PRESET, MINIMAX_CLAUDE_PRESET];
 const PRESETS_BY_ID: Record<string, PresetDefinition> = Object.fromEntries(
   PRESETS.map((p) => [p.id, p])
 );
@@ -1015,13 +969,64 @@ type AgentTypeOption = {
 const BUILTIN_OPTIONS: AgentTypeOption[] = [
   {
     kind: 'builtin',
-    value: 'builtin:sorbet',
-    label: 'Lody Agent',
-    descriptionKey: 'settings.agent.dialog.option.sorbet.description',
-    descriptionDefault: 'An agent harness for work that outlives one conversation. Built for Lody.',
+    value: 'builtin:codex',
+    label: 'Codex',
+    descriptionKey: 'settings.agent.dialog.option.codex.description',
+    descriptionDefault: 'OpenAI Codex runtime',
     cliType: 'builtin',
-    agentType: 'sorbet',
-    searchKeys: 'lody agent sorbet',
+    agentType: 'codex',
+    searchKeys: 'codex openai',
+  },
+  {
+    kind: 'builtin',
+    value: 'builtin:claude',
+    label: 'Claude',
+    descriptionKey: 'settings.agent.dialog.option.claude.description',
+    descriptionDefault: 'Anthropic Claude Code runtime',
+    cliType: 'builtin',
+    agentType: 'claude',
+    searchKeys: 'claude anthropic',
+  },
+  {
+    kind: 'builtin',
+    value: 'builtin:antigravity',
+    label: 'Antigravity',
+    descriptionKey: 'settings.agent.dialog.option.antigravity.description',
+    descriptionDefault: 'Google Antigravity CLI with automatic installation',
+    cliType: 'builtin',
+    agentType: 'antigravity',
+    searchKeys: 'google antigravity agy',
+  },
+  {
+    kind: 'builtin',
+    value: 'builtin:deepseek',
+    label: 'DeepSeek Harness',
+    descriptionKey: 'settings.agent.dialog.option.deepseek.description',
+    descriptionDefault: 'DeepSeek coding agent over ACP (developer preview)',
+    cliType: 'builtin',
+    agentType: 'deepseek',
+    experimental: true,
+    searchKeys: 'deepseek harness dsh acp',
+  },
+  {
+    kind: 'builtin',
+    value: 'builtin:grok',
+    label: 'Grok',
+    descriptionKey: 'settings.agent.dialog.option.grok.description',
+    descriptionDefault: 'xAI Grok coding agent runtime',
+    cliType: 'builtin',
+    agentType: 'grok',
+    searchKeys: 'grok xai',
+  },
+  {
+    kind: 'builtin',
+    value: 'builtin:pi',
+    label: 'Pi',
+    descriptionKey: 'settings.agent.dialog.option.pi.description',
+    descriptionDefault: 'Lody-managed Pi ACP runtime',
+    cliType: 'builtin',
+    agentType: 'pi',
+    searchKeys: 'pi acp',
   },
   {
     kind: 'builtin',
@@ -1045,54 +1050,13 @@ const BUILTIN_OPTIONS: AgentTypeOption[] = [
   },
   {
     kind: 'builtin',
-    value: 'builtin:grok',
-    label: 'Grok',
-    descriptionKey: 'settings.agent.dialog.option.grok.description',
-    descriptionDefault: 'xAI Grok coding agent runtime',
+    value: 'builtin:bub',
+    label: 'Bub',
+    descriptionKey: 'settings.agent.dialog.option.bub.description',
+    descriptionDefault: 'Bub agent runtime over ACP (install the bub-acp-server plugin)',
     cliType: 'builtin',
-    agentType: 'grok',
-    searchKeys: 'grok xai',
-  },
-  {
-    kind: 'builtin',
-    value: 'builtin:claude',
-    label: 'Claude',
-    descriptionKey: 'settings.agent.dialog.option.claude.description',
-    descriptionDefault: 'Anthropic Claude Code runtime',
-    cliType: 'builtin',
-    agentType: 'claude',
-    searchKeys: 'claude anthropic',
-  },
-  {
-    kind: 'builtin',
-    value: 'builtin:codex',
-    label: 'Codex',
-    descriptionKey: 'settings.agent.dialog.option.codex.description',
-    descriptionDefault: 'OpenAI Codex runtime',
-    cliType: 'builtin',
-    agentType: 'codex',
-    searchKeys: 'codex openai',
-  },
-  {
-    kind: 'builtin',
-    value: 'builtin:deepseek',
-    label: 'DeepSeek Harness',
-    descriptionKey: 'settings.agent.dialog.option.deepseek.description',
-    descriptionDefault: 'DeepSeek coding agent over ACP (developer preview)',
-    cliType: 'builtin',
-    agentType: 'deepseek',
-    experimental: true,
-    searchKeys: 'deepseek harness dsh acp',
-  },
-  {
-    kind: 'builtin',
-    value: 'builtin:pi',
-    label: 'Pi',
-    descriptionKey: 'settings.agent.dialog.option.pi.description',
-    descriptionDefault: 'Lody-managed Pi ACP runtime',
-    cliType: 'builtin',
-    agentType: 'pi',
-    searchKeys: 'pi acp',
+    agentType: 'bub',
+    searchKeys: 'bub bubbuild acp',
   },
   {
     kind: 'builtin',
@@ -1106,13 +1070,13 @@ const BUILTIN_OPTIONS: AgentTypeOption[] = [
   },
   {
     kind: 'builtin',
-    value: 'builtin:bub',
-    label: 'Bub',
-    descriptionKey: 'settings.agent.dialog.option.bub.description',
-    descriptionDefault: 'Bub agent runtime over ACP (install the bub-acp-server plugin)',
+    value: 'builtin:sorbet',
+    label: 'Lody Agent',
+    descriptionKey: 'settings.agent.dialog.option.sorbet.description',
+    descriptionDefault: 'An agent harness for work that outlives one conversation. Built for Lody.',
     cliType: 'builtin',
-    agentType: 'bub',
-    searchKeys: 'bub bubbuild acp',
+    agentType: 'sorbet',
+    searchKeys: 'lody agent sorbet',
   },
 ];
 
@@ -1214,6 +1178,7 @@ export type AgentConfigDialogMode =
 type RefreshArgs = {
   machineId: MachineId;
   configId: AgentConfigId;
+  onModelOptionsProgress?: (progress: AcpModelOptionsRefreshProgress) => void;
 };
 
 /** Whether a registry agent's platform binary is present on the target machine. */
@@ -1646,6 +1611,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   const [submitting, setSubmitting] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [probing, setProbing] = useState(false);
+  const [modelProgress, setModelProgress] = useState<AcpModelOptionsRefreshProgress | null>(null);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [manuallyTested, setManuallyTested] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
@@ -1816,19 +1782,21 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   const builtinRuntimeOverrideKey =
     formData.cliType !== 'builtin'
       ? null
-      : formData.agentType === 'codex'
-        ? 'codexPath'
-        : formData.agentType === 'claude'
-          ? 'claudeCodeExecutable'
-          : formData.agentType === 'kimi'
-            ? 'kimiPath'
-            : formData.agentType === 'devin'
-              ? 'devinPath'
-              : formData.agentType === 'grok'
-                ? 'grokPath'
-                : formData.agentType === 'pi'
-                  ? 'piPath'
-                  : null;
+      : formData.agentType === 'antigravity'
+        ? 'antigravityPath'
+        : formData.agentType === 'codex'
+          ? 'codexPath'
+          : formData.agentType === 'claude'
+            ? 'claudeCodeExecutable'
+            : formData.agentType === 'kimi'
+              ? 'kimiPath'
+              : formData.agentType === 'devin'
+                ? 'devinPath'
+                : formData.agentType === 'grok'
+                  ? 'grokPath'
+                  : formData.agentType === 'pi'
+                    ? 'piPath'
+                    : null;
   const builtinRuntimeOverrideValue = builtinRuntimeOverrideKey
     ? (formData.runtimeOverrides?.[builtinRuntimeOverrideKey] ?? '')
     : '';
@@ -2152,6 +2120,9 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
         const response = await onRefreshCapabilities({
           machineId: machine.id,
           configId: agentConfigId,
+          onModelOptionsProgress: (progress) => {
+            if (!cancelled) setModelProgress(progress);
+          },
         });
         if (cancelled) return;
         if (response.authRequired) {
@@ -2195,12 +2166,16 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
         setVerifiedBuiltinContext(null);
         setProbeError(error instanceof Error ? error.message : String(error));
       } finally {
-        if (!cancelled) setProbing(false);
+        if (!cancelled) {
+          setProbing(false);
+          setModelProgress(null);
+        }
       }
     })();
     return () => {
       cancelled = true;
       setProbing(false);
+      setModelProgress(null);
     };
   }, [
     open,
@@ -2233,6 +2208,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
       const response = await onRefreshCapabilities({
         machineId: machine.id,
         configId: agentConfigId,
+        onModelOptionsProgress: setModelProgress,
       });
       if (response.authRequired) {
         setAuthRequired(true);
@@ -2261,6 +2237,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
       setProbeError(error instanceof Error ? error.message : String(error));
     } finally {
       setProbing(false);
+      setModelProgress(null);
     }
   };
 
@@ -2335,7 +2312,8 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   }, [isPreset, titleSelectors, formData.titleGeneration?.configOptionValues]);
 
   const isAntigravityRegistry =
-    formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE;
+    (formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE) ||
+    (formData.cliType === 'builtin' && formData.agentType === 'antigravity');
   const antigravityThirdPartyModels = formData.env[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV];
   // The opt-in is owned by its switch below, so the free-form list neither shows
   // nor drops it.
@@ -2648,7 +2626,10 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   const filteredOptions = useMemo(() => {
     const q = query.trim().toLowerCase();
     return ALL_OPTIONS.filter(
-      (o) => o.agentType !== 'sorbet' && (!q || o.searchKeys.toLowerCase().includes(q))
+      (o) =>
+        o.agentType !== 'sorbet' &&
+        !(o.cliType === 'registry' && o.agentType === ANTIGRAVITY_AGENT_TYPE) &&
+        (!q || o.searchKeys.toLowerCase().includes(q))
     );
   }, [query]);
 
@@ -2837,6 +2818,9 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
               <ProbeStatus
                 isPreset={isPreset}
                 probing={probing}
+                probingText={
+                  modelProgress ? formatModelOptionsProgressText(t, modelProgress) : undefined
+                }
                 probeError={probeError}
                 ready={capabilitiesReady && !builtinNeedsCredentialCheck && !authRequired}
                 showIdleAction={!isCustom}
@@ -3110,35 +3094,40 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
                     value={builtinRuntimeOverrideValue}
                     onChange={(event) => updateBuiltinRuntimeOverride(event.target.value)}
                     placeholder={
-                      formData.agentType === 'codex'
+                      formData.agentType === 'antigravity'
                         ? t(
-                            'settings.agent.dialog.runtimeOverride.codexPlaceholder',
-                            '/path/to/codex'
+                            'settings.agent.dialog.runtimeOverride.antigravityPlaceholder',
+                            '/path/to/agy'
                           )
-                        : formData.agentType === 'kimi'
+                        : formData.agentType === 'codex'
                           ? t(
-                              'settings.agent.dialog.runtimeOverride.kimiPlaceholder',
-                              '/path/to/kimi'
+                              'settings.agent.dialog.runtimeOverride.codexPlaceholder',
+                              '/path/to/codex'
                             )
-                          : formData.agentType === 'devin'
+                          : formData.agentType === 'kimi'
                             ? t(
-                                'settings.agent.dialog.runtimeOverride.devinPlaceholder',
-                                '/path/to/devin'
+                                'settings.agent.dialog.runtimeOverride.kimiPlaceholder',
+                                '/path/to/kimi'
                               )
-                            : formData.agentType === 'grok'
+                            : formData.agentType === 'devin'
                               ? t(
-                                  'settings.agent.dialog.runtimeOverride.grokPlaceholder',
-                                  '/path/to/grok'
+                                  'settings.agent.dialog.runtimeOverride.devinPlaceholder',
+                                  '/path/to/devin'
                                 )
-                              : formData.agentType === 'pi'
+                              : formData.agentType === 'grok'
                                 ? t(
-                                    'settings.agent.dialog.runtimeOverride.piPlaceholder',
-                                    '/path/to/pi'
+                                    'settings.agent.dialog.runtimeOverride.grokPlaceholder',
+                                    '/path/to/grok'
                                   )
-                                : t(
-                                    'settings.agent.dialog.runtimeOverride.claudePlaceholder',
-                                    '/path/to/claude'
-                                  )
+                                : formData.agentType === 'pi'
+                                  ? t(
+                                      'settings.agent.dialog.runtimeOverride.piPlaceholder',
+                                      '/path/to/pi'
+                                    )
+                                  : t(
+                                      'settings.agent.dialog.runtimeOverride.claudePlaceholder',
+                                      '/path/to/claude'
+                                    )
                     }
                     autoComplete="off"
                     spellCheck={false}
@@ -3767,6 +3756,7 @@ function formatBinaryStatusText(
 function ProbeStatus({
   isPreset,
   probing,
+  probingText,
   probeError,
   ready,
   showIdleAction,
@@ -3775,6 +3765,8 @@ function ProbeStatus({
 }: {
   isPreset: boolean;
   probing: boolean;
+  /** Replaces the generic label while a refresh names the model it is reading. */
+  probingText?: string;
   probeError: string | null;
   ready: boolean;
   showIdleAction: boolean;
@@ -3793,7 +3785,7 @@ function ProbeStatus({
     return (
       <span {...stylex.props(styles.probing)}>
         <Spinner size="small" aria-hidden="true" />
-        {t('settings.agent.dialog.probing', 'Probing…')}
+        {probingText ?? t('settings.agent.dialog.probing', 'Probing…')}
       </span>
     );
   }

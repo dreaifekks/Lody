@@ -33,10 +33,7 @@ context/message-flow.md "Upstream".
   Claude single-question forms retain their request-message prompt. The shared bridge
   maps recognized Droid AskUser labels and custom answers back to its option IDs and
   companion fields ([Droid decision](../../../../.agents/notes/implemented/bug-fix/2026-11-03-droid-ask-user-elicitation.md)).
-- `claude-task-lifecycle.ts` — converts Claude task lifecycle events into ACP task
-  updates. Rendered titles may use a fallback; persisted actor metadata is omitted when
-  Claude reports no actor, so later events preserve an earlier identity. Providers that
-  rely on an unknown-actor label can configure a separate metadata fallback.
+- `antigravity-background.ts` — keeps Antigravity background work after `end_turn` safe from idle GC with synthesized `sessionActivity`.
 - `acp-runner.ts` — process spawn/restart around the client. Spawn + initialize +
   `newSession`/`loadSession` share `acp-session-start-gate.ts`.
 - `acp-session-start-gate.ts` — process-wide start semaphore used by
@@ -54,6 +51,9 @@ context/message-flow.md "Upstream".
   upstream auto-update in its child process and never downloads a fallback. Credentials
   remain in Dimcode's own configuration or provider environment. Refresh capabilities
   after upgrading. Existing registry configurations retain their saved launch contract.
+  Builtin Devin is a bundled proxy over the pinned official runtime; discovery hides duplicate
+  registry Devin, Dimcode and Kimi entries while saved configurations keep their launch
+  contracts ([decision and ablations](../../../../.agents/notes/implemented/feature/2026-09-30-builtin-devin.md)).
   [Sorbet authentication](../../../../.agents/notes/proposed/feature/2026-11-02-sorbet-acp-authentication.md)
   uses the existing protected ACP interaction path. Its `sorbet.dev` credentials v1
   extension runs in a separate bounded builtin Sorbet ACP process, with no session or
@@ -258,6 +258,82 @@ ACP capabilities, without AIR, terminal-output deltas or session notices. Standa
 tool fields and text fallback remain authoritative. Consumer audit and limits:
 [compatibility decision](../../../../.agents/notes/implemented/bug-fix/2026-09-29-claude-acp-sparse-updates.md).
 
+### Managed Antigravity
+
+Builtin Antigravity launches the pinned official `agy acp --process-per-session
+--disable-telemetry` directly, with `AGY_CLI_DISABLE_AUTO_UPDATE=true`. Its only
+version/archive pins are in `antigravity-runtime-manifest.json`; downloads use the
+same public runtime channel, cache and verification as other managed agents.
+`runtimeOverrides.antigravityPath` selects a user-managed binary.
+The fork ignores `runtimeOverrides.antigravitySkipPermissions` as a launch policy;
+its schema and protocol field remain readable for upstream compatibility. Only a
+session selecting `yolo` appends the skip flag, as described below.
+Authentication
+uses methods returned by ACP initialize, not a native terminal login command.
+
+New Provider discovery omits `registry/antigravity-acp`. Persisted Providers retain
+the fork’s fixed agy CLI 1.5.9 launch definition and show a Legacy label; neither Provider
+identity nor native session IDs are rewritten. Create a builtin Provider for new
+work. Compatibility of old server sessions with agy is not assumed.
+
+Quota refresh runs the selected agy executable with `--print /usage
+--output-format json` and its launch environment. This command reports zero model
+turns; its model-group weekly and five-hour fractions become the existing Provider
+quota windows. Persisted registry Antigravity uses the same print-mode reader.
+Neither path sends an ACP `/usage` prompt: agy does not advertise that command
+and would send the text to the model. The former Cloud Code reader is removed.
+
+Capability probes and real new/load/resume session snapshots use the same
+normalizer to project the builtin and legacy Antigravity quota readers. Session
+startup must not erase that declaration while updating the Provider cache;
+native Core declarations remain authoritative. Builtin quota display accepts
+only audited proxy and locale environment overrides. Credential/home overrides,
+unknown environment keys, and Magpie routing remain ineligible.
+
+Native `ask_question` forms use each `qN.title` as the prompt, numbered option
+IDs with labels in `oneOf[].title` / `items.anyOf[].title`, and a `qN_other`
+custom-answer field. The shared bridge receives explicit builtin Antigravity
+provenance, persists readable Core questions/answers, and maps replies back to
+the original IDs or custom field. It does not reinterpret other providers'
+legacy forms or canonical Core forms.
+
+Native tool updates carry the tool identity in a top-level `name`; AgentClient
+projects that bounded value into `_meta.lody.toolName` for history. Existing
+canonical metadata takes precedence. In live 1.5.9 Hydrogen experiments,
+`search_web`, `invoke_subagent` and `manage_subagents` emitted ordinary tool
+start/completion updates without `content` or `rawOutput`. Child activity and
+results were reported in parent assistant text, not structured child events;
+no `subagentEvents` capability was advertised. Keep these as tool calls rather
+than inventing child lifecycle or treating spawn acknowledgement as child success.
+
+A custom Provider whose `initialize` reports `Antigravity ACP Server` gets the same
+compatibility as builtin Antigravity; legacy `antigravity-acp` does not. AgentClient
+negotiates the `realpath` of the workdir as the ACP `cwd`, because agy compares edit
+targets by realpath and would otherwise ask permission for in-workspace edits under a
+symlinked path such as macOS `/tmp`.
+
+agy ends `session/prompt` with `end_turn` while background work (commands, timers,
+subagents, swarms) is still running, then stops writing to stdout. Lody ends the turn
+normally, and `antigravity-background.ts` reports `sessionActivity` from side-effect-free
+`session/list` activity so idle GC keeps the process until that work has woken the model
+and gone quiet. Output from those wakeups is not replayed: `session/load` restarts the
+session's MCP servers. See the
+[background work decision](../../../../.agents/notes/implemented/bug-fix/2026-11-16-antigravity-background-wakeup.md).
+
+`antigravity-usage.ts` projects end-turn `PromptResponse.usage` into disjoint token
+buckets. Each submitted request has a fresh accounting scope and freezes its
+confirmed session model before dispatch, so later model changes and smaller next
+turns do not overwrite earlier totals. Cache reads/writes and reasoning retain
+separate buckets; provider cost stays unknown. Standard `usage_update` records
+both current occupancy (`used`) and capacity (`size`) in Session metadata for the
+composer, including zero occupancy and decreases after compaction. The latest
+reported positive capacity also accompanies aggregate token usage as
+`usage.contextWindow` for statistics persistence; it is neither summed across
+turns nor inferred from token totals. Model-level counters retain only token
+buckets. Standard context observations are not cumulative billable tokens. Optional malformed
+telemetry cannot fail the prompt. The existing delivery contract remains in
+[usage snapshots](../../../../specs/usage-delivery.md).
+
 ### Managed runtimes
 
 Codex version/archive pins come from `codex-runtime-manifest.json`, which the outer
@@ -287,9 +363,8 @@ then rank eligible candidates by installedAt and command. Best-effort cleanup co
 because the manager cannot prove their readers have exited. Downloads have a 60-second idle deadline;
 progressing transfers have no total deadline. Idle timeout retains partial bytes for Range resume. [Decision](../../../../.agents/notes/implemented/bug-fix/2026-09-21-acp-auth-runtime-download.md).
 
-Completed caches written before metadata schema v1 remain reusable through a separate strict
-legacy schema; their old `name`/`version`/`platform` fields are normalized in memory and only
-the trusted runtime definition's command and host requirement are inferred. Repacked Node
+Completed caches must match metadata schema v1; a pre-v1 cache is invalid and the runtime is
+installed again. Repacked Node
 packages intentionally publish no convenience link because non-ACP subcommands may be
 omitted. A fully validated install that has already crossed the final complete-marker commit
 may remain a safe cache hit even though that caller observes cancellation, and network
@@ -399,8 +474,8 @@ leaves the draft title; there is no timeout-triggered duplicate generation.
 The builtin Claude/Grok identity table remains compatibility for older
 managed runtimes. Overrides revoke that fallback, but can independently advertise
 the new capability. Only legacy Claude/Grok titles are trusted without a tag. The
-LAN fork adds the registry's Google Antigravity to that fallback, because the entry
-runs the agy CLI, which titles its own conversations (see
+LAN fork adds builtin and persisted registry Antigravity to that fallback, because both
+run the agy CLI, which titles its own conversations (see
 [Google Antigravity runs the agy CLI](#google-antigravity-runs-the-agy-cli-lan-fork)).
 See the [contract](../../../../specs/acp-session-titles.md) and
 [original compatibility decision](../../../../.agents/notes/implemented/architecture/2026-09-08-acp-owned-session-titles.md).
@@ -457,10 +532,11 @@ isolated generator's own fallback is the raw prompt.
 
 ### Google Antigravity runs the agy CLI (LAN fork)
 
-The registry entry `antigravity-acp` launches the agy CLI's own ACP server
-(`antigravity acp`) from the CLI's GitHub release instead of the registry's
-`agy_acp_server`. `scripts/generate-acp-registry.mjs` pins that release in
-`ANTIGRAVITY_CLI_VERSION` and rewrites only this entry; a version bump is manual.
+New Providers use [managed Antigravity](#managed-antigravity). Persisted
+`registry/antigravity-acp` Providers retain the fork’s agy CLI 1.5.9 GitHub
+distribution in `setting.ts`, hidden from discovery. Both launch
+`acp --process-per-session --disable-telemetry` with automatic updates disabled;
+the legacy transition never returns to `agy_acp_server`.
 The server loads the user's agy plugins, hooks and MCP servers, and offers `default`,
 `accept-edits`, `auto` and `plan` with a `thought_level` option. It lists Claude/GPT
 models to every client, so the Zed client identity no longer matters for it.
@@ -480,7 +556,11 @@ models to every client, so the Zed client identity no longer matters for it.
   its own permission requests; its deny rules and command denylist still apply. The
   flag is fixed for a process: a turn that turns YOLO on or off restarts the
   session's agent first (`antigravityYoloChanged`), and a switch during a turn is
-  refused until the next message.
+  refused until the next message. This applies to builtin and persisted registry
+  Antigravity. Only that session's agy is replaced; other sessions of the same
+  Provider keep their mode and process. The Provider-level skip-permissions setting
+  is hidden and its stored field never adds a global flag: `auto` and `auto_review`
+  cannot inherit permission bypass from it.
 - Permissions: in `default` and `auto`, agy asks before every tool call of an MCP
   server the client passes (the builtin `lody` server, workspace MCP) and offers only
   allow-once or reject-once. MCP servers from its own plugins run without asking.
@@ -492,8 +572,8 @@ models to every client, so the Zed client identity no longer matters for it.
 - Stored selections: `auto_edit` and `thinking_level` are not in this catalog. Create
   rejects them and continuing turns drop
   them. Session ids from the former server load as empty conversations.
-- Quota still reads the former server's sign-in, `~/.gemini/antigravity-acp/acp_token.json`;
-  the agy CLI keeps its own credential.
+- Quota uses the selected agy executable’s print-mode `/usage` and account environment.
+  The daemon no longer reads the former server’s token or calls Cloud Code directly.
 
 Decision, alternatives and evidence:
 [agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md).
@@ -529,7 +609,7 @@ five seconds. Unconfirmed process release retains its owner and prevents a secon
 
 [Ownership decision](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
 
-Provider quota refresh uses `queryLocalAcpRateLimits`: initialize a separately owned ACP process, verify Core `rateLimits.query`, query without a session, and await process-tree cleanup. The official registry Antigravity server uses `antigravity-quota.ts` instead when Core query support is absent: create a scratch session with no MCP servers, wait for its advertised `usage` command, and parse the official `/usage` reply into named weekly and five-hour windows. Its existing launcher and account environment are preserved; no separate CLI or credential reader is used. Missing commands, unavailable/malformed quota, cancellation and timeout preserve cached quota. The session execution service owns Provider coalescing and guarded Flock publication. See the [quota refresh decision](../../../../.agents/notes/implemented/architecture/2026-10-13-provider-quota-refresh.md).
+Provider quota refresh uses `queryLocalAcpRateLimits`: Core providers initialize a separately owned ACP process, verify `rateLimits.query`, query without a session, and await process-tree cleanup. Builtin and persisted registry Antigravity run the selected agy executable with `--print /usage --output-format json`; no ACP quota session is created. Malformed quota, cancellation and timeout preserve cached quota. The session execution service owns Provider coalescing and guarded Flock publication.
 
 Account eligibility for both renderer display and daemon refresh lives in
 [`subscription-quota.ts`](../../../../packages/shared/src/subscription-quota.ts).
@@ -551,9 +631,7 @@ and session/new carries no legacy `_meta.lody.promptSuggestions` setting.
 
 ### Fork Antigravity quota
 
-`registry/antigravity-acp` is the fork's agy CLI entry. agy does not advertise `/usage`.
-`../lib/antigravity-quota.ts` reads Cloud Code directly without starting a provider
-process or ACP session; it is the sole quota source. Capability probing must not infer
-Core rate-limit query support from this registry id, and `queryLocalAcpRateLimits`
-refuses the entry before launch. The upstream reader remains isolated for its original
-protocol fixtures; it is not a fallback for agy.
+Builtin and persisted registry Antigravity share the agy print-mode reader and
+advertise its query capability through the session normalizer. The result preserves
+all named groups and windows; Cloud Code token parsing and direct HTTP polling are
+removed. [Quota decision](../../../../.agents/notes/implemented/bug-fix/2026-10-20-antigravity-argon-quota.md).

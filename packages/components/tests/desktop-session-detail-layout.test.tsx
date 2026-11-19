@@ -1,7 +1,5 @@
 import { beforeEach } from 'vitest';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import React, { act, forwardRef, useImperativeHandle, type HTMLAttributes } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';

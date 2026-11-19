@@ -2,6 +2,7 @@ import {
   AgentProviderOperationParams,
   AgentProviderOperationResult,
   AgentProviderOperationProgress,
+  AgentProviderRefreshProgress,
   AgentProviderDetailParams,
   AgentProviderDetail,
   AgentProviderProbeParams,
@@ -109,6 +110,7 @@ import {
   ForkSessionParams,
   ForkSessionResult,
   ForgetPendingInputParams,
+  RetryPendingInputResult,
   CreateSessionResult,
   DeleteSessionParams,
   DeleteSessionResult,
@@ -137,6 +139,7 @@ export type {
   CreateSessionResult,
   EditSessionResult,
   SendTurnResult,
+  RetryPendingInputResult,
 } from './sessions.ts';
 export type { CreationOptions } from './projects.ts';
 export type { SessionRuntimeEvent, SessionTrace } from './session-events.ts';
@@ -203,7 +206,9 @@ export const runtimeCalls = {
   agentProviderProbe: {
     params: AgentProviderProbeParams,
     result: AgentProviderProbeResult,
-    timeoutMs: 135000,
+    // Backstop for a refresh that reads every model; a plain probe answers
+    // within the runtime's own 125 s budget.
+    timeoutMs: 1_215_000,
   },
   agentProviderAuth: {
     params: AgentProviderAuthParams,
@@ -366,7 +371,7 @@ export const runtimeCalls = {
   },
   retryPendingInput: {
     params: ForgetPendingInputParams,
-    result: Empty,
+    result: RetryPendingInputResult,
     timeoutMs: 30_000,
   },
   forgetPendingInput: {
@@ -418,6 +423,7 @@ export const hostCalls = {
 export const runtimeEvents = {
   agentProviderAuthChanged: AgentProviderAuthState,
   agentProviderOperationProgress: AgentProviderOperationProgress,
+  agentProviderRefreshProgress: AgentProviderRefreshProgress,
   agentProvidersChanged: z
     .object({ machineId: z.string() })
     .meta({ id: 'AgentProvidersChangedEvent' }),

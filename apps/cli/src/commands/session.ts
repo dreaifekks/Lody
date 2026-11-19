@@ -47,7 +47,9 @@ import type { MessageAuthor, AgentMessageAuthor } from '@lody/shared';
 import {
   ACP_CAPABILITY_ROW_FAMILIES,
   getDeclaredModelControls,
-  getModelEffortChoices,
+  getAcpModelEffortChoices,
+  getAcpModelFastSupport,
+  withAcpConfigOptionsForModel,
   machineSupportsPreparedSessionInputProtocol,
   machineSupportsMemoryProviders,
   resolveNewSessionHistoryBackend,
@@ -478,9 +480,6 @@ type SessionActivityTimestampManager = {
     upsertDocMeta(roomId: string, meta: Partial<SessionMeta>): Promise<unknown>;
   };
 };
-
-// Re-export for backward compatibility with tests
-export { normalizeCliValue, selectWorkspaceSummary };
 
 export function resolvePromptCandidate(input: {
   prompt?: string;
@@ -2030,10 +2029,13 @@ function validateModelDependentTurnConfigOptionValues(
   }
   const probedModelId = findTurnConfigOptionByCategory(capability, 'model')?.currentValue;
   const optionsById = new Map(
-    (capability.configOptions ?? []).map((option) => [option.id, option])
+    (withAcpConfigOptionsForModel(capability, targetModelId).configOptions ?? []).map((option) => [
+      option.id,
+      option,
+    ])
   );
-  const efforts = getModelEffortChoices(capability, targetModelId);
-  const declaredFast = getDeclaredModelControls(capability, targetModelId)?.fastMode;
+  const efforts = getAcpModelEffortChoices(capability, targetModelId);
+  const declaredFast = getAcpModelFastSupport(capability, targetModelId);
   for (const [id, value] of Object.entries(values)) {
     if (isTurnEffortEntry(optionsById, id)) {
       if (typeof value !== 'string') {
@@ -2135,14 +2137,19 @@ export function filterCompatibleTurnConfigOptionValues(
     return undefined;
   }
   const optionsById = new Map(
-    (capability.configOptions ?? []).map((option) => [option.id, option])
+    (withAcpConfigOptionsForModel(capability, targetModelId).configOptions ?? []).map((option) => [
+      option.id,
+      option,
+    ])
   );
   const probedModelId = findTurnConfigOptionByCategory(capability, 'model')?.currentValue;
-  const efforts = getModelEffortChoices(capability, targetModelId);
-  const declared = getDeclaredModelControls(capability, targetModelId);
+  const efforts = getAcpModelEffortChoices(capability, targetModelId);
+  const fastSupport = getAcpModelFastSupport(capability, targetModelId);
   // A different (or unknown) probe model cannot invalidate the target's
   // recorded controls. Without per-model data, preserve them for runtime.
-  const keepUnverified = targetModelId !== probedModelId || declared !== undefined;
+  const keepUnverified =
+    targetModelId !== probedModelId ||
+    getDeclaredModelControls(capability, targetModelId) !== undefined;
   const compatible = Object.fromEntries(
     Object.entries(values).filter(([id, value]) => {
       if (targetModelId) {
@@ -2150,8 +2157,8 @@ export function filterCompatibleTurnConfigOptionValues(
           if (efforts !== undefined) return typeof value === 'string' && efforts.includes(value);
           if (keepUnverified) return typeof value === 'string';
         } else if (isAcpFastModeConfigId(id)) {
-          // A model declared without Fast has nothing to carry a Fast value to.
-          if (declared?.fastMode === false) return false;
+          // A model known without Fast has nothing to carry a Fast value to.
+          if (fastSupport === false) return false;
           if (keepUnverified) {
             return (
               typeof value === 'boolean' ||
@@ -2476,7 +2483,7 @@ export function resolveEffectiveSessionChatDispatchConfig(args: {
   );
   validateTurnConfigOptionValues(
     args.dispatchConfig.configOptionValues,
-    args.capability,
+    args.capability && withAcpConfigOptionsForModel(args.capability, targetModelId),
     validatedIds,
     freshness
   );
@@ -3872,7 +3879,7 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
   ]);
   validateTurnConfigOptionValues(
     requested.config.configOptionValues,
-    capability,
+    capability && withAcpConfigOptionsForModel(capability, targetModelId),
     validatedConfigIds,
     freshness
   );

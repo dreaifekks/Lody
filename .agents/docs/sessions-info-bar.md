@@ -7,6 +7,21 @@ pointer to this page live in
 [that directory's AGENTS.md](../../packages/components/src/components/sessions/AGENTS.md);
 this page is the full text of the rules summarised there.
 
+## Composer contracts
+
+- Keep cluster order and one nonempty stage when items exist. Hide only without
+  items or ambient content. Machine (desktop name/mobile icon) stays unstaged;
+  ownership appears only in details. Scheduled drafts live in the composer, never the bar.
+- Stage icons stay inert; reserve colour for genuine status; no pulses.
+- Reported preview requests enable simulator actions. One platform opens directly;
+  iOS + Android share a chooser on desktop and mobile, targeting the main conversation.
+- Open preview stays gated on a real reported target; repository actions are
+  priority-ordered (dirty ⇒ Commit & Push), collapse into one, never duplicated
+  below the reply.
+- Workspace diff presence follows the complete changed-file count when available,
+  with line-count fallback for older daemons. Display positive text totals normally
+  and file counts for zero-line changes.
+
 The execution-machine control sits before the canonical cluster and never
 takes the stage. `session-machine-info.tsx` shows a monitor icon and machine name
 on desktop, or a compact icon-only button on mobile (`compactMachineInfo`).
@@ -22,6 +37,13 @@ Mobile controls remain in the same 32px row. With only machine information the b
 is a transparent row; existing items and actions retain the raised bar surface. The
 [draft Spec](../../specs/composer-machine-owner.md) owns the presentation intent.
 The parent passes already-resolved metadata and presence without new subscriptions.
+The workspace diff entry uses the complete changed-path count (`diffStats.allChange.files`)
+when supplied, including binary, empty-file and permission changes. Positive text
+additions/deletions remain the visible summary for text-only and mixed comparisons;
+zero-line comparisons show the localized file count. Older daemons without `files`
+retain their positive-line-count behavior. Counts come from the complete comparison,
+not the bounded shared index; per-turn edited-file cards keep their independent scope.
+
 Scheduled-message drafts must not add an info-bar item. Their state is the
 composer's secondary action beside Send; the bar only carries machine, status,
 goal, schedule, and context. This is distinct from the pending Agent task countdown
@@ -109,6 +131,13 @@ labelClassName`) so the stage diffstat never clips. Wired from
   the PR marker opens the PR tab, branch copies the current branch, and ±diff
   opens the existing fixed All Changes side-panel tab; file-row and comment-reference
   actions may still create a diff viewer because they carry a precise file/comment focus.
+  A conversation can create several PRs over its life. Associations are
+  append-only (the reconciler only reorders `pullRequests` so the current PR is
+  last), and `resolveSessionPullRequestHistory` lists every PR in the scope the
+  stage describes, the primary PR first and older ones newest first. With more
+  than one, the PR marker keeps showing the primary PR, gains a chevron, and
+  opens that list instead: the current row opens the PR tab as before, while an
+  older row opens on GitHub because the PR tab is bound to the current PR.
   The context stage is also the single owner of agent-driven GitHub/worktree actions:
   a changed GitHub-capable workspace without a PR shows `Create PR` + `Commit & Push`,
   including a direct Local Project with a resolved GitHub repository. For an open
@@ -177,10 +206,11 @@ labelClassName`) so the stage diffstat never clips. Wired from
     must preventDefault onPointerDownOutside when the target is the anchor,
     or dismiss + click-toggle cancel out. GoalChip's popover reuses
     `GoalActionButton`/`formatTokensCompact` from `session-goal-banner.tsx`.
-    Goal controls are transport-gated: the current `/goal …` prompt bridge is
-    Codex-only, so provider-neutral snapshots remain read-only until their advertised
-    `_session/goal` method is routed through the session control plane; Stop must never
-    synthesize `pause` for those providers. Paused and blocked Codex goals both expose
+    Goal controls are transport-gated by the agent's advertised Core goal capability
+    (`apps/cli/src/agent/goal-control.ts`: the `_lody/session/goal` request, a
+    `_meta.lody.goalControl` prompt, or the older `/goal …` bridge); goals from an agent
+    that advertises no control stay read-only, and Stop must never synthesize `pause`
+    for it. Paused and blocked Codex goals both expose
     Resume; a blocked goal is waiting for explicit user continuation, not terminal.
     An `active` goal is persistent session state,
     not proof that an ACP prompt is running: current busy/running UI, message queue routing,

@@ -1,7 +1,5 @@
 import { act } from 'react';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';

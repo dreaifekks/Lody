@@ -164,8 +164,7 @@ export type AgentConfigMeta = {
    * each machine has its own binaries, auth state, env, and rate-limit context.
    *
    * Legacy configs written before this field existed are normalized by the one-time
-   * migration tracked in docs/backward-compatibility.md (BC-AGENT-CONFIG-MACHINE-
-   * ASSOCIATION); see also plans/20260420-machine-agent-settings.md. Consumers should filter
+   * `useAgentConfigMigration` hook in `@lody/components`. Consumers should filter
    * out configs without a resolved machineId while the migration is running.
    */
   machineId: MachineId;
@@ -646,15 +645,6 @@ export const resolveSessionHistoryStatus = (
   return undefined;
 };
 
-export const getLegacyReadForSessionHistoryStatus = (
-  status: SessionHistoryStatus | undefined
-): boolean | undefined => {
-  if (!status) {
-    return undefined;
-  }
-  return status !== 'pending' && status !== 'pending_apply';
-};
-
 export const isSessionHistoryDelivered = (
   entry: SessionHistoryStatusReadable | null | undefined
 ): boolean => {
@@ -846,11 +836,20 @@ export function deriveSessionPullRequestReadiness(
 export type LineChange = {
   add: number;
   del: number;
+  /** Changed paths in the complete workspace comparison; absent on older writers. */
+  files?: number;
 };
 
 export type SessionDiffStats = {
+  /** Workspace base versus current files, including committed and uncommitted changes. */
   allChange: LineChange;
 };
+
+/** Explicit path counts own presence; old daemons only published text line totals. */
+export function hasWorkspaceChanges(change: LineChange | null | undefined): boolean {
+  if (!change) return false;
+  return change.files === undefined ? change.add + change.del > 0 : change.files > 0;
+}
 
 export type SessionContextWindowUsage = {
   size: number;
@@ -1131,6 +1130,13 @@ export type SessionMeta = SessionPullRequestLifecycleFields & {
   lastCanceledTurn?: string;
   /** Latest user history entry id that the machine has fully handled. */
   lastHandledUserMsgId?: string;
+  /**
+   * Latest user history entry id whose turn ended in failure, written together with
+   * `lastHandledUserMsgId`. It stays set; read it only through
+   * {@link hasFailedLatestTurn}, so a later handled or canceled turn retires it without
+   * another write.
+   */
+  lastFailedUserMsgId?: string;
   /** User history entry id currently being processed by the machine. */
   processingUserMsgId?: string;
   /**
@@ -1229,6 +1235,21 @@ export function isMissingHistoryUserTurn(
     !!turnId &&
     (meta?.lastMissingHistoryUserMsgId === turnId ||
       meta?.missingHistoryUserMsgIds?.[turnId] === true)
+  );
+}
+
+/**
+ * Whether the conversation's latest finished turn ended in failure: the failed marker still
+ * names the turn the machine handled last. Lets lists show a failed conversation from
+ * metadata alone, without opening its history.
+ */
+export function hasFailedLatestTurn(
+  meta: Pick<SessionMeta, 'lastFailedUserMsgId' | 'lastHandledUserMsgId'>
+): boolean {
+  return (
+    typeof meta.lastFailedUserMsgId === 'string' &&
+    meta.lastFailedUserMsgId.length > 0 &&
+    meta.lastFailedUserMsgId === meta.lastHandledUserMsgId
   );
 }
 

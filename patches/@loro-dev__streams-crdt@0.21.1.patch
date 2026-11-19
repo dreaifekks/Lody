@@ -1,0 +1,73 @@
+--- a/dist/shared-CtFYX7A0.js
++++ b/dist/shared-CtFYX7A0.js
+@@ -876,8 +876,15 @@
+ 			}
+ 		});
+ 	}
+-	async maybeUpload(state) {
+-		const config = this.getRunnableConfig(state);
++	// Lody fork: archive-triggered upload retains the normal snapshot safety gates.
++	async repair(state) {
++		if (this.uploadInFlight || state.status !== "joined" || state.awaitingInitialTail || state.initialSyncFailed) return false;
++		this.uploadInFlight = true;
++		try { return (await this.maybeUpload(state, true)) === true; }
++		finally { this.uploadInFlight = false; }
++	}
++	async maybeUpload(state, force = false) {
++		const config = this.getRunnableConfig(state, 0n, force);
+ 		if (config == null) return;
+ 		const snapshotId = createDiagnosticId();
+ 		const workflowStartedAt = performance.now();
+@@ -951,18 +958,18 @@
+ 				});
+ 				return;
+ 			}
+-			if (this.getRunnableConfig(state) == null) return;
++			if (this.getRunnableConfig(state, 0n, force) == null) return;
+ 			const snapshotBytes = parseSnapshotByteOffset(await observe("head", () => this.readSnapshotOffsetValue(requestDiagnostics("head"))));
+ 			if (snapshotBytes == null) return;
+ 			await this.adapter.flushLocalExports?.();
+ 			const capture = await this.enqueueExclusive(() => {
+-				if (this.getRunnableConfig(state, snapshotBytes) == null || !this.isCursorComplete(state.cursor) || this.hasPendingLocal(state)) return void 0;
++				if (this.getRunnableConfig(state, snapshotBytes, force) == null || !this.isCursorComplete(state.cursor) || this.hasPendingLocal(state)) return void 0;
+ 				const currentVersion = this.adapter.getCurrentVersion?.();
+ 				if (currentVersion != null && this.adapter.mergeVersions != null && !jsonObjectEquals(this.adapter.mergeVersions(state.cursor.serverLowerBoundVersion, currentVersion), state.cursor.serverLowerBoundVersion)) return void 0;
+ 				const offset = state.cursor.nextOffset;
+ 				const tailBytes = parseSnapshotByteOffset(offset);
+ 				const minBytes = state.snapshot.observedForeignWriter ? config.maxBytesSinceRemoteSnapshot : config.minBytesSinceRemoteSnapshot;
+-				if (tailBytes == null || minBytes == null || tailBytes <= snapshotBytes || tailBytes - snapshotBytes < minBytes) return void 0;
++				if (tailBytes == null || (!force && (minBytes == null || tailBytes <= snapshotBytes || tailBytes - snapshotBytes < minBytes))) return void 0;
+ 				snapshotOffset = offset;
+ 				const startedAt = performance.now();
+ 				emit({
+@@ -1013,7 +1020,7 @@
+ 				snapshotByteLength = bytes.byteLength;
+ 				return bytes;
+ 			});
+-			if (this.getRunnableConfig(state, snapshotBytes) == null) {
++			if (this.getRunnableConfig(state, snapshotBytes, force) == null) {
+ 				emit({
+ 					stage: "put",
+ 					outcome: "skipped",
+@@ -1022,6 +1029,7 @@
+ 				return;
+ 			}
+ 			await observe("put", () => this.putSnapshotAt(capture.offset, encoded, requestDiagnostics("put")));
++			return true;
+ 		} catch (error) {
+ 			this.onUploadError?.(error);
+ 			this.logError("snapshot upload failed", void 0, {
+@@ -1031,11 +1039,11 @@
+ 			});
+ 		}
+ 	}
+-	getRunnableConfig(state, snapshotBytes = 0n) {
++	getRunnableConfig(state, snapshotBytes = 0n, force = false) {
+ 		const config = this.config;
+ 		if (config == null || state.closed || !this.isCurrentState(state)) return;
+ 		if (state.status === "reconnecting" || state.status === "disconnected" || state.status === "error") return;
+-		if (state.snapshot.observedForeignWriter) {
++		if (!force && state.snapshot.observedForeignWriter) {
+ 			const tailBytes = parseSnapshotByteOffset(state.cursor.nextOffset);
+ 			if (config.maxBytesSinceRemoteSnapshot == null || tailBytes == null || tailBytes <= snapshotBytes || tailBytes - snapshotBytes < config.maxBytesSinceRemoteSnapshot) return;
+ 		}

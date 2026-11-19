@@ -191,6 +191,9 @@ export const cloudOperations = {
     ),
   },
   e2eeWorkspaces: {
+    reportDeviceProfile: mutation<ConvexApi['e2eeWorkspaces']['reportDeviceProfile']>(
+      'e2eeWorkspaces:reportDeviceProfile'
+    ),
     ledgerHead: query<ConvexApi['e2eeWorkspaces']['ledgerHead']>('e2eeWorkspaces:ledgerHead'),
     memberProfiles: query<ConvexApi['e2eeWorkspaces']['memberProfiles']>(
       'e2eeWorkspaces:memberProfiles'
@@ -200,6 +203,9 @@ export const cloudOperations = {
     history: action<ConvexApi['e2eeWorkspaces']['history']>('e2eeWorkspaces:history'),
   },
   promptShortcuts: {
+    getStreamTokenV2: action<ConvexApi['promptShortcuts']['getStreamTokenV2']>(
+      'promptShortcuts:getStreamTokenV2'
+    ),
     stageDocument: mutation<ConvexApi['promptShortcuts']['stageDocument']>(
       'promptShortcuts:stageDocument'
     ),

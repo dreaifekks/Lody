@@ -6,6 +6,8 @@ Discover archive/restore/delete from one ready Repo snapshot, never UI caches.
 Archive uses `collectSessionArchiveTargets`; restore/delete keep direct containment.
 Exact deletion bypasses discovery: [relations](../../specs/session-relations.md).
 
+Snapshot compression is available only through `@lody/shared/streams-snapshot-codec`. Keep its runtime imports out of the shared root so Convex isolate bundles can use protocol helpers without loading Node compression dependencies.
+
 ## Session history
 
 - `createSessionMirror` owns renderer/CLI history through one `HistoryWriter`, including
@@ -94,3 +96,5 @@ ordinary behavior stays unchanged. [Contract](../../.agents/docs/cli-lib-loro-pr
 Encrypted attachment manifests contain secret per-file keys and belong only in protected conversation content or local recovery receipts. Relay requests use opaque metadata and attachment-only grants; never publish a manifest or key in a URL. Format and recovery rationale: [attachment decision](../../.agents/notes/implemented/architecture/2026-10-28-encrypted-attachments.md).
 
 Native `local_attachment` inputs require exact submission scope and explicit inheritance. Never backfill or silently discard them. [Contract](../../.agents/docs/cli-lib-session-files.md#native-local-references).
+
+Shortcut sync preserves handled token/auth causes through SDK refresh, rather than producing new generic exceptions; [diagnostic ownership](../../.agents/notes/implemented/bug-fix/2026-11-17-shortcut-token-retry-diagnostics.md) remains with the client operation.

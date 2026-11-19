@@ -281,6 +281,16 @@ enum NativeHomeFixture {
     let url = Bundle.main.url(forResource: "DebugHome", withExtension: "json")!
     let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
     catalog = fixture["catalog"] as! [String: Any]
+    if LodyUIVerify.has("--ui-verify-session-tabs"), var sessions = catalog["sessions"] as? [[String: Any]],
+       var tab = sessions.first(where: { $0["id"] as? String == "ui-design" }) {
+      HomeScope.store(.team)
+      tab["id"] = "ui-history-tab"
+      tab["title"] = "Waiting for tab history"
+      tab["parentSessionId"] = "ui-design"
+      tab["status"] = "running"
+      sessions.append(tab)
+      catalog["sessions"] = sessions
+    }
     if LodyUIVerify.has("--ui-verify-sticky-groups") {
       HomeGrouping.store(.project)
       let names = ["Alpha project", "Beta project", "Gamma project"]
@@ -297,6 +307,17 @@ enum NativeHomeFixture {
     }
     statesCatalog = relative(fixture["statesCatalog"] as! [String: Any], now: Date().timeIntervalSince1970 * 1000)
     workspaces = fixture["workspaces"] as! [[String: Any]]
+    // Offline fixtures supply the explicit describe admission that a live account
+    // obtains from the server. Missing fields alone never authorize plaintext.
+    precondition(LodyUIVerify.enabled)
+    for workspace in workspaces {
+      precondition(workspace["admission"] as? String == "legacy-unclassified"
+        && workspace["contentMode"] == nil && workspace["contentModeVersion"] == nil
+        && workspace["genesisHash"] == nil && workspace["cryptoOrgId"] == nil,
+        "Home fixtures require an explicit legacy admission without encrypted evidence")
+      let mode = try WorkspaceModePins.shared.observe(workspace["id"] as! String, mode: .plaintext)
+      precondition(mode == .plaintext, "Home fixtures must not replace retained encrypted admission")
+    }
     for case let (photo, source as String) in fixture["photoCache"] as? [String: Any] ?? [:] {
       if let url = URL(string: photo), let data = URL(string: source) { LodyListPhoto.prime(url, from: data) }
     }
@@ -310,14 +331,28 @@ enum NativeHomeFixture {
         syncPreview = false; publish()
       }
     }
-    for key in ["inboxView", "inboxProjectSort", "inboxExpansion", "inboxPinOrder.ui-home.ui-home"] {
-      UserDefaults.standard.removeObject(forKey: key)
+    UserDefaults.standard.removeObject(forKey: "inboxProjectSort")
+    // Every offline Home run starts expanded, even after a failed interaction check.
+    UserDefaults.standard.removeObject(forKey: "homeFoldedOpeners")
+    UserDefaults.standard.removeObject(forKey: "homeCollapsedGroups")
+    if LodyUIVerify.has("--ui-verify-tab-unread"), var sessions = catalog["sessions"] as? [[String: Any]],
+       var unread = sessions.first(where: { $0["id"] as? String == "ui-design" }) {
+      unread["id"] = "ui-unread-tab"
+      unread["title"] = "Unread tab output"
+      unread["parentSessionId"] = "ui-design"
+      unread["lastMessageAt"] = 2_000
+      unread["lastReadAt"] = 1_000
+      sessions.append(unread)
+      catalog["sessions"] = sessions
     }
     let catalogJSON = SessionController.json(["catalog": catalog, "syncedAt": 0])
     try LocalStore.queue.sync {
       let store = LocalStore.shared
       try store.write("ui-device-presence", "{\"state\":\"live\",\"onlineMachineIds\":[\"ui\",\"mini\"]}")
       try store.write("catalog:ui-home:ui-home", catalogJSON)
+      if LodyUIVerify.has("--ui-verify-tab-unread") {
+        try store.write("session-views:[\"ui-home\",\"ui-home\"]", "{}")
+      }
       try store.write("pending-sends:ui-home:ui-home", "[]")
       try store.write("draft:ui-home:ui-home:ui-design", "")
       let search = LodyUIVerify.has("--ui-verify-search")
@@ -345,7 +380,14 @@ enum NativeHomeFixture {
 
   static func apply(_ action: String, _ fields: [String: Any]) throws {
     switch action {
-    case "selectWorkspace": selected = fields["workspaceId"] as! String
+    case "selectWorkspace":
+      selected = fields["workspaceId"] as! String
+      if selected == "ui-states" {
+        // These synthetic rows have no owner; the design-state scene displays the
+        // whole workspace under project headings, independently of saved preferences.
+        HomeScope.store(.team)
+        HomeGrouping.store(.project)
+      }
     case "updateWorkspace", "updateWorkspaceIcon":
       let id = fields["workspaceId"] as! String
       guard let index = workspaces.firstIndex(where: { $0["id"] as? String == id }) else { preconditionFailure("Unknown fixture workspace") }

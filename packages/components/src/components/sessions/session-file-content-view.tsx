@@ -58,6 +58,11 @@ import {
 } from '@/lib/session-local-file-source';
 import { useSessionFileActions } from '@/hooks/use-session-file-actions';
 import type { SessionFileErrorActions } from '@/lib/session-file-actions';
+import {
+  LocalHtmlPreviewConsentDialog,
+  LocalHtmlPreviewFrame,
+  useLocalHtmlPreview,
+} from './local-html-preview';
 import { chooseSessionFileSurfaceSource } from '@/lib/session-file-source-selection';
 import { resolveEffectiveCodeCollabWorkspaceId } from '@/lib/code-collab-workspace-id';
 import {
@@ -1313,12 +1318,36 @@ function SessionFileContentViewImpl({
   const showHtmlRendered = isActiveSurface && isHtmlTextFile && htmlRenderMode === 'rendered';
   const isArticle = article !== undefined && isActiveSurface;
   const showArticleHtml = isArticle && showHtmlRendered;
+  // Desktop + file on this machine: serve the real file from its own isolated
+  // origin so relative assets load, after a per-entry consent that decides
+  // JavaScript. Everything else keeps the inline srcdoc preview below.
+  const localHtmlHostPath = sessionFileActions.localHost
+    ? sessionFileActions.resolveHostPath(normalizedPath)
+    : null;
+  const [localHtmlUnavailablePath, setLocalHtmlUnavailablePath] = useState<string | null>(null);
+  const handleLocalHtmlCancel = useCallback(() => setHtmlRenderMode('code'), []);
+  const handleLocalHtmlUnavailable = useCallback(
+    () => setLocalHtmlUnavailablePath(normalizedPath),
+    [normalizedPath]
+  );
+  const localHtmlPreview = useLocalHtmlPreview({
+    active: showHtmlRendered && !showArticleHtml,
+    machineId: session.machineId,
+    hostPath: localHtmlUnavailablePath === normalizedPath ? null : localHtmlHostPath,
+    onCancel: handleLocalHtmlCancel,
+    onUnavailable: handleLocalHtmlUnavailable,
+  });
+  const useLocalHtml = localHtmlPreview.enabled;
   const htmlPreviewDocument = useMemo(
     () =>
-      showHtmlRendered && !showArticleHtml && supportsHtmlPreview && htmlPreviewSource !== null
+      showHtmlRendered &&
+      !showArticleHtml &&
+      !useLocalHtml &&
+      supportsHtmlPreview &&
+      htmlPreviewSource !== null
         ? buildStaticHtmlPreviewDocument(htmlPreviewSource)
         : null,
-    [htmlPreviewSource, showArticleHtml, showHtmlRendered, supportsHtmlPreview]
+    [htmlPreviewSource, showArticleHtml, showHtmlRendered, supportsHtmlPreview, useLocalHtml]
   );
   const htmlPreviewLogicalUrl = useMemo(
     () => getStaticHtmlPreviewLogicalUrl(normalizedPath),
@@ -1957,6 +1986,25 @@ function SessionFileContentViewImpl({
         />
       </div>
     );
+  } else if (showHtmlRendered && useLocalHtml) {
+    const state = localHtmlPreview.state;
+    body =
+      state.status === 'ready' ? (
+        <div {...stylex.props(styles.previewFrame)}>
+          <LocalHtmlPreviewFrame
+            key={localHtmlPreview.reloadKey}
+            url={state.url}
+            allowScripts={state.allowScripts}
+            title={normalizedPath}
+          />
+        </div>
+      ) : state.status === 'error' ? (
+        <SessionFileErrorState message={state.message} onRetry={localHtmlPreview.retry} />
+      ) : state.status === 'opening' ? (
+        <div {...stylex.props(styles.centeredState)}>
+          <Spinner {...stylex.props(styles.spinner16)} />
+        </div>
+      ) : null;
   } else if (showHtmlRendered && !supportsHtmlPreview && htmlPreviewSource !== null) {
     body = <ReadOnlyHtmlPreview text={htmlPreviewSource} />;
   } else if (showHtmlRendered && htmlPreviewDocument !== null) {
@@ -2346,7 +2394,7 @@ function SessionFileContentViewImpl({
                   }
                 }}
                 showLabel={
-                  isHtmlTextFile && htmlScriptSupport === 'automatic'
+                  isHtmlTextFile && !localHtmlHostPath && htmlScriptSupport === 'automatic'
                     ? t('sessions.fileViewer.htmlPreview.show', 'Preview HTML (runs scripts)')
                     : t('sessions.fileViewer.preview.show', 'Preview')
                 }
@@ -2372,7 +2420,7 @@ function SessionFileContentViewImpl({
                 <Copy {...stylex.props(styles.icon)} aria-hidden="true" />
               </button>
             ) : null}
-            {showHtmlRendered && htmlScriptSupport === 'opt-in' ? (
+            {showHtmlRendered && !useLocalHtml && htmlScriptSupport === 'opt-in' ? (
               <button
                 type="button"
                 aria-pressed={htmlScriptsOptedIn}
@@ -2399,7 +2447,7 @@ function SessionFileContentViewImpl({
                 )}
               </button>
             ) : null}
-            {showHtmlRendered && supportsHtmlPreview && !showArticleHtml ? (
+            {showHtmlRendered && !useLocalHtml && !showArticleHtml && supportsHtmlPreview ? (
               <button
                 type="button"
                 aria-pressed={htmlAnnotationEnabled}
@@ -2415,10 +2463,11 @@ function SessionFileContentViewImpl({
                 <MessageCircle {...stylex.props(styles.icon)} aria-hidden="true" />
               </button>
             ) : null}
-            {showHtmlRendered && supportsHtmlPreview ? (
+            {showHtmlRendered &&
+            (useLocalHtml ? localHtmlPreview.state.status === 'ready' : supportsHtmlPreview) ? (
               <button
                 type="button"
-                onClick={handleReloadHtmlPreview}
+                onClick={useLocalHtml ? localHtmlPreview.reload : handleReloadHtmlPreview}
                 disabled={isRefreshing}
                 title={t('sessions.browser.reload', 'Reload')}
                 aria-label={t('sessions.browser.reload', 'Reload')}
@@ -2577,6 +2626,14 @@ function SessionFileContentViewImpl({
             showProviderConnecting || shouldUseProviderFileContent ? isSessionMachineOffline : false
           }
           t={t}
+        />
+      ) : null}
+      {useLocalHtml && localHtmlPreview.state.status === 'confirming' ? (
+        <LocalHtmlPreviewConsentDialog
+          open
+          fileName={normalizedPath.split('/').pop() ?? normalizedPath}
+          onConfirm={localHtmlPreview.confirm}
+          onCancel={localHtmlPreview.cancel}
         />
       ) : null}
     </div>

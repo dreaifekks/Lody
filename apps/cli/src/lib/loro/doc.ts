@@ -1,4 +1,4 @@
-import { Effect } from 'effect';
+import { Cause, Effect } from 'effect';
 import { isDeepStrictEqual } from 'node:util';
 import type { CliE2eeWorkspaceLegacy } from '../e2ee/workspace-legacy';
 import { projectRunMetaPatch } from '@/session/project-run-state';
@@ -60,6 +60,8 @@ import {
   NEW_SESSION_HISTORY_BACKEND,
   LEGACY_SESSION_HISTORY_BACKEND,
   getMachineFlockAcpCapabilities,
+  getAcpConfigOptionsModelId,
+  writeAcpModelConfigOptionsToFlock,
   getMachineFlockProviderSetupCancellations,
   getMachineFlockProviderSetups,
   getMachineFlockDocId,
@@ -106,7 +108,11 @@ import {
   type RepoRoomSubscription,
   type RepoTransportRoomStatus,
 } from 'loro-repo';
-import { createCliPresenceRuntimeLegacy, type CliPresenceRuntimeLegacy } from './presence-legacy';
+import {
+  createCliPresenceRuntimeLegacy,
+  WorkspacePresenceLegacyFailure,
+  type CliPresenceRuntimeLegacy,
+} from './presence-legacy';
 import { CliMachineMonitorRuntime } from './machine-monitor';
 import { CliPromptSuggestions } from './prompt-suggestions';
 import type { LodyPromptSuggestion } from 'acp-extension-core';
@@ -155,6 +161,50 @@ import {
 } from '@/lib/agent-config-machine-flock';
 import { installCliHttpGlobalDispatcher } from '@/utils/http-transport';
 import { createCliStreamsTransport } from './streams-transport';
+
+// Cleanup failures can reach MCP and synced history. Project known causes instead
+// of copying arbitrary SDK messages, URLs, credentials, or Effect owner state.
+const cleanupFailureReasons = (error: unknown): string[] => {
+  const reasons = new Set<string>();
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 8 || seen.has(value)) return;
+    seen.add(value);
+    if (Cause.isTimeoutError(value)) reasons.add('timed out');
+    if (Cause.isCause(value)) {
+      for (const reason of value.reasons) {
+        if (Cause.isFailReason(reason)) visit(reason.error, depth + 1);
+        else if (Cause.isDieReason(reason)) visit(reason.defect, depth + 1);
+      }
+      return;
+    }
+    if (!(value instanceof Error)) return;
+    const code = (value as { code?: unknown }).code;
+    const message = typeof value.message === 'string' ? value.message.trim() : '';
+    if (code === 'ENOSPC' || /^disk (?:is )?full[.!]?$/i.test(message)) reasons.add('disk is full');
+    else if (code === 'EACCES' || code === 'EPERM') reasons.add('permission denied');
+    else if (code === 'EROFS' || code === 'SQLITE_READONLY') reasons.add('storage is read-only');
+    else if (code === 'SQLITE_FULL') reasons.add('database storage is full');
+    else if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') reasons.add('database is locked');
+    else if (code === 'ETIMEDOUT' || /^(?:operation )?(?:timed out|timeout)[.!]?$/i.test(message))
+      reasons.add('timed out');
+    else if (
+      code === 'ECONNRESET' ||
+      code === 'ECONNREFUSED' ||
+      code === 'ENETUNREACH' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN'
+    )
+      reasons.add('network connection failed');
+    if (value instanceof WorkspacePresenceLegacyFailure) visit(value.effectCause, depth + 1);
+    if (value instanceof AggregateError) {
+      for (const nested of value.errors.slice(0, 16)) visit(nested, depth + 1);
+    }
+    visit(value.cause, depth + 1);
+  };
+  visit(error, 0);
+  return [...reasons];
+};
 
 const isValidDaemonLaunchConfig = (
   config: AgentConfigMeta,
@@ -425,6 +475,9 @@ function describeDocOpener(stack: string | undefined): string {
 
 export class LoroDocumentManager {
   public readonly repo: LoroRepo;
+  // A cloud transport can be detached and replaced while this manager's replica
+  // remains alive. Keep its repair budget across those adapter generations.
+  private readonly incompleteRecoveryScope = {};
   sessions: Map<SessionId, SessionDocument> = new Map();
   /**
    * When each cached Session doc was last handed to a caller. Every opener, not
@@ -888,6 +941,7 @@ export class LoroDocumentManager {
     this.remoteStreamsTokens = streamsTokens;
     if (this.encryptedWorkspace) await streamsTokens.legacy.getToken();
     const streamsTransport = await createCliStreamsTransport({
+      incompleteRecoveryScope: this.incompleteRecoveryScope,
       content: this.encryptedWorkspace?.content ?? { mode: 'plaintext' },
       bucketId: this.encryptedWorkspace?.bucketId(),
       workspaceId: this.workspaceId,
@@ -1628,7 +1682,7 @@ export class LoroDocumentManager {
     // any one-shot renderer reconciliation without unloading the shared doc.
     this.cancelLocalDocRoomBridge(docId);
     const existing = this.sessions.get(sessionId);
-    if (existing?.isDestroyed) {
+    if (existing && (existing.isDestroyed || this.sessionDocCleanup.has(sessionId))) {
       try {
         await withTimeout(
           this.cleanSessionDoc(sessionId),
@@ -2192,19 +2246,6 @@ export class LoroDocumentManager {
     return agentConfigId;
   }
 
-  /**
-   * Historical hook kept for startup flow compatibility. Title generation defaults are
-   * now runtime-only and are not persisted into agent config meta.
-   */
-  async applyTitleGenerationDefaults(
-    _cliType: AgentConfigCliType,
-    _agentType: string,
-    _configOptions: AcpConfigOptionSummary[]
-  ): Promise<void> {
-    // Intentionally no-op. New builtin agent configs no longer persist title defaults;
-    // runtime generation computes least-privilege defaults from current ACP configOptions.
-  }
-
   async registerMachine(machineId: MachineId, machine: MachineMetaPatch): Promise<void> {
     if (!this.machine) {
       this.machine = this.createMachineDocument(machineId);
@@ -2392,11 +2433,21 @@ export class LoroDocumentManager {
 
   async cleanUp(options: { fast?: boolean; preserveSessionStatus?: boolean } = {}) {
     this.cleaningUp = true;
-    let presenceCleanupFailure: unknown;
+    const failures: Error[] = [];
+    const recordFailure = (scope: string, cause: unknown, persistenceUnconfirmed = false) => {
+      const reasons = cleanupFailureReasons(cause);
+      const detail = reasons.length ? reasons.join(', ') : 'underlying reason unavailable';
+      failures.push(
+        new Error(
+          `${scope}: ${detail}${persistenceUnconfirmed ? '; persistence unconfirmed' : ''}`,
+          { cause }
+        )
+      );
+    };
     try {
       await this.catalogSync?.close();
     } catch (error) {
-      presenceCleanupFailure = error;
+      recordFailure('Catalog subscriptions', error);
     }
     this.localDocRoomBridgeGeneration += 1;
     for (const docId of [...this.localDocRoomBridges.keys()]) {
@@ -2421,19 +2472,13 @@ export class LoroDocumentManager {
       try {
         await this.detachRemoteStreamsTransport();
       } catch (error) {
-        presenceCleanupFailure = presenceCleanupFailure
-          ? new AggregateError([presenceCleanupFailure, error], 'Workspace cleanup failed')
-          : error;
+        recordFailure('Remote sync transport', error);
       }
     }
     try {
       await this.presenceRuntime?.stop();
     } catch (error) {
-      presenceCleanupFailure = presenceCleanupFailure
-        ? new AggregateError([presenceCleanupFailure, error], 'Workspace cleanup failed', {
-            cause: error,
-          })
-        : error;
+      recordFailure('Presence release', error);
       this.logger.debug(
         `[${this.workspaceId}] Failed to stop Loro presence runtime: ${formatErrorMessage(error)}`
       );
@@ -2442,12 +2487,11 @@ export class LoroDocumentManager {
     this.detachMachineFlockMetaRoomSyncedListener = null;
     await this.machineFlockSync.cleanUp();
     await this.connectionRecovery.cleanUp();
-    const failures: unknown[] = presenceCleanupFailure ? [presenceCleanupFailure] : [];
     const attempt = async (scope: string, close: () => Promise<unknown>) => {
       try {
         await close();
       } catch (cause) {
-        failures.push(new Error(`${scope}: cleanup failed; persistence unconfirmed`, { cause }));
+        recordFailure(scope, cause, true);
       }
     };
     // An init rejection has no registered doc. A destroy rejection must be reported.
@@ -2472,15 +2516,22 @@ export class LoroDocumentManager {
     this.machineExistenceWatcher = null;
     this.remoteStreamsStatusUnsubscribe?.();
     this.remoteStreamsStatusUnsubscribe = null;
+    let cleanupFailure: AggregateError | undefined;
     if (failures.length) {
-      presenceCleanupFailure = new AggregateError(failures, 'Workspace cleanup failed');
+      const details = failures.slice(0, 16).map((error) => error.message);
+      if (failures.length > details.length)
+        details.push(`${failures.length - details.length} more failures`);
+      cleanupFailure = new AggregateError(
+        failures,
+        `Workspace cleanup failed: ${details.join('; ')}`
+      );
       this.logger.warn(
         `[${this.workspaceId}] ${failures.map((error) => formatErrorMessage(error)).join('; ')}`
       );
     }
     await this.destroyRepo({ fast: options.fast });
     await this.encryptedWorkspace?.close();
-    if (presenceCleanupFailure) throw presenceCleanupFailure;
+    if (cleanupFailure) throw cleanupFailure;
   }
 
   publishPromptSuggestion(
@@ -2526,6 +2577,11 @@ export class LoroDocumentManager {
   peekSessionDoc(sessionId: SessionId): SessionDocument | undefined {
     const sessionDoc = this.sessions.get(sessionId);
     return sessionDoc && !sessionDoc.isDestroyed ? sessionDoc : undefined;
+  }
+
+  /** Whether `cleanSessionDoc` is currently tearing down this Session's cached doc. */
+  isSessionDocCleaning(sessionId: SessionId): boolean {
+    return this.sessionDocCleanup.has(sessionId);
   }
 
   cleanSessionDoc(sessionId: SessionId, options: { preserveStatus?: boolean } = {}): Promise<void> {
@@ -4200,6 +4256,11 @@ export type AcpCapabilityWriteOptions = {
    */
   modelCapabilities?: Record<string, AcpModelControls>;
   /**
+   * Each model's own option list, read by a refresh that switched the probe
+   * session to every model. Stored one row per model beside the snapshot.
+   */
+  modelConfigOptions?: Record<string, AcpConfigOptionSummary[]>;
+  /**
    * Sign-in methods the probe read from the agent's `initialize` response.
    * Absent means this probe did not ask (a built-in provider with its own
    * login command); an empty array records that the agent advertises none, so
@@ -4432,6 +4493,19 @@ export class MachineDocument implements LoroDocument<{}, MachineMeta> {
         key: machineFlockKeys.acpModelCapability(configId),
         value: { version: 1, sourceVersion, models: options.modelCapabilities },
       });
+    // The snapshot is also its own model's answer; keep it beside the other
+    // models' answers so a later snapshot of another model does not lose it.
+    const modelAnswers: Record<string, AcpConfigOptionSummary[]> = {
+      ...options.modelConfigOptions,
+    };
+    const snapshotModelId = getAcpConfigOptionsModelId(entry.configOptions);
+    if (snapshotModelId && entry.configOptions) modelAnswers[snapshotModelId] = entry.configOptions;
+    const modelAnswersChanged = writeAcpModelConfigOptionsToFlock(
+      handle.flock,
+      configId,
+      sourceVersion,
+      modelAnswers
+    );
     const capabilityUnchanged =
       existing &&
       serializeAcpCapabilityWithoutFetchTime(existing) ===
@@ -4447,7 +4521,7 @@ export class MachineDocument implements LoroDocument<{}, MachineMeta> {
         key: machineFlockKeys.acpCapability(configId),
         value: entry,
       });
-    if (changed || modelCapabilitiesChanged) {
+    if (changed || modelCapabilitiesChanged || modelAnswersChanged) {
       await this.repo.flush();
       if (this.markMachineFlockDirty) {
         this.markMachineFlockDirty('acp-capability-update');

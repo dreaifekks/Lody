@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
-// @vitest-environment jsdom
-// @vitest-environment jsdom
 import { act, createElement, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -63,6 +59,7 @@ vi.mock('../src/hooks/use-recoverable-convex-query', () => ({
 
 vi.mock('../src/hooks/use-authenticated-convex', () => ({
   useAuthenticatedConvex: () => convexAuthMock.state,
+  useOptionalAuthenticatedConvex: () => convexAuthMock.state,
 }));
 
 vi.mock('@lody/cloud-api', () => ({

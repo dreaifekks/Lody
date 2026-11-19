@@ -52,7 +52,6 @@ const meta = {
     promptPlaceholder: undefined,
     promptRows: 3,
     promptRef: undefined,
-    selector: null,
     primaryAction: null,
     secondaryAction: undefined,
     className: undefined,
@@ -238,7 +237,6 @@ function DemoComposer({
             onSelect={(option) => setSelectedRepo(option.value)}
             placeholder="Select repo"
             placeholderIcon={Github}
-            tone={tone}
             className="w-full"
             contentClassName="w-72"
           />
@@ -250,7 +248,6 @@ function DemoComposer({
             onSelect={(option) => setSelectedAgent(option.value)}
             placeholder="Select agent"
             placeholderIcon={Bot}
-            tone={tone}
             className="w-full"
             contentClassName="w-64"
           />
@@ -264,7 +261,6 @@ function DemoComposer({
           onSelect={(option) => setSelectedRepo(option.value)}
           placeholder="Select repo"
           placeholderIcon={Github}
-          tone={tone}
           className="w-full"
           contentClassName="w-72"
         />
@@ -274,7 +270,6 @@ function DemoComposer({
           onSelect={(option) => setSelectedAgent(option.value)}
           placeholder="Select agent"
           placeholderIcon={Bot}
-          tone={tone}
           className="w-full"
           contentClassName="w-64"
         />
@@ -329,7 +324,7 @@ function DemoComposer({
       promptRows={promptRows ?? 3}
       pastedTextDrafts={pastedTextDrafts}
       onPastedTextDraftsChange={setPastedTextDrafts}
-      selector={selectorNode}
+      footerSelector={selectorNode}
       primaryAction={primaryActionNode}
       onAttachmentAddClick={attachmentsEnabled ? () => undefined : undefined}
       imageItems={resolvedImageItems}

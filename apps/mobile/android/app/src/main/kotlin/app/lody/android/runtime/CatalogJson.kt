@@ -32,11 +32,14 @@ object CatalogJson {
         lastMessageAt = json.optMillis("lastMessageAt"),
         lastReadAt = json.optMillis("lastReadAt"),
         awaitingUserSince = json.optMillis("awaitingUserSince"),
+        lastHandledUserMsgId = json.optText("lastHandledUserMsgId"),
+        lastFailedUserMsgId = json.optText("lastFailedUserMsgId"),
         pullRequests = json.optJSONArray("pullRequests")?.let { array ->
             (0 until array.length()).mapNotNull { index -> array.optJSONObject(index)?.let(::pullRequest) }
         }.orEmpty(),
         diffAdded = json.optJSONObject("diff")?.optCount("add") ?: 0,
         diffRemoved = json.optJSONObject("diff")?.optCount("del") ?: 0,
+        diffFiles = json.optJSONObject("diff")?.optCount("files"),
         workspaceDirty = json.opt("workspaceDirty") == true,
         workspaceUnpushed = json.opt("workspaceUnpushed") == true,
         projectRun = json.optJSONObject("projectRun")?.let(::projectRun),
@@ -59,6 +62,7 @@ object CatalogJson {
                 diff?.optCount("add"), diff?.optCount("del"),
                 member.opt("dirty") == true, member.opt("unpushed") == true,
                 member.optJSONObject("pullRequest")?.let(::pullRequest),
+                diffFiles = diff?.optCount("files"),
             )
         })
     }
@@ -71,7 +75,9 @@ object CatalogJson {
                     member.repoFullName?.let { put("repoFullName", it) }
                     member.branch?.let { put("branch", it) }
                     if (member.diffAdded != null && member.diffRemoved != null) {
-                        put("diff", JSONObject().put("add", member.diffAdded).put("del", member.diffRemoved))
+                        put("diff", JSONObject().put("add", member.diffAdded).put("del", member.diffRemoved).apply {
+                            member.diffFiles?.let { put("files", it) }
+                        })
                     }
                     if (member.dirty) put("dirty", true)
                     if (member.unpushed) put("unpushed", true)
@@ -118,11 +124,17 @@ object CatalogJson {
         session.lastMessageAt?.let { put("lastMessageAt", it) }
         session.lastReadAt?.let { put("lastReadAt", it) }
         session.awaitingUserSince?.let { put("awaitingUserSince", it) }
+        session.lastHandledUserMsgId?.let { put("lastHandledUserMsgId", it) }
+        session.lastFailedUserMsgId?.let { put("lastFailedUserMsgId", it) }
         if (session.pullRequests.isNotEmpty()) {
             put("pullRequests", JSONArray(session.pullRequests.map(::putPullRequest)))
         }
         session.projectRun?.let { put("projectRun", putProjectRun(it)) }
-        if (session.diffAdded > 0 || session.diffRemoved > 0) put("diff", JSONObject().put("add", session.diffAdded).put("del", session.diffRemoved))
+        if (session.diffFiles != null || session.diffAdded > 0 || session.diffRemoved > 0) {
+            put("diff", JSONObject().put("add", session.diffAdded).put("del", session.diffRemoved).apply {
+                session.diffFiles?.let { put("files", it) }
+            })
+        }
         if (session.workspaceDirty) put("workspaceDirty", true)
         if (session.workspaceUnpushed) put("workspaceUnpushed", true)
     }

@@ -37,18 +37,10 @@ embedded clients pass them at startup, while local builds do not require them.
 
 ## Provider quota
 
-- `antigravity-quota.ts` — maps Cloud Code groups to provider-scoped limits.
-  Gemini keeps `gemini`; Pro's `gemini-argon-wtu` maps to `argon` / Argon with
-  its weekly window. Ultra reports Argon within Gemini. Session selection uses
-  these explicit ids; provider rows show Gemini plus labeled Argon windows, and
-  the compact machine view retains one row per group.
-  Successful polls replace that config/type's complete Machine Flock quota
-  snapshot, removing groups absent from the response (including Argon after
-  switching to Ultra). Signed-out and failed fetches preserve the cached snapshot.
-  The request uses the host and User-Agent of the agy CLI
-  ([Argon quota decision](../../../../.agents/notes/implemented/bug-fix/2026-10-20-antigravity-argon-quota.md)).
-  It reads the sign-in of the former `agy_acp_server`, not the agy CLI that sessions
-  now run ([agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md)).
+- Antigravity quota uses the managed CLI through
+  [`../agent/antigravity-quota.ts`](../agent/antigravity-quota.ts), sharing provider-scoped
+  refresh and Machine Flock publication with other agents. The former Cloud Code
+  reader and its daemon poller are removed; failed refreshes retain cached quota.
 - `machine-identity-restore.ts` — retained daemon restart intent and credential
   backup/publication. Only the next supervised daemon worker commits the accepted
   cloud operation, before opening runtimes. Unknown results retain their original
@@ -62,6 +54,9 @@ embedded clients pass them at startup, while local builds do not require them.
   cleanup. Authorization scopes stay separate; a failed cleanup is reported once
   and never blocks later commands. Daemon-executed commands borrow the daemon's
   replica through `session-command-environment.ts` instead.
+  Workspace cleanup errors identify failed stages and recognized safe causes;
+  document failures also report unconfirmed persistence. Unknown raw error text
+  is not copied into messages that may reach MCP or synced history.
 - `discovery-query.ts` — strict query schemas, scope-bound keyset pagination and
   shared Session title/Machine/Agent/Role filters.
 - `resource-discovery.ts` — readable directory projections, Role availability,
@@ -256,6 +251,9 @@ provides LocalProjects. See the [decision](../../../../.agents/notes/implemented
   waiting for causal dependencies through the existing SQLite journal. A durable
   save does not establish complete synchronization or advance another replica's
   cursor. See the [persistence decision](../../../../.agents/notes/implemented/bug-fix/2026-10-22-loro-pending-persistence.md).
+  Released streams-crdt and LoroRepo builds own storage-failure recovery: a failed save no
+  longer spins the live-read loop ([read-loop decision](../../../../.agents/notes/implemented/bug-fix/2026-10-19-streams-read-loop-spin.md))
+  or re-downloads applied updates ([release adoption](../../../../.agents/notes/implemented/bug-fix/2026-10-23-storage-recovery-release-adoption.md)).
   `sqlite-lock-diagnostics.ts` logs, at most once a minute, which processes hold a
   workspace `repo.sqlite3` open when loro-repo or streams-crdt reports
   `database is locked`; it only observes (`lsof`) and never retries or blocks.

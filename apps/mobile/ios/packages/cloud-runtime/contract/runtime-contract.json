@@ -19,7 +19,7 @@
     "agentProviderProbe": {
       "params": "AgentProviderProbeParams",
       "result": "AgentProviderProbeResult",
-      "timeoutMs": 135000
+      "timeoutMs": 1215000
     },
     "agentProviders": {
       "params": "AgentProvidersParams",
@@ -209,7 +209,7 @@
     },
     "retryPendingInput": {
       "params": "ForgetPendingInputParams",
-      "result": "Empty",
+      "result": "RetryPendingInputResult",
       "timeoutMs": 30000
     },
     "scheduleCommand": {
@@ -295,6 +295,7 @@
   "events": {
     "agentProviderAuthChanged": "AgentProviderAuthState",
     "agentProviderOperationProgress": "AgentProviderOperationProgress",
+    "agentProviderRefreshProgress": "AgentProviderRefreshProgress",
     "agentProvidersChanged": "AgentProvidersChangedEvent",
     "catalog": "CatalogEvent",
     "creationOptionsChanged": "Empty",
@@ -707,7 +708,8 @@
         "workspaceId": { "type": "string", "minLength": 1 },
         "userId": { "type": "string", "minLength": 1 },
         "machineId": { "type": "string", "minLength": 1 },
-        "id": { "type": "string", "minLength": 1 }
+        "id": { "type": "string", "minLength": 1 },
+        "readModelOptions": { "type": "boolean" }
       },
       "required": ["workspaceId", "userId", "machineId", "id"]
     },
@@ -719,6 +721,26 @@
         "capabilities": { "$ref": "ProviderCapabilities" }
       },
       "required": ["success", "authRequired", "capabilities"]
+    },
+    "AgentProviderRefreshProgress": {
+      "type": "object",
+      "properties": {
+        "machineId": { "type": "string" },
+        "id": { "type": "string" },
+        "modelId": { "type": "string" },
+        "modelName": { "type": "string" },
+        "index": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["machineId", "id", "modelId", "modelName", "index", "total"]
     },
     "AgentProvidersChangedEvent": {
       "type": "object",
@@ -1616,7 +1638,8 @@
       "properties": {
         "workspaceId": { "type": "string", "minLength": 1 },
         "projectId": { "type": "string" },
-        "agentConfigId": { "type": "string", "minLength": 1 }
+        "agentConfigId": { "type": "string", "minLength": 1 },
+        "includeOffline": { "type": "boolean" }
       },
       "required": ["workspaceId"]
     },
@@ -3191,6 +3214,16 @@
         }
       },
       "required": ["ids", "current", "reserved"]
+    },
+    "RetryPendingInputResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["pending", "accepted", "settled"]
+        }
+      },
+      "required": ["state"]
     },
     "RuntimeError": {
       "type": "object",

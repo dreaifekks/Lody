@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
@@ -13,18 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionUsagePopover } from '../src/components/sessions/session-usage-popover';
 import type { MachineRateLimits } from '../src/lib/session-usage';
+import { createTestI18n, withTestI18n } from './test-i18n';
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, values?: Record<string, string | number>): string => {
-      if (typeof fallback !== 'string') return key;
-      return fallback.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
-        values?.[name] === undefined ? match : String(values[name])
-      );
-    },
-    i18n: { language: 'en' },
-  }),
-}));
+const testI18n = createTestI18n();
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -65,11 +54,14 @@ describe('SessionUsagePopover', () => {
   ): Promise<void> => {
     await act(async () => {
       root.render(
-        createElement(SessionUsagePopover, {
-          agentType: 'codex',
-          modelId: 'gpt-5.4',
-          ...props,
-        })
+        withTestI18n(
+          createElement(SessionUsagePopover, {
+            agentType: 'codex',
+            modelId: 'gpt-5.4',
+            ...props,
+          }),
+          testI18n
+        )
       );
     });
   };
@@ -79,6 +71,72 @@ describe('SessionUsagePopover', () => {
 
     expect(container.querySelector('button')).toBeNull();
   });
+
+  it.each([
+    ['antigravity', 'gemini-pro-orchestrator'],
+    ['antigravity', 'claude-opus'],
+    ['antigravity-acp', 'gemini-pro-orchestrator'],
+    ['antigravity-acp', 'claude-opus'],
+  ])(
+    'shows both agy model groups and quota windows alongside context for %s/%s',
+    async (agentType, modelId) => {
+      const agentConfigId = 'antigravity-provider' as AgentConfigId;
+      const limits: MachineRateLimits = {
+        [getRateLimitEntryKey(agentType, 'antigravity', agentConfigId)]: {
+          limitId: 'antigravity',
+          scope: { providerId: 'antigravity' },
+          windows: [
+            {
+              label: 'Gemini Models',
+              usedPercent: 25,
+              windowDurationSeconds: 604_800,
+              resetsAtEpochSeconds: null,
+            },
+            {
+              label: 'Gemini Models',
+              usedPercent: 10,
+              windowDurationSeconds: 18_000,
+              resetsAtEpochSeconds: null,
+            },
+            {
+              label: 'Claude and GPT models',
+              usedPercent: 0,
+              windowDurationSeconds: 604_800,
+              resetsAtEpochSeconds: null,
+            },
+            {
+              label: 'Claude and GPT models',
+              usedPercent: 0,
+              windowDurationSeconds: 18_000,
+              resetsAtEpochSeconds: null,
+            },
+          ],
+        },
+      };
+      await renderUsage({
+        agentType,
+        agentConfigId,
+        modelId,
+        contextWindowUsage: { used: 100, size: 1000 },
+        rateLimits: limits,
+      });
+      await act(async () => {
+        container
+          .querySelector('button')
+          ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const meters = document.body
+        .querySelector('[aria-label="Usage"]')
+        ?.querySelectorAll('[role="progressbar"]');
+      expect(Array.from(meters ?? []).map((meter) => meter.getAttribute('aria-label'))).toEqual([
+        'Context: 10% used',
+        'Weekly · Gemini Models: 25% used',
+        'Weekly · Claude and GPT models: 0% used',
+        '5 hours · Gemini Models: 10% used',
+        '5 hours · Claude and GPT models: 0% used',
+      ]);
+    }
+  );
 
   it.each([
     { fiveHourFirst: false, usedPercent: 11 },

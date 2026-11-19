@@ -46,6 +46,9 @@ have accepted it. The native transcript opens at the latest page and requests
 older pages when needed. The Android runtime test exercises the bundled production
 session module with a synthetic Streams peer.
 
+Roost reports a live session after both the control stream and owner history
+are ready. A failed read only clears its own reader's readiness until it recovers.
+
 Roost proposal decisions write the outcome through the owner's shared
 `replaceTurn` command, as on Web. The Loro path continues to append the notice
 update to its session document.
@@ -97,6 +100,12 @@ for 30 s, grants, bodies; forgotten when the account or workspace changes): Sett
 `fresh`, while the composer's `shortcutBody` may use the recent directory. The unused
 `publishedShares` call is gone.
 
+The `scheduleOfflineTargets` update mirrors only the schedule-target files: `creationOptions`
+accepts `includeOffline`, which skips the online filter for schedule targets (new chats keep
+online-only agents), and `schedules` derives `ownedMachineIds` and clocks from workspace
+metadata as well as synced machine streams. The transcript windowing hunks in `project.ts` and
+`session.ts` remain outside the snapshot.
+
 ## Catalog read recovery
 
 Catalog transport, authorization and rate-limit failures retry from the last
@@ -124,7 +133,17 @@ Creation reads healthy machine replicas independently: another machine's failed
 sync does not block its agents or session creation. `creationOptionsChanged`
 wakes both native pickers even before the whole catalog can report synced.
 Matching `acpModelCapability` source versions supply per-model effort/Fast
-controls; mismatched declarations never overwrite current capabilities.
+controls; mismatched declarations never overwrite current capabilities. Below
+them, each model's own option list recorded by a desktop or mobile model refresh
+(`acpModelConfigOptions` pointers to shared `acpModelConfigOptionsShape` lists)
+supplies that model's effort ladder and Fast toggle; `modelReasoningEfforts`
+still wins over a record, and an unrecorded model keeps the snapshot.
+
+Settings › Agents refreshes a provider (row menu or the editor's Refresh models
+and modes) through `agentProviderProbe` with `readModelOptions`. The runtime sends
+the field only to machines advertising `acpModelOptionsRead`, waits up to twenty
+minutes, and emits `agentProviderRefreshProgress` naming each model. Save and test
+remains the quick probe.
 
 Agent discovery merges live `agent-*` repo metadata with machine Flock configs,
 matching the daemon. Machine configs win by machine/config identity; deleted
@@ -133,7 +152,7 @@ fields reach native UI, never launch environments or credentials.
 
 ## Schedules
 
-`schedule-commands.mjs` bridges the shared `schedules`, `scheduleDetail` and `scheduleCommand` calls with the native workspace identity. The dispatcher reduces thrown errors to one code, so schedule failures return in-band as `{error}`: the runtime's schedule codes pass through for localized copy, and any other write failure is `schedule_write_unknown`, because the write may have landed. Writes carry the caller's idempotency `requestId` and are never retried. Both network gates allow `<workspace>:sr` (the Flock registry) and `<workspace>:schedule:<id>` (one schedule's Loro document) to be created, read and appended; deletes stay denied. The handler depends on `loro-mirror` 2.3.2, which shares the asynchronous Loro wrapper. It ships no license text, only `"license": "MIT"` in its package.json, so `build.mjs` accepts that declaration for this one reviewed package and records it in the license inventory.
+`schedule-commands.mjs` bridges the shared `schedules`, `scheduleDetail` and `scheduleCommand` calls with the native workspace identity. The dispatcher reduces thrown errors to one code, so schedule failures return in-band as `{error}`: the runtime's schedule codes pass through for localized copy, and any other write failure is `schedule_write_unknown`, because the write may have landed. Writes carry the caller's idempotency `requestId` and are never retried. Native waits up to 50 s for `schedules` and `scheduleDetail`, longer than the runtime's 40 s read budget, so the runtime's own outcome always arrives first. Both network gates allow `<workspace>:sr` (the Flock registry) and `<workspace>:schedule:<id>` (one schedule's Loro document) to be created, read and appended; deletes stay denied. The handler depends on `loro-mirror` 2.3.2, which shares the asynchronous Loro wrapper. It ships no license text, only `"license": "MIT"` in its package.json, so `build.mjs` accepts that declaration for this one reviewed package and records it in the license inventory.
 
 ## Operation receipts
 

@@ -156,7 +156,6 @@ import {
   type ChatFailedCode,
   type ChatFailedReason,
   type ProjectRef,
-  type SessionPreparationCancelSpec,
   getProjectRefBranch,
   resolveBaseBranchPreference,
   MachineStatusRequestValidated,
@@ -169,14 +168,14 @@ import {
   MachineAcpCapabilitiesRefreshResponse,
   type MachineAcpAuthenticateRequestValidated,
   type MachineAcpAuthenticateResponse,
-  SessionCodeCollabHostStartRequestValidated,
-  SessionCodeCollabHostStartResponse,
   type MachineAcpBinaryStatusRequestValidated,
   type MachineAcpBinaryInstallRequestValidated,
   type LocalProjectControlErrorCode,
   type LocalProjectControlRequest,
   type LocalProjectControlResponse,
   E2EE_ACP_INTERACTION_PROTOCOL_VERSION,
+  E2EE_SESSION_EDIT_AND_RESEND_PROTOCOL_VERSION,
+  E2EE_SESSION_FORK_PROTOCOL_VERSION,
   SORBET_CREDENTIALS_PROTOCOL_VERSION,
   SORBET_CREDENTIALS_REMOTE_PROTOCOL_VERSION,
   SORBET_PROVIDERS_PROTOCOL_VERSION,
@@ -190,9 +189,6 @@ import {
   sessionForkFailure,
   type SessionEditAndResendResponse,
   sessionEditAndResendFailure,
-  type SessionPreparationSpec,
-  type SessionPrepareCancelResponse,
-  type SessionPrepareResponse,
   type MachineLifecycleCapability,
   PreviewCandidateReportRequestValidated,
   SessionPreviewCreateRequestValidated,
@@ -263,7 +259,6 @@ import {
   type LanMemberControlRequest,
   type LanMemberControlResponse,
   type MachineProtocolCapabilities,
-  ANTIGRAVITY_AGENT_TYPE,
   BOARD_MAINTENANCE_TURN_PREFIX,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
@@ -442,11 +437,6 @@ import {
   applyAcpSessionRunConfig,
   type AcpSessionRunConfig,
 } from '@/session/acp-session-config-applier';
-import {
-  readDiffStatsMetadata,
-  resolveCodeCollabAllChangesDiffStatsPatch,
-  resolveDiffStatsTarget,
-} from '@/session/session-diff-stats-target';
 import type { MachineAccessVerification } from '@/session/session-access-retry';
 import {
   CodeCollabV2Service,
@@ -531,7 +521,6 @@ import {
   isLocalProjectWorktreeConfigRequest,
 } from '@/session/worktree/worktree-setup-config-store';
 import { resolveSessionWorktreeCleanupConfig } from '@/session/worktree/worktree-config-resolver';
-import { AntigravityQuotaPoller, createAntigravityQuotaClient } from '@/lib/antigravity-quota';
 
 type SessionHistoryReadRequest = Extract<
   LocalSessionControlRequestValidated,
@@ -973,7 +962,6 @@ export class MessageHandler {
   private detachWorktreeGcSyncListener: (() => void) | null = null;
   private interruptedSessionSync: InterruptedSessionSync | null = null;
   private detachInterruptedSessionSyncListener: (() => void) | null = null;
-  private antigravityQuotaPoller: AntigravityQuotaPoller | null = null;
   private readonly deleteLocalProjectInFlight = new Set<LocalProjectId>();
   private machineFlockCommandWatcher: MachineFlockCommandWatcher;
   // Desktop local-transport backfill: in-flight task keys (`${sessionId}:${fileId}`)
@@ -2198,6 +2186,9 @@ export class MessageHandler {
     expectedMimeType: string;
     encryption?: EncryptedAttachment;
   }): Promise<DownloadedSessionImagePromptBlock> {
+    // Encrypted workspaces never read plaintext relay objects with the account token.
+    if (this.encryptedAttachments && !args.encryption)
+      throw new Error('e2ee_attachment_unavailable');
     return await downloadSessionImageForPrompt({
       ...args,
       serverBaseUrl: this.resolveServerBaseUrl(),
@@ -2513,6 +2504,8 @@ export class MessageHandler {
         return { ok: false, reason: 'error', message: formatErrorMessage(error) };
       }
     }
+    if (this.encryptedAttachments)
+      return { ok: false, reason: 'error', message: 'e2ee_attachment_unavailable' };
     const serverBaseUrl = this.resolveServerBaseUrl();
     const fileUrl = buildSessionFileApiUrl(
       serverBaseUrl,
@@ -3142,35 +3135,6 @@ export class MessageHandler {
     });
   }
 
-  /**
-   * Draft session preparation is retired. Desktops that predate its removal
-   * still ask for it, so both requests answer at once without doing any work.
-   * Prepare reports an accepted duplicate: an older desktop then holds that one
-   * lease until the draft idles or is sent. A rejection would make it ask again,
-   * and cancel, after every pause in typing.
-   */
-  private declineSessionPreparation(spec: SessionPreparationSpec): SessionPrepareResponse {
-    return {
-      type: 'session/prepare_response',
-      preparationId: spec.preparationId,
-      sessionId: spec.sessionId,
-      accepted: true,
-      disposition: 'duplicate',
-    };
-  }
-
-  private declineSessionPreparationCancel(
-    args: SessionPreparationCancelSpec
-  ): SessionPrepareCancelResponse {
-    return {
-      type: 'session/prepare-cancel_response',
-      preparationId: args.preparationId,
-      sessionId: args.sessionId,
-      cancelled: false,
-      disposition: 'not-found',
-    };
-  }
-
   // Single access choke point for prompt-handoff steer: both RPC arrival paths
   // (Loro Streams deps callback and local Machine RPC switch) route through here
   // so neither can bypass machine/local-project verification.
@@ -3524,13 +3488,9 @@ export class MessageHandler {
           bumpDiffPaths: state.bumpDiffPaths,
         });
         state.signal?.throwIfAborted();
-        if (state.persistAllChangesDiffStats && state.allChangesDiffStats) {
+        if (state.persistAllChangesDiffStats) {
           try {
-            await this.persistCodeCollabAllChangesDiffStats(
-              state.ownerSessionId,
-              state.allChangesDiffStats,
-              state.signal
-            );
+            await workspaceGitService.publishDiffStats(state);
           } catch (error) {
             this.logger.debug(
               `[code-collab-v2] Failed to persist All Changes diffStats ownerSessionId=${
@@ -3612,7 +3572,6 @@ export class MessageHandler {
       logger: this.logger,
       workspaceDocument: this.workspaceDocument,
       workspaceId: this.workspaceId,
-      preferredBaseBranch: this.configuredBaseBranch,
       prAssociation: this.cloudPort.prAssociation,
     });
     this.encryptedExecution = config.encryptedWorkspace ? config.encryptedExecution : undefined;
@@ -3683,8 +3642,6 @@ export class MessageHandler {
         persistCodeCollabTurnDiffs: async (sessionId, turnId, signal) =>
           await this.persistCodeCollabTurnDiffs(sessionId, turnId, signal),
         flushSessionUsage: async (sessionId) => await this.flushSessionUsage(sessionId),
-        updateSessionDiffStats: async (sessionId, session, options) =>
-          await this.turnPostProcessingService.updateSessionDiffStats(sessionId, session, options),
         refreshCodeCollabSharedState: async (sessionId, signal) => {
           await this.codeCollabV2Service.refreshSharedStateAfterTurn({ sessionId, signal });
         },
@@ -3752,6 +3709,17 @@ export class MessageHandler {
           },
           { noticeId: `session-stop-failure-${turnId}-${failure.phase}` }
         ),
+      recordNativeWorkInterrupted: async (sessionId, turnId) => {
+        if (this.deletedSessionIds.has(sessionId) || this.archiveInFlight.has(sessionId)) return;
+        await this.recordAgentWarning(
+          sessionId,
+          {
+            message: 'The agent process ended while it still reported background work.',
+            source: 'nativeWorkInterrupted',
+          },
+          { noticeId: `native-work-interrupted-${turnId}` }
+        );
+      },
       maybeGenerateAndStoreSessionTitle: async (
         sessionId,
         cliType,
@@ -4038,7 +4006,13 @@ export class MessageHandler {
         },
         refreshMachineProviderRateLimits: async (configId) =>
           this.executionService.refreshProviderRateLimits(configId),
-        refreshMachineAcpCapabilities: async ({ configId, force, onAcpBinaryProgress, signal }) =>
+        refreshMachineAcpCapabilities: async ({
+          configId,
+          force,
+          readModelOptions,
+          onAcpBinaryProgress,
+          signal,
+        }) =>
           await this.executionService.refreshMachineAcpCapabilities(
             {
               type: 'machine/acp-capabilities-refresh',
@@ -4046,6 +4020,7 @@ export class MessageHandler {
               workspaceId: this.workspaceId,
               configId,
               force,
+              ...(readModelOptions ? { readModelOptions } : {}),
             },
             { onAcpBinaryProgress, signal }
           ),
@@ -4201,8 +4176,6 @@ export class MessageHandler {
             disposition,
           };
         },
-        prepareSession: async (spec) => this.declineSessionPreparation(spec),
-        cancelSessionPreparation: async (args) => this.declineSessionPreparationCancel(args),
         resolveSessionHistoryOwnerSessionId: this.resolveSessionHistoryOwnerSessionId,
         authorizeSessionHistoryRead: async ({ sessionId, readProof }) => {
           if (!readProof || !this.cloudPort.access.verifySessionHistoryRead) return false;
@@ -4517,7 +4490,6 @@ export class MessageHandler {
     this.startWorktreeGc();
     this.startArchivedStreamsBackfill();
     this.startInterruptedSessionSync();
-    this.startAntigravityQuota();
     void this.machineFlockCommandWatcher.start();
     void this.discardLegacySessionCommands();
   }
@@ -4715,6 +4687,7 @@ export class MessageHandler {
 
     // Session exit: flush ACP updates before marking idle.
     this.sessionManager.on('exit', (exit) => {
+      this.executionService.forgetReleasedTurn(exit.sessionId);
       void (async () => {
         const sessionId = exit.sessionId;
         this.logger.debug(`[${sessionId}] Session exit event received (exitCode=${exit.exitCode})`);
@@ -4734,6 +4707,7 @@ export class MessageHandler {
     // Session termination can race with exit/error; always flush ACP updates first.
     // Skip if session was already cleaned by GC to avoid re-creating transient state.
     this.sessionManager.on('terminated', (event) => {
+      this.executionService.forgetReleasedTurn(event.sessionId);
       this.codeCollabV2Service.releaseWorkspaceWatchForOwner(event.sessionId);
       void (async () => {
         const sessionId = event.sessionId;
@@ -4940,38 +4914,6 @@ export class MessageHandler {
       ),
     ];
     this.logger.debug('[session-lifecycle] Archive and delete watchers registered');
-  }
-
-  private startAntigravityQuota(): void {
-    if (this.antigravityQuotaPoller) return;
-    const client = createAntigravityQuotaClient();
-    const poller = new AntigravityQuotaPoller({
-      listAgentConfigIds: async () =>
-        (
-          await this.workspaceDocument.listMachineAgentConfigsOfType(
-            'registry',
-            ANTIGRAVITY_AGENT_TYPE,
-            this.machineId
-          )
-        ).map((config) => config.id),
-      replaceRateLimits: async (agentConfigId, limits) =>
-        await this.workspaceDocument.replaceRateLimits(
-          this.machineId,
-          agentConfigId,
-          ANTIGRAVITY_AGENT_TYPE,
-          limits
-        ),
-      fetchRateLimits: () => client.fetchRateLimits(),
-      logger: this.logger,
-    });
-    this.antigravityQuotaPoller = poller;
-    poller.start();
-    // Providers are known once metadata has synced. Off the startup path: the
-    // quota is a best-effort display and must never fail handler setup.
-    void Promise.resolve()
-      .then(() => this.workspaceDocument.waitForInitialMetaSync())
-      .then(() => poller.poll())
-      .catch(() => undefined);
   }
 
   /**
@@ -5219,6 +5161,7 @@ export class MessageHandler {
     options: { writeIdleStatus?: boolean } = {}
   ): Promise<void> {
     this.logger.debug(`[${sessionId}] Releasing archived session runtime`);
+    this.executionService.withdrawNativeWorkCompletion(sessionId);
 
     this.clearSessionActivePresence(sessionId);
     this.closeSessionTerminals?.(sessionId);
@@ -5551,6 +5494,7 @@ export class MessageHandler {
    * orphan to report, not a reason to leave the archive half done.
    */
   private async terminateSessionForRelease(sessionId: SessionId): Promise<void> {
+    this.executionService.withdrawNativeWorkCompletion(sessionId);
     try {
       await this.sessionManager.terminateSession(sessionId, true);
     } catch (error) {
@@ -7166,7 +7110,11 @@ export class MessageHandler {
     const capabilities: MachineProtocolCapabilities = {
       ...getHostMachineProtocolCapabilities(),
       ...(this.encryptedAttachments
-        ? { e2eeAcpInteraction: E2EE_ACP_INTERACTION_PROTOCOL_VERSION }
+        ? {
+            e2eeAcpInteraction: E2EE_ACP_INTERACTION_PROTOCOL_VERSION,
+            e2eeSessionFork: E2EE_SESSION_FORK_PROTOCOL_VERSION,
+            e2eeSessionEditAndResend: E2EE_SESSION_EDIT_AND_RESEND_PROTOCOL_VERSION,
+          }
         : {}),
       ...(this.sorbetCredentials
         ? {
@@ -7877,27 +7825,6 @@ export class MessageHandler {
       return undefined;
     }
     return metaRecord.meta as SessionMeta;
-  }
-
-  private async persistCodeCollabAllChangesDiffStats(
-    ownerSessionId: SessionId,
-    diffStats: NonNullable<SessionMeta['diffStats']>,
-    signal?: AbortSignal
-  ): Promise<void> {
-    const ownerRoomId = getSessionRoomId(ownerSessionId);
-    const metaRecord = await this.workspaceDocument.repo.getDocMeta(ownerRoomId);
-    if (!metaRecord?.meta || isLoroRepoDocDeleted(metaRecord)) {
-      return;
-    }
-    signal?.throwIfAborted();
-    if ((metaRecord.meta as SessionMeta).projectRun) return;
-    const ownerMeta = readDiffStatsMetadata(metaRecord.meta);
-    const target = resolveDiffStatsTarget({ ownerRoomId, ownerMeta });
-    const patch = resolveCodeCollabAllChangesDiffStatsPatch({ target, ownerMeta, diffStats });
-    if (!patch) {
-      return;
-    }
-    await this.workspaceDocument.repo.upsertDocMeta(ownerRoomId, patch);
   }
 
   private canWriteCodeCollabOwnerSession(args: {
@@ -8762,10 +8689,6 @@ export class MessageHandler {
           disposition,
         };
       }
-      case 'session/prepare':
-        return this.declineSessionPreparation(request.params);
-      case 'session/prepare-cancel':
-        return this.declineSessionPreparationCancel(request.params);
       case 'ios-simulator/agent-control': {
         const sessionId = request.params.sessionId as SessionId;
         const invocation = this.executionService.getActiveInvocationContext(sessionId);
@@ -8909,24 +8832,6 @@ export class MessageHandler {
     }
   }
 
-  private async respondToLegacyCodeCollabHostStart(
-    message: SessionCodeCollabHostStartRequestValidated
-  ): Promise<SessionCodeCollabHostStartResponse> {
-    const sessionId = message.sessionId;
-    this.touchSession(sessionId);
-    this.logger.debug(
-      `[${sessionId}] Ignoring legacy Code Collab host-start request; v1 session-specific host has been removed.`
-    );
-    return {
-      type: 'session/code-collab-host-start_response',
-      sessionId,
-      success: false,
-      status: 'disabled',
-      error: 'unsupported',
-      message: 'Code Collab v1 session-specific host is no longer supported.',
-    };
-  }
-
   /**
    * Handles a validated local control message.
    */
@@ -8978,9 +8883,6 @@ export class MessageHandler {
         break;
       case 'machine/acp-binary-install':
         await this.handleMachineAcpBinaryInstall(message, context);
-        break;
-      case 'session/code-collab-host-start':
-        await this.handleCodeCollabHostStart(message, context);
         break;
       case 'session/image-upload':
         await this.handleSessionImageUpload(message, context);
@@ -9111,6 +9013,42 @@ export class MessageHandler {
   }
 
   /** Synced ownership/containment is the accepted UI trust boundary, not a registry. */
+  /** Every local project this machine would run a session's work in (encrypted sharing). */
+  async resolveSessionExecutionScope(sessionId: SessionId): Promise<readonly string[]> {
+    return await this.executionService.encryptedSessionExecutionScope(sessionId);
+  }
+
+  /**
+   * Verified encrypted fork. `executionRequesterUserId` is the signer's execution identity
+   * (owner account or `e2ee-member:`); `spec.requestedByUserId` stays the display account.
+   */
+  async handleEncryptedSessionFork(
+    spec: SessionForkSpec,
+    executionRequesterUserId: string
+  ): Promise<LocalMachineRpcResponse> {
+    try {
+      const access = await this.verifySessionMachineAccess(
+        spec.sourceSessionId,
+        executionRequesterUserId
+      );
+      if (access.outcome !== 'allowed')
+        return {
+          ok: true,
+          result: sessionForkFailure(
+            spec,
+            'MACHINE_ACCESS_DENIED',
+            `Fork access verification ${access.outcome}.`
+          ),
+        };
+      return {
+        ok: true,
+        result: await this.sessionForkService.fork({ ...spec, executionRequesterUserId }),
+      };
+    } catch (error) {
+      return { ok: false, error: formatErrorMessage(error) };
+    }
+  }
+
   async resolveSessionHistoryAccessTarget(sessionId: SessionId) {
     await this.resolveSessionHistoryOwnerSessionId(sessionId);
     const entry = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
@@ -9612,14 +9550,6 @@ export class MessageHandler {
         message.payload as Record<string, unknown>
       )
     );
-  }
-
-  private async handleCodeCollabHostStart(
-    message: SessionCodeCollabHostStartRequestValidated,
-    dispatchContext: MessageDispatchContext
-  ): Promise<void> {
-    const response = await this.respondToLegacyCodeCollabHostStart(message);
-    dispatchContext.send(response);
   }
 
   private async handlePreviewCandidateReport(
@@ -12781,8 +12711,6 @@ export class MessageHandler {
     }
     this.detachWorktreeGcSyncListener?.();
     this.detachWorktreeGcSyncListener = null;
-    this.antigravityQuotaPoller?.stop();
-    this.antigravityQuotaPoller = null;
     this.machineFlockCommandWatcher.stop();
     this.providerSetupManager.stop();
     this.detachInterruptedSessionSyncListener?.();
@@ -13350,7 +13278,9 @@ export class MessageHandler {
    * model turn it started itself). GC must not stop such a session as idle.
    */
   getNativeWork(sessionId: SessionId): NativeAgentWork {
-    return this.sessionManager.getSession(sessionId)?.agentClient?.getNativeWork() ?? null;
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session || session.hasLiveAgentProcess?.() === false) return null;
+    return session.agentClient?.getNativeWork() ?? null;
   }
 
   /**
@@ -13440,8 +13370,9 @@ export class MessageHandler {
         this.sessionDispatchWatcher.hasPendingDispatch(sessionId),
       hasGoal: (sessionId) => this.hasActiveGoal(sessionId),
       nativeActivity: (sessionId) => {
-        const client = this.sessionManager.getSession(sessionId)?.agentClient;
-        return client ? client.getNativeActivityObservation() : 'idle';
+        const session = this.sessionManager.getSession(sessionId);
+        if (!session || session.hasLiveAgentProcess?.() === false) return 'idle';
+        return session.agentClient ? session.agentClient.getNativeActivityObservation() : 'idle';
       },
       author: (sessionId) =>
         this.executionService.getActiveInvocationContext(sessionId)?.requesterUserId,

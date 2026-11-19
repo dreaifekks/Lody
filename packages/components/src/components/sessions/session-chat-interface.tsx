@@ -73,6 +73,7 @@ import {
   Copy,
   CornerLeftUp,
   Ellipsis,
+  FileText,
   Folder,
   GitBranch,
   GitBranchPlus,
@@ -80,6 +81,7 @@ import {
   Github,
   History,
   Image,
+  Link,
   LockKeyhole,
   MessageCircle,
   MessageSquarePlus,
@@ -91,6 +93,7 @@ import {
   Search,
   Share2,
   Shrink,
+  SquareArrowOutUpRight,
   Trash2,
   UserRoundCog,
   Users,
@@ -123,6 +126,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/toast';
 import type {
   LocalProjectId,
+  LineChange,
   MessageContent,
   MessageQueueItemInput,
   MessageQueueItem,
@@ -177,7 +181,9 @@ import {
   ScheduleRepository,
   type McpServerId,
   type ScheduleDocument,
+  type SessionPullRequestView,
 } from '@lody/shared';
+import { encryptedRemoteEditAndResendAvailable } from '../../lib/encrypted-machine-controls';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useStableCallback } from '@/hooks/use-stable-callback';
 import { useSideChatFirstPrompt } from '@/hooks/use-side-chat-first-prompt';
@@ -250,7 +256,22 @@ import {
 import { buildSessionLink } from '@lody/shared/session-link';
 import { buildAppSessionUrl } from '@/lib/session-app-url';
 import { openSessionDeepLink } from '@/lib/session-deep-link';
-import { executePathLauncher, buildPathLauncherProbes, canLaunchRemotePath, remotePathLauncherTakesUrlHost, resolveRemotePathDestination, resolveRemotePathEntry, getAvailablePathLauncherOptions, getPathLauncherId, PATH_LAUNCHER_PREFERENCE_CHANGED_EVENT, PATH_LAUNCHER_PREFERENCE_STORAGE_KEY, readStoredPathLauncherPreference, resolveSelectedPathLauncher, writeStoredPathLauncherPreference, type PathLauncherOption } from '@/lib/session-path-launchers';
+import {
+  executePathLauncher,
+  buildPathLauncherProbes,
+  canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
+  resolveRemotePathDestination,
+  resolveRemotePathEntry,
+  getAvailablePathLauncherOptions,
+  getPathLauncherId,
+  PATH_LAUNCHER_PREFERENCE_CHANGED_EVENT,
+  PATH_LAUNCHER_PREFERENCE_STORAGE_KEY,
+  readStoredPathLauncherPreference,
+  resolveSelectedPathLauncher,
+  writeStoredPathLauncherPreference,
+  type PathLauncherOption,
+} from '@/lib/session-path-launchers';
 import { withClassName } from '@/lib/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import * as stylex from '@stylexjs/stylex';
@@ -2050,7 +2071,7 @@ export function SessionHeaderMenu({
                   trimmedWorkspacePath ||
                   t('sessions.copyPathUnavailable', 'Workspace path unavailable')
                 }
-                icon={Copy}
+                icon={Folder}
               >
                 {t('sessions.copyPath', 'Copy path')}
               </Menu.Item>
@@ -2068,7 +2089,7 @@ export function SessionHeaderMenu({
                         'Conversation history is unavailable for this tab'
                       ))
                 }
-                icon={Copy}
+                icon={FileText}
               >
                 {t('sessions.copyAsMarkdown', 'Copy as Markdown')}
               </Menu.Item>
@@ -2076,12 +2097,12 @@ export function SessionHeaderMenu({
                 onClick={() => {
                   void onCopyUrl();
                 }}
-                icon={Copy}
+                icon={Link}
               >
                 {t('sessions.copyUrl', 'Copy URL')}
               </Menu.Item>
               {onCopyDeepLink ? (
-                <Menu.Item onClick={() => void onCopyDeepLink()} icon={Copy}>
+                <Menu.Item onClick={() => void onCopyDeepLink()} icon={SquareArrowOutUpRight}>
                   {t('sessions.copyDeepLink', 'Copy deeplink')}
                 </Menu.Item>
               ) : null}
@@ -2437,7 +2458,7 @@ export interface SessionChatInterfaceProps {
    */
   paintSessionMentionOverlay?: boolean;
   /** All-Changes totals for the context strip; null/undefined hides the diffstat. */
-  changesDiffStat?: { add: number; del: number } | null;
+  changesDiffStat?: LineChange | null;
   /** Called when the context strip's diffstat is clicked. */
   onOpenAllChanges?: () => void;
   /** Native ACP fork action for the latest completed assistant turn. */
@@ -2491,7 +2512,10 @@ export type SessionChatToolbar = {
     | 'sharing'
     | 'onShareWithTeam'
     | 'onShareAsImage'
-  >;
+  > & {
+    /** Copies the active tab's session link; the tab row reuses the root header menu. */
+    onCopyUrl: (linkFormat: 'https' | 'deeplink') => void | Promise<void>;
+  };
 };
 
 export type SessionChatInterfaceHandle = {
@@ -2792,7 +2816,10 @@ export const SessionChatInterface = memo(
     const automationContent = {
       mode: runtime?.contentMode === 'e2ee' ? 'protected' : 'plaintext',
     } as const;
-    const automationSupported = session.boardRole !== 'coordinator' && !!runtime && workspaceSupports(automationContent, 'automations');
+    const automationSupported =
+      session.boardRole !== 'coordinator' &&
+      !!runtime &&
+      workspaceSupports(automationContent, 'automations');
     const continuation = useLocalSessionContinuation(
       automationSupported &&
         workspaceId &&
@@ -3101,6 +3128,7 @@ export const SessionChatInterface = memo(
       repoFullName,
       latestPr,
       latestPrState,
+      pullRequestHistory,
       canShowGitHubActions,
       hasExistingPr,
       workspaceDirty,
@@ -3129,6 +3157,10 @@ export const SessionChatInterface = memo(
       void openExternalUrl(latestPr.url);
     });
     const prLinkHandler = latestPr ? openLatestPr : undefined;
+    // The PR tab follows the current PR, so an earlier PR opens on GitHub.
+    const openHistoryPr = useStableCallback((view: SessionPullRequestView) => {
+      void openExternalUrl(view.url);
+    });
     const preferredMergeMethod = usePreferredPrMergeMethod();
     const activePrDetails = useGitHubPrDetails({
       sessionId: prSessionId,
@@ -3398,7 +3430,7 @@ export const SessionChatInterface = memo(
     );
 
     // How current the shown conversation is: a skeleton while nothing is cached,
-    // "Updating" in the info bar while a cached copy catches up. "Caught up"
+    // "Syncing" in the info bar while a cached copy catches up. "Caught up"
     // is sticky per open, so later sync blips (live output) stay quiet.
     const contentCaughtUpRef = useRef({ sessionId: session.id, caughtUp: false });
     if (contentCaughtUpRef.current.sessionId !== session.id) {
@@ -3880,9 +3912,17 @@ export const SessionChatInterface = memo(
       t,
       workspaceId,
     ]);
+    // Encrypted remote machines cannot take ordinary RPC, but their owner reaches edit and
+    // resend through the signed feature channel once the machine supports it.
+    const encryptedRemoteEditAvailable = encryptedRemoteEditAndResendAvailable({
+      contentMode: runtime?.contentMode,
+      accountId: runtime?.accountId,
+      machine: sessionMachine,
+    });
+    const editRpcReason = encryptedRemoteEditAvailable ? undefined : rpcReason;
     const editableLastUserMessageId = useMemo(() => {
       if (
-        rpcReason ||
+        editRpcReason ||
         session.isArchived ||
         isGoalActive ||
         session.cliType !== 'builtin' ||
@@ -3925,7 +3965,7 @@ export const SessionChatInterface = memo(
       return userMessage.id;
     }, [
       capabilityAuthority,
-      rpcReason,
+      editRpcReason,
       isGoalActive,
       session.agentConfigId,
       session.agentType,
@@ -7276,7 +7316,12 @@ export const SessionChatInterface = memo(
 
         const launcherId = getPathLauncherId(launcher);
         try {
-          const sshDestination = openInIdeSsh ? resolveRemotePathEntry(launcher, readMachineSshEntry(session.machineId)) ?? resolveRemotePathDestination(launcher, openInIdeSsh, { found: await findSshEntry(openInIdeSsh, remotePathLauncherTakesUrlHost(launcher)) }) : undefined;
+          const sshDestination = openInIdeSsh
+            ? (resolveRemotePathEntry(launcher, readMachineSshEntry(session.machineId)) ??
+              resolveRemotePathDestination(launcher, openInIdeSsh, {
+                found: await findSshEntry(openInIdeSsh, remotePathLauncherTakesUrlHost(launcher)),
+              }))
+            : undefined;
           const analyticsProperties = {
             // Custom launcher ids are random uuids, so collapse them to a single
             // `custom` value to keep `ide_id` low-cardinality in analytics;
@@ -7543,9 +7588,13 @@ export const SessionChatInterface = memo(
         workspacePath={sessionWorkspacePath}
         onCopyConversationHistory={headerCopyConversation}
         onCopyUrl={() => {
-          void handleCopySessionLink();
+          void (toolbarActions
+            ? toolbarActions.onCopyUrl('https')
+            : handleCopySessionLink('https'));
         }}
-        onCopyDeepLink={() => handleCopySessionLink('deeplink')}
+        onCopyDeepLink={() =>
+          toolbarActions ? toolbarActions.onCopyUrl('deeplink') : handleCopySessionLink('deeplink')
+        }
         sharing={headerSharing}
         onShareWithTeam={headerShareWithTeam}
         onShareAsImage={headerShareAsImage}
@@ -7817,7 +7866,7 @@ export const SessionChatInterface = memo(
                           !shareSelection.active &&
                           !shouldReplaceComposerWithPermission
                         }
-                        onQuote={(text, options) => inputAreaRef.current?.addMessageQuote(text, options) ?? false}
+                        onQuote={(text) => inputAreaRef.current?.addMessageQuote(text) ?? false}
                       />
                       <div
                         ref={setMessageArea}
@@ -8058,6 +8107,8 @@ export const SessionChatInterface = memo(
                           workspaceLocation={infoBarWorkspaceLocation}
                           pr={canShowGitHubActions ? latestPr : null}
                           onOpenPr={prLinkHandler}
+                          prHistory={canShowGitHubActions ? pullRequestHistory : undefined}
+                          onOpenHistoryPr={openHistoryPr}
                           contextActions={infoBarContextActions}
                           onOpenAllChanges={onOpenAllChanges}
                           // Opener + every Session/Tab created here: the in-stream

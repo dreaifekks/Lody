@@ -420,7 +420,7 @@ function Composer({ sessionId, placeholder }: { sessionId: SessionId; placeholde
             })
           : undefined
       }
-      selector={
+      footerSelector={
         <>
           <DesktopRunConfigMenu
             agentSelection={null}

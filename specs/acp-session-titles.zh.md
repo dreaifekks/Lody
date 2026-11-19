@@ -11,13 +11,13 @@ Provider 通过 Core 初始化能力
 
 主 Session 完成初始化后才判断标题归属。实时能力适用于 builtin、registry、custom
 Provider 及运行时覆盖，即使尚无探测缓存也生效。旧版托管 Claude/Grok
-继续使用身份兼容名单；运行时覆盖禁用该兼容路径。LAN fork 中 registry 的 Google
-Antigravity 同样走该兼容路径：该条目运行 agy CLI，它不声明能力，但会自己给会话起标题。
+继续使用身份兼容名单；运行时覆盖禁用该兼容路径。LAN fork 的托管 Antigravity 与旧 registry
+条目同样走该兼容路径：两者都运行 agy CLI，它不声明能力，但会自己给会话起标题。
 其他运行时保留独立生成。
 
 Provider 推送标准 `session_info_update`，包含 `title` 和 `_meta.lody.titleSource`。
 `generated` 需要声明能力；`explicit` 保留兼容接收。拒绝 `fallback`、`unset`、
-无效来源标签、空标题以及其他 ACP Session 的通知。仅旧版 Claude/Grok 和上述 Antigravity 条目接收无标签标题。
+无效来源标签、空标题以及其他 ACP Session 的通知。仅旧版 Claude/Grok 和上述 Antigravity Provider接收无标签标题。
 Lody 清理标题内容，只更新 draft/generated 标题，保留用户手动命名。
 Provider 生成失败时保留草稿标题，不通过超时启动重复生成器。
 

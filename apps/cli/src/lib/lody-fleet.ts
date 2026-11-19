@@ -48,6 +48,7 @@ import { CliRuntimeStateReporter } from '@/lib/cli-runtime-state';
 import { WorkspaceWatchCoordinator } from '@/lib/code-collab/workspace-watch-coordinator';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import type { DaemonWorkspaceAccess } from '@/lib/session-command-environment';
+import type { CliE2eeWorkspaceLegacy } from '@/lib/e2ee/workspace-legacy';
 import {
   startLocalIpcSocketServers,
   stopLocalIpcSocketServers,
@@ -1384,7 +1385,32 @@ export class LodyFleet {
     this.refreshRuntimeState();
   }
 
-  private async startWorkspace(workspace: WorkspaceListItem): Promise<void> {
+  /** A promoted encrypted owner is handed only to a start that registers its
+   * `startInFlight` synchronously, so reset and shutdown always see its owner. */
+  private canAdoptPromotedWorkspace(workspaceId: string): boolean {
+    return (
+      this.mayStart(workspaceId) &&
+      !this.startupCleanupOwners.has(workspaceId) &&
+      !this.cleanupOwners.has(workspaceId) &&
+      !this.runtimes.has(workspaceId) &&
+      !this.startInFlight.has(workspaceId)
+    );
+  }
+
+  private async startWorkspace(
+    workspace: WorkspaceListItem,
+    options: { encryptedWorkspace?: CliE2eeWorkspaceLegacy } = {}
+  ): Promise<void> {
+    let handed = options.encryptedWorkspace;
+    if (handed && !this.canAdoptPromotedWorkspace(workspace.id)) {
+      const unused = handed;
+      handed = undefined;
+      await unused.close().catch((cause: unknown) => {
+        this.logger.warn(
+          `[fleet] Closing an unused encrypted owner failed: ${formatErrorMessage(cause)}`
+        );
+      });
+    }
     if (!this.mayStart(workspace.id)) return;
     if (this.startupCleanupOwners.has(workspace.id) || this.cleanupOwners.has(workspace.id)) {
       try {
@@ -1590,6 +1616,7 @@ export class LodyFleet {
                 },
               }
             : {}),
+          encryptedWorkspace: handed,
         });
         // The opener read the binding: any earlier unreadable episode has ended.
         this.clearUnreadableBinding(workspace.id);
@@ -1644,7 +1671,6 @@ export class LodyFleet {
           ? {
               evaluate: async () => {},
               dispose: async () => {},
-              hasUncertainLegacyQuota: () => false,
             }
           : await createScheduleWorkspace({
               manager: startedLody.documentManager,
@@ -1682,7 +1708,6 @@ export class LodyFleet {
           ? undefined
           : await createAutomationWorkspaceLegacy({
               lody: startedLody,
-              hasUncertainLegacyQuota: schedules.hasUncertainLegacyQuota,
               workspace,
               logger: workspaceLogger,
               verifyRemoteControl: this.remoteAutomationVerifier(workspace),
@@ -1993,7 +2018,6 @@ export class LodyFleet {
     if (state.automationsStart) return state.automationsStart;
     const pending = createAutomationWorkspaceLegacy({
       lody: state.lody,
-      hasUncertainLegacyQuota: state.schedules.hasUncertainLegacyQuota,
       workspace: state.workspace,
       logger: this.logger,
       verifyRemoteControl: this.remoteAutomationVerifier(state.workspace),
@@ -3258,7 +3282,7 @@ export class LodyFleet {
     )
       throw new Error('e2ee_binding_conflict');
     const {
-      activateCliE2eeWorkspaceLegacy,
+      activateAndPromoteCliE2eeWorkspaceLegacy,
       prepareCliE2eeMachineLegacy,
       validateCliE2eePairingIntentLegacy,
     } = await import('./e2ee/workspace-legacy');
@@ -3285,7 +3309,13 @@ export class LodyFleet {
       frontendSigningPublicKey: message.frontendSigningPublicKey,
       signingPublicKey: message.signingPublicKey,
     };
+    // The ledger handoff is a transport hint, not intent: retries with or without it
+    // join the same flight.
     const intent = JSON.stringify(captured);
+    const ledgerHandoff =
+      message.ledgerRecordsHex && message.ledgerPosition
+        ? { recordsHex: message.ledgerRecordsHex, position: message.ledgerPosition }
+        : undefined;
     let flight = this.e2eeActivationInFlight.get(workspace.id);
     if (flight && flight.intent !== intent) throw new Error('e2ee_binding_conflict');
     if (!flight) {
@@ -3297,7 +3327,8 @@ export class LodyFleet {
         const running = this.runtimes.get(workspace.id);
         if (running && (await running.lody.confirmEncryptedWorkspacePairing(captured))) return;
         if (running) await this.stopWorkspace(workspace.id);
-        await activateCliE2eeWorkspaceLegacy({
+        const promoted = await activateAndPromoteCliE2eeWorkspaceLegacy({
+          machineId: captured.machineId,
           accountId: captured.accountId,
           workspaceId: captured.workspaceId,
           genesisHash: captured.genesisHash,
@@ -3306,10 +3337,25 @@ export class LodyFleet {
           frontendSigningPublicKey: captured.frontendSigningPublicKey,
           cloud: e2eeCloud,
           onUnavailable: () => this.logger.debug('e2ee_background_unavailable'),
+          ledgerHandoff,
         });
         this.waitingForPairing.delete(workspace.id);
-        await this.startWorkspace(workspace);
-        await this.resolveWorkspaceRuntime(workspace.id as WorkspaceId);
+        // Activation verified admission and installed the current key; the runtime start
+        // (Loro rooms, machine runtime) is not part of the pairing answer. startWorkspace
+        // registers its startInFlight synchronously, so session requests, reset and
+        // shutdown still await it; it owns the promoted owner, failure reporting and retry.
+        if (this.canAdoptPromotedWorkspace(workspace.id)) {
+          void this.startWorkspace(workspace, { encryptedWorkspace: promoted });
+          return;
+        }
+        // Never hold the owner across a wait that reset cannot observe: release it
+        // inside this flight, then start cold.
+        await promoted.close().catch((cause: unknown) => {
+          this.logger.warn(
+            `[fleet] Closing an unused encrypted owner failed: ${formatErrorMessage(cause)}`
+          );
+        });
+        void this.startWorkspace(workspace);
       })().finally(() => {
         this.e2eeActivationInFlight.delete(workspace.id);
       });

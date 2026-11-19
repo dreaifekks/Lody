@@ -1,8 +1,10 @@
 import { useLegacyWorkspaceMutation } from '@/hooks/use-legacy-workspace-query';
 import { text as uiText } from '@lody/ui/tokens/scales.stylex';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
+import { getMachineMetaMapAtom } from '@/atoms/machines';
+import { localMachineIdAtom } from '@/atoms/local-probe';
 import { settingsDialogOpenAtom } from '@/atoms';
 import { Button } from '@lody/ui/button';
 import { CompactRow } from './compact-layout';
@@ -75,12 +77,15 @@ export function AccountSettingsComponent({
   surface = 'account',
   encryptedTeamManagement = true,
   onOpenEncryptionConsole,
+  workspaceSecuritySlot,
 }: {
   surface?: AccountSettingsSurface;
   /** Desktop General leaves encrypted invitations to the encryption console. */
   encryptedTeamManagement?: boolean;
   /** Opens the encryption console on its members page, where encrypted ownership moves. */
   onOpenEncryptionConsole?: () => void;
+  /** The encrypted workspace's security entry, laid out as the page's first section. */
+  workspaceSecuritySlot?: ReactNode;
 }) {
   // Personal account and workspace administration are cloud-account surfaces.
   // Registry-level gating hides their tabs without `cloudAccount`; this is the
@@ -94,6 +99,7 @@ export function AccountSettingsComponent({
       surface={surface}
       encryptedTeamManagement={encryptedTeamManagement}
       onOpenEncryptionConsole={onOpenEncryptionConsole}
+      workspaceSecuritySlot={workspaceSecuritySlot}
     />
   );
 }
@@ -102,10 +108,12 @@ function CloudAccountSettings({
   surface,
   encryptedTeamManagement,
   onOpenEncryptionConsole,
+  workspaceSecuritySlot,
 }: {
   surface: AccountSettingsSurface;
   encryptedTeamManagement: boolean;
   onOpenEncryptionConsole: (() => void) | undefined;
+  workspaceSecuritySlot: ReactNode;
 }) {
   const { t } = useTranslation();
   const authClient = useAuthClient();
@@ -227,6 +235,16 @@ function CloudAccountSettings({
   const sessionToken = rawSession?.session?.token ?? session?.session?.token ?? null;
   const authBaseUrl = import.meta.env.VITE_CONVEX_SITE_URL;
   const canGenerateCliApiKey = Boolean(authBaseUrl && sessionToken);
+  // Names the machines each CLI token signs in, and marks this computer's.
+  const machineMetaMap = useAtomValue(getMachineMetaMapAtom);
+  const localMachineId = useAtomValue(localMachineIdAtom);
+  const cliApiKeyMachineNames = useMemo(
+    () =>
+      new Map(
+        Array.from(machineMetaMap.values(), (machine) => [machine.id, machine.name || machine.id])
+      ),
+    [machineMetaMap]
+  );
   const billingUiAvailable = !isNativeAppShell();
   const openAdmissionBilling = billingUiAvailable
     ? () => {
@@ -740,6 +758,7 @@ function CloudAccountSettings({
         <AccountSettingsPure
           surface={surface}
           loading
+          workspaceSecuritySlot={workspaceSecuritySlot}
           currentUser={currentUser}
           organization={{ id: '', name: '' }}
           role="member"
@@ -825,6 +844,7 @@ function CloudAccountSettings({
           ) : undefined
         }
         encryptedWorkspace={encrypted}
+        workspaceSecuritySlot={workspaceSecuritySlot}
         workspaceJoinRequestsSlot={
           encrypted &&
           encryptedTeamManagement &&
@@ -896,6 +916,8 @@ function CloudAccountSettings({
         onSetupPassword={handleSetupPassword}
         canGenerateCliApiKey={canGenerateCliApiKey}
         cliApiKeys={cliApiKeys}
+        cliApiKeyMachineNames={cliApiKeyMachineNames}
+        currentMachineId={localMachineId}
         isLoadingCliApiKeys={isLoadingCliApiKeys}
         isCreatingCliApiKey={isCreatingCliApiKey}
         hasGeneratedCliApiKey={Boolean(generatedCliApiKey)}

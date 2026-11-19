@@ -86,19 +86,20 @@ execution/consent rules. These rules also bind CLI callers outside that director
 - Child Sessions are one level deep. An independent Session created inside another persists exact
   provenance in `openedBySessionId`, plus `openedByRootSessionId` when the opener is a child Tab;
   never rewrite the exact opener to the root or treat either as `parentSessionId`.
-- Reasoning/Fast are per model. Apply mode, model, then dependent options at both
-  selector levels. Probe configOptions describe only its current model. Validate target
-  effort through getModelEffortChoices (stored declaration before modelReasoningEfforts),
-  skipping validatedConfigIds in validateTurnConfigOptionValues. Dispatch offline-unverifiable
-  choices as requested and debug-log rejections. Hide Codex/Claude effort/Fast/Plan
-  rejection notices; model rejection always emits GUI agent_warning. For Fable without
-  Fast, skip fast=false as a no-op and dispatch fast=true.
-
-- SessionManager publishes exit/terminated only for Sessions received by a caller.
-  Detach failed createAgent instances before cleanup termination so MessageHandler
-  cannot finalize the live turn or discard replacement output.
-  See the [lifecycle decision](../../.agents/notes/implemented/bug-fix/2026-09-11-failed-session-create-lifecycle-events.md).
-
+- INVARIANT: reasoning effort and fast mode are per MODEL. Apply mode, then model, then dependent
+  options, for both top-level and config-option selections. A probe's `configOptions` describe only
+  its current model; that model and every model a requested refresh read are also kept in
+  `acpModelConfigOptions` rows. Validate effort against the TARGET model using `getAcpModelEffortChoices` (the stored
+  per-model declaration first, then `modelReasoningEfforts`, then that model's recorded list) and skip the resulting `validatedConfigIds` in
+  `validateTurnConfigOptionValues`; dispatch what cannot be checked offline as requested. Keep
+  runtime rejections in debug diagnostics. Codex/Claude effort, Fast and Plan rejections stay hidden;
+  model rejections always emit `agent_warning` in the GUI. Claude Fable
+  models omit Fast, so `fast=false` is skipped as a no-op while `fast=true` is dispatched.
+- INVARIANT: `SessionManager` publishes `exit`/`terminated` only for `Session` instances a caller
+  received. `MessageHandler` treats them as "the live turn's agent died" and finalizes the turn, so
+  a `createAgent` failure detaches the instance BEFORE its cleanup `terminate`; otherwise a
+  recovery such as the resume-to-replay fallback loses every update of the replacement agent
+  ([note](../../.agents/notes/implemented/bug-fix/2026-09-11-failed-session-create-lifecycle-events.md)).
 - `lody feedback` and MCP `lody_feedback` submit only caller-provided suggestion text and CLI
   version, platform, and architecture — never cwd, paths, hostname, environment, logs, prompts,
   history, or file contents. Keep obvious-secret rejection in the CLI and the hosted API boundary.

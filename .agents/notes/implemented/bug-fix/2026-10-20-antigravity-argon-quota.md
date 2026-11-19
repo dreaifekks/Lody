@@ -7,20 +7,14 @@ Translation: current
 
 ## Abstract
 
-Antigravity Pro reports a separate weekly Argon bucket, but model-name matching
-would select the longer Gemini name and provider rows displayed only one group.
-The daemon now maps `gemini-argon-wtu` to the shared `argon` limit id and Argon
-label. Session usage explicitly prefers Argon for Argon models and uses Gemini
-when that separate bucket is absent, as on Ultra. Provider rows show Gemini and
-Argon together; the compact view already preserves separate labeled rows.
-Successful polls replace the provider's quota snapshot so a switch to Ultra removes
-stale Argon rows; failed or signed-out fetches retain the last snapshot. A follow-up
-correction moved the request to the host and User-Agent the agy CLI uses: the old
-request never received the Argon group or real usage.
-A later change made the composer usage popover list Argon beside Gemini too, the
-session model's group first; the trigger percentage still reads only that group.
+Antigravity reports separate model-group quota, including Argon. Lody now obtains
+all groups from the selected agy executable's `--print /usage --output-format json`
+command for both builtin and persisted registry Providers. It preserves named weekly
+and five-hour windows without parsing old ACP credentials or calling Cloud Code.
+The historical direct-reader measurements below explain why returning to the old
+endpoint or inventing one combined bucket is incorrect.
 
-## Decision and evidence
+## Historical direct-reader decision and evidence
 
 The sanitized three-group response contains `gemini-argon-wtu-weekly`, a weekly
 window and remaining fraction `0.5653113126754761`, mapped to 43.5% used. Explicit
@@ -47,7 +41,7 @@ The poller suite uses a real in-memory LoroRepo and MachineDocument to verify
 Pro-to-Ultra replacement, other config/type isolation, empty snapshots, and
 signed-out/failed fetch preservation followed by recovery.
 
-## Correction: request host and User-Agent
+## Historical measurement: request host and User-Agent
 
 The first version kept the production host and the bare `antigravity` User-Agent.
 Probed live with one account on 2026-10-20, that request returned only the Gemini
@@ -58,15 +52,17 @@ account showed real Gemini usage and the Argon group. The daily host
 User-Agent names a versioned client: `antigravity/cli/<version> <os>/<arch>` and
 `antigravity/hub/3.0.0` did; `antigravity/hub/2.9.1` gave real Gemini usage without
 Argon; `antigravity/agy/<version>` and the bare agent gave only Claude/GPT. The
-OS/arch part did not change the answer. The daemon now sends
+OS/arch part did not change the answer. The retired reader sent
 `antigravity/cli/1.4.2 <os>/<arch>` to the daily host. The version gate is Google's
 and undocumented, so a later Antigravity release may require a newer version string.
 CodexBar reads the summary from the same host for the same reason.
 
-## ACP quota reader boundary
+## Current quota reader boundary
 
-The fork registry entry launches agy, whose ACP session does not advertise `/usage`.
-The upstream compatibility reader would start an unnecessary process/session and run
-plugin hooks on each refresh. Keep the direct Cloud Code poller as the sole source;
-never infer query support from the registry id, and refuse the generic ACP quota
-request before process launch. Shared provider quota presentation remains usable.
+The builtin and persisted registry entries both launch agy. Neither sends `/usage`
+as an ACP prompt or creates a quota conversation. `queryLocalAcpRateLimits` runs
+print mode with the selected launch environment, validates `num_turns: 0`, and
+preserves all groups in one Provider snapshot. Extra ACP launch arguments and
+Magpie routing remain unsupported for quota, so account selectors are never silently
+dropped. The old `lib/antigravity-quota.ts` reader and its tests are removed.
+See the [agy CLI decision](../feature/2026-11-15-antigravity-agy-cli-acp.md).

@@ -15,6 +15,7 @@ import {
   machineSupportsIosSimulatorControls,
   negotiatedAcpCapabilitiesRefreshForce,
   REALTIME_VOICE_PROTOCOL_VERSION,
+  negotiatedAcpModelOptionsRead,
   resolveNewSessionHistoryBackend,
 } from '../src/machine-protocol-capabilities';
 import { MachineVoiceRequestSchema, MachineVoiceResponseSchema } from '../src/machine-voice';
@@ -166,5 +167,39 @@ describe('realtime voice protocol capability', () => {
     expect(
       MachineVoiceRequestSchema.safeParse({ ...start, context: 'x'.repeat(16_001) }).success
     ).toBe(false);
+  });
+});
+
+describe('model option read negotiation', () => {
+  // What a daemon without `acpModelOptionsRead` parses: the same strict schema
+  // minus the field it never declared.
+  const previousGenerationRequestSchema = MachineAcpCapabilitiesRefreshRequestSchema.omit({
+    readModelOptions: true,
+  });
+  const buildRequest = (
+    machine: { protocolCapabilities?: Record<string, number> } | undefined
+  ) => ({
+    type: 'machine/acp-capabilities-refresh' as const,
+    machineId: 'machine-1',
+    workspaceId: 'workspace-1',
+    configId: 'config-1',
+    force: true,
+    ...negotiatedAcpModelOptionsRead(machine, true),
+  });
+
+  it('omits the field for a daemon that cannot read models', () => {
+    const request = buildRequest({ protocolCapabilities: { acpCapabilityRefreshCache: 1 } });
+
+    expect(Object.keys(request)).not.toContain('readModelOptions');
+    expect(previousGenerationRequestSchema.safeParse(request).success).toBe(true);
+  });
+
+  it('asks a current daemon to read every model, on both planes', () => {
+    const request = buildRequest({ protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES });
+
+    expect(request.readModelOptions).toBe(true);
+    expect(MachineAcpCapabilitiesRefreshRequestSchema.safeParse(request).success).toBe(true);
+    expect(safeParseLocalSessionControlRequest(JSON.stringify(request)).success).toBe(true);
+    expect(previousGenerationRequestSchema.safeParse(request).success).toBe(false);
   });
 });

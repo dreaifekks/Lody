@@ -68,7 +68,7 @@ checks = {
     'watchdog': [],
     'local-store': ['Cloud/LocalStore.swift', 'Cloud/SessionProse.swift', 'Text/MarkdownPlainText.swift', 'Text/MarkdownRuby.swift', 'Text/TextSearch.swift', 'LodyLocalization.swift'],
     'content-store': ['Cloud/ContentStore.swift'],
-    'chat-render': ['List/ConversationTabStrip.swift', 'List/ConversationTreeRow.swift', 'Chat/ChatOperationCell.swift', 'Chat/ChatMessageActionsCell.swift', 'List/LodyListPhoto.swift', 'List/PhotoDiskCache.swift', 'LodyLocalization.swift', 'LodyTint.swift', 'UIFont+Dynamic.swift', 'Appearance/LodyDesign.swift', 'List/LodyStatusGlyph.swift', 'Chat/LodyAgentIcon.swift', 'Chat/ChatTranscript.swift', 'Chat/ChatThrowCurve.swift', 'Chat/ChatAttachments.swift', 'Chat/ChatSendHandoff.swift', 'Chat/ChatNumericText.swift', 'Chat/ChatCell.swift', 'Chat/ChatAuthorHeader.swift', 'Chat/ChatUserMentions.swift'],
+    'chat-render': ['List/ConversationTabStrip.swift', 'List/ConversationTreeRow.swift', 'Chat/ChatOperationCell.swift', 'Chat/ChatMessageActionsCell.swift', 'List/LodyListPhoto.swift', 'List/PhotoDiskCache.swift', 'LodyLocalization.swift', 'LodyTint.swift', 'UIFont+Dynamic.swift', 'Appearance/LodyDesign.swift', 'List/LodyStatusGlyph.swift', 'Chat/LodyAgentIcon.swift', 'Chat/ChatTranscript.swift', 'Chat/ChatImageGallery.swift', 'Chat/ChatThrowCurve.swift', 'Chat/ChatAttachments.swift', 'Chat/ChatSendHandoff.swift', 'Chat/ChatReferenceNode.swift', 'Chat/ChatNumericText.swift', 'Chat/ChatCell.swift', 'Chat/ChatAuthorHeader.swift', 'Chat/ChatUserMentions.swift'],
     'chat-subagent': ['LodyLocalization.swift', 'LodyTint.swift', 'UIFont+Dynamic.swift', 'Appearance/LodyDesign.swift', 'List/LodyStatusGlyph.swift', 'Chat/LodyAgentIcon.swift', 'Chat/ChatTranscript.swift', 'Chat/ChatThrowCurve.swift', 'Chat/ChatAttachments.swift', 'Chat/ChatSendHandoff.swift', 'Chat/ChatNumericText.swift', 'Chat/ChatCell.swift', 'Chat/ChatUserMentions.swift', 'Chat/ChatSubagentCell.swift'],
     'chat-files': ['LodyLocalization.swift', 'LodyTint.swift', 'UIFont+Dynamic.swift', 'Appearance/LodyDesign.swift', 'List/LodyStatusGlyph.swift', 'Chat/LodyAgentIcon.swift', 'Chat/ChatTranscript.swift', 'Chat/ChatThrowCurve.swift', 'Chat/ChatAttachments.swift', 'Chat/ChatSendHandoff.swift', 'Chat/ChatNumericText.swift', 'Chat/ChatCell.swift', 'Chat/ChatUserMentions.swift', 'Chat/ChatFileCell.swift', 'List/LodyListPhoto.swift', 'List/PhotoDiskCache.swift'],
     'chat-chrome': ['LodyLocalization.swift', 'Chat/ChatOverlay.swift'],
@@ -82,7 +82,6 @@ checks = {
         'Chrome/WorkspaceSwitcherPanel.swift',
         'Sessions/SessionListView.swift',
         'LodyTint.swift',
-        'List/LodyRowDensity.swift',
         'List/LodyListCellBackground.swift',
         'List/LodyListPhoto.swift', 'List/PhotoDiskCache.swift',
         'List/LodyListSectionAnimation.swift',
@@ -126,7 +125,6 @@ for files in checks.values():
     if 'Chat/ChatComposerView.swift' in files:
         files.append('Chat/ChatActionBar.swift')
         files.extend(['Projects/RepositoryIcon.swift', 'List/LodyListPhoto.swift', 'List/PhotoDiskCache.swift'])
-        files.append('Chat/ChatComposerFormatBar.swift')
         files.append('Chat/ChatShortcutInsertion.swift')
     if 'Chat/ChatTranscript.swift' in files:
         files.append('Chat/ChatPendingSend.swift')

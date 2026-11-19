@@ -3,7 +3,8 @@
 `CLAUDE.md` aliases this; CLI rules apply.
 
 - Lazy machine-only; ordinary startup never probes keyring.
-- Creation probes OS keystore write/read; fixes OS/file protection permanently.
+- Creation reads, or writes and reads back, the KEK keyring entry in one helper process;
+  never replace an existing entry. It fixes OS/file protection permanently.
   Reopen: original selector/KEK; no re-probe/switch.
 - File protection: owner-only dirs/files, no symlinks. Windows: owner/DACL via official
   process Layer, never Unix mode bits.
@@ -12,6 +13,7 @@
 - Disclose file protection pre-approval.
 
 - Keyring: 10s timeout, stdin secrets; confirm termination before fallback, retain failed owners.
+  A read KEK is remembered per process, never absence; opens still check disk.
 - Batch Windows ACL checks; bound async SQLite BUSY retries. No blocking busy_timeout in keyring work.
 
 - Resume first Windows ACL setup only with empty custody; otherwise validate.
@@ -58,6 +60,7 @@
   IDs stay outside possession and ledger records; old developer formats need recreation.
   Local prepare/activate: OS-user socket; remote: signed offer/scoped port. Fleet checks account/workspace/genesis first.
   Activation refreshes verified ledger/mailbox; ACK only an installed current key. Failure keeps pairing retryable.
+  Local activation answers after `activation.json`; Fleet's start owner finishes startup.
   The local catalog never refuses that check: a workspace it lacks or binds to another
   genesis waits for the first authoritative list outcome (list, rejection, subscription
   error or shutdown), then fails closed; a cached match proceeds offline
@@ -82,12 +85,20 @@
   Logs carry only both epochs.
   [M3 selection](../../../../../.agents/notes/implemented/architecture/2026-10-27-e2ee-epoch-receive-barrier.md).
 - Prepared bindings cannot start content replicas. Activate only the native ledger/key
-  receiver: verify current installed key, close temporary owner, THEN write `activation.json`
-  before Fleet attaches rooms. Marker grants no authority; match genesis/device.
+  receiver: verify current installed key, THEN write `activation.json` before Fleet attaches
+  rooms. Remote activation closes its owner; local activation promotes that leased owner into
+  Fleet's start, which closes it unless a runtime adopts it. A desktop ledger handoff is untrusted
+  bytes verified from the pinned genesis; rejection falls back to history, and it never confirms
+  authority. Marker grants no authority; match genesis/device.
   Activated workspaces reopen offline. Join identical per-workspace intents; Fleet shutdown
   drains activation before cloud-port close.
 
 - Never register Fleet PR pollers for encrypted workspaces.
+- `runtime-cloud-port.ts` closes plaintext cloud channels for encrypted runtimes but keeps
+  the attachment relay URL and the preview tunnel, whose ordinary proof verifier rejects.
+  MessageHandler fences plaintext attachment reads.
+- Edit-and-resend replacements carry this machine's `signMachineInput` intent in the same
+  commit; an unsigned one is never written.
 - Encrypted cloud ports omit hosted GitHub tokens. SessionManager uses host git/gh
   credentials; never send decrypted repository names through its credential broker.
 

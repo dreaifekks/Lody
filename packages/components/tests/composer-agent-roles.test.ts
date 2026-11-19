@@ -647,3 +647,18 @@ describe('resolvePendingAgentRoleSelection', () => {
     ).toEqual({ kind: 'give-up' });
   });
 });
+
+import { filterFuzzyOptions } from '../src/lib/fuzzy-option-filter';
+it('ranks a match on the visible label above one only in the id or blurb', () => {
+  // `codex` is the label of one option and the description word of none; `cod`
+  // hits the GPT label. A hit on the hidden id must not outrank a visible name.
+  const ranked = filterFuzzyOptions(
+    [
+      { value: 'anthropic-fastest', label: 'Opus 5' },
+      { value: 'x-1', label: 'Fastest Mini' },
+    ],
+    'fastest',
+    (option) => ({ primary: option.label, secondary: [option.value] })
+  ).map((option) => option.value);
+  expect(ranked).toEqual(['x-1', 'anthropic-fastest']);
+});

@@ -207,6 +207,11 @@ export function resolveAgentRateLimitForModel({
   if (entries.length === 0) return null;
 
   const normalizedModelId = normalizeModelName(modelId);
+  if (agentType === 'antigravity' || agentType === ANTIGRAVITY_AGENT_TYPE) {
+    // agy print /usage reports every model group in one provider-wide snapshot.
+    const snapshot = entries.find((entry) => entry.limitId === 'antigravity');
+    if (snapshot) return snapshot;
+  }
   if (agentType === ANTIGRAVITY_AGENT_TYPE) {
     const wantsArgon = normalizedModelId.includes('argon');
     if (wantsArgon) {
@@ -262,7 +267,8 @@ export function resolveAgentRateLimitsForModel(
 ): AgentRateLimitEntry[] {
   const primary = resolveAgentRateLimitForModel(options);
   if (!primary) return [];
-  if (options.agentType !== ANTIGRAVITY_AGENT_TYPE) return [primary];
+  if (options.agentType !== ANTIGRAVITY_AGENT_TYPE || primary.limitId === 'antigravity')
+    return [primary];
   const companions = getAgentRateLimitEntries(
     options.rateLimits,
     options.agentType,

@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-// @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,11 +9,14 @@ import { TEST_CLOUD_PLATFORM } from './test-platform';
 import { workspaceContentModeAtom } from '../src/atoms/workspace-content-mode';
 import { E2eeMachineSharingSettings } from '../src/components/settings/e2ee/machine-sharing-settings';
 import { WorkspaceSettings } from '../src/components/settings/e2ee/workspace-security';
+import { E2eeWorkspaceConsole } from '../src/components/pages/e2ee-workspace-console';
 import { RecoveryVaultSection } from '../src/components/settings/e2ee/recovery-vault-section';
 import { E2eeRecoveryHostContext } from '../src/components/settings/e2ee/recovery-host';
 import type { RecoveryPlan, RecoveryPort } from '../src/components/settings/e2ee/recovery-port';
 import { developerModeEnabledAtom, e2eeRecoveryVaultEnabledAtom } from '../src/atoms/settings';
 import { MachineDetailPane } from '../src/components/settings/machine-detail-pane';
+import { collectE2eeDeviceProfile } from '../src/lib/e2ee-device-profile';
+import { useDeviceDirectory } from '../src/components/settings/e2ee/security-state';
 import { E2eeSettingsIcon } from '../src/components/settings/e2ee/security-state';
 import {
   E2eeSecurityPanel,
@@ -34,16 +36,20 @@ vi.mock('../src/components/settings/account-setting', () => ({
   AccountSettingsComponent: (props: {
     encryptedTeamManagement?: boolean;
     onOpenEncryptionConsole?: () => void;
+    workspaceSecuritySlot?: import('react').ReactNode;
   }) => (
-    <p>
-      ordinary settings
-      {props.encryptedTeamManagement === false ? ' without team management' : ''}
-      {props.onOpenEncryptionConsole && (
-        <button type="button" onClick={props.onOpenEncryptionConsole}>
-          danger zone transfer
-        </button>
-      )}
-    </p>
+    <>
+      {props.workspaceSecuritySlot}
+      <p>
+        ordinary settings
+        {props.encryptedTeamManagement === false ? ' without team management' : ''}
+        {props.onOpenEncryptionConsole && (
+          <button type="button" onClick={props.onOpenEncryptionConsole}>
+            danger zone transfer
+          </button>
+        )}
+      </p>
+    </>
   ),
 }));
 describe('recovery vault settings', () => {
@@ -85,6 +91,39 @@ describe('recovery vault settings', () => {
       for (let tick = 0; tick < 20; tick++) await act(async () => {});
       expect(container.textContent).toContain('e2ee.recovery.replace');
       expect(calls.get('e2ee.recoveryReplacementPlan')).toBe(1);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('is enabled by default without requiring developer mode', async () => {
+    vi.stubGlobal('ipc', {
+      invoke: async (channel: string) =>
+        channel === 'e2ee.recoveryReplacementPlan'
+          ? { hasVault: false, replaceable: false, replacing: false, covered: [], uncovered: [] }
+          : channel === 'e2ee.recoveryPasskeyAvailable'
+            ? false
+            : [],
+      on: () => () => {},
+    });
+    const store = createStore();
+    expect(store.get(developerModeEnabledAtom)).toBe(false);
+    expect(store.get(e2eeRecoveryVaultEnabledAtom)).toBe(true);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <Provider store={store}>
+            <RecoveryVaultSection />
+          </Provider>
+        );
+      });
+      for (let tick = 0; tick < 10; tick++) await act(async () => {});
+      expect(container.textContent).toContain('e2ee.recovery.createWithPassword');
     } finally {
       act(() => root.unmount());
       container.remove();
@@ -190,8 +229,8 @@ describe('recovery vault settings actions', () => {
   };
   const workspace = (id: string, status: unknown) => ({ id, name: `Workspace ${id}`, status });
 
-  it('offers only creation when the account has no vault', async () => {
-    const view = await mount({
+  it('recommends passkey creation when available and falls back to password otherwise', async () => {
+    const withPasskey = await mount({
       hasVault: false,
       replaceable: false,
       replacing: false,
@@ -199,8 +238,134 @@ describe('recovery vault settings actions', () => {
       uncovered: [],
     });
     try {
-      expect(view.labels).toEqual(['e2ee.recovery.create']);
-      expect(view.primary).toEqual(['e2ee.recovery.create']);
+      expect(withPasskey.labels).toEqual([
+        'e2ee.recovery.createWithPasskey',
+        'e2ee.recovery.createWithPassword',
+        'e2ee.recovery.create',
+      ]);
+      expect(withPasskey.primary).toEqual(['e2ee.recovery.createWithPasskey']);
+    } finally {
+      withPasskey.done();
+    }
+
+    const withoutPasskey = await mount(
+      {
+        hasVault: false,
+        replaceable: false,
+        replacing: false,
+        covered: [workspace('a', { kind: 'notSet' })],
+        uncovered: [],
+      },
+      { 'e2ee.recoveryPasskeyAvailable': () => false }
+    );
+    try {
+      expect(withoutPasskey.labels).toEqual([
+        'e2ee.recovery.createWithPassword',
+        'e2ee.recovery.create',
+      ]);
+      expect(withoutPasskey.primary).toEqual(['e2ee.recovery.createWithPassword']);
+    } finally {
+      withoutPasskey.done();
+    }
+  });
+
+  it('creates with password, saves an offline recovery file later, and nudges removing password after passkey setup', async () => {
+    const typeInput = async (testId: string, value: string) => {
+      const input = document.body.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`)!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+          input,
+          value
+        );
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const dialogButton = (label: string) =>
+      [...document.body.querySelectorAll('button')].find(
+        (b) => b.textContent === label && b.closest('[role="alertdialog"]')
+      );
+    let state = {
+      hasVault: false,
+      replaceable: false,
+      replacing: false,
+      methods: { hasFile: false, hasPassword: false, hasPasskey: false as boolean | null },
+      covered: [workspace('a', { kind: 'verified', update: 1 })],
+      uncovered: [],
+    };
+    const calls: unknown[] = [];
+    const view = await mount(() => state, {
+      'e2ee.recoveryPasskeyAvailable': () => false,
+      'e2ee.createRecoveryVault': (options) => {
+        calls.push(['create', options]);
+        state = {
+          ...state,
+          hasVault: true,
+          replaceable: true,
+          methods: { hasFile: false, hasPassword: true, hasPasskey: false },
+        };
+        return { outcome: 'created', vaultId: 'a'.repeat(32) };
+      },
+      'e2ee.saveRecoveryVaultFile': (method, options) => {
+        calls.push(['saveFile', method, options]);
+        state = {
+          ...state,
+          methods: { hasFile: true, hasPassword: true, hasPasskey: true },
+        };
+        return { outcome: 'saved', vaultId: 'a'.repeat(32) };
+      },
+      'e2ee.removeRecoveryPassword': (method, options) => {
+        calls.push(['removePassword', method, options]);
+        state = {
+          ...state,
+          methods: { hasFile: true, hasPassword: false, hasPasskey: true },
+        };
+        return { outcome: 'removed' };
+      },
+    });
+    try {
+      await view.click('e2ee.recovery.createWithPassword');
+      await typeInput('e2ee-recovery-new-password', 'short');
+      await typeInput('e2ee-recovery-confirm-password', 'short');
+      expect(dialogButton('e2ee.recovery.createWithPassword')?.disabled).toBe(true);
+      await typeInput('e2ee-recovery-new-password', 'correct-horse-battery-staple');
+      await typeInput('e2ee-recovery-confirm-password', 'mismatch-horse-battery-staple');
+      expect(dialogButton('e2ee.recovery.createWithPassword')?.disabled).toBe(true);
+      await typeInput('e2ee-recovery-confirm-password', 'correct-horse-battery-staple');
+      expect(dialogButton('e2ee.recovery.createWithPassword')?.disabled).toBe(false);
+      await act(async () => dialogButton('e2ee.recovery.createWithPassword')!.click());
+      for (let tick = 0; tick < 10; tick++) await act(async () => {});
+
+      expect(calls[0]).toEqual([
+        'create',
+        { method: 'password', password: 'correct-horse-battery-staple' },
+      ]);
+      // No recovery file saved yet: Save file leads instead of Check file.
+      expect(view.labels).toContain('e2ee.recovery.saveFile');
+      expect(view.labels).not.toContain('e2ee.recovery.check');
+      expect(view.primary).toEqual(['e2ee.recovery.saveFile']);
+
+      await view.click('e2ee.recovery.saveFile');
+      await typeInput('e2ee-recovery-unlock-password', 'correct-horse-battery-staple');
+      await act(async () => dialogButton('e2ee.lostAll.continue')!.click());
+      for (let tick = 0; tick < 10; tick++) await act(async () => {});
+
+      expect(calls[1]).toEqual([
+        'saveFile',
+        'password',
+        { password: 'correct-horse-battery-staple' },
+      ]);
+      // Now both Passkey and Password are active: the security nudge recommends removing password.
+      const nudge = document.body.querySelector('[data-testid="e2ee-recovery-password-nudge"]');
+      expect(nudge).not.toBeNull();
+      expect(nudge?.textContent).toContain('e2ee.recovery.passwordNudgeTitle');
+      await act(async () => nudge!.querySelector('button')!.click());
+      await act(async () => dialogButton('e2ee.recovery.passwordRemove')!.click());
+      for (let tick = 0; tick < 10; tick++) await act(async () => {});
+
+      expect(calls[2]).toEqual(['removePassword', 'file', undefined]);
+      expect(
+        document.body.querySelector('[data-testid="e2ee-recovery-password-nudge"]')
+      ).toBeNull();
     } finally {
       view.done();
     }
@@ -397,6 +562,42 @@ describe('recovery vault settings actions', () => {
       // The saved workspace is not verified yet, so finishing its setup leads.
       expect(view.primary).toEqual(['e2ee.recovery.setupAll']);
       expect(view.text).toContain('e2ee.recovery.workspace.saved');
+    } finally {
+      view.done();
+    }
+  });
+
+  it('says it is loading until the first recovery state arrives', async () => {
+    let answer: (plan: RecoveryPlan) => void = () => {};
+    const port = fakeRecoveryPort(
+      { hasVault: false, replacing: false, covered: [], uncovered: [] },
+      { plan: () => new Promise<RecoveryPlan>((resolve) => (answer = resolve)) }
+    );
+    const view = await mount(undefined, {}, port);
+    try {
+      expect(view.text).toContain('e2ee.recovery.loading');
+      expect(view.text).not.toContain('e2ee.recovery.offlineHint');
+      expect(view.labels).toEqual([]);
+      await act(async () =>
+        answer({ hasVault: false, replacing: false, covered: [], uncovered: [] })
+      );
+      for (let tick = 0; tick < 5; tick++) await act(async () => {});
+      expect(view.text).not.toContain('e2ee.recovery.loading');
+      expect(view.primary).toEqual(['e2ee.recovery.create']);
+    } finally {
+      view.done();
+    }
+  });
+
+  it('says recovery is off when desktop main refuses it, without retry or file actions', async () => {
+    const view = await mount(async () => {
+      throw new Error('Error invoking remote method: Error: e2ee_recovery_disabled');
+    });
+    try {
+      expect(view.text).toContain('e2ee.recovery.disabled');
+      expect(view.text).not.toContain('e2ee.recovery.planFailed');
+      expect(view.text).not.toContain('e2ee.recovery.offlineHint');
+      expect(view.labels).toEqual([]);
     } finally {
       view.done();
     }
@@ -761,7 +962,31 @@ describe('encrypted workspace settings', () => {
     store.set(e2eeRecoveryVaultEnabledAtom, true);
     await render();
     await openConsole('recovery');
-    expect(page()).toContain('e2ee.console.recoveryElsewhere');
+    expect(page()).toContain('e2ee.console.recoveryUnavailable');
+  });
+
+  it('explains instead of showing an empty tab when desktop recovery is switched off', async () => {
+    // Desktop IPC exists, but the renderer switch is off: no vault call may happen and the
+    // tab still explains itself, with no shortcut that promises a setup.
+    store.set(developerModeEnabledAtom, true);
+    store.set(e2eeRecoveryVaultEnabledAtom, false);
+    const channels: string[] = [];
+    vi.stubGlobal('ipc', {
+      invoke: async (channel: string) => {
+        channels.push(channel);
+        return undefined;
+      },
+      on: () => () => {},
+    });
+    try {
+      await render();
+      await openConsole('recovery');
+      for (let tick = 0; tick < 5; tick++) await act(async () => {});
+      expect(page()).toContain('e2ee.console.recoveryUnavailable');
+      expect(channels.filter((channel) => channel.startsWith('e2ee.recovery'))).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows a browser-shaped host's own recovery section for the current account", async () => {
@@ -783,7 +1008,7 @@ describe('encrypted workspace settings', () => {
     );
     await openConsole('recovery');
     expect(page()).toContain('host recovery for account');
-    expect(page()).not.toContain('e2ee.console.recoveryElsewhere');
+    expect(page()).not.toContain('e2ee.console.recoveryUnavailable');
   });
 
   it("renders the shared recovery section over a browser-shaped host's port", async () => {
@@ -810,7 +1035,73 @@ describe('encrypted workspace settings', () => {
     for (let tick = 0; tick < 5; tick++) await act(async () => {});
     expect(page()).toContain('Host workspace');
     expect(page()).toContain('e2ee.recovery.setupAll');
-    expect(page()).not.toContain('e2ee.console.recoveryElsewhere');
+    expect(page()).not.toContain('e2ee.console.recoveryUnavailable');
+  });
+
+  it('renders the recovery section on the standalone console page instead of recoveryUnavailable', async () => {
+    const port = fakeRecoveryPort({
+      hasVault: true,
+      replacing: false,
+      covered: [{ id: 'workspace', name: 'Standalone workspace', status: { kind: 'notSet' } }],
+      uncovered: [],
+    });
+    const standalonePlatform = {
+      ...platform,
+      e2eeWorkspaces: {
+        ...platform.e2eeWorkspaces,
+        describe: async () => ({
+          workspaceId: 'workspace',
+          contentMode: 'e2ee' as const,
+          contentModeVersion: 1 as const,
+          genesisHash: '11'.repeat(32),
+          cryptoOrgId: '11'.repeat(32),
+          activation: 'control-only' as const,
+        }),
+        history: async () => ({
+          workspaceId: 'workspace',
+          genesisHash: '11'.repeat(32),
+          records: [],
+          checkpoint: { length: 0, headHash: null },
+          nextCursor: null,
+        }),
+        runtime: {
+          ...platform.e2eeWorkspaces!.runtime,
+          open: async () => ({
+            workspaceId: 'workspace',
+            genesisHash: '11'.repeat(32),
+            length: 0,
+            headHash: null,
+            deviceKind: 'personal' as const,
+            hasDeviceCredential: true,
+            hasCurrentKey: true,
+            memberRole: 'owner' as const,
+          }),
+          close: async () => {},
+          recordCreated: async () => {},
+          ledgerView: async () => {
+            throw new Error('skip');
+          },
+        },
+      },
+    } as unknown as PlatformProvider;
+    await act(async () =>
+      root.render(
+        <Provider store={store}>
+          <PlatformContext.Provider value={standalonePlatform}>
+            <E2eeRecoveryHostContext.Provider value={{ port }}>
+              <E2eeWorkspaceConsole
+                workspaceId="workspace"
+                presentation="page"
+                initialTab="recovery"
+              />
+            </E2eeRecoveryHostContext.Provider>
+          </PlatformContext.Provider>
+        </Provider>
+      )
+    );
+    for (let tick = 0; tick < 15; tick++) await act(async () => {});
+    expect(page()).toContain('Standalone workspace');
+    expect(page()).not.toContain('e2ee.console.recoveryUnavailable');
   });
 
   const renderSharing = () =>
@@ -983,13 +1274,34 @@ describe('encrypted workspace settings', () => {
     expect(container.textContent).toBe('');
   });
   it('waits for an explicit click, keeps retry and device rows after failure, then completes and clears the badge', async () => {
+    let managementStateReads = 0;
+    let refreshReads = 0;
+    const baseRuntime = platform.e2eeWorkspaces!.runtime!;
+    platform.e2eeWorkspaces!.runtime = {
+      ...baseRuntime,
+      managementState: async (workspace) => {
+        managementStateReads++;
+        return baseRuntime.managementState!(workspace);
+      },
+      refresh: async (workspace, options) => {
+        refreshReads++;
+        return baseRuntime.refresh!(workspace, options);
+      },
+    };
     await render();
+    expect(managementStateReads).toBe(2);
+    expect(refreshReads).toBe(2);
     expect(signed).toBe(false);
     expect(container.querySelector('[role=status]')).not.toBeNull();
     fail = true;
     await click('e2ee.security.complete');
+    expect(managementStateReads).toBe(4);
+    expect(refreshReads).toBe(2);
     expect(container.textContent).toContain('e2ee.security.error.retry.title');
     await openConsole('devices');
+    await act(async () =>
+      (document.querySelector('[data-testid="e2ee-device-details"]') as HTMLButtonElement).click()
+    );
     expect(page()).toContain('synthetic-machine');
     expect(signed).toBe(false);
     fail = false;
@@ -998,6 +1310,8 @@ describe('encrypted workspace settings', () => {
     )!;
     await act(async () => complete.click());
     expect(signed).toBe(true);
+    expect(managementStateReads).toBe(6);
+    expect(refreshReads).toBe(2);
     expect(container.textContent).toContain('e2ee.security.current');
     expect(container.querySelector('[role=status]')).toBeNull();
   });
@@ -1031,6 +1345,36 @@ describe('encrypted workspace settings', () => {
       (button) => button.textContent === 'e2ee.security.revoke'
     );
     expect(revoke?.disabled).toBe(true);
+  });
+  it('adds a device from the General card and keeps one way to add it on the Devices tab', async () => {
+    const personalPairing = () =>
+      document.body.querySelector('[data-testid="e2ee-personal-pairing-state"]');
+    Object.assign(platform.e2eeWorkspaces!.runtime!, {
+      preparePersonalJoin: async () => ({}),
+      claimPersonalJoin: async () => ({}),
+      cancelPersonalJoin: async () => {},
+    });
+    await render();
+    await click('e2ee.security.addDevice');
+    for (let tick = 0; tick < 5; tick++) await act(async () => {});
+    expect(
+      document.body.querySelector('[data-console-tab="devices"]')?.getAttribute('aria-current')
+    ).toBe('page');
+    // A host without account pairing keeps the per-workspace exchange.
+    expect(personalPairing()).not.toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    platform.e2eeWorkspaces!.runtime!.inspectAccountPairing = async () => null;
+    await render();
+    await click('e2ee.security.addDevice');
+    for (let tick = 0; tick < 5; tick++) await act(async () => {});
+    // The device list is still there, alone with the one way to add a device.
+    expect(
+      document.body.querySelector(
+        `[data-testid="e2ee-device-details"][data-device-key="${'ab'.repeat(32)}"]`
+      )
+    ).not.toBeNull();
+    expect(personalPairing()).toBeNull();
   });
   it('keeps the ordinary General page and leaves encrypted team management to the console', async () => {
     state = { ...state, rotationRequired: false };
@@ -1220,3 +1564,397 @@ it.each([true, false])(
     }
   }
 );
+
+describe('authorized device identities', () => {
+  it('binds owner and model to their verified device and still revokes the original key', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const revoked: string[] = [];
+    const device = {
+      key: 'aa'.repeat(32),
+      cryptoUserId: 'owner-a',
+      kind: 'personal' as const,
+      machineId: null,
+      self: true,
+      mayRevoke: true,
+    };
+    const state = {
+      epoch: 1,
+      rotationRequired: false,
+      updatePending: false,
+      mayRotate: true,
+      devices: [device, { ...device, key: 'bb'.repeat(32), self: false, cryptoUserId: 'owner-b' }],
+    };
+    try {
+      await act(async () =>
+        root.render(
+          <E2eeDevicesPanel
+            state={state}
+            directory={{
+              workspaceId: 'w',
+              profiles: [{ cryptoUserId: 'owner-a', name: 'Alice', image: null }],
+              devices: [
+                {
+                  signingPublicKey: device.key,
+                  profile: {
+                    client: 'mobile',
+                    model: 'Synthetic phone',
+                    os: 'iOS',
+                    osVersion: '26.0',
+                    appVersion: '1.2.3',
+                  },
+                },
+                { signingPublicKey: 'unadmitted', profile: { client: 'desktop', name: 'Spoof' } },
+              ],
+            }}
+            onRevoke={(key) => revoked.push(key)}
+            onRetry={() => {}}
+            onUpdate={() => {}}
+          />
+        )
+      );
+      expect(container.textContent).toContain('Alice · Synthetic phone');
+      const avatars = container.querySelectorAll('[data-testid="e2ee-device-owner-avatar"]');
+      expect(avatars[0]?.textContent).toBe('A');
+      expect(avatars[1]?.querySelector('svg')).not.toBeNull();
+      expect(avatars[1]?.textContent).not.toContain('A');
+      expect(container.textContent).toContain('iOS 26.0 · Lody 1.2.3');
+      expect(container.textContent).toContain('e2ee.security.thisDevice');
+      expect(container.textContent).toContain(
+        'e2ee.deviceIdentity.ownerUnknown · e2ee.deviceIdentity.personal'
+      );
+      // A missing profile is explained once, inside the row's details.
+      expect(container.textContent).not.toContain('e2ee.deviceIdentity.detailsUnavailable');
+      expect(container.textContent).not.toContain('Spoof');
+      await act(async () =>
+        (container.querySelector('[data-testid="e2ee-device-revoke"]') as HTMLButtonElement).click()
+      );
+      expect(revoked).toEqual([device.key]);
+      const detail = container.querySelector(
+        '[data-testid="e2ee-device-details"]'
+      ) as HTMLButtonElement;
+      expect(detail.textContent).toBe(
+        `e2ee.deviceIdentity.identifier · ${device.key.slice(0, 12)}`
+      );
+      expect(detail.querySelector('span > span')).toBeNull();
+      await act(async () => detail.click());
+      expect(container.textContent).toContain(device.key);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('fills this device from local facts and machine rows from the machine directory only', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const base = { cryptoUserId: 'owner-a', mayRevoke: true };
+    const self = {
+      ...base,
+      key: 'aa'.repeat(32),
+      kind: 'personal' as const,
+      machineId: null,
+      self: true,
+    };
+    const other = {
+      ...base,
+      key: 'bb'.repeat(32),
+      kind: 'personal' as const,
+      machineId: null,
+      self: false,
+    };
+    const machine = {
+      ...base,
+      key: 'cc'.repeat(32),
+      kind: 'machine' as const,
+      machineId: 'm-1',
+      self: false,
+    };
+    const unknownMachine = { ...machine, key: 'dd'.repeat(32), machineId: 'm-2' };
+    try {
+      await act(async () =>
+        root.render(
+          <E2eeDevicesPanel
+            state={{
+              epoch: 1,
+              rotationRequired: false,
+              updatePending: false,
+              mayRotate: true,
+              devices: [self, other, machine, unknownMachine],
+            }}
+            // The server has not stored any device profile yet.
+            directory={{
+              workspaceId: 'w',
+              profiles: [{ cryptoUserId: 'owner-a', name: 'Alice', image: null }],
+            }}
+            localProfile={{
+              client: 'desktop',
+              name: 'Synthetic laptop',
+              os: 'macOS',
+              osVersion: '26.1',
+              appVersion: '1.2.3',
+            }}
+            machines={new Map([['m-1', { name: 'Build box', os: 'linux', cliVersion: '0.104.0' }]])}
+            onRevoke={() => {}}
+            onRetry={() => {}}
+            onUpdate={() => {}}
+          />
+        )
+      );
+      expect(container.textContent).toContain('Alice · Synthetic laptop');
+      expect(container.textContent).toContain(
+        'e2ee.deviceIdentity.desktop · macOS 26.1 · Lody 1.2.3'
+      );
+      expect(container.textContent).toContain('Alice · Build box');
+      expect(container.textContent).toContain('e2ee.deviceIdentity.daemon · Linux · Lody 0.104.0');
+      // Neither local nor machine facts are borrowed by rows they do not describe.
+      expect(container.textContent).toContain('Alice · e2ee.deviceIdentity.personal');
+      expect(container.textContent).toContain('Alice · e2ee.deviceIdentity.machine');
+      expect(container.textContent?.match(/Synthetic laptop/g)).toHaveLength(1);
+      expect(container.textContent?.match(/Build box/g)).toHaveLength(1);
+      expect(container.textContent).not.toContain('e2ee.deviceIdentity.detailsUnavailable');
+      const otherDetails = container.querySelector(
+        `[data-testid="e2ee-device-details"][data-device-key="${other.key}"]`
+      ) as HTMLButtonElement;
+      await act(async () => otherDetails.click());
+      expect(container.textContent).toContain('e2ee.deviceIdentity.detailsUnavailable');
+      // A browser has no device name: the title carries the client kind once.
+      await act(async () =>
+        root.render(
+          <E2eeDevicesPanel
+            state={{
+              epoch: 1,
+              rotationRequired: false,
+              updatePending: false,
+              mayRotate: true,
+              devices: [self],
+            }}
+            localProfile={{ client: 'web', os: 'macOS', appVersion: '1.2.3' }}
+            onRevoke={() => {}}
+            onRetry={() => {}}
+            onUpdate={() => {}}
+          />
+        )
+      );
+      expect(container.textContent).toContain(
+        'e2ee.deviceIdentity.ownerUnknown · e2ee.deviceIdentity.web'
+      );
+      expect(container.textContent).toContain('macOS · Lody 1.2.3');
+      expect(container.textContent?.match(/e2ee\.deviceIdentity\.web/g)).toHaveLength(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('stops reporting to a server without the profile mutation until the profile changes', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const reports: unknown[] = [];
+    const port = {
+      ...TEST_CLOUD_PLATFORM.e2eeWorkspaces!,
+      reportDeviceProfile: async (input: unknown) => {
+        reports.push(input);
+        throw new Error(
+          "[CONVEX M(e2eeWorkspaces:reportDeviceProfile)] Could not find public function for 'e2eeWorkspaces:reportDeviceProfile'"
+        );
+      },
+      memberProfiles: async () => ({ workspaceId: 'workspace', profiles: [] }),
+    };
+    const state = () => ({
+      epoch: 1,
+      rotationRequired: false,
+      updatePending: false,
+      mayRotate: true,
+      devices: [
+        {
+          key: 'aa'.repeat(32),
+          kind: 'personal' as const,
+          machineId: null,
+          self: true,
+          mayRevoke: true,
+        },
+      ],
+    });
+    function Fixture({ value }: { value: ReturnType<typeof state> }) {
+      useDeviceDirectory(
+        port,
+        { status: 'authenticated', user: { id: 'a', name: 'a', email: '' } },
+        'workspace',
+        'a',
+        value
+      );
+      return null;
+    }
+    try {
+      await act(async () => root.render(<Fixture value={state()} />));
+      // Each verified management refresh yields a new state object.
+      await act(async () => root.render(<Fixture value={state()} />));
+      await act(async () => root.render(<Fixture value={state()} />));
+      expect(reports).toHaveLength(1);
+      window.__LODY_APP_INFO__ = { model: 'iPhone18,1', os_name: 'ios', os_version: '26.0' };
+      (window as Window & { __LODY_NATIVE__?: boolean }).__LODY_NATIVE__ = true;
+      await act(async () => window.dispatchEvent(new Event('lody:app-info-updated')));
+      expect(reports).toHaveLength(2);
+      expect(reports.at(-1)).toMatchObject({
+        profile: { client: 'mobile', model: 'iPhone 17 Pro' },
+      });
+    } finally {
+      await act(async () => root.unmount());
+      delete window.__LODY_APP_INFO__;
+      delete (window as Window & { __LODY_NATIVE__?: boolean }).__LODY_NATIVE__;
+    }
+  });
+
+  it('reports only this device, refreshes legacy metadata and discards another account’s late directory', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const reports: unknown[] = [];
+    let resolveOld!: (value: any) => void;
+    let old = true;
+    const port = {
+      ...TEST_CLOUD_PLATFORM.e2eeWorkspaces!,
+      reportDeviceProfile: async (input: unknown) => {
+        reports.push(input);
+        return null;
+      },
+      memberProfiles: async () =>
+        old
+          ? new Promise<any>((resolve) => {
+              resolveOld = resolve;
+            })
+          : { workspaceId: 'workspace', profiles: [], devices: [] },
+    };
+    const state = {
+      epoch: 1,
+      rotationRequired: false,
+      updatePending: false,
+      mayRotate: true,
+      devices: [
+        {
+          key: 'aa'.repeat(32),
+          kind: 'personal' as const,
+          machineId: null,
+          self: true,
+          mayRevoke: true,
+        },
+        {
+          key: 'bb'.repeat(32),
+          kind: 'personal' as const,
+          machineId: null,
+          self: false,
+          mayRevoke: true,
+        },
+      ],
+    };
+    function Fixture({ account }: { account: string }) {
+      const directory = useDeviceDirectory(
+        port,
+        { status: 'authenticated', user: { id: account, name: account, email: '' } },
+        'workspace',
+        account,
+        state
+      );
+      return <p>{directory?.profiles.map((p) => p.name).join(',') ?? 'no labels'}</p>;
+    }
+    try {
+      await act(async () => root.render(<Fixture account="a" />));
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({
+        signingPublicKey: state.devices[0]!.key,
+        profile: { client: 'web' },
+      });
+      old = false;
+      await act(async () => root.render(<Fixture account="b" />));
+      await act(async () =>
+        resolveOld({
+          workspaceId: 'workspace',
+          profiles: [{ cryptoUserId: 'x', name: 'Old account', image: null }],
+        })
+      );
+      expect(container.textContent).not.toContain('Old account');
+      // The native shell can finish collecting OS/model information after mount.
+      window.__LODY_APP_INFO__ = { model: 'iPhone18,1', os_name: 'ios', os_version: '26.0' };
+      (window as Window & { __LODY_NATIVE__?: boolean }).__LODY_NATIVE__ = true;
+      await act(async () => window.dispatchEvent(new Event('lody:app-info-updated')));
+      expect(reports.at(-1)).toMatchObject({
+        signingPublicKey: state.devices[0]!.key,
+        profile: { client: 'mobile', model: 'iPhone 17 Pro', osVersion: '26.0' },
+      });
+    } finally {
+      await act(async () => root.unmount());
+      delete window.__LODY_APP_INFO__;
+      delete (window as Window & { __LODY_NATIVE__?: boolean }).__LODY_NATIVE__;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not claim an iPhone model or real OS version from a browser compatibility UA', () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X)',
+    });
+    try {
+      expect(collectE2eeDeviceProfile()).toMatchObject({ client: 'web' });
+      expect(collectE2eeDeviceProfile().model).toBeUndefined();
+      expect(collectE2eeDeviceProfile().osVersion).toBeUndefined();
+    } finally {
+      if (original) Object.defineProperty(navigator, 'userAgent', original);
+      else delete (navigator as unknown as Record<string, unknown>).userAgent;
+    }
+  });
+});
+
+it('keeps the newer device profile when the initial directory read finishes after the post-update read', async () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  type Directory = import('@lody/cloud-api').E2eeWorkspaceMemberProfiles;
+  const replies: ((value: Directory) => void)[] = [];
+  const port = {
+    ...TEST_CLOUD_PLATFORM.e2eeWorkspaces!,
+    reportDeviceProfile: async () => null,
+    memberProfiles: () => new Promise<Directory>((resolve) => replies.push(resolve)),
+  };
+  const state = {
+    epoch: 1,
+    rotationRequired: false,
+    updatePending: false,
+    mayRotate: true,
+    devices: [
+      {
+        key: 'aa'.repeat(32),
+        kind: 'personal' as const,
+        machineId: null,
+        self: true,
+        mayRevoke: true,
+      },
+    ],
+  };
+  function Fixture() {
+    const directory = useDeviceDirectory(
+      port,
+      { status: 'authenticated', user: { id: 'a', name: 'a', email: '' } },
+      'workspace',
+      'a',
+      state
+    );
+    return <p>{directory?.devices?.[0]?.profile.osVersion ?? 'loading'}</p>;
+  }
+  try {
+    await act(async () => root.render(<Fixture />));
+    const value = (version: string): Directory => ({
+      workspaceId: 'workspace',
+      profiles: [],
+      devices: [
+        {
+          signingPublicKey: state.devices[0]!.key,
+          profile: { client: 'mobile', osVersion: version },
+        },
+      ],
+    });
+    await act(async () => replies[1]!(value('26.1')));
+    await act(async () => replies[0]!(value('26.0')));
+    expect(container.textContent).toBe('26.1');
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

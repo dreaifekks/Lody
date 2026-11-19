@@ -193,7 +193,7 @@ const markdownStyles = stylex.create({
     display: { default: 'block', ':is(li > p)': 'inline' },
     paddingInline: {
       default: conversation.railInset,
-      ':is(li > p, table *, [data-streamdown] *, [data-tool-detail-sheet] *)': 0,
+      ':is(li > p, blockquote *, table *, [data-streamdown] *, [data-tool-detail-sheet] *)': 0,
     },
   },
   compactParagraph: { marginBottom: { default: space[1], ':last-child': 0 } },
@@ -238,8 +238,11 @@ const markdownStyles = stylex.create({
   quote: {
     marginTop: conversation.paragraphGap,
     marginBottom: { default: conversation.paragraphGap, ':last-child': 0 },
-    borderLeft: `2px solid ${colors.separator}`,
-    paddingLeft: space[3],
+    marginInline: { default: conversation.railInset, ':is(blockquote *)': 0 },
+    borderInlineStartWidth: 2,
+    borderInlineStartStyle: 'solid',
+    borderInlineStartColor: colors.gray3,
+    paddingInlineStart: space[3],
     color: colors.secondaryLabel,
   },
   strong: { color: conversation.strong, fontWeight: 600 },
@@ -253,7 +256,7 @@ const markdownStyles = stylex.create({
     marginBottom: space[2],
     paddingInline: {
       default: conversation.railInset,
-      ':is(table *, [data-streamdown] *, [data-tool-detail-sheet] *)': 0,
+      ':is(blockquote *, table *, [data-streamdown] *, [data-tool-detail-sheet] *)': 0,
     },
     fontWeight: 600,
     color: conversation.strong,

@@ -27,9 +27,10 @@ new security/capability decision in the owning
 [Spec](../../../../../specs/desktop-devbar.md) and
 [Agent Note](../../../../../.agents/notes/implemented/feature/2026-09-16-devbar-hub-ui.md).
 
-`storage-guard.ts` requires both failed Lody write and low Lody-volume space. Only
-relaunch/quit clears it; background agents continue.
-Read the [decision](../../../../../.agents/notes/proposed/feature/2026-10-22-desktop-disk-full-guard.md).
+The disk-full guard (`storage-guard.ts`) requires a failed Lody write AND low space
+on a Lody data volume. Space alone never blocks. Only relaunch/quit clears it;
+background agents keep running
+([decision](../../../../../.agents/notes/implemented/feature/2026-10-22-desktop-disk-full-guard.md)).
 
 ## Public browser
 
@@ -94,7 +95,8 @@ Read [M1](../../../../../.agents/notes/implemented/architecture/2026-10-21-e2ee-
 and [bootstrap](../../../../../.agents/docs/e2ee-workspace-bootstrap.md).
 Fence opens/late D03 registration by identity/generation; pin D03 before signing.
 Workspace custody; reset binds account/generation; recheck after lock/drain before archive.
-No network under locks; drain before release. Bad keys allow ledger open; core repairs.
+No network or proxy lookup under locks; drain before release. Bad keys allow ledger open; core repairs.
+Account turns share the account barrier and lock only their identity directory; account switch, close, identity cleanup and account reset hold it exclusively, draining and fencing turns. Work must never re-enter it.
 Recovery keeps completed anchors; unfinished rebinding needs verified same-device admission and archived originals.
 Isolate verification/storage errors; bad input keeps readers.
 Originals precede feed/pin; compare overlaps, retain checkpoints, await history.
@@ -114,6 +116,11 @@ until verified admission/history settlement (including revocation); see [rationa
 denial/I/O cannot gate mailbox receipt. Show file protection; socket timeout stays pending. Await CLI current-key install.
 
 Only rotate resumes candidates. Keep errors transport-free.
+
+A content frame the verified ledger has not caught up with (an epoch at most four
+ahead, or an unknown author at the current epoch) opens as retryable `key-pending`; the
+portable session applies the same bound, and frames further ahead keep their original
+failure. The shared content adapter's refresh catches up, at most once per interval.
 
 The iroh client (`e2ee-iroh.mts`) lives with its workspace entry and follows [these rules](../../../../../packages/iroh-native/AGENTS.md).
 

@@ -5,15 +5,20 @@ Ancestor rules apply. Edit `AGENTS.md`.
 ## Sidebar and session rows
 
 - Sidebar rows represent Sessions, never Tasks.
-- Desktop project grouping shows only projects with session rows after pinned-tree
-  separation and opener placement. Hide empty machine sections, while retaining
-  populated project groups and remote LAN projects, even before their first session.
-- Desktop Workspace/Local Project/Updated/Pinned rows support mention drag and
-  Mark as unread, hidden when unread. Conversation/landing drops use
-  `lib/session-mention-drag.ts`; parent tabs use HTML5 drag, children dnd-kit.
-  `startSessionMentionDrag`/`armSessionMentionDrag` show `ConversationDropOverlay`
-  before `dragenter`. Rows own `draggable`; navigation overlays set it false.
-
+- Desktop project grouping applies `selectVisibleLocalProjectSections`; its
+  "Hide Empty Projects" switch is documented in the [README](README.md).
+  Keep remote LAN projects visible before their first Session and retain sections
+  holding populated project groups; pinned projects retain their independent order.
+- Desktop Workspace, Local Project, Updated and Pinned rows support mention drag
+  and Mark as unread (hide on unread). Use `lib/session-mention-drag.ts` for
+  conversation/landing drops; parent tabs use HTML5 drag, child tabs dnd-kit.
+  `startSessionMentionDrag` / `armSessionMentionDrag` must light
+  `ConversationDropOverlay` before `dragenter`. Navigation overlays use
+  `draggable={false}`; rows own `draggable`.
+- Workspace selection navigates in place and preserves the current workspace's route
+  on reselection. Browser `/chat` links retain native modified-click, middle-click and
+  context-menu actions without switching the source page. Electron Cmd-click
+  (Ctrl-click on Windows/Linux) and context menus open native workspace windows.
 - Full-width sidebar stays mounted/inert with scroll; Cmd+B animates content width
   (zero for reduced motion); pause hidden eager-sync/keyboard-nav. Compact/settings
   remounts restore scroll. Compact nav is modal: inert content, restore focus,
@@ -119,6 +124,10 @@ Ancestor rules apply. Edit `AGENTS.md`.
   Project. Retried saves reuse registrations; source paths stay out of definitions.
 
 E2EE/terminals: read [rules](e2ee/AGENTS.md).
+
+## Crash diagnostics
+
+ErrorBoundary uploads one fixed-vocabulary exception per failure episode, including retries, until healthy content commits.
 
 ## Automation markers
 

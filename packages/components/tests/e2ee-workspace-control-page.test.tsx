@@ -1,9 +1,8 @@
+// @vitest-environment jsdom
 import { ClientCustodyError } from '@lody/e2ee-core/services';
 import { classifyE2eeControlFailure } from '../src/lib/e2ee-control-failure';
 import { E2eeMemberActions } from '../src/components/pages/e2ee-member-actions';
-// @vitest-environment jsdom
 
-// @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,13 +25,9 @@ import {
 } from '../src/lib/e2ee-ledger-history';
 import { ledgerOverview } from '../src/lib/e2ee-ledger-overview';
 import { ledgerVerificationCode } from '../src/lib/e2ee-ledger-verification';
+import { createTestI18n, withTestI18n } from './test-i18n';
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) =>
-      options ? `${key} ${JSON.stringify(options)}` : key,
-  }),
-}));
+const testI18n = createTestI18n({ keyLabels: true, exposeValues: true });
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -59,7 +54,7 @@ function render(overrides: Partial<ComponentProps<typeof E2eeWorkspaceControlPag
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
-  act(() => root!.render(<E2eeWorkspaceControlPage {...props} />));
+  act(() => root!.render(withTestI18n(<E2eeWorkspaceControlPage {...props} />, testI18n)));
   return props;
 }
 
@@ -382,7 +377,7 @@ describe('encrypted workspace control page reading', () => {
       container = document.createElement('div');
       document.body.append(container);
       root = createRoot(container);
-      act(() => root!.render(<Console />));
+      act(() => root!.render(withTestI18n(<Console />, testI18n)));
       await act(async () =>
         (
           document.querySelector(
@@ -451,12 +446,15 @@ it('requires confirmation, carries the member incarnation, and hides forbidden m
   const show = (actorRole: 'owner' | 'admin', role: 'owner' | 'admin' | 'member') =>
     act(() =>
       root!.render(
-        <E2eeMemberActions
-          member={{ ...member, role }}
-          name="Jordan"
-          management={{ actorRole, remove, setRole }}
-          onRotationSettled={() => {}}
-        />
+        withTestI18n(
+          <E2eeMemberActions
+            member={{ ...member, role }}
+            name="Jordan"
+            management={{ actorRole, remove, setRole }}
+            onRotationSettled={() => {}}
+          />,
+          testI18n
+        )
       )
     );
   show('admin', 'admin');
@@ -515,12 +513,15 @@ it('lets only the owner transfer ownership, after a confirmation that states the
   const openMenu = async (actorRole: 'owner' | 'admin') => {
     act(() =>
       root!.render(
-        <E2eeMemberActions
-          member={member}
-          name="Jordan"
-          management={management(actorRole)}
-          onRotationSettled={() => {}}
-        />
+        withTestI18n(
+          <E2eeMemberActions
+            member={member}
+            name="Jordan"
+            management={management(actorRole)}
+            onRotationSettled={() => {}}
+          />,
+          testI18n
+        )
       )
     );
     const trigger = container!.querySelector('button');
@@ -554,4 +555,63 @@ it('lets only the owner transfer ownership, after a confirmation that states the
   );
   expect(workspace.owner).toBe(member.membershipId);
   expect(document.querySelector('[data-testid="e2ee-member-transfer-dialog"]')).toBeNull();
+});
+
+describe('QR camera', () => {
+  const mount = async (getUserMedia: (constraints: MediaStreamConstraints) => Promise<unknown>) => {
+    const { useQrCamera } = await import('../src/components/pages/e2ee-ledger-verification');
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const states: string[] = [];
+    function Probe() {
+      const { video, state } = useQrCamera(true, () => {});
+      states.push(state);
+      return <video ref={video} />;
+    }
+    const host = document.createElement('div');
+    document.body.append(host);
+    const probeRoot = createRoot(host);
+    await act(async () => probeRoot.render(withTestI18n(<Probe />, testI18n)));
+    for (let turn = 0; turn < 5; turn++) await act(async () => {});
+    return {
+      states,
+      unmount: async () => {
+        await act(async () => probeRoot.unmount());
+        host.remove();
+        delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+      },
+    };
+  };
+  const failure = (name: string) => Object.assign(new Error(name), { name });
+
+  it('never asks a camera that was denied a second time', async () => {
+    const asked: MediaStreamConstraints[] = [];
+    const probe = await mount(async (constraints) => {
+      asked.push(constraints);
+      throw failure('NotAllowedError');
+    });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.video).toMatchObject({
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 720 },
+    });
+    expect(probe.states.at(-1)).toBe('unavailable');
+    await probe.unmount();
+  });
+
+  it('retries with plain video only when the rear-camera request cannot be met', async () => {
+    const asked: MediaStreamConstraints[] = [];
+    const probe = await mount(async (constraints) => {
+      asked.push(constraints);
+      throw failure(asked.length === 1 ? 'OverconstrainedError' : 'NotReadableError');
+    });
+    expect(asked.map((constraints) => constraints.video)).toEqual([
+      expect.objectContaining({ facingMode: { ideal: 'environment' } }),
+      true,
+    ]);
+    expect(probe.states.at(-1)).toBe('unavailable');
+    await probe.unmount();
+  });
 });

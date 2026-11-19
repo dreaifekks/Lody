@@ -57,7 +57,6 @@ import {
   ArchiveRestore,
   ArrowLeft,
   Settings2,
-  Copy,
   BookOpenText,
   Ellipsis,
   FileText,
@@ -76,6 +75,7 @@ import {
   Trash2,
   Users,
   X,
+  SquareArrowOutUpRight,
 } from 'lucide-react';
 import { CuidaSidebarExpandOutline } from '@lody/ui';
 import { Spinner } from '@lody/ui/spinner';
@@ -6600,6 +6600,7 @@ const SessionDetail = ({
         onDeleteSession: activeBoard ? undefined : handleRequestDeleteCurrentSession,
         onOpenSearch: handleOpenSearch,
         onCopyConversationHistory: exportAllowed ? handleCopyConversationHistory : undefined,
+        onCopyUrl: (linkFormat) => handleCopyUrl(undefined, undefined, linkFormat),
         onRequestRename: activeBoard
           ? () => setRenamingBoard(activeBoard)
           : canRenameCurrentSession
@@ -6648,6 +6649,7 @@ const SessionDetail = ({
     handleOpenSearch,
     exportAllowed,
     handleCopyConversationHistory,
+    handleCopyUrl,
     activeDraftTab,
     canRenameCurrentSession,
     handleRenameCurrentSession,
@@ -7363,7 +7365,7 @@ const SessionDetail = ({
     mobileMenuActions.push(
       {
         id: 'copy-path',
-        icon: <Copy {...stylex.props(detailStyles.icon14)} />,
+        icon: <Folder {...stylex.props(detailStyles.icon14)} />,
         label: t('sessions.copyPath', 'Copy path'),
         onClick: () =>
           handleCopyText(
@@ -7391,7 +7393,7 @@ const SessionDetail = ({
     });
     mobileMenuActions.push({
       id: 'copy-deeplink',
-      icon: <Link {...stylex.props(detailStyles.icon14)} />,
+      icon: <SquareArrowOutUpRight {...stylex.props(detailStyles.icon14)} />,
       label: t('sessions.copyDeepLink', 'Copy deeplink'),
       onClick: () => {
         void handleCopyUrl(undefined, undefined, 'deeplink');

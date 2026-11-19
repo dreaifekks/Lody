@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-// @vitest-environment jsdom
 import { act, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -561,6 +560,31 @@ describe('Time rules a person opens', () => {
     });
   });
 
+  it('accepts a custom step far beyond a day, as a proposal or the CLI may store', async () => {
+    open({ kind: 'interval', everyMs: 90 * 60_000, anchorAt: '2026-09-06T00:00:00.000Z' });
+    const minutesField = () =>
+      container.querySelector<HTMLInputElement>(
+        `[aria-label="${en['schedules.repeat.customMinutes']}"]`
+      )!;
+    expect(minutesField().value).toBe('90');
+    await act(async () => {
+      const input = minutesField();
+      input.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        '200000'
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.blur();
+    });
+    submit();
+    expect(onSave.mock.calls[0]![0].trigger).toEqual({
+      kind: 'interval',
+      everyMs: 200_000 * 60_000,
+      anchorAt: new Date(NOW).toISOString(),
+    });
+  });
+
   it('reopens a typed step in the custom field rather than as a preset', () => {
     open({ kind: 'interval', everyMs: 5 * 3_600_000, anchorAt: '2026-09-06T00:00:00.000Z' });
     expect(repeatValue()).toBe(en['schedules.repeat.hours']);
@@ -572,5 +596,86 @@ describe('Time rules a person opens', () => {
     expect(
       container.querySelector(`[aria-label="${en['schedules.repeat.every']}"]`)!.textContent
     ).toBe(en['schedules.repeat.custom']);
+  });
+});
+
+import {
+  collectScheduleSaveIssues,
+  type ScheduleSaveContext,
+} from '../src/components/schedules/schedule-save-blockers';
+import { CURRENT_MACHINE_PROTOCOL_CAPABILITIES } from '@lody/shared';
+describe('schedule Role admission', () => {
+  const t = i18next.createInstance({ lng: 'en', resources: { en: { translation: en } } });
+  beforeAll(() => t.init().then(() => undefined));
+  const agentConfig = {
+    id: 'agent',
+    machineId: 'machine',
+    name: 'Code reviewer',
+    cliType: 'claude',
+    agentType: 'claude',
+  } as unknown as ScheduleSaveContext['agentConfig'];
+  const machine = {
+    id: 'machine',
+    ownerUserId: 'owner',
+    protocolCapabilities: CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+    acpCapabilities: {
+      agent: {
+        modes: [{ id: 'safe', name: 'Ask each time' }],
+        configOptions: [],
+      },
+    },
+  } as unknown as ScheduleSaveContext['machine'];
+  const ready = (overrides: Partial<ScheduleSaveContext> = {}): ScheduleSaveContext => ({
+    workspaceReady: true,
+    userId: 'owner',
+    agent: { agentConfigId: 'agent' as never, modeId: 'safe' },
+    agentConfig,
+    machine,
+    project: null,
+    machineLocalProjectIds: new Set(),
+    destination: { kind: 'new_session' },
+    ...overrides,
+  });
+  it('marks a Role that is gone, or cannot run on the machine, on the Agent at once', () => {
+    // The Agent saved beside the reference still exists: it must not make the form look fine.
+    expect(collectScheduleSaveIssues(ready({ agentRoleProblem: 'role_not_found' }), t.t)).toEqual([
+      { field: 'agent', kind: 'invalid', message: en['schedules.roleNotFound'] },
+    ]);
+    expect(
+      collectScheduleSaveIssues(ready({ agentRoleProblem: 'instance_unavailable' }), t.t)
+    ).toEqual([
+      { field: 'agent', kind: 'invalid', message: en['schedules.roleInstanceUnavailable'] },
+    ]);
+    expect(collectScheduleSaveIssues(ready({ usesAgentRole: true }), t.t)).toEqual([]);
+  });
+  it('needs a machine whose daemon reads the reference, only when there is one', () => {
+    const older = { ...machine!, protocolCapabilities: { schedules: 2 } };
+    expect(collectScheduleSaveIssues(ready({ machine: older, usesAgentRole: true }), t.t)).toEqual([
+      { field: 'machine', kind: 'invalid', message: en['schedules.roleUpgrade'] },
+    ]);
+    expect(collectScheduleSaveIssues(ready({ machine: older }), t.t)).toEqual([]);
+  });
+});
+
+import { describeMcpSelection } from '../src/components/schedules/schedule-format';
+import zh from '../../../locales/zh_CN.json';
+describe('schedule MCP summary', () => {
+  const instance = i18next.createInstance({
+    lng: 'zh_CN',
+    resources: { zh_CN: { translation: zh } },
+  });
+  beforeAll(() => instance.init().then(() => undefined));
+  it('names the MCP servers a proposal loads and how they were chosen', () => {
+    const servers = [
+      { id: 'mail', name: 'Mail', transport: 'stdio', enabledByDefault: true },
+      { id: 'search', name: 'Search', transport: 'http' },
+    ] as never;
+    expect(describeMcpSelection(undefined, servers, instance.t)).toBe('工作区默认：Mail');
+    expect(describeMcpSelection(undefined, [], instance.t)).toBe('工作区默认（无）');
+    expect(describeMcpSelection([], servers, instance.t)).toBe('不加载');
+    // A saved id whose server was removed still shows, as its id.
+    expect(describeMcpSelection(['search', 'gone'], servers, instance.t)).toBe(
+      '指定：Search, gone'
+    );
   });
 });

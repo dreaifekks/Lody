@@ -40,6 +40,8 @@ Read [README](README.md) and these rules.
   `getExecutableHtmlPreviewSupport()` plus `scriptsOptedIn` via
   `useManagedPreviewFrame` only (see sessions-browser.md); else use
   navigation-stripped HTML with an empty sandbox.
+  The only other executable frame is the consented desktop direct preview in
+  `local-html-preview.tsx` (same doc).
   Never preview truncated text; static frames die with their tab.
 - Encrypted remote controls require protected host features/verified write role,
   never ordinary proofs. Disclose plaintext tunnel bytes.
@@ -93,14 +95,8 @@ Read [README](README.md) and these rules.
 
 ## [Info bar](../../../../../.agents/docs/sessions-info-bar.md)
 
-- Keep cluster order and a nonempty stage while items/ambient content exist.
-  Machine identity stays unstaged (desktop name/mobile icon); ownership is details-only.
-  Scheduled drafts stay in the composer, never the bar.
-- Stage icons are inert. Colour indicates status; never pulse.
-- Reported preview requests enable actions targeting the main Session. One
-  platform opens directly; iOS+Android use a chooser on desktop/mobile.
-- Open preview requires a real reported target. Prioritize repository actions
-  (dirty means Commit & Push), collapse into one and never duplicate below replies.
+Follow the linked composer contract for cluster visibility, stage interaction,
+preview admission, repository-action priority and workspace diff presentation.
 
 ## [Status slot](../../../../../.agents/docs/sessions-auto-review.md)
 

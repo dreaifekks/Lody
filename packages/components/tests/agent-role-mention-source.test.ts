@@ -1,7 +1,5 @@
 import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
 // @vitest-environment jsdom
-
-// @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';

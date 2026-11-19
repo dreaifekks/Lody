@@ -1,23 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Flock } from '@loro-dev/flock-wasm';
+import type { AgentConfigMeta, MachineMeta } from '@lody/shared';
 import {
   getMachineFlockAgentConfigs,
   getMachineFlockProviderSetups,
+  machineFlockKeys,
   readMachineFlockRowsFromFlock,
   writeMachineFlockRowToFlock,
-  machineFlockKeys,
 } from '@lody/shared';
-import { importMagpieProviders, resolveMagpieImport } from './magpie-import';
-import { toAgentConfigOutput } from './agent-config-output';
-import type { AgentConfigMeta, MachineMeta } from '@lody/shared';
+import { Flock } from '@loro-dev/flock-wasm';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   inferAgentConfigCliType,
-  resolveMachineOrThrow,
   resolveAgentConfigSelector,
+  resolveMachineOrThrow,
 } from './agent-config';
+import { toAgentConfigOutput } from './agent-config-output';
+import { importMagpieProviders, resolveMagpieImport } from './magpie-import';
 
 const state = vi.hoisted(() => ({
   config: undefined as AgentConfigMeta | undefined,
@@ -384,32 +384,41 @@ describe('agent-config output boundary', () => {
     }
   });
 
-  it('create returns a receipt while preserving inline and file values for launch', async () => {
-    const envFile = join(directory, 'config.env');
-    await writeFile(envFile, `OPENAI_API_KEY=${syntheticEnv.OPENAI_API_KEY}\nEMPTY=\n`);
-    const output = await run([
-      'create',
-      '--agent-type',
-      'codex',
-      '--env-file',
-      envFile,
-      '--env',
-      `ORDINARY_NAME=${syntheticEnv.ORDINARY_NAME}`,
-      '--json',
-    ]);
-    expectNoValues(output);
-    expect(JSON.parse(output)).toEqual({
-      ok: true,
-      workspaceId: 'workspace-id',
-      agentConfigId: state.saved?.id,
-      changedFields: ['name', 'agentType', 'machineId', 'env'],
-    });
-    expect(state.saved?.env).toEqual({
-      OPENAI_API_KEY: syntheticEnv.OPENAI_API_KEY,
-      ORDINARY_NAME: syntheticEnv.ORDINARY_NAME,
-      EMPTY: '',
-    });
-  });
+  it.each([
+    ['codex', 'builtin'],
+    ['antigravity', 'builtin'],
+    ['antigravity-acp', 'registry'],
+    ['kimi', 'registry'],
+  ] as const)(
+    'create %s preserves provider kind and inline/file values for launch',
+    async (agentType, cliType) => {
+      const envFile = join(directory, 'config.env');
+      await writeFile(envFile, `OPENAI_API_KEY=${syntheticEnv.OPENAI_API_KEY}\nEMPTY=\n`);
+      const output = await run([
+        'create',
+        '--agent-type',
+        agentType,
+        '--env-file',
+        envFile,
+        '--env',
+        `ORDINARY_NAME=${syntheticEnv.ORDINARY_NAME}`,
+        '--json',
+      ]);
+      expectNoValues(output);
+      expect(JSON.parse(output)).toEqual({
+        ok: true,
+        workspaceId: 'workspace-id',
+        agentConfigId: state.saved?.id,
+        changedFields: ['name', 'agentType', 'machineId', 'env'],
+      });
+      expect(state.saved).toMatchObject({ agentType, cliType });
+      expect(state.saved?.env).toEqual({
+        OPENAI_API_KEY: syntheticEnv.OPENAI_API_KEY,
+        ORDINARY_NAME: syntheticEnv.ORDINARY_NAME,
+        EMPTY: '',
+      });
+    }
+  );
 
   it('a name-only update cannot echo existing credentials', async () => {
     const output = await run(['update', 'agent-config-id', '--name', 'Renamed', '--json']);

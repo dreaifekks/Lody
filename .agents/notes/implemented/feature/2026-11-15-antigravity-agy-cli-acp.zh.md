@@ -65,9 +65,12 @@ YOLO 时重启它。
 
 ## 决策
 
-`scripts/generate-acp-registry.mjs` 只替换 `antigravity-acp` 条目：版本取
-`ANTIGRAVITY_CLI_VERSION`，各平台从该 GitHub release 下载 `agy_cli_<os>_<arch>`，
-命令是 `./antigravity`（Windows 为 `.exe`）加参数 `acp`。agy 几乎每天发版，版本号需手动更新。
+运行时、配额及会话权限边界记录在[草稿契约](../../../../specs/antigravity-runtime.zh.md)。
+
+新 Provider 使用上游托管的内置 Antigravity，由 `antigravity-runtime-manifest.json`
+固定到 agy 1.5.10。启动参数为 `acp --process-per-session --disable-telemetry`，
+禁用自动更新；`antigravityPath` 可指定用户维护的可执行文件。已有 registry Provider 在
+`setting.ts` 保留 fork 已使用的 agy 1.5.9 GitHub 分发，从新建列表隐藏，不改写身份或已存会话。
 
 registry 的 Antigravity 加入 Claude/Grok 的身份兼容名单，接收不带标签的
 `session_info_update` 标题。agy 按提示词的语言给每个会话起标题；独立的标题会话会多出一个
@@ -84,7 +87,8 @@ agy 会话并执行用户的 hooks，每个 Lody 会话多一条 nmem 线程和�
 YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保存的 Role 和会话因此重新通过校验。
 驱动这一轮的选择是 `yolo` 的会话，用 `--dangerously-skip-permissions` 启动 agy
 （`antigravityLaunchArgs`），以 `default` 运行，包装层把当前模式报告为 `yolo`。Lody 本来就是
-每个会话一个 agy 进程，所以这个参数按会话生效。某一轮切入或切出 YOLO 时，先退役该会话的 agent，
+每个会话一个 agy 进程，所以这个参数对内置和 registry Antigravity 都按会话生效，
+不会重启同 Provider 的其他会话。某一轮切入或切出 YOLO 时，先退役该会话的 agent，
 再启动一个载入原对话的替代进程（会话执行服务里的 `antigravityYoloChanged`）。运行中的一轮里，
 需要换进程的模式切换会被报错拒绝，不会发给 agy。
 
@@ -98,9 +102,10 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
   的沙箱没有网络，这样选择就变成按机器而不是按 Role。
 - 把 `auto_review` 列为原生 `auto` 的别名：能让已保存的选择继续有效。否决原因是 id 会和 agy
   自己的不一致，模式更新要做转换，而需要修改的已保存选择很少。
-- Provider 级的跳过参数，即上游 LodyAI/Lody#2796 给内置 `antigravity` 条目加的开关，作用于该
-  Provider 的所有会话。fork 保留按会话的模式，因为 Role 和会话是按会话选 `yolo` 的。两者最后都是
-  同一个启动参数，以后改用内置条目也不需要新机制。
+- 上游 LodyAI/Lody#2796 的 Provider 级跳过开关会让该 Provider 的全部会话绕过审批，
+  包括选择 `auto` 或 `auto_review` 的会话。fork 隐藏入口并忽略已存 runtime override；
+  schema 和协议字段保留兼容，但只有本会话选择 `yolo` 才添加启动参数，内置与已有 registry
+  Provider 都遵守这一边界。
 - `antigravity acp --process-per-session` 在一个父进程里为每个 ACP 会话起一个 agy worker；Lody 本来
   就是每个会话一个进程，而且这个参数仍属于父进程。
 - agy 的 `always-proceed` 工具执行策略（它的 Turbo 预设）作用于整台机器上的所有 agy 会话，不是 ACP 模式。
@@ -113,14 +118,15 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 - 每个 Auto Review 会话多一个执行用户 hooks 的隐藏 agy 会话。
 - 会话切入或切出 YOLO，要在下一条消息时重启一次 agy。在一轮进行中切换，从下一条消息起生效。
 - 来自 `agy_acp_server` 的会话 id 会载入为空对话，以前的 Antigravity 会话丢失 agent 侧上下文。
-- 配额仍读取 `~/.gemini/antigravity-acp/acp_token.json`，见
-  [Argon 配额决策](../bug-fix/2026-10-20-antigravity-argon-quota.zh.md)。只通过 agy CLI 登录的机器
-  不会报告配额。
+- 内置和旧 registry 配额都用选中的 agy 可执行文件运行 `--print /usage --output-format json`，
+  保留账户环境和全部返回分组；不启动模型轮次或 ACP 配额会话，不读旧 token，也不直接请求 Cloud Code。
+  见 [配额决策](../bug-fix/2026-10-20-antigravity-argon-quota.zh.md)。
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` 不再影响这个条目的模型列表，继续发送 Zed 客户端身份没有影响。
 
 ## 验证
 
-- `scripts/generate-acp-registry.test.mjs` 固定生成的条目。
+- `scripts/generate-acp-registry.test.mjs` 验证新建列表排除旧条目；
+  `apps/cli/src/agent/acp-runner.test.ts` 覆盖两种身份的 print 模式配额。
 - `packages/shared/tests/title-generation-defaults.test.ts` 固定标题归属。
 - `apps/cli/tests/antigravity-auto-review.test.ts` 固定 `auto_review` 与 agy 的 `auto` 并存、YOLO 模式和启动参数、
   被拒绝的切换，以及会话目录规则。

@@ -10,7 +10,8 @@ import {
   useLegacyWorkspaceQuery,
 } from '@/hooks/use-legacy-workspace-query';
 import { useLegacyWorkspaceQueryStatus } from '@/hooks/use-workspace-feature';
-import { E2eeLocalAgentApproval } from '../e2ee-local-agent-approval';
+import { E2eeLocalAgentApproval, localAgentRunsWorkspace } from '../e2ee-local-agent-approval';
+import { useElectronCliDaemon } from '@/hooks/use-electron-cli-daemon';
 import { useProviderQuotaRefresh } from '@/hooks/use-provider-quota-refresh';
 import { getAgentRoleTargets } from '@lody/shared';
 import { buildDraftUserHistoryEntry } from '@/lib/session-attachment-draft';
@@ -449,6 +450,7 @@ import {
   getChatLandingSelectedMachineProjectStatus,
   getEmptyLocalProjectsMessageKey,
   getSharingReviewActionTarget,
+  getChatLandingSharingReviewActionTarget,
   getSharingReviewSourceRevision,
   getSharingReviewSourcesReady,
   getSharingReviewTeamHasNoVisibleLocalResources,
@@ -665,6 +667,7 @@ function WorkspaceChatLanding({
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const localAgentEnabled = useAtomValue(localAgentEnabledAtom);
   const nativeE2ee = usePlatform().e2eeWorkspaces?.runtime;
+  const { state: localCliState } = useElectronCliDaemon();
   const workspaceRuntime = useAtomValue(runtimeAtom);
   const postHog = usePostHog();
   const multiWorkspaceAvailable = useAppCapability('multiWorkspace');
@@ -3742,7 +3745,6 @@ function WorkspaceChatLanding({
         value={currentBranch}
         onChange={setCurrentBranch}
         options={branchOptions}
-        tone={tone}
         placeholder={t('chat.branchPlaceholder')}
         searchPlaceholder={t('chat.branchSearchPlaceholder', { defaultValue: 'Search branches' })}
         emptyText={t('chat.branchEmpty', { defaultValue: 'No branches found' })}
@@ -6328,8 +6330,24 @@ function WorkspaceChatLanding({
       ) : null}
     </div>
   ) : null;
+  const selectedSharingReviewActionTarget = getChatLandingSharingReviewActionTarget({
+    currentUserId: userId ?? null,
+    machineId: selectedMachineId,
+    localProjectIds:
+      projectGroupLaunchTarget?.kind === 'ready'
+        ? projectGroupLaunchTarget.members.flatMap((member) =>
+            member.source.kind === 'local' && member.source.machineId === selectedMachineId
+              ? [member.source.localProjectId]
+              : []
+          )
+        : contextType === 'local' && selectedLocalProject?.machineId === selectedMachineId
+          ? [selectedLocalProject.localProjectId]
+          : [],
+    machineAccessByMachineId: accessByMachineId,
+    localProjectAccessByKey: visibleLocalProjectAccess,
+  });
   const sharingReviewRow =
-    sharingReviewState.ready && sharingReviewState.active
+    sharingReviewState.ready && sharingReviewState.active && selectedSharingReviewActionTarget
       ? inboxRows?.find((item) => item.kind === 'sharing_review')
       : undefined;
   const sharingReviewNoticeNode = sharingReviewRow ? (
@@ -6340,23 +6358,18 @@ function WorkspaceChatLanding({
           {t('inbox.sharingReview.title', 'Review what your team can see')}
         </div>
         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-          {sharingReviewState.teamLooksEmpty
+          {selectedSharingReviewActionTarget === 'machines'
             ? t(
-                'inbox.sharingReview.emptyTeam',
-                'Nothing is visible in this team workspace yet. Ask a teammate to share a machine or project if you expected to see their conversations.'
+                'inbox.sharingReview.selectedMachine',
+                'The selected machine is private. Share it so your teammates can use it.'
               )
-            : sharingReviewState.privateMachineCount + sharingReviewState.privateProjectCount === 0
-              ? t(
-                  'inbox.sharingReview.noLocalResources',
-                  'No team machines or local projects are visible to you. A teammate may need to share them before their local conversations appear.'
-                )
-              : t(
-                  'inbox.sharingReview.landing',
-                  'Private machines and projects are only visible to you. Share the ones your teammates should be able to use.'
-                )}
+            : t(
+                'inbox.sharingReview.selectedProject',
+                'A selected project is private. Share it so your teammates can use it.'
+              )}
         </p>
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-          {sharingReviewState.actionTarget ? (
+          {selectedSharingReviewActionTarget ? (
             <button
               type="button"
               className="text-xs font-semibold text-primary hover:underline"
@@ -6364,10 +6377,10 @@ function WorkspaceChatLanding({
                 void markInboxItemRead({ itemId: sharingReviewRow._id }).catch((error) =>
                   console.error('Failed to mark sharing review read', error)
                 );
-                openSettings(sharingReviewState.actionTarget ?? 'projects');
+                openSettings(selectedSharingReviewActionTarget);
               }}
             >
-              {sharingReviewState.actionTarget === 'machines'
+              {selectedSharingReviewActionTarget === 'machines'
                 ? t('inbox.sharingReview.actionDevices', 'Review machines')
                 : t('inbox.sharingReview.action', 'Review projects')}
             </button>
@@ -6441,6 +6454,7 @@ function WorkspaceChatLanding({
         workspaceId={runtime.workspaceId}
         runtime={nativeE2ee}
         enabled
+        localAgentRunning={localAgentRunsWorkspace(localCliState, runtime.workspaceId)}
       />
     ) : null;
   const composerNoticeNode =
@@ -6774,7 +6788,6 @@ function WorkspaceChatLanding({
             archiveToggleLabel: t('chat.mobileHome.archiveToggleLabel', '归档'),
             searchPlaceholder: t('chat.mobileProject.searchPlaceholder', '搜索对话'),
             clearSearchAriaLabel: t('common.clear', '清空'),
-            allConversationsHeading: t('chat.mobileHome.allChatsHeading', '全部对话'),
             archivedConversationsHeading: t('chat.mobileHome.archivedChatsHeading', '归档对话'),
             archiveSelection: {
               selectedCount: (count) =>
@@ -6973,7 +6986,6 @@ function WorkspaceChatLanding({
             recentLocalProjectsHeading: t('chat.mobileHome.recentLocalProjectsHeading', '最近常用'),
             allLocalProjectsHeading: t('chat.mobileHome.allLocalProjectsHeading', '全部项目'),
             allGitHubReposHeading: t('chat.mobileHome.allGitHubReposHeading', '全部仓库'),
-            allChatsHeading: t('chat.mobileHome.allChatsHeading', '全部对话'),
             archivedChatsHeading: t('chat.mobileHome.archivedChatsHeading', '归档对话'),
             archiveSelection: {
               selectedCount: (count) =>

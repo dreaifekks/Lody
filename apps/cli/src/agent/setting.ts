@@ -36,6 +36,7 @@ import {
   BUILTIN_KIMI_CAPABILITY_SOURCE_VERSION,
   CLAUDE_ACP_ADAPTER_VERSION,
   CLAUDE_AGENT_SDK_VERSION,
+  ANTIGRAVITY_RUNTIME_VERSION,
   CODEX_ACP_ADAPTER_VERSION,
   getManagedAgentRuntimeManager,
   GROK_ACP_ADAPTER_VERSION,
@@ -136,6 +137,7 @@ export type ResolveBuiltinAuthenticationProcessLaunchInput = ResolveACPSettingIn
 };
 
 export const BuiltinACPSetting: Record<CliType, ACPSetting> = {
+  antigravity: { packageName: 'antigravity', version: ANTIGRAVITY_RUNTIME_VERSION, binName: 'agy' },
   devin: {
     packageName: 'acp-extension-devin',
     version: DEVIN_ACP_ADAPTER_VERSION,
@@ -221,6 +223,34 @@ const registryAgentsById: Record<string, RegistryAcpAgent> = Object.fromEntries(
 );
 // Keep existing providers and stored turns runnable until their owner chooses
 // migration. This compatibility entry is deliberately absent from the catalog.
+const LEGACY_ANTIGRAVITY_CLI_VERSION = '1.5.9';
+registryAgentsById['antigravity-acp'] = {
+  id: 'antigravity-acp',
+  name: 'Antigravity ACP (Legacy)',
+  version: LEGACY_ANTIGRAVITY_CLI_VERSION,
+  description: 'Google’s AI coding agent',
+  icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg',
+  distribution: {
+    binary: Object.fromEntries(
+      Object.entries({
+        'darwin-aarch64': 'mac_arm64.tar.gz',
+        'darwin-x86_64': 'mac_x64.tar.gz',
+        'linux-aarch64': 'linux_arm64.tar.gz',
+        'linux-x86_64': 'linux_x64.tar.gz',
+        'windows-aarch64': 'windows_arm64.zip',
+        'windows-x86_64': 'windows_x64.zip',
+      }).map(([platform, archive]) => [
+        platform,
+        {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${LEGACY_ANTIGRAVITY_CLI_VERSION}/agy_cli_${archive}`,
+          cmd: platform.startsWith('windows-') ? './antigravity.exe' : './antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+      ])
+    ),
+  },
+};
 registryAgentsById['pi-acp'] = {
   id: 'pi-acp',
   name: 'Pi ACP (legacy)',
@@ -325,6 +355,9 @@ export function getAcpCapabilitySourceVersion(
       const runtimeOverrideSuffix = getBuiltinRuntimeOverrideSourceVersionSuffix(
         input.runtimeOverrides
       );
+      if (input.agentType === 'antigravity') {
+        return `builtin-antigravity:${managedRuntimeVersion ?? ANTIGRAVITY_RUNTIME_VERSION}${runtimeOverrideSuffix}`;
+      }
       if (input.agentType === 'codex') {
         return managedRuntimeVersion
           ? `builtin-codex-acp:${CODEX_ACP_ADAPTER_VERSION}+codex:${managedRuntimeVersion}`
@@ -407,6 +440,7 @@ export function getAcpClientInfo(input: ResolveACPSettingInput): Implementation 
  * answering capability refreshes from the managed runtime's cached entry.
  */
 const MANAGED_BUILTIN_RUNTIME_OVERRIDE_PATH_KEYS = {
+  antigravity: 'antigravityPath',
   kimi: 'kimiPath',
   grok: 'grokPath',
   devin: 'devinPath',
@@ -730,6 +764,18 @@ async function resolveBuiltinACPProcessLaunch(
   if (!isManagedBuiltinAgentType(input.agentType)) {
     throw new Error(`Unsupported managed builtin ACP type: ${input.agentType}`);
   }
+  if (input.agentType === 'antigravity') {
+    const overridePath = trimRuntimeOverride(input.runtimeOverrides?.antigravityPath);
+    const runtime = overridePath
+      ? { command: overridePath, version: undefined }
+      : await resolveManagedRuntimeForLaunch('antigravity', input);
+    return {
+      command: runtime.command,
+      args: ['acp', '--process-per-session', '--disable-telemetry', ...(input.extraArgs ?? [])],
+      env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+      capabilitySourceVersion: getAcpCapabilitySourceVersion(input, runtime.version),
+    };
+  }
   if (input.agentType === 'pi') {
     const extensions = input.runtimeOverrides?.piExtensions ?? [];
     if (extensions.length && !PI_EXTENSIONS_SUPPORTED) {
@@ -818,9 +864,9 @@ export async function resolveBuiltinAuthenticationProcessLaunch(
     throw new Error(`Unsupported builtin authentication type: ${input.agentType}`);
   }
 
-  if (input.agentType === 'devin') {
+  if (input.agentType === 'devin' || input.agentType === 'antigravity') {
     if (input.action === 'status') return null;
-    throw new Error('Devin authentication uses the ACP authentication flow.');
+    throw new Error(`${input.agentType} authentication uses the ACP authentication flow.`);
   }
   if (input.agentType === 'pi') {
     if (input.action === 'status') return null;

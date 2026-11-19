@@ -83,8 +83,6 @@ export type SettingsTabConfig = {
    * list is met by any one of its capabilities.
    */
   capability?: PlatformCapability | readonly PlatformCapability[];
-  /** The workspace machine inventory has no useful distinction in a solo workspace. */
-  multiMemberOnly?: boolean;
   /** Keyboard-centric surfaces are hidden from the mobile settings list. */
   desktopOnly?: boolean;
   /**
@@ -150,7 +148,6 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
     labelKey: 'settings.tabs.machines',
     descriptionKey: 'settings.categories.machines.description',
     icon: Monitor,
-    multiMemberOnly: true,
     path: '/$workspaceName/settings/machines',
   },
   {
@@ -268,12 +265,9 @@ export const SETTINGS_TAB_CONFIGS: SettingsTabConfig[] = [
   },
 ];
 
-export function useVisibleSettingsTabs(options?: {
-  includeMultiMemberOnly?: boolean;
-}): SettingsTabConfig[] {
+export function useVisibleSettingsTabs(): SettingsTabConfig[] {
   const hasCapability = useAppCapabilityCheck();
   const lodyAgentEnabled = useAtomValue(lodyAgentFeatureEnabledAtom);
-  const includeMultiMemberOnly = options?.includeMultiMemberOnly ?? true;
   const localDesktop = isLocalAppPlatform() && isElectronRenderer();
   return SETTINGS_TAB_CONFIGS.filter(
     (tab) =>
@@ -281,7 +275,6 @@ export function useVisibleSettingsTabs(options?: {
         (typeof tab.capability === 'string'
           ? hasCapability(tab.capability)
           : tab.capability.some(hasCapability))) &&
-      (!tab.multiMemberOnly || includeMultiMemberOnly) &&
       (!tab.localDesktopOnly || localDesktop) &&
       (!tab.lodyAgent || lodyAgentEnabled)
   );

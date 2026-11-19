@@ -36,6 +36,7 @@ vi.mock('@/agent/acp-binary-manager', async (importOriginal) => ({
   }),
 }));
 
+import { resolveACPProcessLaunchAsync } from '../src/agent/setting';
 import { fetchAcpCapabilities } from '../src/agent/acp-capabilities';
 import {
   ANTIGRAVITY_SKIP_PERMISSIONS_ARG,
@@ -1336,4 +1337,146 @@ describe('Antigravity Auto Review rules', () => {
       classifyAntigravityPermission({ kind: 'search', rawInput: { query: 'acp' } }, workspace).kind
     ).toBe('review');
   });
+});
+
+it.each(['antigravity', 'antigravity-acp'])(
+  'negotiates HTTP MCP and distinct Auto Review for %s',
+  async (agentType) => {
+    const incoming = new TransformStream<AnyMessage, AnyMessage>();
+    const outgoing = new TransformStream<AnyMessage, AnyMessage>();
+    const wrapped = withAntigravityAutoReview(
+      { readable: incoming.readable, writable: outgoing.writable },
+      {
+        agentType,
+        logger: { debug: vi.fn(), warn: vi.fn() } as unknown as Logger,
+        label: 'synthetic-antigravity',
+        createReviewer: () => ({
+          prewarm: () => {},
+          close: () => {},
+          review: async () => ({ decision: 'ask', reason: 'fixture' }),
+        }),
+      }
+    );
+    const clientWriter = wrapped.writable.getWriter();
+    const agentReader = outgoing.readable.getReader();
+    const agentWriter = incoming.writable.getWriter();
+    const clientReader = wrapped.readable.getReader();
+    const request = async (message: AnyMessage) => {
+      const read = agentReader.read();
+      await clientWriter.write(message);
+      return (await read).value;
+    };
+    const response = async (message: AnyMessage) => {
+      const read = clientReader.read();
+      await agentWriter.write(message);
+      return (await read).value;
+    };
+    try {
+      await request({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+      expect(
+        await response({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            agentCapabilities: { mcpCapabilities: { sse: false } },
+          },
+        })
+      ).toMatchObject({
+        result: {
+          agentCapabilities: {
+            mcpCapabilities: { http: true, sse: false },
+          },
+        },
+      });
+      expect(
+        await request({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'session/new',
+          params: {
+            cwd: '/synthetic-workspace',
+            _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'auto_review' } } } },
+          },
+        })
+      ).toMatchObject({
+        params: {
+          _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'default' } } } },
+        },
+      });
+      expect(
+        await response({
+          jsonrpc: '2.0',
+          id: 2,
+          result: {
+            sessionId: 'synthetic-session',
+            modes: {
+              currentModeId: 'default',
+              availableModes: [
+                { id: 'default', name: 'Default' },
+                { id: 'auto', name: 'Auto' },
+              ],
+            },
+          },
+        })
+      ).toMatchObject({
+        result: {
+          modes: {
+            currentModeId: 'auto_review',
+            availableModes: expect.arrayContaining([
+              expect.objectContaining({ id: 'auto' }),
+              expect.objectContaining({ id: 'auto_review' }),
+            ]),
+          },
+        },
+      });
+      expect(
+        await request({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'session/set_mode',
+          params: { sessionId: 'synthetic-session', modeId: 'auto' },
+        })
+      ).toMatchObject({ params: { modeId: 'auto' } });
+      expect(antigravityLaunchArgs({ agentType, modeId: 'yolo' })).toEqual([
+        '--dangerously-skip-permissions',
+      ]);
+      expect(
+        antigravityYoloChanged({ agentType, modeId: 'auto' }, { agentType, modeId: 'yolo' })
+      ).toBe(true);
+    } finally {
+      await clientWriter.close();
+      await agentWriter.close();
+      agentReader.releaseLock();
+      clientReader.releaseLock();
+    }
+  }
+);
+
+it.each([
+  ['builtin', 'antigravity'],
+  ['registry', 'antigravity-acp'],
+] as const)('keeps %s/%s permission bypass scoped to each session', async (cliType, agentType) => {
+  const modes = ['auto_review', 'yolo', 'auto'];
+  const launches = await Promise.all(
+    modes.map((modeId) =>
+      resolveACPProcessLaunchAsync({
+        cliType,
+        agentType,
+        runtimeOverrides: { antigravityPath: '/synthetic/agy', antigravitySkipPermissions: true },
+        extraArgs: antigravityLaunchArgs({ agentType, modeId }),
+      })
+    )
+  );
+  for (const [index, launch] of launches.entries()) {
+    expect(launch.command).toBe(cliType === 'builtin' ? '/synthetic/agy' : process.execPath);
+    expect(launch.args).toEqual([
+      ...(cliType === 'builtin'
+        ? ['acp', '--process-per-session', '--disable-telemetry']
+        : [fixture]),
+      ...(modes[index] === 'yolo' ? ['--dangerously-skip-permissions'] : []),
+    ]);
+    expect(launch.env).toEqual(
+      cliType === 'builtin' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}
+    );
+  }
 });

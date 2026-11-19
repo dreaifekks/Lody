@@ -1,13 +1,15 @@
-import { LODY_HELP_INSTRUCTIONS } from '../src/mcp/tool-help';
+import type { LocalProjectId } from '@lody/shared';
 import { normalizeBoardMeta, SessionProjectRunSchema } from '@lody/shared';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LocalProjectId } from '@lody/shared';
+import { LODY_HELP_INSTRUCTIONS } from '../src/mcp/tool-help';
 
 import { setLanSessionCommand } from '../src/lib/lan/lan-session-command';
 import { BOARD_UI_COMPARISON_GUIDE, buildPrompt } from '../src/session/session-execution-helpers';
+import { TURN_BUDGETS } from '../src/session/turn-budgets';
 
 const SESSION_REMINDERS =
-  '\n\nUse the available Lody MCP tools when relevant. ' + LODY_HELP_INSTRUCTIONS +
+  '\n\nUse the available Lody MCP tools when relevant. ' +
+  LODY_HELP_INSTRUCTIONS +
   "\n\nFile paths in your replies become links that open relative to this session's working directory: " +
   'write a file inside it by its full path from there, and a file anywhere else by its absolute path.';
 
@@ -278,4 +280,16 @@ it('lists a narrowed project scope for every member and says nothing for all pro
     expect(prompt).not.toContain('Project scope');
     expect(prompt).not.toContain('BOARD_PROJECT_OUT_OF_SCOPE');
   }
+});
+
+describe('turn release budgets', () => {
+  it('ends a Git observation before the shared workspace-statistics budget', () => {
+    expect(TURN_BUDGETS.gitObservationMs).toBeLessThan(TURN_BUDGETS.workspaceStatsMs);
+  });
+
+  it('writes shutdown release receipts inside the CLI shutdown budget', () => {
+    expect(
+      TURN_BUDGETS.shutdownReleaseWaitMs + TURN_BUDGETS.shutdownForcedWriteMs
+    ).toBeLessThanOrEqual(TURN_BUDGETS.cliShutdownMs);
+  });
 });
