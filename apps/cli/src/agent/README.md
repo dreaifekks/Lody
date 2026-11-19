@@ -475,7 +475,8 @@ The builtin Claude/Grok identity table remains compatibility for older
 managed runtimes. Overrides revoke that fallback, but can independently advertise
 the new capability. Only legacy Claude/Grok titles are trusted without a tag. The
 LAN fork adds builtin and persisted registry Antigravity to that fallback, because both
-run the agy CLI, which titles its own conversations (see
+run the agy CLI, which titles its own conversations. An `antigravityPath` override
+keeps that ownership and does not start a second title conversation (see
 [Google Antigravity runs the agy CLI](#google-antigravity-runs-the-agy-cli-lan-fork)).
 See the [contract](../../../../specs/acp-session-titles.md) and
 [original compatibility decision](../../../../.agents/notes/implemented/architecture/2026-09-08-acp-owned-session-titles.md).

@@ -139,7 +139,8 @@ const builtinAcpTitleOwnership = (
  * starts its isolated title agent for them and hides the title-generation config
  * from their agent settings.
  *
- * A runtime override revokes only the identity fallback; an advertised capability
+ * An agy path override keeps title ownership: it still runs agy with its own titles.
+ * Other runtime overrides revoke only the identity fallback; an advertised capability
  * still owns generation. The table describes the managed runtime each
  * agent normally launches, but `BuiltinRuntimeOverrides` can point the same
  * `agentType` at any executable — including one predating the title behaviour.
@@ -157,7 +158,8 @@ export const acpOwnsSessionTitleGeneration = (
 ): boolean =>
   !(cliType === 'builtin' && agentType === 'codex') &&
   (sessionTitle === true ||
-    (!hasBuiltinRuntimeOverrideValues(runtimeOverrides) &&
+    (((cliType === 'builtin' && agentType === 'antigravity') ||
+      !hasBuiltinRuntimeOverrideValues(runtimeOverrides)) &&
       builtinAcpTitleOwnership(cliType, agentType) !== 'none'));
 
 /**

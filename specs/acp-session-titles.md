@@ -15,7 +15,9 @@ overrides, even without a prior capability probe. The existing managed
 Claude/Grok identity fallback remains for older runtimes; overrides disable
 that fallback. In the LAN fork managed Antigravity and the legacy registry entry
 get the same fallback, because both run the agy CLI, which titles its own conversations
-without advertising the capability. Other runtimes retain isolated generation.
+without advertising the capability. Selecting another agy executable with
+`antigravityPath` does not revoke this ownership or start a second title session.
+Other runtimes retain isolated generation.
 
 The Provider pushes standard `session_info_update` notifications with `title` and
 `_meta.lody.titleSource`. `generated` requires the advertised capability;

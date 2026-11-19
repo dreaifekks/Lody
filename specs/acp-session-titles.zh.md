@@ -13,6 +13,7 @@ Provider 通过 Core 初始化能力
 Provider 及运行时覆盖，即使尚无探测缓存也生效。旧版托管 Claude/Grok
 继续使用身份兼容名单；运行时覆盖禁用该兼容路径。LAN fork 的托管 Antigravity 与旧 registry
 条目同样走该兼容路径：两者都运行 agy CLI，它不声明能力，但会自己给会话起标题。
+通过 `antigravityPath` 选择另一个 agy 可执行文件不撤销该归属，也不额外启动标题会话。
 其他运行时保留独立生成。
 
 Provider 推送标准 `session_info_update`，包含 `title` 和 `_meta.lody.titleSource`。

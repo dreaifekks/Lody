@@ -153,6 +153,26 @@ describe('acpOwnsSessionTitleGeneration', () => {
     expect(acpOwnsSessionTitleGeneration('builtin', 'grok', { grokPath: '  ' })).toBe(true);
   });
 
+  it('keeps agy title ownership with an overridden executable and no advertised title capability', () => {
+    expect(
+      acpOwnsSessionTitleGeneration(
+        'builtin',
+        'antigravity',
+        { antigravityPath: '/user/agy' },
+        false
+      )
+    ).toBe(true);
+    expect(trustsUntaggedAcpSessionTitle('builtin', 'antigravity')).toBe(true);
+    expect(
+      acpOwnsSessionTitleGeneration(
+        'custom',
+        'antigravity',
+        { antigravityPath: '/user/agy' },
+        false
+      )
+    ).toBe(false);
+  });
+
   it('never applies to registry, custom, or unknown agents', () => {
     expect(acpOwnsSessionTitleGeneration('registry', 'codex')).toBe(false);
     expect(acpOwnsSessionTitleGeneration('custom', 'claude')).toBe(false);
@@ -160,7 +180,7 @@ describe('acpOwnsSessionTitleGeneration', () => {
   });
 
   // LAN fork: the registry entry runs the agy CLI, which titles its conversations.
-  it("lets managed and registry Google Antigravity title their own sessions", () => {
+  it('lets managed and registry Google Antigravity title their own sessions', () => {
     expect(acpOwnsSessionTitleGeneration('builtin', 'antigravity')).toBe(true);
     expect(trustsUntaggedAcpSessionTitle('builtin', 'antigravity')).toBe(true);
     expect(acpOwnsSessionTitleGeneration('registry', 'antigravity-acp')).toBe(true);
