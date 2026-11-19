@@ -220,7 +220,7 @@ import { createSessionToolRegistrar, type SessionToolHandlers } from './session-
 
 import { registerIosSimulatorPreviewTool } from './ios-simulator-tool';
 import { registerAgentSurfaceTools } from './agent-surface-tools';
-import { LODY_MCP_AGENT_TOOLS_ENV } from './lody-mcp-http-protocol';
+import { LODY_MCP_AGENT_TOOLS_ENV, LODY_MCP_COMPACT_TOOLS_ENV } from './lody-mcp-http-protocol';
 
 const PREVIEW_TOOL_NAME = 'lody_report_preview_candidate';
 const IMAGE_UPLOAD_TOOL_NAME = 'lody_upload_images';
@@ -1231,6 +1231,8 @@ export interface McpSessionContext {
   boardId?: string;
   /** Experimental tools the daemon offered this agent when it started. */
   agentTools?: readonly LodyAgentToolId[];
+  /** List commands with open input schemas; see `createToolHelpServer`. */
+  compactTools?: boolean;
 }
 
 /** Stands in for the requester Session of a terminal command; never a real id. */
@@ -5042,19 +5044,21 @@ const OPERATION_SNAPSHOT_GUIDANCE = [
 ].join('\n\n');
 
 /**
- * `agentTools` are the experimental tools to list. The stdio server reads them
- * from its environment; the HTTP host passes the requesting session's.
+ * `agentTools` are the experimental tools to list and `compactTools` lists them
+ * without input schemas. The stdio server reads both from its environment; the
+ * HTTP host passes the requesting session's.
  */
 export function buildLodyMcpServer(options?: {
   boardId?: string;
   agentTools?: readonly LodyAgentToolId[];
+  compactTools?: boolean;
 }): McpServer {
   return buildSessionToolServer(undefined, options);
 }
 
 export function buildSessionToolServer(
   handlers?: SessionToolHandlers,
-  surface?: { agentTools?: readonly LodyAgentToolId[]; boardId?: string }
+  surface?: { agentTools?: readonly LodyAgentToolId[]; boardId?: string; compactTools?: boolean }
 ): McpServer {
   // The HTTP host is long-lived and the stdio server normally lives for the
   // Agent session. Initialization is idempotent and local-platform telemetry
@@ -5077,7 +5081,9 @@ export function buildSessionToolServer(
       ].join(' '),
     }
   );
-  const toolServer = createToolHelpServer(server);
+  const toolServer = createToolHelpServer(server, {
+    compact: surface?.compactTools ?? readOptionalEnv(LODY_MCP_COMPACT_TOOLS_ENV) === '1',
+  });
   registerLodySkills(server);
   registerAutomationTools(toolServer, async (command) => {
     const ctx = getSessionContext();

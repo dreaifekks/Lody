@@ -591,6 +591,13 @@ models to every client, so the Zed client identity no longer matters for it.
 - HTTP MCP: agy connects to Streamable HTTP servers passed over ACP but does not
   advertise `mcpCapabilities.http`; the wrapper adds it to the initialize response, so
   workspace HTTP servers start and the builtin `lody` server uses the shared HTTP host.
+- MCP tool budget: agy declares every tool of an MCP server the client passes as a
+  native function, smallest first, until a size budget it shares with skills runs out.
+  A tool that does not fit is neither listed nor callable (`call_mcp_tool` answers
+  "not enabled for server"). AgentClient therefore asks the `lody` server for
+  [compact listings](../mcp/README.md#command-help) whenever `isAntigravityServer()`
+  holds: commands keep their names and summaries but carry an open input schema, so
+  all of them fit and are listed before most workspace MCP tools.
 - Stored selections: `auto_edit` and `thinking_level` are not in this catalog. Create
   rejects them and continuing turns drop
   them. Session ids from the former server load as empty conversations.

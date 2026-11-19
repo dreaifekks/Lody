@@ -3,6 +3,11 @@ vi.hoisted(() => {
   Object.assign(globalThis, { __LODY_E2E_DAEMON_LOSS__: true });
   process.env.LODY_E2E = '1';
 });
+const mcpHttp = vi.hoisted(() => ({ endpoint: null as { url: string; token: string } | null }));
+vi.mock('../src/mcp/lody-mcp-http-server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/mcp/lody-mcp-http-server')>()),
+  getLodyMcpHttpEndpoint: () => mcpHttp.endpoint,
+}));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ACPSessionId,
@@ -193,6 +198,48 @@ describe('AgentClient plan mode permission restoration', () => {
       expect(plain.env).not.toContainEqual(
         expect.objectContaining({ name: 'LODY_MCP_AGENT_TOOLS' })
       );
+    });
+
+    it('lists Lody commands without input schemas for agy only', () => {
+      const ids = {
+        workspaceId: 'workspace-1' as WorkspaceId,
+        machineId: 'machine-1' as MachineId,
+      };
+      const { client: agy } = createTestClient({
+        ...ids,
+        cliType: 'registry',
+        agentType: 'antigravity-acp',
+      });
+      // @ts-expect-error - set by the initialize response of agy's ACP server
+      agy.agentInfo = { name: 'Antigravity ACP Server', version: '1.5.9' };
+      const { client: codex } = createTestClient(ids);
+
+      // @ts-expect-error - exercising private config builder for a focused regression test
+      const [agyStdio] = agy.buildBuiltinMcpServers('/tmp/lody-session');
+      expect(agyStdio.env).toContainEqual({ name: 'LODY_MCP_COMPACT_TOOLS', value: '1' });
+      // @ts-expect-error - exercising private config builder for a focused regression test
+      const [codexStdio] = codex.buildBuiltinMcpServers('/tmp/lody-session');
+      expect(codexStdio.env).not.toContainEqual(
+        expect.objectContaining({ name: 'LODY_MCP_COMPACT_TOOLS' })
+      );
+
+      mcpHttp.endpoint = { url: 'http://127.0.0.1:9/mcp', token: 'synthetic-token' };
+      try {
+        for (const client of [agy, codex]) {
+          // @ts-expect-error - set by an initialize response advertising HTTP MCP
+          client.supportsHttpMcp = true;
+        }
+        // @ts-expect-error - exercising private config builder for a focused regression test
+        const [agyHttp] = agy.buildBuiltinMcpServers('/tmp/lody-session');
+        expect(agyHttp.headers).toContainEqual({ name: 'x-lody-mcp-compact-tools', value: '1' });
+        // @ts-expect-error - exercising private config builder for a focused regression test
+        const [codexHttp] = codex.buildBuiltinMcpServers('/tmp/lody-session');
+        expect(codexHttp.headers).not.toContainEqual(
+          expect.objectContaining({ name: 'x-lody-mcp-compact-tools' })
+        );
+      } finally {
+        mcpHttp.endpoint = null;
+      }
     });
 
     it('passes ELECTRON_RUN_AS_NODE through when the embedded Electron CLI is running as Node', () => {

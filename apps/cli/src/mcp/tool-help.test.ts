@@ -137,6 +137,79 @@ describe('Lody command help over MCP', () => {
     }
   });
 
+  it('lists compact commands with open schemas while help and validation keep the full schema', async () => {
+    const server = new McpServer({ name: 'lody-help-compact', version: '1' });
+    const created: string[] = [];
+    createToolHelpServer(server, { compact: true }).registerTool(
+      'lody_session_create',
+      {
+        summary: 'Delegate work to a new conversation.',
+        inputSchema: z
+          .object({
+            projectId: z.string().min(1),
+            workContext: z.object({ kind: z.literal('chat') }).strict(),
+          })
+          .strict(),
+      },
+      async ({ projectId }) => {
+        created.push(projectId);
+        return { content: [{ type: 'text', text: 'Created' }] };
+      }
+    );
+    const client = new Client({ name: 'help-compact', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.find(({ name }) => name === 'lody_session_create')?.inputSchema).toEqual({
+        type: 'object',
+      });
+      expect(tools.find(({ name }) => name === 'lody_help')?.inputSchema).toMatchObject({
+        properties: { command: { type: 'string' } },
+      });
+
+      const help = CallToolResultSchema.parse(
+        await client.callTool({ name: 'lody_help', arguments: { command: 'lody_session_create' } })
+      );
+      const text = help.content.find((block) => block.type === 'text');
+      if (!text || text.type !== 'text') throw new Error('Missing command help');
+      expect(JSON.parse(text.text)).toMatchObject({
+        inputSchema: {
+          required: ['projectId', 'workContext'],
+          additionalProperties: false,
+          properties: { workContext: { properties: { kind: { const: 'chat' } } } },
+        },
+      });
+
+      const invalid = CallToolResultSchema.parse(
+        await client.callTool({
+          name: 'lody_session_create',
+          arguments: { projectId: 'synthetic-project', workContext: { kind: 'local' } },
+        })
+      );
+      expect(invalid).toMatchObject({
+        isError: true,
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'text',
+            text: expect.stringContaining('lody_help({command:"lody_session_create"})'),
+          }),
+        ]),
+      });
+      expect(created).toEqual([]);
+
+      expect(
+        await client.callTool({
+          name: 'lody_session_create',
+          arguments: { projectId: 'synthetic-project', workContext: { kind: 'chat' } },
+        })
+      ).not.toMatchObject({ isError: true });
+      expect(created).toEqual(['synthetic-project']);
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  });
+
   it('includes command help in modern HTTP validation errors without executing work', async () => {
     const workspaces: string[] = [];
     const handler = createMcpHandler(() => {

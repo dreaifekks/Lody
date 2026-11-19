@@ -15,19 +15,27 @@ export const LODY_HELP_INSTRUCTIONS =
 export const commandHelpReminder = (name: string): string =>
   `Before using this command, read lody_help({command:"${name}"}) and follow its parameter and retry rules.`;
 
-/** The SDK validates before callbacks; preserve the schema and append a recovery hint to issues. */
+/**
+ * The SDK validates before callbacks; preserve the schema and append a recovery hint to issues.
+ * `compact` advertises an open object instead, which leaves validation unchanged.
+ */
 function inputWithHelp<T extends z.ZodObject>(
   schema: T,
-  name: string
+  name: string,
+  compact: boolean
 ): StandardSchemaWithJSON<
   StandardSchemaWithJSON.InferInput<T>,
   StandardSchemaWithJSON.InferOutput<T>
 > {
+  const standard = schema['~standard'];
   return {
     '~standard': {
-      ...schema['~standard'],
+      ...standard,
+      ...(compact
+        ? { jsonSchema: { ...standard.jsonSchema, input: () => ({ type: 'object' }) } }
+        : {}),
       validate: async (value, options) => {
-        const result = await schema['~standard'].validate(value, options);
+        const result = await standard.validate(value, options);
         return result.issues
           ? { issues: [...result.issues, { message: commandHelpReminder(name) }] }
           : result;
@@ -56,8 +64,16 @@ export type LodyToolServer = {
   ): RegisteredTool;
 };
 
-/** Keep discovery small; serve the executing registration's documentation on demand. */
-export function createToolHelpServer(server: McpServer): LodyToolServer {
+/**
+ * Keep discovery small; serve the executing registration's documentation on demand.
+ * `compact` lists every command with an open input schema, so its parameters come
+ * only from lody_help. agy needs it: it fits client MCP tools into its prompt by size,
+ * smallest first, and a tool that does not fit cannot be called at all.
+ */
+export function createToolHelpServer(
+  server: McpServer,
+  { compact = false }: { compact?: boolean } = {}
+): LodyToolServer {
   const commands = new Map<string, { summary: string; read: () => Record<string, unknown> }>();
 
   server.registerTool(
@@ -98,7 +114,7 @@ export function createToolHelpServer(server: McpServer): LodyToolServer {
 
   return {
     registerTool(name, { summary, ...config }, callback) {
-      const inputSchema = inputWithHelp(config.inputSchema, name);
+      const inputSchema = inputWithHelp(config.inputSchema, name, compact);
       const execute: ToolCallback<typeof inputSchema> = async (args, context) => {
         const result = await callback(args, context);
         return isFailedToolResult(result)

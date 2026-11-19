@@ -65,6 +65,7 @@ import { getLodyMcpHttpEndpoint } from '@/mcp/lody-mcp-http-server';
 import {
   LODY_MCP_BOARD_ID_ENV,
   LODY_MCP_AGENT_TOOLS_ENV,
+  LODY_MCP_COMPACT_TOOLS_ENV,
   buildLodyMcpHttpHeaders,
 } from '@/mcp/lody-mcp-http-protocol';
 import { TerminalManager, TerminalSpawnError } from '@/session/terminal-manager';
@@ -712,6 +713,10 @@ export class AgentClient implements acp.Client {
     if (!this.options.workspaceId || !this.options.machineId) {
       return [];
     }
+    // agy puts client MCP tools into its prompt by size up to a budget it shares with
+    // skills, and a tool left out cannot be called. Without input schemas every Lody
+    // command fits; lody_help still documents and the server still validates them.
+    const compactTools = this.isAntigravityServer();
 
     // Agents that advertise `mcpCapabilities.http` use the shared MCP HTTP
     // host (one subprocess per daemon): same tool surface, instead of a full
@@ -733,6 +738,7 @@ export class AgentClient implements acp.Client {
               workdir,
               agentTools,
               boardId,
+              compactTools,
             }),
           },
         ];
@@ -752,6 +758,7 @@ export class AgentClient implements acp.Client {
       ...(agentTools.length > 0
         ? [{ name: LODY_MCP_AGENT_TOOLS_ENV, value: agentTools.join(',') }]
         : []),
+      ...(compactTools ? [{ name: LODY_MCP_COMPACT_TOOLS_ENV, value: '1' }] : []),
     ];
 
     // ACP MCP config is an explicit environment allowlist. The MCP subprocess

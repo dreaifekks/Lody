@@ -23,7 +23,9 @@ validate. agy skips permission requests only for a whole process, so Lody's `yol
 mode starts the session's agy with `--dangerously-skip-permissions` and restarts it
 when a turn switches YOLO on or off. Both Antigravity identities run the same agy
 release; from 1.5.10 agy streams what a background wakeup produces after `end_turn`,
-and Lody writes it into the finished turn.
+and Lody writes it into the finished turn. agy also declares client-provided MCP tools only
+up to a prompt budget and drops the rest, so Lody lists its own commands to agy
+without input schemas and `lody_help` supplies their parameters.
 
 Lody's Auto Review described below was removed on 2026-11-19; stored selections run
 in agy's `auto`. See the [removal decision](../simplification/2026-11-19-antigravity-auto-review-removal.md).
@@ -109,6 +111,43 @@ every JSON-RPC line, `gemini-3.8-flash` at `thought_level` low, and a temporary 
 - A parked coordinator wakes only for a board post that concerns it: a worker post
   without `@coordinator` left it asleep.
 
+Measured on 2026-11-19 with agy CLI 1.5.9 and 1.5.10 (the latter launched with
+`--process-per-session --disable-telemetry`) on Linux x86_64 and from a macOS
+session, reading each conversation's last model request from
+`~/.gemini/antigravity-cli/conversations/<id>.db`:
+
+- agy declares the tools of every MCP server passed over ACP as native functions
+  (`mcp_<server>_<tool>`), smallest declaration first, until a budget shared by all
+  servers runs out. Plugin MCP servers stay lazy and list only names. A tool past the
+  budget is in neither list, and `call_mcp_tool` rejects it with
+  `tool <name> is not enabled for server <server>`. agy's built-in flag defaults
+  include `customization-token-budget: 20000`, and its changelog says skills,
+  workflows, subagents and MCP tools share that budget; the room left for MCP tools
+  differs by machine (about 11.7k estimated tokens on the Mac mini on 2026-11-16).
+- A Mac mini chat session with `lody` and four workspace servers listed 32 of 48
+  `lody` tools. The missing 16 included `lody_session_create_options`,
+  `lody_session_create`, `lody_session_chat`, `lody_session_list` and
+  `lody_session_history`, and the agent's `lody_session_create_options` call failed
+  with that error.
+- `_meta["antigravity/alwaysLoad"]` on a tool of an ACP-passed server did not keep it
+  within the budget: of three equal-size tools past the cut, agy kept the same one
+  whichever of them carried the mark.
+- A tool whose input schema is `{"type": "object"}` received nested arguments unchanged.
+- On a temporary daemon with those four servers replayed from the Mac mini's cached
+  declarations, `lody` went from 33 of 45 listed tools to all 45 with compact listings,
+  and the workspace servers kept more of theirs (hebi8-market 15 → 17 of 19,
+  mail-personal 12 → 15 of 17). agy read `lody_help`, called
+  `lody_session_create_options` and then `lody_session_create` with complete
+  arguments; the child Tab answered and its completion reached the parent through
+  the Inbox.
+- The 48 `lody` declarations measured 65.7 KB as full JSON and 12.8 KB compact. Only 5
+  of the 47 workspace tools were smaller than the largest compact declaration.
+- agy wraps each declaration in fields of its own. In the temporary daemon's request
+  the 45 compact `lody` tools took 25.5 KB (509 to 712 bytes each). In the Mac mini
+  session the 32 listed full `lody` tools took 27.1 KB of the 46.4 KB declared for all
+  MCP tools, about the room the 48 compact commands would need there. The Nowledge Mem
+  plugin's MCP server stayed lazy in both and took none of it.
+
 ## Decision
 
 The runtime, quota and session permission boundaries are recorded in the
@@ -147,6 +186,14 @@ retires the session's agent and starts a replacement that loads the conversation
 (`antigravityYoloChanged` in the session execution service). A mode switch inside a
 running turn that would need the other process is refused with an error, and agy
 never sees it.
+
+For agy (`isAntigravityServer()`, builtin and registry), AgentClient asks the `lody`
+server for compact listings (`x-lody-mcp-compact-tools` over HTTP,
+`LODY_MCP_COMPACT_TOOLS` for stdio). Each command keeps its name, summary and help
+pointer and advertises `{"type": "object"}` as its input schema; `lody_help` returns
+the full schema, and the server validates every call against it. The tool set and
+names, and therefore agy's `mcp(lody/<tool>)` allow rules, are unchanged. Other agents
+still receive full schemas.
 
 Permission tiers rank agy's `accept-edits` as `edit`, and the composer shows it with
 the accept-edits face. `auto`, `default` and `plan` were already classified; `yolo`
@@ -190,6 +237,17 @@ Native modes are left as the agent reports them.
   agy's replay carries no turn ids to align it with Lody's history.
 - Asking agy not to use its native `swarm` in Lody: unnecessary once agy streams the
   wakeup; timers, subagents and swarms stay usable.
+- Marking Lody's session tools with `_meta["antigravity/alwaysLoad"]` was measured to
+  have no effect for ACP-passed servers.
+- Listing only the session tools to agy would remove the rest of Lody's commands and
+  still compete with workspace tools by size.
+- A single dispatcher command such as `lody_call` would be the smallest listing, but
+  every command would share one tool name, so agy's per-tool allow rules and the
+  per-command rendering of tool calls could no longer tell them apart.
+- Raising agy's budget: `customization-token-budget` arrives as a server-side
+  experiment flag, and no local setting for it is documented.
+- Keeping property names without nested schemas saves less: the create, chat and
+  schedule commands would still list kilobytes of properties each.
 
 ## Consequences
 
@@ -215,6 +273,11 @@ Native modes are left as the agent reports them.
   permission writes, so Lody cancels it in any mode. Only what agy decides itself
   never asks: YOLO, agy's allow rules, and commands that agy's `auto` runs in its
   sandbox.
+- agy's function declarations no longer show Lody's parameters. An agy session
+  depends on `lody_help`, which Lody's instructions already require before every
+  command, and an argument error returns the help reminder. Workspace MCP servers keep
+  about the room they had under a budget like the Mac mini's, and more of their tools
+  under a larger one.
 
 ## Verification
 
@@ -232,8 +295,13 @@ Native modes are left as the agent reports them.
   switches YOLO.
 - `packages/shared/tests/permission-tier.test.ts` and `permission-mode-face.test.ts`
   pin the mode tiers and faces.
+- `apps/cli/src/mcp/tool-help.test.ts` pins compact listings with full help and
+  validation, `apps/cli/src/mcp/lody-mcp-http-host.test.ts` carries the header through
+  the HTTP host, and `apps/cli/tests/agent-client-plan-mode.test.ts` pins that only
+  agy sessions request them, over stdio and HTTP.
 
 Not verified: answering a permission prompt in the desktop app, a `lody` tool call
 after approval, `accept-edits` and `plan` in a real run, launching the Windows
 archive, a YOLO session through a Lody build (only the agy process was probed),
-agy 1.5.10's wakeup on macOS, and a permission request from a wakeup.
+agy 1.5.10's wakeup on macOS, a permission request from a wakeup, and compact
+listings in a Lody build on macOS or Windows.

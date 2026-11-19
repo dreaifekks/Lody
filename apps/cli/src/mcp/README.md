@@ -54,6 +54,15 @@ results, and cancelling a current turn versus cancelling an Operation.
 The same path covers Session/catalog, Schedule, automation, preview and upload
 tools. Skills keep their existing resource-loading path.
 
+A compact listing (`x-lody-mcp-compact-tools: 1` on HTTP, `LODY_MCP_COMPACT_TOOLS=1`
+for stdio) advertises every command with the open input schema `{"type": "object"}`
+instead of its own; `lody_help` keeps its schema. Command help still returns the full
+schema and calls are still validated against it, so an argument error comes back with
+the help reminder as before. AgentClient requests it for agy, which drops client MCP
+tools that exceed its prompt budget
+([agy CLI decision](../../../../.agents/notes/implemented/feature/2026-11-15-antigravity-agy-cli-acp.md)).
+Other agents receive full schemas.
+
 Each tool summary, server instructions and the Lody prompt require reading successful
 command-specific help before execution. The index alone does not satisfy this rule,
 and the agent must not run help and the command in parallel. Already-read full help
