@@ -1947,6 +1947,11 @@ export class SessionExecutionService {
     );
   }
 
+  /** A finished Turn still owns completion while its native background work is pending. */
+  hasPendingNativeWork(sessionId: SessionId): boolean {
+    return this.nativeWorkSupersede.has(sessionId);
+  }
+
   getExecutionSnapshot(sessionId: SessionId): SessionExecutionSnapshot {
     const runtime = this.turnRuntimeBySession.get(sessionId);
     const currentTurnId = this.currentTurnBySession.get(sessionId);

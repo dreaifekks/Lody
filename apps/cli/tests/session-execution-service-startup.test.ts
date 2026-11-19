@@ -502,6 +502,10 @@ describe('SessionExecutionService', () => {
       nativeWork: { current: 'background' },
     });
     expect(turn.notificationFacts).toEqual([]);
+    expect(turn.service.getExecutionSnapshot('background-settles' as SessionId).hasActiveTurn).toBe(
+      false
+    );
+    expect(turn.service.hasPendingNativeWork('background-settles' as SessionId)).toBe(true);
     expect(turn.sessionDoc.setLastMessageAt).not.toHaveBeenCalled();
 
     turn.changeNativeWork('running');
@@ -511,6 +515,7 @@ describe('SessionExecutionService', () => {
     turn.changeNativeWork(null);
     await vi.waitFor(() => expect(turn.notificationFacts).toHaveLength(1));
     await turn.service.drainInboxExecutions();
+    expect(turn.service.hasPendingNativeWork('background-settles' as SessionId)).toBe(false);
     expect(turn.notificationFacts[0]?.outcome).toEqual({ kind: 'succeeded' });
     expect(turn.sessionDoc.setLastMessageAt).toHaveBeenCalledOnce();
     expect(turn.interruptedNotices).toEqual([]);

@@ -258,6 +258,7 @@ export const coordinatorSessionsLayer = (
     boardMaintenance: {
       busy: (id) =>
         options.executionService.getExecutionSnapshot(id).hasActiveTurn ||
+        options.executionService.hasPendingNativeWork(id) ||
         options.dispatchWatcher.hasPendingDispatch(id),
       inbox: (id) => ({
         runnable: store.inbox.hasRunnableWork(options.workspaceId, id),

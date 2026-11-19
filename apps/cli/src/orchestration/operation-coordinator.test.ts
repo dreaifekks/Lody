@@ -378,6 +378,7 @@ const makeHarness = async (options?: {
         hasActiveTurn: busy,
         ...(busy && options?.activeTurnId ? { activeTurnId: options.activeTurnId } : {}),
       }),
+      hasPendingNativeWork: () => false,
       continueSession,
     } as never,
     dispatchWatcher: { hasPendingDispatch: () => pendingUser } as never,
@@ -2099,6 +2100,7 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
     compactStatus: 'completed' as 'completed' | 'failed' | 'none',
     usageAfterCompact: 24_000,
     pendingUser: false,
+    pendingNativeWork: false,
     duringStep: async (_request: MaintenanceTurnRequest) => {},
     afterStep: (_request: MaintenanceTurnRequest) => {},
     outcome: (_request: MaintenanceTurnRequest): string => 'completed',
@@ -2124,6 +2126,7 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
       } as never),
     executionService: {
       getExecutionSnapshot: () => ({ hasActiveTurn: hold || maintenance.active }),
+      hasPendingNativeWork: () => maintenance.pendingNativeWork,
       contextCompactionSupport: () => maintenance.support,
       holdInboxForBoardMaintenance: (id: SessionId, held: boolean) => {
         if (held) maintenance.held.add(id);
@@ -2831,6 +2834,24 @@ describe('Board coordinator continuity', () => {
     return h;
   };
   const steps = (h: Harness) => h.maintenance.runs.map((run) => run.stepTurnId.split(':').at(-1));
+
+  it('waits for native background work before starting idle Board maintenance', async () => {
+    const h = await largeIdleCoordinator();
+    try {
+      h.maintenance.pendingNativeWork = true;
+      h.coordinator.start();
+      h.advance(60 * 60_000);
+      await h.drain();
+      expect(h.maintenance.runs).toEqual([]);
+      expect(records(h)).toEqual([]);
+      h.maintenance.pendingNativeWork = false;
+      await h.drain();
+      await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+      expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+    } finally {
+      await h.close();
+    }
+  });
 
   it('waits out the idle period, then records, compacts and renews the Board instructions', async () => {
     const h = await largeIdleCoordinator();

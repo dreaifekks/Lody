@@ -188,6 +188,12 @@ turns and timeouts do not acquire a user-stop cause.
 
 ## Board reports
 
+Board maintenance considers a Session busy while it has an active Turn, pending
+user dispatch, or native background work awaiting completion publication. The last
+state comes from `SessionExecutionService.hasPendingNativeWork`, so releasing a
+Turn does not admit compaction or fresh-agent maintenance while that work is still
+running. The existing reconciliation retries once the Session is idle.
+
 `board-report-workflow.ts` is a branch of the same native coordinator reconciliation,
 after ordinary Operations and before the Inbox wake. Workspace Board rows and
 `repo.watch` metadata events maintain membership; real history subscriptions mark
