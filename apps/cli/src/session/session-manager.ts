@@ -70,7 +70,7 @@ import {
 import { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 import { TerminalManager } from './terminal-manager';
 import { resolveACPProcessLaunchAsync } from '@/agent/setting';
-import { antigravityLaunchArgs } from '@/agent/antigravity-auto-review';
+import { antigravityLaunchArgs } from '@/agent/antigravity-acp-stream';
 import {
   classifyManagedRuntimeFailureReason,
   formatManagedRuntimeFailureMessage,

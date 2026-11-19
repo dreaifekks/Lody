@@ -11,7 +11,11 @@ import type {
   SessionTurnInputConfig,
   VisualAnnotationReferencePayload,
 } from './ai';
-import { isSessionFileSourcePath } from './ai';
+import {
+  isSessionFileSourcePath,
+  migrateLegacyAntigravityModeId,
+  migrateLegacyAntigravityModeOption,
+} from './ai';
 import type { SessionHistoryInput } from './schema';
 import type { AgentRoleId, McpServerId } from './ids';
 import { reanchorMessageTextSpansForTrim, sanitizeMessageTextSpans } from './message-text-spans';
@@ -167,10 +171,10 @@ export const resolveSessionConversationConfig = (
 
     return {
       sourceConfigKey,
-      ...(inputConfig.modeId ? { modeId: inputConfig.modeId } : {}),
+      ...(inputConfig.modeId ? { modeId: migrateLegacyAntigravityModeId(inputConfig.modeId) } : {}),
       ...(inputConfig.modelId ? { modelId: inputConfig.modelId } : {}),
       ...(inputConfig.configOptionValues && Object.keys(inputConfig.configOptionValues).length > 0
-        ? { configOptionValues: inputConfig.configOptionValues }
+        ? { configOptionValues: migrateLegacyAntigravityModeOption(inputConfig.configOptionValues) }
         : {}),
       ...(inputConfig.memory ? { memory: inputConfig.memory } : {}),
       ...(inputConfig.agentRoleSnapshot
@@ -256,9 +260,13 @@ export const resolveSessionAcpRuntimeConfig = (
   const configOptionValues = normalizeRuntimeConfigOptionValues(value.configOptionValues);
   return {
     sourceConfigKey: `runtime:${value.acpSessionId}:${value.revision}`,
-    ...(typeof value.modeId === 'string' ? { modeId: value.modeId } : {}),
+    ...(typeof value.modeId === 'string'
+      ? { modeId: migrateLegacyAntigravityModeId(value.modeId) }
+      : {}),
     ...(typeof value.modelId === 'string' ? { modelId: value.modelId } : {}),
-    ...(hasConfigOptionValues && configOptionValues ? { configOptionValues } : {}),
+    ...(hasConfigOptionValues && configOptionValues
+      ? { configOptionValues: migrateLegacyAntigravityModeOption(configOptionValues) }
+      : {}),
   };
 };
 

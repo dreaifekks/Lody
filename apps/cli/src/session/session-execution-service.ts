@@ -1,7 +1,7 @@
 import {
   antigravityProviderConfigOptions,
   antigravityYoloChanged,
-} from '@/agent/antigravity-auto-review';
+} from '@/agent/antigravity-acp-stream';
 import { machineTurnInterruptionReason, reserveMachineTurn } from './machine-turn-admission';
 import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';

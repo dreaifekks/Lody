@@ -19,6 +19,9 @@ agy CLI 的 GitHub release 启动 `antigravity acp`，Lody 会话因此和本地
 所以 Lody 的 `yolo` 模式用 `--dangerously-skip-permissions` 启动该会话的 agy，某一轮切入或切出
 YOLO 时重启它。
 
+下文所述的 Lody Auto Review 已于 2026-11-19 删除，已保存的选择以 agy 的 `auto` 运行，见
+[删除决策](../simplification/2026-11-19-antigravity-auto-review-removal.zh.md)。
+
 ## 发现
 
 2026-11-15 在 macOS arm64 上测得，agy CLI 1.5.9，最小 ACP 客户端，nmem 插件每个会话只注入一次上下文：
@@ -132,9 +135,8 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 - `scripts/generate-acp-registry.test.mjs` 验证新建列表排除旧条目；
   `apps/cli/src/agent/acp-runner.test.ts` 覆盖两种身份的 print 模式配额。
 - `packages/shared/tests/title-generation-defaults.test.ts` 固定标题归属。
-- `apps/cli/tests/antigravity-auto-review.test.ts` 固定 `auto_review` 与 agy 的 `auto` 并存、YOLO 模式和启动参数、
-  被拒绝的切换，以及会话目录规则。
-- `apps/cli/tests/session-execution-service.test.ts` 固定某一轮切换 YOLO 时的重启。
+- `apps/cli/tests/antigravity-acp-stream.test.ts` 固定 YOLO 模式和启动参数，以及被拒绝的切换。
+- `apps/cli/tests/session-execution-service-startup-part-2.test.ts` 固定某一轮切换 YOLO 时的重启。
 - `packages/shared/tests/permission-tier.test.ts` 和 `permission-mode-face.test.ts` 固定模式档位和图标。
 
 未验证：在桌面应用里回答权限请求、批准后实际调用 `lody` 工具、真跑 `accept-edits` 和 `plan`、

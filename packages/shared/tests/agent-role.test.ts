@@ -139,6 +139,22 @@ describe('agent role run config', () => {
       configOptionValues: { thought_level: 'high', fast: true },
     });
   });
+
+  it("reads a pin of Lody's former Antigravity Auto Review as agy's own auto", () => {
+    const read = normalizeAgentRole(
+      legacyRow({
+        runConfig: {
+          modelId: 'gemini-3.8-flash',
+          configOptionValues: { mode: 'auto_review', thought_level: 'high' },
+        },
+      })
+    );
+    expect(targets(read)?.[0]?.runConfig).toEqual({
+      modelId: 'gemini-3.8-flash',
+      configOptionValues: { mode: 'auto', thought_level: 'high' },
+    });
+    expect(normalizeAgentRoleRunConfig({ modeId: 'auto_review' })).toEqual({ modeId: 'auto' });
+  });
 });
 
 describe('agent role rows', () => {

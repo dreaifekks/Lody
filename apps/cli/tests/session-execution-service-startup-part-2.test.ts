@@ -2039,21 +2039,9 @@ describe('SessionExecutionService', () => {
       { scenario: 'turns YOLO off', started: 'yolo', turn: 'auto', restarts: true },
       { scenario: 'keeps YOLO', started: 'yolo', turn: 'yolo', restarts: false },
       {
-        scenario: 'switches from Auto Review to YOLO',
-        started: 'auto_review',
-        turn: 'yolo',
-        restarts: true,
-      },
-      {
-        scenario: 'switches from YOLO to Auto Review',
-        started: 'yolo',
-        turn: 'auto_review',
-        restarts: true,
-      },
-      {
         scenario: 'switches between approval modes',
-        started: 'auto',
-        turn: 'auto_review',
+        started: 'default',
+        turn: 'auto',
         restarts: false,
       },
       { scenario: 'names no mode', started: 'yolo', turn: undefined, restarts: false },

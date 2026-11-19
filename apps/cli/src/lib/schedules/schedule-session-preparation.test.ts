@@ -309,6 +309,68 @@ describe('Schedule ACP values reach ordinary Session preparation', () => {
     });
   });
 
+  it.each([{ modeId: 'auto_review' }, { configOptionValues: { mode: 'auto_review' } }])(
+    "runs a schedule saved in Lody's former Antigravity Auto Review in agy's auto: %o",
+    async (saved) => {
+      const modes = ['default', 'auto'];
+      const agyCapability: AcpCapabilityCacheEntry = {
+        cliType: 'registry',
+        agentType: 'antigravity-acp',
+        modes: modes.map((id) => ({ id, name: id })),
+        models: [],
+        fetchedAt: 0,
+        configOptions: [
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: modes.map((value) => ({ value, name: value })),
+          },
+        ],
+      };
+      const agyManager = {
+        ...localManager,
+        repo: {
+          ...localManager.repo,
+          openFlockDoc: async () => ({
+            flock: { scan: () => [{ key: ['acpCapability', 'agent'], value: agyCapability }] },
+          }),
+        },
+      } as unknown as LoroDocumentManager;
+      const stored = ScheduleAgentSchema.parse({ agentConfigId: 'agent', ...saved });
+      const agent = await resolveScheduleAgentRunConfig(
+        agyManager,
+        'workspace' as WorkspaceId,
+        targetMachine.id,
+        stored
+      );
+      const prepared = await prepareSessionInput(
+        auth,
+        workspace,
+        agyManager,
+        'Synthetic scheduled prompt',
+        buildScheduleSessionCreateOptions({
+          sessionId: 'session-1' as SessionId,
+          userTurnId: 'turn-1',
+          agentConfigId: 'agent',
+          title: 'Schedule',
+        }),
+        { ...resolveTurnDispatchConfig({}), ...agent, inheritSessionDefaults: false },
+        buildScheduleRunTarget({
+          targetMachine,
+          agentConfig: { ...agentConfig, cliType: 'registry', agentType: 'antigravity-acp' },
+        })
+      );
+      expect(prepared.userTurn.inputConfig).toMatchObject(
+        'modeId' in saved ? { modeId: 'auto' } : { configOptionValues: { mode: 'auto' } }
+      );
+      // The definition itself, and so its fingerprint, keeps what was saved.
+      expect(stored).toMatchObject(saved);
+    }
+  );
+
   it('starts a Role’s Session as a dispatched Role does: instruction, run config, provenance', async () => {
     const role = {
       role: {

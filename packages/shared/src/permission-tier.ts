@@ -45,7 +45,8 @@ const MODE_TIERS: ReadonlyMap<string, PermissionTier> = new Map([
   ['yolo', 'full'],
   // The agy CLI's ACP server (LAN fork registry entry for Google Antigravity).
   ['accept-edits', 'edit'],
-  // Antigravity Auto Review, added by Lody (LAN fork): the CLI reviews each request.
+  // Lody's former Antigravity Auto Review (LAN fork), still stored by sessions last
+  // run in it; they now run in agy's own `auto`.
   ['auto_review', 'auto'],
   // Grok `permission_mode`.
   ['ask', 'ask'],

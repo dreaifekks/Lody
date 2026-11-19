@@ -4,6 +4,8 @@ import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
 import { summarizeAgentRunConfigCapabilities } from './acp-run-config';
 import {
   getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
+  migrateLegacyAntigravityModeId,
+  migrateLegacyAntigravityModeOption,
   type AcpCapabilityCacheEntry,
 } from './ai';
 import type { AgentConfigMeta } from './schema';
@@ -241,9 +243,11 @@ export const normalizeAgentRoleRunConfig = (value: unknown): AgentRoleRunConfig 
   const configOptionValues = normalizeAgentRoleConfigOptionValues(value.configOptionValues);
   return {
     ...(value.memory === undefined ? {} : { memory: MemoryBindingSchema.parse(value.memory) }),
-    ...(modeId ? { modeId } : {}),
+    ...(modeId ? { modeId: migrateLegacyAntigravityModeId(modeId) } : {}),
     ...(modelId ? { modelId } : {}),
-    ...(configOptionValues ? { configOptionValues } : {}),
+    ...(configOptionValues
+      ? { configOptionValues: migrateLegacyAntigravityModeOption(configOptionValues) }
+      : {}),
   };
 };
 

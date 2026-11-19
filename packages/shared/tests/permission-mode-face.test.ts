@@ -42,7 +42,7 @@ describe('classifyPermissionModeFace', () => {
   });
 
   it('renders model-reviewed approval modes as a short text label, neutral tone', () => {
-    // Claude auto, Codex auto review and Lody's Antigravity Auto Review all route approval prompts to a model.
+    // Claude auto, Codex auto review and a stored former Antigravity Auto Review all route approval prompts to a model.
     for (const modeId of ['auto', 'agent-auto-review', 'auto_review']) {
       expect(classifyPermissionModeFace(modeId)).toEqual({
         kind: 'auto',

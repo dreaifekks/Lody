@@ -1128,7 +1128,7 @@ describe('SessionExecutionService', () => {
       [
         { cliType: 'builtin' as const, agentType: 'antigravity' },
         { cliType: 'registry' as const, agentType: 'antigravity-acp' },
-      ].flatMap((agent) => ['yolo', 'auto_review', 'auto'].map((mode) => ({ ...agent, mode })))
+      ].flatMap((agent) => ['yolo', 'auto'].map((mode) => ({ ...agent, mode })))
     )(
       'keeps $cliType/$agentType session $mode out of shared Provider defaults',
       async ({ cliType, agentType, mode }) => {
@@ -1148,7 +1148,7 @@ describe('SessionExecutionService', () => {
             category: 'mode',
             type: 'select',
             currentValue: mode,
-            options: ['default', 'auto', 'auto_review', 'yolo'].map((value) => ({
+            options: ['default', 'auto', 'yolo'].map((value) => ({
               value,
               name: value,
             })),

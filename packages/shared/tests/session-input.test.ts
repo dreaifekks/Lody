@@ -283,6 +283,40 @@ describe('session-input helpers', () => {
     ).toBeNull();
   });
 
+  it("reads a session last run in Lody's former Antigravity Auto Review as agy's own auto", () => {
+    const history = [
+      {
+        id: 'turn-1',
+        role: 'user' as const,
+        inputConfig: {
+          prompt: 'review',
+          cliType: 'registry' as const,
+          agentType: 'antigravity-acp',
+          modeId: 'auto_review',
+          configOptionValues: { mode: 'auto_review', thought_level: 'high' },
+        },
+      },
+    ];
+    expect(resolveSessionConversationConfig(history)).toEqual({
+      sourceConfigKey: 'history:turn-1',
+      modeId: 'auto',
+      configOptionValues: { mode: 'auto', thought_level: 'high' },
+    });
+    expect(
+      resolveSessionAcpRuntimeConfig(history, [], {
+        acpSessionId: 'acp-1',
+        basedOnUserTurnId: 'turn-1',
+        revision: 2,
+        modeId: 'auto_review',
+        configOptionValues: { mode: 'auto_review' },
+      })
+    ).toEqual({
+      sourceConfigKey: 'runtime:acp-1:2',
+      modeId: 'auto',
+      configOptionValues: { mode: 'auto' },
+    });
+  });
+
   it('does not let runtime state override a frozen queued turn', () => {
     expect(
       resolveSessionAcpRuntimeConfig([{ id: 'turn-1', role: 'user' }], [{ $cid: 'queue-1' }], {

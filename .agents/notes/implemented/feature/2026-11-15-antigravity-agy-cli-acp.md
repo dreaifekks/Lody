@@ -23,6 +23,9 @@ validate. agy skips permission requests only for a whole process, so Lody's `yol
 mode starts the session's agy with `--dangerously-skip-permissions` and restarts it
 when a turn switches YOLO on or off.
 
+Lody's Auto Review described below was removed on 2026-11-19; stored selections run
+in agy's `auto`. See the [removal decision](../simplification/2026-11-19-antigravity-auto-review-removal.md).
+
 ## Findings
 
 Measured on 2026-11-15 on macOS arm64 with agy CLI 1.5.9, a minimal ACP client and
@@ -176,9 +179,9 @@ Native modes are left as the agent reports them.
 - `scripts/generate-acp-registry.test.mjs` verifies discovery exclusion;
   `apps/cli/src/agent/acp-runner.test.ts` covers both identities’ print-mode quota.
 - `packages/shared/tests/title-generation-defaults.test.ts` pins title ownership.
-- `apps/cli/tests/antigravity-auto-review.test.ts` pins `auto_review` beside agy's
-  `auto`, the YOLO mode and launch flag, the refused switch and the conversation directory rule.
-- `apps/cli/tests/session-execution-service.test.ts` pins the restart when a turn
+- `apps/cli/tests/antigravity-acp-stream.test.ts` pins the YOLO mode and launch flag
+  and the refused switch.
+- `apps/cli/tests/session-execution-service-startup-part-2.test.ts` pins the restart when a turn
   switches YOLO.
 - `packages/shared/tests/permission-tier.test.ts` and `permission-mode-face.test.ts`
   pin the mode tiers and faces.
