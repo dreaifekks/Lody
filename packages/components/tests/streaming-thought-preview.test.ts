@@ -55,11 +55,23 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     ).toBe('Earlier real thought.');
 
     // Streaming incomplete prefixes of the agy placeholder at the trailing line are suppressed,
-    // while genuine sentences starting with "I'm" remain visible.
+    // including when followed by skipped invalid lines, while genuine sentences starting with
+    // "I'm" or later valid paragraphs remain visible.
     expect(extractStreamingThoughtPreviewFromText("I'm")).toBeNull();
     expect(
       extractStreamingThoughtPreviewFromText("I'm thinking through how to approach this")
     ).toBeNull();
+    expect(
+      extractStreamingThoughtPreviewFromText("I'm thinking through how\n\n**Half typed")
+    ).toBeNull();
+    expect(
+      extractStreamingThoughtPreviewFromText(
+        "Earlier real thought.\n\nI'm thinking through how\n\n**Half typed"
+      )
+    ).toBe('Earlier real thought.');
+    expect(extractStreamingThoughtPreviewFromText("I'm\n\nReal paragraph.")).toBe(
+      'Real paragraph.'
+    );
     expect(
       extractStreamingThoughtPreviewFromText("Earlier real thought.\n\n\nI'm thinking through how")
     ).toBe('Earlier real thought.');
@@ -120,6 +132,20 @@ describe('extractStreamingThoughtPreviewFromText', () => {
       'Checking the <!-- marker.'
     );
 
+    // Backslash-escaped backtick does not open a code span, so the following HTML comment is stripped.
+    expect(
+      extractStreamingThoughtPreviewFromText('Checking \\`<!-- hidden -->` visible.')
+    ).toBe('Checking ` visible.');
+
+    // Same-paragraph multiline inline code spans protect `<!--` across line breaks,
+    // whereas a blank line ends the paragraph and lets a real HTML comment open.
+    expect(
+      extractStreamingThoughtPreviewFromText('Inspecting `first line\n<!-- not a comment`\n\nRunning tests.')
+    ).toBe('Running tests.');
+    expect(
+      extractStreamingThoughtPreviewFromText('Earlier visible.\n\nStart `unclosed\n\n<!-- real comment -->')
+    ).toBe('Start unclosed');
+
     expect(
       extractStreamingThoughtPreviewFromText(
         '<!--\nmultiline comment\n-->\n- 1. Checking `streaming_thought_preview` behavior'
@@ -164,12 +190,12 @@ describe('extractStreamingThoughtPreviewFromText', () => {
       )
     ).toBe('Read and Nested plus Graph');
 
-    // Quoted link titles with unbalanced parens and nested image links inside link labels.
+    // Quoted link titles with unbalanced parens, angle-bracket destinations, and nested image links.
     expect(
       extractStreamingThoughtPreviewFromText(
-        '[the docs](https://example.org "Read this (first") and [![alt](logo.png)](https://example.org)'
+        '[the docs](https://example.org "Read this (first") and [![alt](logo.png)](https://example.org) and [Read](<https://example.org/a(b>) plus [Spec]( <https://example.org/x(y> "Title (1)" )'
       )
-    ).toBe('the docs and alt');
+    ).toBe('the docs and alt and Read plus Spec');
 
     // Private-use characters such as U+E000 must pass through intact (no sentinel collision),
     // and oversized inline code spans crossing the cleanup cap must retain literal identifiers.
@@ -246,14 +272,46 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     expect(strikethroughResult.cleanedLineCount).toBe(1);
     expect(strikethroughResult.cleanedCharCount).toBe('Valid earlier paragraph.'.length);
 
-    // Adversarial non-formatting empty-output lines (empty-label links) respect the cleanup budget.
+    // Empty-label links/images are skipped cheaply and still fall back to earlier valid prose.
     const emptyLinkFlood = `Valid earlier paragraph.\n\n${`[](https://example.com/${'a'.repeat(1000)})\n`.repeat(136)}`;
-    const budgetResult = inspectStreamingThoughtPreview(emptyLinkFlood);
+    const emptyLinkResult = inspectStreamingThoughtPreview(emptyLinkFlood);
+    expect(emptyLinkResult.preview).toBe('Valid earlier paragraph.');
+    expect(emptyLinkResult.cleanedLineCount).toBe(1);
+    expect(emptyLinkResult.cleanedCharCount).toBe('Valid earlier paragraph.'.length);
+
+    // 9 lines of 1001-char empty-output links (with formatting-only labels) must never exceed
+    // STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS due to pre-deducted cleanup budgets.
+    const nineEmptyOutputLinks = `Valid earlier paragraph.\n\n${`[** **](https://example.com/${'a'.repeat(972)})\n`.repeat(9)}`;
+    const budgetResult = inspectStreamingThoughtPreview(nineEmptyOutputLinks);
     expect(budgetResult.cleanedLineCount).toBeLessThanOrEqual(
       STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES
     );
     expect(budgetResult.cleanedCharCount).toBeLessThanOrEqual(
       STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
+    );
+
+    // Dense HTML comments (552k) with no backticks and 524 distinct unclosed backtick lengths (~138k)
+    // must remain strictly linear and deterministically bounded.
+    const denseComments = `${'<!-- -->'.repeat(69_000)}\n\nVisible after dense comments.`;
+    const denseCommentResult = inspectStreamingThoughtPreview(denseComments);
+    expect(denseCommentResult.preview).toBe('Visible after dense comments.');
+    expect(denseCommentResult.cleanedLineCount).toBe(1);
+
+    const distinctTicks = Array.from({ length: 524 }, (_, idx) => '`'.repeat(idx + 1)).join(' ');
+    expect(distinctTicks.length).toBeGreaterThan(138_000);
+    const distinctTickBoldResult = inspectStreamingThoughtPreview(
+      `Earlier valid line.\n\n**${distinctTicks} <!-- hidden -->`
+    );
+    expect(distinctTickBoldResult.preview).toBe('Earlier valid line.');
+    expect(distinctTickBoldResult.cleanedLineCount).toBe(1);
+
+    const distinctTickClosedBold = inspectStreamingThoughtPreview(
+      `**Visible prefix ${distinctTicks} <!-- hidden -->**`
+    );
+    expect(distinctTickClosedBold.preview).toBe('Visible prefix');
+    expect(distinctTickClosedBold.cleanedLineCount).toBe(1);
+    expect(distinctTickClosedBold.cleanedCharCount).toBeLessThanOrEqual(
+      STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP
     );
   });
 });
