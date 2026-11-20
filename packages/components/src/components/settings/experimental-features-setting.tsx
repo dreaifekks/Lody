@@ -12,6 +12,7 @@ import {
   inlineWidgetExperimentEnabledAtom,
   lowStimulusExperimentEnabledAtom,
   planReviewExperimentEnabledAtom,
+  streamingThoughtPreviewExperimentEnabledAtom,
   voiceExperimentEnabledAtom,
 } from '@/atoms/settings';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
@@ -48,6 +49,9 @@ export function ExperimentalFeatureRows() {
   const [boardArticleEnabled, setBoardArticleEnabled] = useAtom(boardArticleExperimentEnabledAtom);
   const [voiceEnabled, setVoiceEnabled] = useAtom(voiceExperimentEnabledAtom);
   const [lowStimulusEnabled, setLowStimulusEnabled] = useAtom(lowStimulusExperimentEnabledAtom);
+  const [streamingThoughtPreviewEnabled, setStreamingThoughtPreviewEnabled] = useAtom(
+    streamingThoughtPreviewExperimentEnabledAtom
+  );
 
   return (
     <>
@@ -72,6 +76,22 @@ export function ExperimentalFeatureRows() {
               checked={lowStimulusEnabled}
               onCheckedChange={setLowStimulusEnabled}
               aria-label={t('settings.experimental.lowStimulus', 'Low-stimulus mode')}
+            />
+          </CompactRow>
+          <CompactRow
+            label={t('settings.experimental.streamingThoughtPreview', 'Streaming thought preview')}
+            helper={t(
+              'settings.experimental.streamingThoughtPreviewHelper',
+              'Show a two-line preview of the latest thought beneath the collapsed activity header while a turn is running. Disappears when expanded or finished.'
+            )}
+          >
+            <Switch
+              checked={streamingThoughtPreviewEnabled}
+              onCheckedChange={setStreamingThoughtPreviewEnabled}
+              aria-label={t(
+                'settings.experimental.streamingThoughtPreview',
+                'Streaming thought preview'
+              )}
             />
           </CompactRow>
           <CompactRow

@@ -16,6 +16,7 @@ While it is on, its rows follow the master switch in the same section:
 | Switch | Atom (localStorage key) |
 | --- | --- |
 | Low-stimulus mode | `lowStimulusExperimentEnabledAtom` (`lody-low-stimulus-mode`) |
+| Streaming thought preview | `streamingThoughtPreviewExperimentEnabledAtom` (`lody-streaming-thought-preview-enabled`) |
 | Voice | `voiceExperimentEnabledAtom` (`lody-voice-experiment-enabled`) |
 | Notifications from agents | `agentNotifyExperimentEnabledAtom` (`lody-agent-notify-experiment-enabled`) |
 | Plan review | `planReviewExperimentEnabledAtom` (`lody-plan-review-experiment-enabled`) |
@@ -126,6 +127,33 @@ included, the new-chat page's Now tiles count each Session on its own, the phone
 is untouched (it folds only by the user's choice, as before, because its rows have no
 family mark), and an opened Session being viewed has no highlighted row while its
 family is folded.
+
+## Streaming thought preview
+
+Shows a two-line preview of the latest thought paragraph beneath the trailing
+collapsed activity group header while a turn is running. The switch is per device
+and presentation-only: it reads synced turn history (`block.entries`), never uses
+presence, never alters stored history or ACP adapters, and leaves completed-turn
+folding unchanged. Applies uniformly across providers
+([decision](../notes/implemented/feature/2026-11-21-streaming-thought-preview.md)).
+
+- **Placement and lifecycle.** Renders inside the trailing collapsed
+  `activity_group_header` virtual row (skipping only the turn's footer) when
+  `message.finished !== true` and the group contains at least one thought,
+  independent of header shimmer. Sits on `conversation.railInset` in compact
+  secondary text (`line-clamp-2`, `select-none`, no card fill, no icons, no added
+  animation). Retains the last thought while subsequent tool calls run in the
+  same group, and disappears immediately on manual expand or turn finish.
+- **Extraction and anti-flicker.** Strips the Antigravity placeholder sentence,
+  HTML comments, unclosed leading `**` streaming headings, and inline Markdown,
+  bounded to 260 characters and tail-scanned so 138k+ thought entries stay fast.
+  Identical text deduplicates without resetting the hold timer; each sentence
+  holds for at least 1500 ms (4000 ms while Low-stimulus mode is on), coalescing
+  intermediate updates and keeping the previous valid preview when a streaming
+  chunk parses to empty within the same group.
+- **Code.** `packages/components/src/components/ai-gui/streaming-thought-preview.ts`,
+  `packages/components/src/components/ai-gui/streaming-thought-preview-row.tsx`,
+  and minimal row wiring in `packages/components/src/components/ai-gui/view.tsx`.
 
 ## Voice
 

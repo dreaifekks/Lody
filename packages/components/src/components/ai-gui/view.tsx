@@ -341,7 +341,13 @@ import {
   buildChatFailedErrorReport,
   buildChatFailedNoticeDetail,
 } from './chat-failed-error-report';
-import { DEFAULT_CONVERSATION_FONT_SIZE, type ConversationFontSize } from '@/atoms/settings';
+import {
+  DEFAULT_CONVERSATION_FONT_SIZE,
+  streamingThoughtPreviewFeatureEnabledAtom,
+  type ConversationFontSize,
+} from '@/atoms/settings';
+import { resolveLiveThoughtPreviewRowKey } from './streaming-thought-preview';
+import { StreamingThoughtPreview } from './streaming-thought-preview-row';
 import {
   conversationTextFontSizeStyle,
   conversationReadingFontSizeStyle,
@@ -2046,6 +2052,11 @@ export const SessionChatStreamView = forwardRef<
       }
       return null;
     }, [agentActivityLabel, agentActivityShimmer, virtualRows]);
+    const streamingThoughtPreviewEnabled = useAtomValue(streamingThoughtPreviewFeatureEnabledAtom);
+    const liveThoughtPreviewRowKey = useMemo(
+      () => resolveLiveThoughtPreviewRowKey(virtualRows, streamingThoughtPreviewEnabled),
+      [streamingThoughtPreviewEnabled, virtualRows]
+    );
     // Keep the live status inside the final expanding assistant row's measurement
     // boundary. Streaming Markdown can grow between list commits; a separate
     // absolute status row would retain the previous offset until ResizeObserver
@@ -2703,6 +2714,7 @@ export const SessionChatStreamView = forwardRef<
                 onTurnHoverChange={handleAssistantTurnHoverChange}
                 conversationFontSize={conversationFontSize}
                 shimmerGroupHeader={row.key === liveGroupHeaderRowKey}
+                showThoughtPreview={row.key === liveThoughtPreviewRowKey}
                 liveStatus={row.key === liveStatusRowKey ? liveTurnStatus : null}
                 liveStatusFollowsSurface={
                   row.key === liveStatusRowKey &&
@@ -6147,6 +6159,8 @@ interface AssistantChatItemProps {
   conversationFontSize: ConversationFontSize;
   /** This row is the live turn's collapsed bottom group: shimmer its label. */
   shimmerGroupHeader?: boolean;
+  /** This row shows the live two-line thought preview under its collapsed group header. */
+  showThoughtPreview?: boolean;
   /** This row is the live turn's footer: the status sits above its actions. */
   liveStatus?: AgentActivityStatusProps | null;
   /** A bordered/card row above the status needs the wider object gap. */
@@ -6243,6 +6257,7 @@ const areAssistantChatItemPropsEqual = (
   prev.isLatestTurn === next.isLatestTurn &&
   prev.conversationFontSize === next.conversationFontSize &&
   prev.shimmerGroupHeader === next.shimmerGroupHeader &&
+  prev.showThoughtPreview === next.showThoughtPreview &&
   prev.liveStatusFollowsSurface === next.liveStatusFollowsSurface &&
   prev.liveStatus?.label === next.liveStatus?.label &&
   prev.liveStatus?.tone === next.liveStatus?.tone &&
@@ -6265,6 +6280,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
   isLatestTurn,
   conversationFontSize,
   shimmerGroupHeader = false,
+  showThoughtPreview = false,
   liveStatus = null,
   liveStatusFollowsSurface = false,
 }: AssistantChatItemProps) {
@@ -6318,16 +6334,24 @@ const AssistantChatItem = memo(function AssistantChatItem({
       }
       case 'activity_group_header':
         return (
-          <ActivityGroupHeader
-            id={`${message.id}:${content.block.key}`}
-            summary={content.block.summary}
-            expanded={content.expanded}
-            onExpandedChange={(expanded) =>
-              onGroupExpandedChange(message.id, content.block.key, expanded)
-            }
-            shimmer={shimmerGroupHeader}
-            liveMessage={shimmerGroupHeader ? message : undefined}
-          />
+          <>
+            <ActivityGroupHeader
+              id={`${message.id}:${content.block.key}`}
+              summary={content.block.summary}
+              expanded={content.expanded}
+              onExpandedChange={(expanded) =>
+                onGroupExpandedChange(message.id, content.block.key, expanded)
+              }
+              shimmer={shimmerGroupHeader}
+              liveMessage={shimmerGroupHeader ? message : undefined}
+            />
+            {showThoughtPreview ? (
+              <StreamingThoughtPreview
+                groupKey={`${message.id}:${content.block.key}`}
+                entries={content.block.entries}
+              />
+            ) : null}
+          </>
         );
       case 'activity_detail': {
         const { entry } = content;

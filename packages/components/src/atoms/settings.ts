@@ -411,6 +411,20 @@ export const lowStimulusModeEnabledAtom = atom(
   (get) => get(experimentalFeaturesEnabledAtom) && get(lowStimulusExperimentEnabledAtom)
 );
 
+export const STREAMING_THOUGHT_PREVIEW_STORAGE_KEY = 'lody-streaming-thought-preview-enabled';
+
+/** Opt-in for a live two-line thought preview under the collapsed trailing activity header. */
+export const streamingThoughtPreviewExperimentEnabledAtom = atomWithStorage<boolean>(
+  STREAMING_THOUGHT_PREVIEW_STORAGE_KEY,
+  false,
+  undefined,
+  { getOnInit: true }
+);
+
+export const streamingThoughtPreviewFeatureEnabledAtom = atom(
+  (get) => get(experimentalFeaturesEnabledAtom) && get(streamingThoughtPreviewExperimentEnabledAtom)
+);
+
 /*
  * Experimental Lody agent tools. Each switch is this device's view (cards,
  * panels, alerts); flipping one also tells every machine of the workspace which

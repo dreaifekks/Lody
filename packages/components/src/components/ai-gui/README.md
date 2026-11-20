@@ -25,6 +25,7 @@ the reasoning behind those rules.
 | Stream                  | `view.tsx`, `build-chat-stream-items.ts`                                                          | Stable rows and the conversation scroll engine.                                         |
 | User rows               | `view.tsx`                                                                                        | Multi-member sender metadata and desktop profile.                                       |
 | Turns                   | `assistant-turn-render-blocks.ts`                                                                 | Activity groups and foldable segments.                                                  |
+| Thought preview         | `streaming-thought-preview.ts`, `streaming-thought-preview-row.tsx`                               | Opt-in two-line live thought preview under the trailing collapsed activity header.      |
 | Outline                 | `conversation-outline-*`                                                                          | Round ticks and navigation.                                                             |
 | Image sharing selection | [`message-selection.tsx`](message-selection.tsx)                                                  | Temporary message selection, drag rectangle, range modifiers, and edge scrolling.       |
 | Chat quotes             | [`message-quote-action.tsx`](message-quote-action.tsx)                                            | Portal action over a retained native prose selection, outside viewport layout.          |
@@ -173,6 +174,16 @@ the reasoning behind those rules.
 - `session-file-card.tsx`, `session-file-preview-dialog.tsx`, and
   [session-files-rendering.md](session-files-rendering.md) own attachment and
   image-preview rendering.
+- `streaming-thought-preview.ts` and `streaming-thought-preview-row.tsx` implement
+  the opt-in live two-line thought preview beneath the trailing collapsed
+  activity header (`streamingThoughtPreviewFeatureEnabledAtom`): reverse-scans
+  `block.entries` for the latest thought (retaining it across subsequent tool
+  calls), strips the Antigravity placeholder, HTML comments, unclosed leading
+  `**` lines, and inline Markdown within bounded tail windows, and throttles
+  switches to 1500 ms (4000 ms in Low-stimulus mode). Presentation only;
+  [decision](../../../../../.agents/notes/implemented/feature/2026-11-21-streaming-thought-preview.md).
+  Pinned by `tests/streaming-thought-preview.test.ts`,
+  `tests/streaming-thought-preview-ui.test.tsx`, and `StreamingThoughtPreview.stories.tsx`.
 
 ## Spacing and themes
 
