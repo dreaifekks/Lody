@@ -55,7 +55,19 @@ type Harness = {
   workdir: string;
   /** The mode the session's config reports as current. */
   currentMode(): unknown;
+  /** The mode option values the session's live config currently offers. */
+  offeredModes(): unknown[];
   setMode(modeId: string): Promise<{ rejectedSelections: string[]; modeId?: string }>;
+  applyConfig(config: {
+    modeId?: string;
+    modelId?: string;
+    configOptionValues?: Record<string, string>;
+  }): Promise<{
+    rejectedSelections: string[];
+    modeId?: string;
+    modelId?: string;
+    configOptionValues?: Record<string, unknown>;
+  }>;
   prompt(text: string): Promise<string>;
 };
 
@@ -110,6 +122,12 @@ async function startSession(
     workdir,
     currentMode: () =>
       client.getConfigOptions().find((option) => option.id === 'mode')?.currentValue,
+    offeredModes: () => {
+      const modeOption = client.getConfigOptions().find((option) => option.id === 'mode');
+      return modeOption?.type === 'select'
+        ? modeOption.options.map((entry) => ('value' in entry ? entry.value : undefined))
+        : [];
+    },
     async setMode(modeId) {
       const result = await applyAcpSessionRunConfig({
         session: { sessionId: 'session-1' as SessionId, acpSessionId, agentClient: client },
@@ -119,6 +137,19 @@ async function startSession(
       return {
         rejectedSelections: result.rejectedSelections,
         modeId: result.runtimeConfigPatch?.modeId,
+      };
+    },
+    async applyConfig(config) {
+      const result = await applyAcpSessionRunConfig({
+        session: { sessionId: 'session-1' as SessionId, acpSessionId, agentClient: client },
+        config: { cliType: 'registry', agentType: 'antigravity-acp', ...config },
+        logger: createSilentLogger(),
+      });
+      return {
+        rejectedSelections: result.rejectedSelections,
+        modeId: result.runtimeConfigPatch?.modeId,
+        modelId: result.runtimeConfigPatch?.modelId,
+        configOptionValues: result.runtimeConfigPatch?.configOptionValues,
       };
     },
     async prompt(text) {
@@ -146,11 +177,24 @@ afterEach(async () => {
 
 describe('Antigravity modes through the session start chain', () => {
   it("offers agy's own modes and YOLO in probes and sessions", async () => {
-    const probed = await fetchAcpCapabilities('registry', 'antigravity-acp', createSilentLogger());
+    const probed = await fetchAcpCapabilities(
+      'registry',
+      'antigravity-acp',
+      createSilentLogger(),
+      undefined,
+      undefined,
+      undefined,
+      { readModelOptions: {} }
+    );
     const offered = ['default', 'accept-edits', 'auto', 'plan', 'yolo'];
     expect(probed.modes.map((mode) => mode.id)).toEqual(offered);
     expect(
       probed.configOptions
+        ?.find((option) => option.id === 'mode')
+        ?.options.map((option) => option.value)
+    ).toEqual(offered);
+    expect(
+      probed.modelConfigOptions?.['gemini-3.8-flash']
         ?.find((option) => option.id === 'mode')
         ?.options.map((option) => option.value)
     ).toEqual(offered);
@@ -161,6 +205,15 @@ describe('Antigravity modes through the session start chain', () => {
       modeId: 'auto',
     });
     await expect(harness.prompt('report-mode')).resolves.toBe('mode=auto');
+
+    // Switching another config option keeps YOLO offered without rewriting current mode.
+    await expect(harness.applyConfig({ modelId: 'gemini-3.8-flash' })).resolves.toMatchObject({
+      rejectedSelections: [],
+      modeId: 'auto',
+      modelId: 'gemini-3.8-flash',
+    });
+    expect(harness.currentMode()).toBe('auto');
+    expect(harness.offeredModes()).toEqual(offered);
 
     // This process was started without agy's skip flag; YOLO waits for a new one.
     await expect(harness.setMode('yolo')).resolves.toEqual({
@@ -182,6 +235,46 @@ describe('Antigravity modes through the session start chain', () => {
       rejectedSelections: [],
       modeId: 'yolo',
     });
+    await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
+
+    // Switching model/thought_level after startup must keep live mode as YOLO.
+    await expect(
+      harness.applyConfig({
+        modeId: 'yolo',
+        modelId: 'gemini-3.8-flash',
+        configOptionValues: { thought_level: 'high' },
+      })
+    ).resolves.toMatchObject({
+      rejectedSelections: [],
+      modeId: 'yolo',
+      modelId: 'gemini-3.8-flash',
+      configOptionValues: expect.objectContaining({
+        mode: 'yolo',
+        model: 'gemini-3.8-flash',
+        thought_level: 'high',
+      }),
+    });
+    expect(harness.currentMode()).toBe('yolo');
+    expect(harness.offeredModes()).toContain('yolo');
+    expect(
+      harness.session.agentClient
+        ?.getConfigOptions()
+        .find((option) => option.id === 'thought_level')?.currentValue
+    ).toBe('high');
+
+    // Switching only model on a subsequent turn also preserves YOLO and thought_level.
+    await expect(harness.applyConfig({ modelId: 'gemini-4-argon' })).resolves.toMatchObject({
+      rejectedSelections: [],
+      modeId: 'yolo',
+      modelId: 'gemini-4-argon',
+      configOptionValues: expect.objectContaining({
+        mode: 'yolo',
+        model: 'gemini-4-argon',
+        thought_level: 'high',
+      }),
+    });
+    expect(harness.currentMode()).toBe('yolo');
+    expect(harness.offeredModes()).toContain('yolo');
     await expect(harness.prompt('report-mode')).resolves.toBe('mode=default');
   });
 
@@ -303,6 +396,40 @@ describe('Antigravity ACP stream', () => {
         });
         await settle();
       },
+      /** Any config option switch; agent answers with the full `configOptions` snapshot. */
+      async switchConfig(
+        id: number,
+        configId: string,
+        value: string | boolean,
+        reportedMode: string,
+        extraOptions: Record<string, unknown>[] = []
+      ) {
+        await clientWriter.write({
+          jsonrpc: '2.0',
+          id,
+          method: 'session/set_config_option',
+          params:
+            typeof value === 'boolean'
+              ? { sessionId: 's', configId, type: 'boolean', value }
+              : { sessionId: 's', configId, value },
+        });
+        await agentWriter.write({
+          jsonrpc: '2.0',
+          id,
+          result: { configOptions: [modeOption(reportedMode), ...extraOptions] },
+        });
+        await settle();
+      },
+      /** An agent-pushed `session/update` notification. */
+      async notify(update: Record<string, unknown>) {
+        await agentWriter.write({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: { sessionId: 's', update },
+        });
+        await settle();
+      },
+      modeOption,
     };
   };
 
@@ -409,6 +536,183 @@ describe('Antigravity ACP stream', () => {
     expect(flagged.toClient.at(-1)).toMatchObject({
       id: 3,
       error: { message: expect.stringContaining('runs in YOLO') },
+    });
+  });
+
+  it('keeps YOLO rewritten and offered when setting non-mode config options', async () => {
+    const modelOption = {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'gemini-4-neon',
+      options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }],
+    };
+    const thoughtOption = {
+      id: 'thought_level',
+      name: 'Thought Level',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'high',
+      options: [{ value: 'high', name: 'High' }],
+    };
+
+    const flagged = wire({ args: ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG] });
+    await flagged.start('yolo');
+    await flagged.switchConfig(3, 'model', 'gemini-4-neon', 'default', [modelOption]);
+    expect(flagged.toAgent.at(-1)).toMatchObject({
+      method: 'session/set_config_option',
+      params: { configId: 'model', value: 'gemini-4-neon' },
+    });
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      id: 3,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            id: 'mode',
+            currentValue: 'yolo',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+          modelOption,
+        ],
+      },
+    });
+
+    await flagged.switchConfig(4, 'thought_level', 'high', 'default', [thoughtOption]);
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      id: 4,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            id: 'mode',
+            currentValue: 'yolo',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+          thoughtOption,
+        ],
+      },
+    });
+
+    await flagged.switchConfig(5, 'fast_mode', true, 'default');
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      id: 5,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            id: 'mode',
+            currentValue: 'yolo',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+        ],
+      },
+    });
+
+    // Non-YOLO stream: setting model/thought_level keeps YOLO offered without rewriting currentValue.
+    const plain = wire();
+    await plain.start('default', 'default');
+    await plain.switchConfig(3, 'model', 'gemini-4-neon', 'default', [modelOption]);
+    expect(plain.toClient.at(-1)).toMatchObject({
+      id: 3,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            id: 'mode',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+          modelOption,
+        ],
+      },
+    });
+
+    await plain.switchConfig(4, 'thought_level', 'high', 'auto', [thoughtOption]);
+    expect(plain.toClient.at(-1)).toMatchObject({
+      id: 4,
+      result: {
+        configOptions: [
+          expect.objectContaining({
+            id: 'mode',
+            currentValue: 'auto',
+            options: [
+              { value: 'default', name: 'Default' },
+              expect.objectContaining({ value: 'yolo' }),
+            ],
+          }),
+          thoughtOption,
+        ],
+      },
+    });
+  });
+
+  it('rewrites mode state in config_option_update and current_mode_update notifications', async () => {
+    const flagged = wire({ args: ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG] });
+    await flagged.notify({
+      sessionUpdate: 'config_option_update',
+      configOptions: [flagged.modeOption('default')],
+    });
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'config_option_update',
+          configOptions: [
+            expect.objectContaining({
+              id: 'mode',
+              currentValue: 'yolo',
+              options: [
+                { value: 'default', name: 'Default' },
+                expect.objectContaining({ value: 'yolo' }),
+              ],
+            }),
+          ],
+        },
+      },
+    });
+    await flagged.notify({ sessionUpdate: 'current_mode_update', currentModeId: 'default' });
+    expect(flagged.toClient.at(-1)).toMatchObject({
+      method: 'session/update',
+      params: { update: { sessionUpdate: 'current_mode_update', currentModeId: 'yolo' } },
+    });
+
+    const plain = wire();
+    await plain.notify({
+      sessionUpdate: 'config_option_update',
+      configOptions: [plain.modeOption('default')],
+    });
+    expect(plain.toClient.at(-1)).toMatchObject({
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'config_option_update',
+          configOptions: [
+            expect.objectContaining({
+              id: 'mode',
+              currentValue: 'default',
+              options: [
+                { value: 'default', name: 'Default' },
+                expect.objectContaining({ value: 'yolo' }),
+              ],
+            }),
+          ],
+        },
+      },
+    });
+    await plain.notify({ sessionUpdate: 'current_mode_update', currentModeId: 'default' });
+    expect(plain.toClient.at(-1)).toMatchObject({
+      method: 'session/update',
+      params: { update: { sessionUpdate: 'current_mode_update', currentModeId: 'default' } },
     });
   });
 });

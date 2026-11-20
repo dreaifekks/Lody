@@ -1,6 +1,6 @@
 // A stand-in for the agy CLI's `antigravity acp`, for the Antigravity stream
-// tests. Speaks ACP over stdio like agy: its four modes, a `mode` and a `model`
-// config option. It refuses any mode it does not know, so a leaked `yolo` or
+// tests. Speaks ACP over stdio like agy: its four modes, plus `mode`, `model`,
+// and `thought_level` config options. It refuses any mode it does not know, so a leaked `yolo` or
 // `auto_review` fails the request just as agy would. A prompt starting with
 // "report-mode" answers "mode=<current>"; anything else is echoed back.
 import { createInterface } from 'node:readline';
@@ -41,6 +41,18 @@ const configOptions = (session) => [
       description: mode.description,
     })),
   },
+  {
+    id: 'thought_level',
+    name: 'Thought Level',
+    category: 'thought_level',
+    type: 'select',
+    currentValue: session.thoughtLevel,
+    options: [
+      { value: 'low', name: 'Low' },
+      { value: 'medium', name: 'Medium' },
+      { value: 'high', name: 'High' },
+    ],
+  },
 ];
 const sessionState = (session) => ({
   modes: { currentModeId: session.mode, availableModes: MODES },
@@ -54,7 +66,11 @@ const checkMode = (mode) => {
 const openSession = (sessionId, params) => {
   const startMode = params?._meta?.lody?.sessionConfig?.configOptionValues?.mode;
   if (startMode !== undefined) checkMode(startMode);
-  const session = sessions.get(sessionId) ?? { mode: 'default', model: 'gemini-4-argon' };
+  const session = sessions.get(sessionId) ?? {
+    mode: 'default',
+    model: 'gemini-4-argon',
+    thoughtLevel: 'medium',
+  };
   if (startMode) session.mode = startMode;
   sessions.set(sessionId, session);
   return session;
@@ -86,6 +102,8 @@ const handle = (message) => {
         session.mode = value;
       } else if (configId === 'model') {
         session.model = value;
+      } else if (configId === 'thought_level') {
+        session.thoughtLevel = value;
       }
       return message.method === 'session/set_mode' ? {} : { configOptions: configOptions(session) };
     }

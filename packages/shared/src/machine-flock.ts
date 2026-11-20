@@ -3,6 +3,8 @@ import { MemoryAssociationSchema, type MemoryAssociation } from './memory-provid
 import type { RateLimit } from 'acp-extension-core';
 import { CodexAuthProfileSchema, assertManagedCodexProfileConfig } from './codex-auth-profile';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_YOLO_MODE_ID,
   getAcpCapabilityCacheKey,
   hasBuiltinRuntimeOverrideValues,
   hasPersistedBuiltinRuntimeOverrides,
@@ -886,18 +888,63 @@ const observedAcpCapabilityEntries = new WeakMap<
   { signature: string; merged: AcpCapabilityCacheEntry }
 >();
 
+const isAntigravityAgentType = (agentType: string): boolean =>
+  agentType === ANTIGRAVITY_AGENT_TYPE || agentType === 'antigravity';
+
+const readAntigravitySnapshotYoloChoice = (
+  entry: AcpCapabilityCacheEntry
+): AcpConfigOptionSummary['options'][number] | undefined => {
+  if (!Array.isArray(entry.configOptions)) return undefined;
+  const modeOption = (entry.configOptions as unknown[]).find(
+    (option): option is Record<string, unknown> =>
+      isRecord(option) && option.category === 'mode' && Array.isArray(option.options)
+  );
+  if (!modeOption || !Array.isArray(modeOption.options)) return undefined;
+  return modeOption.options.find(
+    (choice): choice is AcpConfigOptionSummary['options'][number] =>
+      isRecord(choice) &&
+      choice.value === ANTIGRAVITY_YOLO_MODE_ID &&
+      typeof choice.name === 'string' &&
+      (choice.description === undefined || typeof choice.description === 'string') &&
+      (choice.group === undefined || typeof choice.group === 'string')
+  );
+};
+
+// Older Antigravity model-option rows recorded before `session/set_config_option`
+// rewrote non-mode responses can omit `yolo` even though the snapshot advertises it.
+const withAntigravitySnapshotYoloMode = (
+  entry: AcpCapabilityCacheEntry,
+  observed: Record<string, AcpConfigOptionSummary[]>
+): Record<string, AcpConfigOptionSummary[]> => {
+  if (!isAntigravityAgentType(entry.agentType)) return observed;
+  const yoloChoice = readAntigravitySnapshotYoloChoice(entry);
+  if (!yoloChoice) return observed;
+  const restored: Record<string, AcpConfigOptionSummary[]> = {};
+  for (const [modelId, options] of Object.entries(observed)) {
+    restored[modelId] = options.map((option) =>
+      option.category === 'mode' &&
+      option.options.some((choice) => choice.value === 'default') &&
+      !option.options.some((choice) => choice.value === ANTIGRAVITY_YOLO_MODE_ID)
+        ? { ...option, options: [...option.options, yoloChoice] }
+        : option
+    );
+  }
+  return restored;
+};
+
 const withObservedModelConfigOptions = (
   entry: AcpCapabilityCacheEntry,
   observed: Record<string, AcpConfigOptionSummary[]>
 ): AcpCapabilityCacheEntry => {
+  const normalizedObserved = withAntigravitySnapshotYoloMode(entry, observed);
   const signature = JSON.stringify(
-    Object.keys(observed)
+    Object.keys(normalizedObserved)
       .sort()
-      .map((modelId) => [modelId, observed[modelId]])
+      .map((modelId) => [modelId, normalizedObserved[modelId]])
   );
   const cached = observedAcpCapabilityEntries.get(entry);
   if (cached?.signature === signature) return cached.merged;
-  const merged = { ...entry, observedModelConfigOptions: observed };
+  const merged = { ...entry, observedModelConfigOptions: normalizedObserved };
   observedAcpCapabilityEntries.set(entry, { signature, merged });
   return merged;
 };

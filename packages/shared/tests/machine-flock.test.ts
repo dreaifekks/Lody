@@ -21,9 +21,13 @@ import {
   type MachineFlockWritableFlock,
 } from '../src/machine-flock';
 import {
+  ANTIGRAVITY_AGENT_TYPE,
+  ANTIGRAVITY_YOLO_MODE_ID,
   getRateLimitEntryKey,
   parseRateLimitEntryKey,
   getAcpCapabilityCacheKey,
+  resolveAcpConfigOptionsForModel,
+  type AcpConfigOptionSummary,
   type AgentConfigId,
   type LocalProjectId,
   type MachineId,
@@ -288,6 +292,246 @@ describe('machine Flock helpers', () => {
       const capabilities = getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock));
       expect(capabilities[key]?.observedModelConfigOptions).toEqual({ a: [effort(['low'])] });
       expect(Object.keys(capabilities)).toEqual([key]);
+    });
+
+    it.each([
+      ['builtin', 'antigravity'],
+      ['registry', ANTIGRAVITY_AGENT_TYPE],
+    ] as const)(
+      'restores snapshot YOLO mode into legacy %s/%s per-model caches',
+      (cliType, agentType) => {
+        const agyConfigId = `agy-${agentType}` as AgentConfigId;
+        const agyKey = getAcpCapabilityCacheKey(agyConfigId);
+        const yoloChoice = {
+          value: ANTIGRAVITY_YOLO_MODE_ID,
+          name: 'YOLO',
+          description: 'Snapshot YOLO description',
+        };
+        const modelOption: AcpConfigOptionSummary = {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'gemini-4-argon',
+          options: [
+            { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+            { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+          ],
+        };
+        const snapshotMode: AcpConfigOptionSummary = {
+          id: 'mode',
+          name: 'Session Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'auto', name: 'Auto' },
+            yoloChoice,
+          ],
+        };
+        const legacyObservedMode: AcpConfigOptionSummary = {
+          id: 'mode',
+          name: 'Session Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'auto', name: 'Auto' },
+          ],
+        };
+
+        const flock = new FakeMachineFlock();
+        writeMachineFlockRowToFlock(flock, {
+          key: machineFlockKeys.acpCapability(agyConfigId),
+          value: {
+            cliType,
+            agentType,
+            cacheVersion: 2,
+            sourceVersion: 'v2',
+            modes: [],
+            models: [],
+            configOptions: [modelOption, snapshotMode],
+            fetchedAt: 1,
+          },
+        });
+        writeAcpModelConfigOptionsToFlock(flock, agyConfigId, 'v1', {
+          'gemini-4-neon': [legacyObservedMode, effort(['high'])],
+        });
+
+        const first = getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock))[agyKey];
+        const second = getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock))[agyKey];
+        expect(first).toBe(second);
+        expect(
+          first?.observedModelConfigOptions?.['gemini-4-neon']?.find((o) => o.id === 'mode')
+            ?.options
+        ).toEqual([
+          { value: 'default', name: 'Default' },
+          { value: 'auto', name: 'Auto' },
+          yoloChoice,
+        ]);
+
+        const resolved = resolveAcpConfigOptionsForModel(
+          first?.configOptions,
+          first?.observedModelConfigOptions,
+          'gemini-4-neon'
+        );
+        expect(resolved.source).toBe('observed');
+        expect(
+          resolved.configOptions
+            ?.find((o) => o.id === 'mode')
+            ?.options.map((choice) => choice.value)
+        ).toEqual(['default', 'auto', ANTIGRAVITY_YOLO_MODE_ID]);
+      }
+    );
+
+    it('does not backfill YOLO for non-Antigravity agents or when the snapshot omits YOLO', () => {
+      const makeMode = (withYolo: boolean): AcpConfigOptionSummary => ({
+        id: 'mode',
+        name: 'Mode',
+        category: 'mode',
+        type: 'select',
+        currentValue: 'default',
+        options: [
+          { value: 'default', name: 'Default' },
+          { value: 'auto', name: 'Auto' },
+          ...(withYolo ? [{ value: ANTIGRAVITY_YOLO_MODE_ID, name: 'YOLO' }] : []),
+        ],
+      });
+
+      const nonAgyConfigId = 'other-agent' as AgentConfigId;
+      const agyNoYoloConfigId = 'agy-no-yolo' as AgentConfigId;
+      const flock = new FakeMachineFlock();
+      writeMachineFlockRowToFlock(flock, {
+        key: machineFlockKeys.acpCapability(nonAgyConfigId),
+        value: {
+          cliType: 'builtin',
+          agentType: 'devin',
+          cacheVersion: 2,
+          sourceVersion: 'v2',
+          modes: [],
+          models: [],
+          configOptions: [makeMode(true)],
+          fetchedAt: 1,
+        },
+      });
+      writeAcpModelConfigOptionsToFlock(flock, nonAgyConfigId, 'v1', {
+        'model-b': [makeMode(false)],
+      });
+
+      writeMachineFlockRowToFlock(flock, {
+        key: machineFlockKeys.acpCapability(agyNoYoloConfigId),
+        value: {
+          cliType: 'builtin',
+          agentType: 'antigravity',
+          cacheVersion: 2,
+          sourceVersion: 'v2',
+          modes: [],
+          models: [],
+          configOptions: [makeMode(false)],
+          fetchedAt: 1,
+        },
+      });
+      writeAcpModelConfigOptionsToFlock(flock, agyNoYoloConfigId, 'v1', {
+        'gemini-4-neon': [makeMode(false)],
+      });
+
+      const capabilities = getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock));
+      expect(
+        capabilities[getAcpCapabilityCacheKey(nonAgyConfigId)]?.observedModelConfigOptions?.[
+          'model-b'
+        ]
+          ?.find((o) => o.id === 'mode')
+          ?.options.map((choice) => choice.value)
+      ).toEqual(['default', 'auto']);
+      expect(
+        capabilities[getAcpCapabilityCacheKey(agyNoYoloConfigId)]?.observedModelConfigOptions?.[
+          'gemini-4-neon'
+        ]
+          ?.find((o) => o.id === 'mode')
+          ?.options.map((choice) => choice.value)
+      ).toEqual(['default', 'auto']);
+    });
+
+    it('keeps observed caches without throwing when an Antigravity snapshot has malformed configOptions', () => {
+      const legacyObservedMode: AcpConfigOptionSummary = {
+        id: 'mode',
+        name: 'Session Mode',
+        category: 'mode',
+        type: 'select',
+        currentValue: 'default',
+        options: [
+          { value: 'default', name: 'Default' },
+          { value: 'auto', name: 'Auto' },
+        ],
+      };
+      const missingOptionsId = 'agy-missing-options' as AgentConfigId;
+      const nonArrayConfigOptionsId = 'agy-non-array-config' as AgentConfigId;
+      const malformedChoiceId = 'agy-malformed-choice' as AgentConfigId;
+      const flock = new FakeMachineFlock();
+
+      // Snapshot mode record missing `options` (accepted by `isAcpCapabilityCacheEntry`).
+      flock.set(machineFlockKeys.acpCapability(missingOptionsId), {
+        cliType: 'builtin',
+        agentType: 'antigravity',
+        cacheVersion: 2,
+        sourceVersion: 'v2',
+        modes: [],
+        models: [],
+        configOptions: [{ id: 'mode', name: 'Mode', category: 'mode', type: 'select' }],
+        fetchedAt: 1,
+      });
+      writeAcpModelConfigOptionsToFlock(flock, missingOptionsId, 'v1', {
+        'gemini-4-neon': [legacyObservedMode],
+      });
+
+      // Snapshot `configOptions` is not an array.
+      flock.set(machineFlockKeys.acpCapability(nonArrayConfigOptionsId), {
+        cliType: 'registry',
+        agentType: ANTIGRAVITY_AGENT_TYPE,
+        cacheVersion: 2,
+        sourceVersion: 'v2',
+        modes: [],
+        models: [],
+        configOptions: 'malformed',
+        fetchedAt: 1,
+      });
+      writeAcpModelConfigOptionsToFlock(flock, nonArrayConfigOptionsId, 'v1', {
+        'gemini-4-neon': [legacyObservedMode],
+      });
+
+      // Snapshot `mode.options` contains a malformed `yolo` choice missing `name`.
+      flock.set(machineFlockKeys.acpCapability(malformedChoiceId), {
+        cliType: 'builtin',
+        agentType: 'antigravity',
+        cacheVersion: 2,
+        sourceVersion: 'v2',
+        modes: [],
+        models: [],
+        configOptions: [
+          null,
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [null, { value: ANTIGRAVITY_YOLO_MODE_ID }],
+          },
+        ],
+        fetchedAt: 1,
+      });
+      writeAcpModelConfigOptionsToFlock(flock, malformedChoiceId, 'v1', {
+        'gemini-4-neon': [legacyObservedMode],
+      });
+
+      const capabilities = getMachineFlockAcpCapabilities(readMachineFlockRowsFromFlock(flock));
+      for (const id of [missingOptionsId, nonArrayConfigOptionsId, malformedChoiceId]) {
+        expect(
+          capabilities[getAcpCapabilityCacheKey(id)]?.observedModelConfigOptions?.['gemini-4-neon']
+        ).toEqual([legacyObservedMode]);
+      }
     });
   });
 

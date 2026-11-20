@@ -214,7 +214,10 @@ export function withAntigravityAcpStream(
       case 'session/set_config_option': {
         const isMode = message.method === 'session/set_mode' || params.configId === 'mode';
         const target = message.method === 'session/set_mode' ? params.modeId : params.value;
-        if (!isMode || typeof target !== 'string') return message;
+        if (!isMode || typeof target !== 'string') {
+          track('modes');
+          return message;
+        }
         const yolo = target === ANTIGRAVITY_YOLO_MODE_ID;
         if (yolo !== skipsPermissions) {
           // The flag is fixed for this process; the session's next turn restarts
