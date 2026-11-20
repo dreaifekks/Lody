@@ -102,6 +102,7 @@ describe('General settings sections', () => {
     expect(section('Experimental features')?.switches).toEqual([
       'Enable experimental features',
       'Low-stimulus mode',
+      'Streaming thought preview',
       'Boards',
       // Its own row: the article window serves every conversation, Boards on or off.
       'Article window',

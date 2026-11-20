@@ -68,6 +68,9 @@ Ownership: [README.md](README.md).
   Mobile buttons rest hidden but the newest turn's; a tap reveals one message's.
 - Live status precedes a trailing subagent task summary, including when the turn
   has no footer.
+- Opt-in streaming thought preview is presentation-only inside the trailing
+  collapsed activity header row, aligned to `conversation.railInset`,
+  non-selectable, and hides on expand or finish.
 - Streaming replies show Copy and initial turn-config info; Fork needs a finished turn.
 - `ConversationColumn` owns the gutter; row shells add no horizontal pad. EVERY
   row shares one rail: prose, process labels/steps, live status and the mobile
