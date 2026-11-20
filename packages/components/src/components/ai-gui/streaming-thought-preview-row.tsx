@@ -69,13 +69,12 @@ export function useThrottledStreamingThoughtPreview(
       return;
     }
 
-    if (candidate === null) {
-      clearTimer();
-      pendingTextRef.current = null;
+    const effectiveCandidate = candidate ?? pendingTextRef.current;
+    if (effectiveCandidate === null) {
       return;
     }
 
-    if (candidate === displayedTextRef.current) {
+    if (effectiveCandidate === displayedTextRef.current) {
       clearTimer();
       pendingTextRef.current = null;
       return;
@@ -84,9 +83,9 @@ export function useThrottledStreamingThoughtPreview(
     if (displayedTextRef.current === null) {
       clearTimer();
       pendingTextRef.current = null;
-      displayedTextRef.current = candidate;
+      displayedTextRef.current = effectiveCandidate;
       lastCommittedAtRef.current = Date.now();
-      setDisplayed({ key: resetKey, text: candidate });
+      setDisplayed({ key: resetKey, text: effectiveCandidate });
       return;
     }
 
@@ -95,13 +94,13 @@ export function useThrottledStreamingThoughtPreview(
     if (remaining <= 0) {
       clearTimer();
       pendingTextRef.current = null;
-      displayedTextRef.current = candidate;
+      displayedTextRef.current = effectiveCandidate;
       lastCommittedAtRef.current = now;
-      setDisplayed({ key: resetKey, text: candidate });
+      setDisplayed({ key: resetKey, text: effectiveCandidate });
       return;
     }
 
-    pendingTextRef.current = candidate;
+    pendingTextRef.current = effectiveCandidate;
     if (timerRef.current === null || scheduledMinHoldMsRef.current !== minHoldMs) {
       clearTimer();
       scheduledMinHoldMsRef.current = minHoldMs;

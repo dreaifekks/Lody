@@ -138,19 +138,24 @@ folding unchanged. Applies uniformly across providers
 ([decision](../notes/implemented/feature/2026-11-21-streaming-thought-preview.md)).
 
 - **Placement and lifecycle.** Renders inside the trailing collapsed
-  `activity_group_header` virtual row (skipping only the turn's footer) when
-  `message.finished !== true` and the group contains at least one thought,
-  independent of header shimmer. Sits on `conversation.railInset` in compact
-  secondary text (`line-clamp-2`, `select-none`, no card fill, no icons, no added
-  animation). Retains the last thought while subsequent tool calls run in the
-  same group, and disappears immediately on manual expand or turn finish.
-- **Extraction and anti-flicker.** Strips the Antigravity placeholder sentence,
-  HTML comments, unclosed leading `**` streaming headings, and inline Markdown,
-  bounded to 260 characters and tail-scanned so 138k+ thought entries stay fast.
-  Identical text deduplicates without resetting the hold timer; each sentence
-  holds for at least 1500 ms (4000 ms while Low-stimulus mode is on), coalescing
-  intermediate updates and keeping the previous valid preview when a streaming
-  chunk parses to empty within the same group.
+  `activity_group_header` virtual row (skipping only the same turn's trailing
+  `footer` and `subagent_tasks` rows) while the turn is unfinished
+  (`message.finished !== true && typeof message.endedAt !== 'number'`) and the
+  group contains at least one thought, independent of header shimmer. Sits on
+  `conversation.railInset` in compact secondary text (`line-clamp-2`,
+  `select-none`, no card fill, no icons, no added animation). Retains the last
+  valid thought while subsequent tool calls run or a newer thought chunk is
+  still unclosed/placeholder-only, and disappears immediately on manual expand
+  or turn finish.
+- **Extraction and anti-flicker.** Scans thought text in a single O(n) forward
+  pass tracking cross-paragraph HTML comments continuously, validates unclosed
+  leading `**` headings against full line bounds, and runs bounded inline
+  Markdown cleanup (1024-char prefix cap, preserving inline code literals and
+  balanced-parenthesis links) before capping output at 260 characters. Identical
+  text deduplicates without resetting the hold timer; each sentence holds for at
+  least 1500 ms (4000 ms while Low-stimulus mode is on), coalescing intermediate
+  updates and preserving any pending valid candidate when a streaming chunk
+  parses to empty within the same group.
 - **Code.** `packages/components/src/components/ai-gui/streaming-thought-preview.ts`,
   `packages/components/src/components/ai-gui/streaming-thought-preview-row.tsx`,
   and minimal row wiring in `packages/components/src/components/ai-gui/view.tsx`.

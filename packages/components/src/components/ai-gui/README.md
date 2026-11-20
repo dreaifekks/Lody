@@ -176,11 +176,16 @@ the reasoning behind those rules.
   image-preview rendering.
 - `streaming-thought-preview.ts` and `streaming-thought-preview-row.tsx` implement
   the opt-in live two-line thought preview beneath the trailing collapsed
-  activity header (`streamingThoughtPreviewFeatureEnabledAtom`): reverse-scans
-  `block.entries` for the latest thought (retaining it across subsequent tool
-  calls), strips the Antigravity placeholder, HTML comments, unclosed leading
-  `**` lines, and inline Markdown within bounded tail windows, and throttles
-  switches to 1500 ms (4000 ms in Low-stimulus mode). Presentation only;
+  activity header (`streamingThoughtPreviewFeatureEnabledAtom`, skipping only
+  same-turn `footer` and `subagent_tasks` rows, hidden when `finished === true`
+  or `endedAt` is numeric): reverse-scans `block.entries` for the latest valid
+  thought (falling back to earlier thoughts in the same group across tool calls
+  or incomplete chunks), strips the Antigravity placeholder, cross-paragraph
+  HTML comments, unclosed leading `**` lines, and inline Markdown (preserving
+  inline code literals and balanced-parenthesis links) via a single-pass O(n)
+  scan with bounded per-line cleanup, and throttles switches to 1500 ms (4000 ms
+  in Low-stimulus mode) without cancelling pending updates on transient empty
+  chunks. Presentation only;
   [decision](../../../../../.agents/notes/implemented/feature/2026-11-21-streaming-thought-preview.md).
   Pinned by `tests/streaming-thought-preview.test.ts`,
   `tests/streaming-thought-preview-ui.test.tsx`, and `StreamingThoughtPreview.stories.tsx`.

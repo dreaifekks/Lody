@@ -14,10 +14,10 @@ Translation: current
 将能力完全限制在前端渲染层（`streaming-thought-preview.ts` 与 `streaming-thought-preview-row.tsx`，`view.tsx` 仅做最小接线），由设备级实验开关 `streamingThoughtPreviewFeatureEnabledAtom`（`lody-streaming-thought-preview-enabled`）控制。
 
 - **前置同步上游 #2896。** 先 cherry-pick 上游 `1c2a979cb`（使流式状态与流式思考共享同一虚拟行测量边界），保证流式状态与思维预览位于同一测量边界内，并减少后续合并上游 `view.tsx` 时的冲突面。
-- **全 provider 统一、纯展示边界。** 对末尾收起活动组的 `block.entries` 逆序查找最新一条 `thought`，不按 provider 或模型分支；不改存储历史、不改 ACP 适配器、不走 presence，也不改变 #2353 回合结束后的折叠规则。
+- **全 provider 统一、纯展示边界。** 对末尾收起活动组的 `block.entries` 逆序查找最近一条可解析出有效预览的 `thought`（若最新思考仍为占位句或未闭合半截行，则回退同组前序有效思考），不按 provider 或模型分支；行匹配允许跨过同回合尾部的 `footer` 与 `subagent_tasks`，终态判定与 `history-apply.ts` 对齐（`finished === true || typeof endedAt === 'number'`）。不改存储历史、不改 ACP 适配器、不走 presence，也不改变 #2353 回合结束后的折叠规则。
 - **规避 #807 问题。** 上游 #807 曾跳过历史并把思考经实时状态推送，导致心跳拥堵被撤回（#852）。直接读取已同步历史既保留完整思考记录，也天然支持 LAN 远端会话。
-- **138k 大文本与流式半截保护。** 采用无回溯线性逆序扫段与尾部窗口截断，避免长思考卡顿；过滤 Antigravity 占位句（`"I'm thinking through how to approach this."`）、HTML 注释与行首未闭合的 `**` 半截加粗标题，清理行内 Markdown 同时保留 `snake_case` 标识符，长度上限 260 字符，界面侧对齐 `conversation.railInset`、`line-clamp-2`、`select-none`、无卡片底色与新增动画。
-- **防闪烁与低刺激节奏。** 相同文本去重且不重置计时器；常规模式每句至少停留 1500 ms，低刺激模式（`lowStimulusModeEnabledAtom`）拉长至 4000 ms，停留期内多次更新合并到最新一段；未闭合半截行在同组内保留上一条有效预览，切换组立即重置。行匹配不强依赖 `agentActivityShimmer`，低刺激与无 shimmer 态下仍正常显示；手动展开或回合结束后立即隐藏。
+- **138k 大文本与流式半截保护。** 采用单遍 O(n) 正向索引扫描持续维护跨段 HTML 注释状态，并按真实行界判定行首未闭合的 `**` 半截加粗标题，不截断单行、无正则回溯；仅对最终选中的候选行取 1024 字符有界前缀做行内 Markdown 清洗，过滤 Antigravity 占位句（`"I'm thinking through how to approach this."`），保护行内代码字面值（如 `` `__init__` ``）与带配对括号的链接，输出上限 260 字符，界面侧对齐 `conversation.railInset`、`line-clamp-2`、`select-none`、无卡片底色与新增动画。
+- **防闪烁与低刺激节奏。** 相同文本去重且不重置计时器；常规模式每句至少停留 1500 ms，低刺激模式（`lowStimulusModeEnabledAtom`）拉长至 4000 ms，停留期内多次更新合并到最新一段；瞬时未闭合半截行在同组内既保留当前预览也不丢弃已排队的有效候选，切换组立即重置。行匹配不强依赖 `agentActivityShimmer`，低刺激与无 shimmer 态下仍正常显示；手动展开或回合结束后立即隐藏。
 
 ## 备选方案
 

@@ -121,9 +121,9 @@ describe('StreamingThoughtPreview throttling and low-stimulus behavior', () => {
     expect(previewNode()?.textContent).toBe('Third sentence.');
   });
 
-  it('retains the last valid preview on unclosed bold chunks and resets on group switch', async () => {
+  it('retains the last valid preview and pending throttled candidate on unclosed bold chunks, and resets on group switch', async () => {
     const store = makeStore(false);
-    const renderPreview = (groupKey: string, text: string) =>
+    const renderPreview = (groupKey: string, entries: AssistantActivityRenderItem[]) =>
       act(async () => {
         root.render(
           createElement(
@@ -131,25 +131,39 @@ describe('StreamingThoughtPreview throttling and low-stimulus behavior', () => {
             { store },
             createElement(StreamingThoughtPreview, {
               groupKey,
-              entries: [makeThoughtEntry(0, text)],
+              entries,
             })
           )
         );
       });
 
-    await renderPreview('g1', 'Checking existing layout.');
+    await renderPreview('g1', [makeThoughtEntry(0, 'Checking existing layout.')]);
     expect(previewNode()?.textContent).toBe('Checking existing layout.');
 
-    // Unclosed leading bold parses to null -> retains previous valid preview in the same group.
-    await renderPreview('g1', '**Half typed heading');
+    // Queue a newer valid candidate inside the 1500ms hold window.
+    await act(async () => vi.advanceTimersByTime(500));
+    await renderPreview('g1', [makeThoughtEntry(0, 'Queued valid update.')]);
     expect(previewNode()?.textContent).toBe('Checking existing layout.');
+
+    // A transient unclosed bold chunk (null candidate) must not cancel the pending update.
+    await act(async () => vi.advanceTimersByTime(400));
+    await renderPreview('g1', [makeThoughtEntry(0, '**Half typed heading')]);
+    expect(previewNode()?.textContent).toBe('Checking existing layout.');
+
+    await act(async () => vi.advanceTimersByTime(600));
+    expect(previewNode()?.textContent).toBe('Queued valid update.');
 
     // Switching to another group resets immediately without carrying the prior group's text.
-    await renderPreview('g2', '**Half typed heading');
+    await renderPreview('g2', [makeThoughtEntry(0, '**Half typed heading')]);
     expect(previewNode()).toBeNull();
 
-    await renderPreview('g2', 'Fresh group thought.');
-    expect(previewNode()?.textContent).toBe('Fresh group thought.');
+    // Mounting a group whose newest thought is unclosed still falls back to an earlier valid thought.
+    await renderPreview('g3', [
+      makeThoughtEntry(0, 'Earlier valid thought.'),
+      { itemIndex: 1, content: makeToolCall('view.tsx') },
+      makeThoughtEntry(2, '**Half typed heading'),
+    ]);
+    expect(previewNode()?.textContent).toBe('Earlier valid thought.');
   });
 
   it('stretches the hold window to 4000ms in low-stimulus mode without adding animation', async () => {
@@ -360,6 +374,41 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
         { type: 'thought', text: 'Inspecting before writing prose.' },
         { type: 'text', text: 'Streaming the answer now.' },
       ])
+    );
+    expect(container.querySelector('[data-streaming-thought-preview]')).toBeNull();
+  });
+
+  it('keeps the thought preview visible when the same live turn has a trailing subagent task summary', async () => {
+    await renderStream(
+      buildTurnHistory([
+        {
+          type: 'subagent_task',
+          taskId: 'worker-1',
+          status: 'in_progress',
+          taskType: 'subagent',
+          subagentType: 'Explore',
+          description: 'Trace layout boundaries',
+          isBackgrounded: true,
+        },
+        {
+          type: 'thought',
+          text: 'Reviewing worker findings before patching the renderer.',
+        },
+      ])
+    );
+
+    expect(container.querySelector('[data-subagent-task-id="worker-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-streaming-thought-preview]')?.textContent).toBe(
+      'Reviewing worker findings before patching the renderer.'
+    );
+  });
+
+  it('hides the preview when the turn has a numeric endedAt even if finished is false', async () => {
+    await renderStream(
+      buildTurnHistory([{ type: 'thought', text: 'Finalizing the response.' }], {
+        finished: false,
+        endedAt: Date.parse('2026-11-21T00:00:28Z'),
+      })
     );
     expect(container.querySelector('[data-streaming-thought-preview]')).toBeNull();
   });
