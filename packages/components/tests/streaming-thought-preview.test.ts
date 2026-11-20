@@ -313,6 +313,20 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     expect(distinctTickClosedBold.cleanedCharCount).toBeLessThanOrEqual(
       STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP
     );
+
+    // 110k+ repeated `****` formatting-only lines and 100k+ unclosed `**a` lines without backticks
+    // must never scan past each line's `[start, end)` bounds and must fall back cleanly.
+    const repeatedStars = `Valid earlier paragraph.\n\n${'****\n'.repeat(110_400)}`;
+    const repeatedStarsResult = inspectStreamingThoughtPreview(repeatedStars);
+    expect(repeatedStarsResult.preview).toBe('Valid earlier paragraph.');
+    expect(repeatedStarsResult.cleanedLineCount).toBe(1);
+    expect(repeatedStarsResult.cleanedCharCount).toBe('Valid earlier paragraph.'.length);
+
+    const repeatedUnclosedBold = `Valid earlier paragraph.\n\n${'**a\n'.repeat(100_000)}`;
+    const repeatedUnclosedBoldResult = inspectStreamingThoughtPreview(repeatedUnclosedBold);
+    expect(repeatedUnclosedBoldResult.preview).toBe('Valid earlier paragraph.');
+    expect(repeatedUnclosedBoldResult.cleanedLineCount).toBe(1);
+    expect(repeatedUnclosedBoldResult.cleanedCharCount).toBe('Valid earlier paragraph.'.length);
   });
 });
 

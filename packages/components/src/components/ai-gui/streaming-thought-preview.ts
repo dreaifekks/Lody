@@ -69,20 +69,20 @@ const isFormattingOnlyRange = (text: string, start: number, end: number): boolea
   return true;
 };
 
-const trimHorizontalRange = (
-  text: string,
-  start: number,
-  end: number
-): { start: number; end: number } => {
-  let trimmedStart = start;
-  let trimmedEnd = end;
-  while (trimmedStart < trimmedEnd && isHorizontalWhitespaceOrCr(text.charCodeAt(trimmedStart))) {
-    trimmedStart += 1;
+const trimHorizontalStart = (text: string, start: number, end: number): number => {
+  let cursor = start;
+  while (cursor < end && isHorizontalWhitespaceOrCr(text.charCodeAt(cursor))) {
+    cursor += 1;
   }
-  while (trimmedEnd > trimmedStart && isHorizontalWhitespaceOrCr(text.charCodeAt(trimmedEnd - 1))) {
-    trimmedEnd -= 1;
+  return cursor;
+};
+
+const trimHorizontalEnd = (text: string, start: number, end: number): number => {
+  let cursor = end;
+  while (cursor > start && isHorizontalWhitespaceOrCr(text.charCodeAt(cursor - 1))) {
+    cursor -= 1;
   }
-  return { start: trimmedStart, end: trimmedEnd };
+  return cursor;
 };
 
 const startsWithFenceAt = (text: string, start: number, end: number): boolean => {
@@ -117,9 +117,29 @@ const isEscapedByBackslash = (text: string, index: number, boundStart: number): 
   return (backslashes & 1) === 1;
 };
 
+const findCharCodeInRange = (text: string, code: number, start: number, end: number): number => {
+  for (let index = start; index < end; index += 1) {
+    if (text.charCodeAt(index) === code) {
+      return index;
+    }
+  }
+  return -1;
+};
+
+const findDoubleStarInRange = (text: string, start: number, end: number): number => {
+  const limit = end - 1;
+  for (let index = start; index < limit; index += 1) {
+    if (text.charCodeAt(index) === 42 && text.charCodeAt(index + 1) === 42) {
+      return index;
+    }
+  }
+  return -1;
+};
+
 /**
- * Builds a single-pass O(n) index of CommonMark inline code span closing offsets
- * within `[start, end)`. Returns `null` when no paired code spans exist.
+ * Builds a single-pass O(end - start) index of CommonMark inline code span closing
+ * offsets within `[start, end)` without ever scanning past `end`. Returns `null`
+ * when no paired code spans exist.
  *
  * Unescaped backtick runs may open or close spans; backslash-escaped runs (`\``)
  * never open a span, but may still close an open span because backslashes are
@@ -130,16 +150,16 @@ const buildCodeSpanEndMap = (
   start: number,
   end: number
 ): Map<number, number> | null => {
-  const firstTick = text.indexOf('`', start);
-  if (firstTick === -1 || firstTick >= end) {
+  const firstTick = findCharCodeInRange(text, 96, start, end);
+  if (firstTick === -1) {
     return null;
   }
 
   const runs: Array<{ pos: number; len: number; escaped: boolean }> = [];
   let cursor = firstTick;
   while (cursor < end) {
-    const pos = text.indexOf('`', cursor);
-    if (pos === -1 || pos >= end) {
+    const pos = findCharCodeInRange(text, 96, cursor, end);
+    if (pos === -1) {
       break;
     }
     const len = countBacktickRun(text, pos, end);
@@ -170,20 +190,21 @@ const buildCodeSpanEndMap = (
 
 /**
  * Checks whether a line starting with `**` lacks a matching closing `**` outside
- * inline code spans within `[start, end)` in O(n) time.
+ * inline code spans within `[start, end)` in O(end - start) time without scanning
+ * past `end`.
  */
 const hasUnclosedLeadingBoldRange = (text: string, start: number, end: number): boolean => {
   if (end - start < 2 || text.charCodeAt(start) !== 42 || text.charCodeAt(start + 1) !== 42) {
     return false;
   }
 
-  let nextBold = text.indexOf('**', start + 2);
-  if (nextBold === -1 || nextBold + 2 > end) {
+  let nextBold = findDoubleStarInRange(text, start + 2, end);
+  if (nextBold === -1) {
     return true;
   }
 
-  let nextTick = text.indexOf('`', start + 2);
-  if (nextTick === -1 || nextTick >= nextBold) {
+  let nextTick = findCharCodeInRange(text, 96, start + 2, nextBold);
+  if (nextTick === -1) {
     return false;
   }
 
@@ -195,13 +216,13 @@ const hasUnclosedLeadingBoldRange = (text: string, start: number, end: number): 
   let cursor = start + 2;
   while (cursor < end) {
     if (nextBold < cursor) {
-      nextBold = text.indexOf('**', cursor);
+      nextBold = findDoubleStarInRange(text, cursor, end);
     }
-    if (nextBold === -1 || nextBold + 2 > end) {
+    if (nextBold === -1) {
       return true;
     }
     if (nextTick !== -1 && nextTick < cursor) {
-      nextTick = text.indexOf('`', cursor);
+      nextTick = findCharCodeInRange(text, 96, cursor, nextBold);
     }
     if (nextTick !== -1 && nextTick < nextBold) {
       const spanEnd = codeSpanEndMap.get(nextTick);
@@ -606,8 +627,8 @@ const sliceCodeSpanSafePrefix = (
 
   const capEnd = start + cap;
   const safeCapEnd = trimSplitBacktickRunEnd(source, start, capEnd, end);
-  const firstTick = source.indexOf('`', start);
-  if (firstTick === -1 || firstTick >= capEnd) {
+  const firstTick = findCharCodeInRange(source, 96, start, capEnd);
+  if (firstTick === -1) {
     return source.slice(start, safeCapEnd);
   }
 
@@ -620,16 +641,21 @@ const sliceCodeSpanSafePrefix = (
   while (cursor < capEnd) {
     const spanEnd = codeSpanEndMap.get(cursor);
     if (spanEnd === undefined) {
-      const nextTick = source.indexOf('`', cursor + countBacktickRun(source, cursor, end));
-      if (nextTick === -1 || nextTick >= capEnd) {
+      const nextTick = findCharCodeInRange(
+        source,
+        96,
+        cursor + countBacktickRun(source, cursor, end),
+        capEnd
+      );
+      if (nextTick === -1) {
         return source.slice(start, safeCapEnd);
       }
       cursor = nextTick;
       continue;
     }
     if (spanEnd <= capEnd) {
-      const nextTick = source.indexOf('`', spanEnd);
-      if (nextTick === -1 || nextTick >= capEnd) {
+      const nextTick = findCharCodeInRange(source, 96, spanEnd, capEnd);
+      if (nextTick === -1) {
         return source.slice(start, safeCapEnd);
       }
       cursor = nextTick;
@@ -726,12 +752,13 @@ const cleanCandidateLineRange = (
   rawEnd: number,
   maxBudgetChars: number
 ): { preview: string | null; cleanedChars: number } => {
-  let { start, end } = trimHorizontalRange(source, rawStart, rawEnd);
+  let start = trimHorizontalStart(source, rawStart, rawEnd);
+  let end = trimHorizontalEnd(source, start, rawEnd);
   if (
     start >= end ||
     startsWithFenceAt(source, start, end) ||
-    hasUnclosedLeadingBoldRange(source, start, end) ||
     isFormattingOnlyRange(source, start, end) ||
+    hasUnclosedLeadingBoldRange(source, start, end) ||
     isEmptyLinkOnlyRange(source, start, end)
   ) {
     return { preview: null, cleanedChars: 0 };
@@ -740,12 +767,12 @@ const cleanCandidateLineRange = (
   const placeholderProbe = source.slice(start, Math.min(end, start + PREFIX_PROBE_CHARS));
   const placeholderMatch = AGY_PLACEHOLDER_PREFIX_RE.exec(placeholderProbe);
   if (placeholderMatch) {
-    start += placeholderMatch[0].length;
-    ({ start, end } = trimHorizontalRange(source, start, end));
+    start = trimHorizontalStart(source, start + placeholderMatch[0].length, end);
+    end = trimHorizontalEnd(source, start, end);
     if (
       start >= end ||
-      hasUnclosedLeadingBoldRange(source, start, end) ||
       isFormattingOnlyRange(source, start, end) ||
+      hasUnclosedLeadingBoldRange(source, start, end) ||
       isEmptyLinkOnlyRange(source, start, end)
     ) {
       return { preview: null, cleanedChars: 0 };
@@ -758,15 +785,15 @@ const cleanCandidateLineRange = (
     if (!prefixMatch) {
       break;
     }
-    start += prefixMatch[0].length;
-    ({ start, end } = trimHorizontalRange(source, start, end));
+    start = trimHorizontalStart(source, start + prefixMatch[0].length, end);
+    end = trimHorizontalEnd(source, start, end);
   }
 
   if (
     start >= end ||
     startsWithFenceAt(source, start, end) ||
-    hasUnclosedLeadingBoldRange(source, start, end) ||
     isFormattingOnlyRange(source, start, end) ||
+    hasUnclosedLeadingBoldRange(source, start, end) ||
     isEmptyLinkOnlyRange(source, start, end)
   ) {
     return { preview: null, cleanedChars: 0 };
@@ -843,9 +870,10 @@ export const inspectStreamingThoughtPreview = (
     }
 
     if (!inHtmlComment && nextCommentOpen === -1) {
-      const trimmed = trimHorizontalRange(rawText, pos, lineEnd0);
-      if (trimmed.start < trimmed.end) {
-        lines.push({ paragraphId, start: trimmed.start, end: trimmed.end });
+      const start = trimHorizontalStart(rawText, pos, lineEnd0);
+      const end = trimHorizontalEnd(rawText, start, lineEnd0);
+      if (start < end) {
+        lines.push({ paragraphId, start, end });
       }
       pos = nl0 === -1 ? len : nl0 + 1;
       continue;
@@ -879,9 +907,10 @@ export const inspectStreamingThoughtPreview = (
           rawLineEnd > lineStart && rawText.charCodeAt(rawLineEnd - 1) === 13
             ? rawLineEnd - 1
             : rawLineEnd;
-        const trimmed = trimHorizontalRange(rawText, lineStart, lineEnd);
-        if (trimmed.start < trimmed.end) {
-          lines.push({ paragraphId, start: trimmed.start, end: trimmed.end });
+        const start = trimHorizontalStart(rawText, lineStart, lineEnd);
+        const end = trimHorizontalEnd(rawText, start, lineEnd);
+        if (start < end) {
+          lines.push({ paragraphId, start, end });
         }
         lineStart = nl === -1 || nl >= paraEnd ? paraEnd : nl + 1;
       }
@@ -914,9 +943,10 @@ export const inspectStreamingThoughtPreview = (
       }
       if (!hasLineBuf) {
         if (unbufferedStart !== -1 && unbufferedStart < end) {
-          const trimmed = trimHorizontalRange(rawText, unbufferedStart, end);
-          if (trimmed.start < trimmed.end) {
-            lines.push({ paragraphId, start: trimmed.start, end: trimmed.end });
+          const start = trimHorizontalStart(rawText, unbufferedStart, end);
+          const trimmedEnd = trimHorizontalEnd(rawText, start, end);
+          if (start < trimmedEnd) {
+            lines.push({ paragraphId, start, end: trimmedEnd });
           }
         }
       } else {
