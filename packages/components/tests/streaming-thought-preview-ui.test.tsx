@@ -166,6 +166,49 @@ describe('StreamingThoughtPreview throttling and low-stimulus behavior', () => {
     expect(previewNode()?.textContent).toBe('Earlier valid thought.');
   });
 
+  it('suppresses incremental agy placeholder prefixes without flashing or delaying real prose', async () => {
+    const store = makeStore(false);
+    const renderPreview = (text: string) =>
+      act(async () => {
+        root.render(
+          createElement(
+            Provider,
+            { store },
+            createElement(StreamingThoughtPreview, {
+              groupKey: 'agy-prefix',
+              entries: [makeThoughtEntry(0, text)],
+            })
+          )
+        );
+      });
+
+    await renderPreview("I'm");
+    expect(previewNode()).toBeNull();
+
+    await act(async () => vi.advanceTimersByTime(300));
+    await renderPreview("I'm thinking through how to approach this");
+    expect(previewNode()).toBeNull();
+
+    await act(async () => vi.advanceTimersByTime(300));
+    await renderPreview("I'm thinking through how to approach this.");
+    expect(previewNode()).toBeNull();
+
+    // Real prose arriving next displays immediately without waiting 1500ms on a placeholder prefix.
+    await act(async () => vi.advanceTimersByTime(200));
+    await renderPreview("I'm thinking through how to approach this.\n\n\nChecking view.tsx next.");
+    expect(previewNode()?.textContent).toBe('Checking view.tsx next.');
+
+    // A queued valid update survives a transient trailing placeholder prefix and still commits at 1500ms.
+    await act(async () => vi.advanceTimersByTime(400));
+    await renderPreview('Queued follow-up thought.');
+    await act(async () => vi.advanceTimersByTime(400));
+    await renderPreview("I'm thinking through");
+    expect(previewNode()?.textContent).toBe('Checking view.tsx next.');
+
+    await act(async () => vi.advanceTimersByTime(700));
+    expect(previewNode()?.textContent).toBe('Queued follow-up thought.');
+  });
+
   it('stretches the hold window to 4000ms in low-stimulus mode without adding animation', async () => {
     const store = makeStore(true);
     const renderPreview = (text: string) =>

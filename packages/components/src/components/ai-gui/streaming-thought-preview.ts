@@ -2,11 +2,15 @@ import type { AssistantActivityRenderItem } from './assistant-turn-render-blocks
 
 export const STREAMING_THOUGHT_PREVIEW_MAX_CHARS = 260;
 export const STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP = 1_024;
+export const STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS = 8_192;
+export const STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES = 32;
 export const STREAMING_THOUGHT_PREVIEW_MIN_HOLD_MS = 1_500;
 export const STREAMING_THOUGHT_PREVIEW_LOW_STIMULUS_HOLD_MS = 4_000;
 
 const WORD_BOUNDARY_LOOKBACK_CHARS = 32;
 const PREFIX_PROBE_CHARS = 96;
+const MAX_LINK_RECURSION_DEPTH = 4;
+const AGY_PLACEHOLDER_LOWER = "i'm thinking through how to approach this.";
 const AGY_PLACEHOLDER_PREFIX_RE = /^i'm thinking through how to approach this\.(?:\s+|$)/i;
 const BLOCK_PREFIX_RE = /^(?:>\s*|#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)/;
 
@@ -15,6 +19,11 @@ type CandidateLine = {
   start: number;
   end: number;
   text?: string;
+};
+
+type InlineSegment = {
+  kind: 'text' | 'code';
+  value: string;
 };
 
 export type StreamingThoughtPreviewInspection = {
@@ -26,9 +35,34 @@ export type StreamingThoughtPreviewInspection = {
 const isHorizontalWhitespaceOrCr = (code: number): boolean =>
   code === 32 || code === 9 || code === 13 || code === 11 || code === 12 || code === 160;
 
+const isAsciiWordCode = (code: number): boolean =>
+  (code >= 48 && code <= 57) ||
+  (code >= 65 && code <= 90) ||
+  (code >= 97 && code <= 122) ||
+  code === 95;
+
+const isFormattingOnlyChar = (code: number): boolean =>
+  isHorizontalWhitespaceOrCr(code) ||
+  code === 35 || // #
+  code === 42 || // *
+  code === 43 || // +
+  code === 45 || // -
+  code === 62 || // >
+  code === 95 || // _
+  code === 126; // ~
+
 const isBlankLineRange = (text: string, start: number, end: number): boolean => {
   for (let index = start; index < end; index += 1) {
     if (!isHorizontalWhitespaceOrCr(text.charCodeAt(index))) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isFormattingOnlyRange = (text: string, start: number, end: number): boolean => {
+  for (let index = start; index < end; index += 1) {
+    if (!isFormattingOnlyChar(text.charCodeAt(index))) {
       return false;
     }
   }
@@ -63,12 +97,84 @@ const startsWithFenceAt = (text: string, start: number, end: number): boolean =>
   );
 };
 
+const countBacktickRun = (text: string, index: number, limit: number): number => {
+  let count = 0;
+  while (index + count < limit && text.charCodeAt(index + count) === 96) {
+    count += 1;
+  }
+  return count;
+};
+
+/**
+ * Finds the exclusive end offset of a CommonMark inline code span starting at
+ * `openIndex` within `[openIndex, limit)`. Returns `-1` when unclosed.
+ * Accepts an optional per-line `unclosedLengths` set so repeated unclosed runs
+ * of the same length never rescan to `limit`.
+ */
+const findInlineCodeSpanEnd = (
+  text: string,
+  openIndex: number,
+  limit: number,
+  unclosedLengths?: Set<number>
+): number => {
+  const tickCount = countBacktickRun(text, openIndex, limit);
+  if (tickCount === 0 || unclosedLengths?.has(tickCount)) {
+    return -1;
+  }
+
+  let search = openIndex + tickCount;
+  while (search < limit) {
+    const nextTick = text.indexOf('`', search);
+    if (nextTick === -1 || nextTick >= limit) {
+      break;
+    }
+    const runLength = countBacktickRun(text, nextTick, limit);
+    if (runLength === tickCount) {
+      return nextTick + runLength;
+    }
+    search = nextTick + runLength;
+  }
+
+  unclosedLengths?.add(tickCount);
+  return -1;
+};
+
+/**
+ * Checks whether a line starting with `**` lacks a matching closing `**` outside
+ * inline code spans within `[start, end)`.
+ */
 const hasUnclosedLeadingBoldRange = (text: string, start: number, end: number): boolean => {
   if (end - start < 2 || text.charCodeAt(start) !== 42 || text.charCodeAt(start + 1) !== 42) {
     return false;
   }
-  const closeIndex = text.indexOf('**', start + 2);
-  return closeIndex === -1 || closeIndex + 2 > end;
+
+  let cursor = start + 2;
+  let unclosedTicks: Set<number> | undefined;
+  while (cursor < end) {
+    const nextBold = text.indexOf('**', cursor);
+    if (nextBold === -1 || nextBold + 2 > end) {
+      return true;
+    }
+    const nextTick = text.indexOf('`', cursor);
+    if (nextTick !== -1 && nextTick < nextBold) {
+      unclosedTicks ??= new Set<number>();
+      const spanEnd = findInlineCodeSpanEnd(text, nextTick, end, unclosedTicks);
+      if (spanEnd !== -1) {
+        cursor = spanEnd;
+        continue;
+      }
+      cursor = nextTick + countBacktickRun(text, nextTick, end);
+      continue;
+    }
+    return false;
+  }
+
+  return true;
+};
+
+const isStreamingAgyPlaceholderPrefix = (text: string): boolean => {
+  const lower = text.toLowerCase();
+  return lower.length > 0 && AGY_PLACEHOLDER_LOWER.startsWith(lower);
 };
 
 const truncatePreview = (text: string): string => {
@@ -85,121 +191,170 @@ const truncatePreview = (text: string): string => {
   return `${text.slice(0, cut).trimEnd()}…`;
 };
 
-const extractInlineCodeSpans = (
-  text: string
-): { masked: string; spans: string[]; openToken: string; closeToken: string } => {
-  const spans: string[] = [];
-  if (!text.includes('`')) {
-    return { masked: text, spans, openToken: '', closeToken: '' };
+const stripTrailingAtxHashes = (text: string): string => {
+  let end = text.length;
+  while (end > 0 && isHorizontalWhitespaceOrCr(text.charCodeAt(end - 1))) {
+    end -= 1;
   }
-
-  let openToken = '\uE000';
-  let closeToken = '\uE001';
-  while (text.includes(openToken) || text.includes(closeToken)) {
-    openToken += '\uE000';
-    closeToken += '\uE001';
+  let hashStart = end;
+  while (hashStart > 0 && text.charCodeAt(hashStart - 1) === 35) {
+    hashStart -= 1;
   }
-
-  let masked = '';
-  let index = 0;
-  while (index < text.length) {
-    if (text.charCodeAt(index) !== 96) {
-      masked += text[index];
-      index += 1;
-      continue;
+  if (
+    hashStart < end &&
+    hashStart > 0 &&
+    isHorizontalWhitespaceOrCr(text.charCodeAt(hashStart - 1))
+  ) {
+    let spaceStart = hashStart;
+    while (spaceStart > 0 && isHorizontalWhitespaceOrCr(text.charCodeAt(spaceStart - 1))) {
+      spaceStart -= 1;
     }
-
-    let tickCount = 0;
-    while (index + tickCount < text.length && text.charCodeAt(index + tickCount) === 96) {
-      tickCount += 1;
-    }
-
-    let search = index + tickCount;
-    let closeStart = -1;
-    while (search < text.length) {
-      const nextTick = text.indexOf('`', search);
-      if (nextTick === -1) {
-        break;
-      }
-      let runLength = 0;
-      while (nextTick + runLength < text.length && text.charCodeAt(nextTick + runLength) === 96) {
-        runLength += 1;
-      }
-      if (runLength === tickCount) {
-        closeStart = nextTick;
-        break;
-      }
-      search = nextTick + runLength;
-    }
-
-    if (closeStart === -1) {
-      index += tickCount;
-      continue;
-    }
-
-    let content = text.slice(index + tickCount, closeStart);
-    if (
-      content.length >= 2 &&
-      content.startsWith(' ') &&
-      content.endsWith(' ') &&
-      content.trim().length > 0
-    ) {
-      content = content.slice(1, -1);
-    }
-
-    const spanIndex = spans.length;
-    spans.push(content);
-    masked += `${openToken}${spanIndex}${closeToken}`;
-    index = closeStart + tickCount;
+    return text.slice(0, spaceStart);
   }
-
-  return { masked, spans, openToken, closeToken };
+  return text;
 };
 
-const restoreInlineCodeSpans = (
-  text: string,
-  spans: readonly string[],
-  openToken: string,
-  closeToken: string
-): string => {
-  if (spans.length === 0) {
+/** Linear O(n) single-`*` emphasis stripping (leaves `2 * 3` untouched). */
+const stripStarEmphasis = (text: string): string => {
+  if (!text.includes('*')) {
     return text;
   }
-
-  let restored = '';
+  const len = text.length;
+  let result = '';
   let cursor = 0;
-  while (cursor < text.length) {
-    const start = text.indexOf(openToken, cursor);
-    if (start === -1) {
-      restored += text.slice(cursor);
+  while (cursor < len) {
+    const open = text.indexOf('*', cursor);
+    if (open === -1) {
+      result += text.slice(cursor);
       break;
     }
-    restored += text.slice(cursor, start);
-    const idStart = start + openToken.length;
-    const end = text.indexOf(closeToken, idStart);
-    if (end === -1) {
-      restored += text.slice(start);
+    if (open + 1 >= len || isHorizontalWhitespaceOrCr(text.charCodeAt(open + 1))) {
+      result += text.slice(cursor, open + 1);
+      cursor = open + 1;
+      continue;
+    }
+    const close = text.indexOf('*', open + 1);
+    if (close === -1) {
+      result += text.slice(cursor);
       break;
     }
-    const spanIndex = Number(text.slice(idStart, end));
-    restored += spans[spanIndex] ?? '';
-    cursor = end + closeToken.length;
+    if (isHorizontalWhitespaceOrCr(text.charCodeAt(close - 1))) {
+      result += text.slice(cursor, close);
+      cursor = close;
+      continue;
+    }
+    result += text.slice(cursor, open);
+    result += text.slice(open + 1, close);
+    cursor = close + 1;
   }
-  return restored;
+  return result;
 };
 
-/**
- * Replaces Markdown links/images `[label](url)` / `![alt](url)` with `label` / `alt`
- * in a single linear pass, balancing nested parentheses inside URLs.
- */
-const replaceMarkdownLinks = (text: string): string => {
-  if (!text.includes('[')) {
+/** Linear O(n) single-`_` emphasis stripping (preserves intraword `snake_case`). */
+const stripUnderscoreEmphasis = (text: string): string => {
+  if (!text.includes('_')) {
+    return text;
+  }
+  const len = text.length;
+  const validClosers: number[] = [];
+  for (let index = 1; index < len; index += 1) {
+    if (
+      text.charCodeAt(index) === 95 &&
+      !isHorizontalWhitespaceOrCr(text.charCodeAt(index - 1)) &&
+      (index + 1 === len || !isAsciiWordCode(text.charCodeAt(index + 1)))
+    ) {
+      validClosers.push(index);
+    }
+  }
+  if (validClosers.length === 0) {
     return text;
   }
 
   let result = '';
+  let cursor = 0;
+  let closerPtr = 0;
+  while (cursor < len) {
+    const open = text.indexOf('_', cursor);
+    if (open === -1) {
+      result += text.slice(cursor);
+      break;
+    }
+    const isValidOpener =
+      (open === 0 || !isAsciiWordCode(text.charCodeAt(open - 1))) &&
+      open + 1 < len &&
+      !isHorizontalWhitespaceOrCr(text.charCodeAt(open + 1));
+    if (!isValidOpener) {
+      result += text.slice(cursor, open + 1);
+      cursor = open + 1;
+      continue;
+    }
+
+    while (closerPtr < validClosers.length && validClosers[closerPtr]! <= open) {
+      closerPtr += 1;
+    }
+    if (closerPtr >= validClosers.length) {
+      result += text.slice(cursor);
+      break;
+    }
+    const close = validClosers[closerPtr]!;
+    let innerOpener = -1;
+    let probe = text.indexOf('_', open + 1);
+    while (probe !== -1 && probe < close) {
+      if (
+        isHorizontalWhitespaceOrCr(text.charCodeAt(probe - 1)) &&
+        probe + 1 < close &&
+        !isHorizontalWhitespaceOrCr(text.charCodeAt(probe + 1))
+      ) {
+        innerOpener = probe;
+        break;
+      }
+      probe = text.indexOf('_', probe + 1);
+    }
+    if (innerOpener !== -1) {
+      result += text.slice(cursor, innerOpener);
+      cursor = innerOpener;
+      continue;
+    }
+
+    result += text.slice(cursor, open);
+    result += text.slice(open + 1, close);
+    cursor = close + 1;
+    closerPtr += 1;
+  }
+  return result;
+};
+
+/**
+ * Replaces Markdown links/images `[label](url "title")` / `![alt](url)` with their
+ * label text in a linear pass: skips inline code spans, ignores parentheses inside
+ * quoted link titles, balances nested URL parentheses, and recursively resolves
+ * nested links/images such as `[![alt](logo.png)](https://example.org)`.
+ */
+const replaceMarkdownLinks = (text: string, depth = 0): string => {
+  if (!text.includes('[') || depth > MAX_LINK_RECURSION_DEPTH) {
+    return text;
+  }
+
+  const len = text.length;
+  let result = '';
   let index = 0;
-  while (index < text.length) {
+  let unclosedTicks: Set<number> | undefined;
+
+  while (index < len) {
+    if (text.charCodeAt(index) === 96) {
+      unclosedTicks ??= new Set<number>();
+      const spanEnd = findInlineCodeSpanEnd(text, index, len, unclosedTicks);
+      if (spanEnd !== -1) {
+        result += text.slice(index, spanEnd);
+        index = spanEnd;
+        continue;
+      }
+      const tickCount = countBacktickRun(text, index, len);
+      result += text.slice(index, index + tickCount);
+      index += tickCount;
+      continue;
+    }
+
     const isImage = text[index] === '!' && text[index + 1] === '[';
     if (!isImage && text[index] !== '[') {
       result += text[index];
@@ -210,15 +365,25 @@ const replaceMarkdownLinks = (text: string): string => {
     const labelStart = isImage ? index + 2 : index + 1;
     let labelDepth = 1;
     let labelEnd = labelStart;
-    while (labelEnd < text.length && labelDepth > 0) {
-      const ch = text[labelEnd];
-      if (ch === '\\' && labelEnd + 1 < text.length) {
+    while (labelEnd < len && labelDepth > 0) {
+      const code = text.charCodeAt(labelEnd);
+      if (code === 92 && labelEnd + 1 < len) {
         labelEnd += 2;
         continue;
       }
-      if (ch === '[') {
+      if (code === 96) {
+        unclosedTicks ??= new Set<number>();
+        const spanEnd = findInlineCodeSpanEnd(text, labelEnd, len, unclosedTicks);
+        if (spanEnd !== -1) {
+          labelEnd = spanEnd;
+          continue;
+        }
+        labelEnd += countBacktickRun(text, labelEnd, len);
+        continue;
+      }
+      if (code === 91) {
         labelDepth += 1;
-      } else if (ch === ']') {
+      } else if (code === 93) {
         labelDepth -= 1;
         if (labelDepth === 0) {
           break;
@@ -234,11 +399,28 @@ const replaceMarkdownLinks = (text: string): string => {
     }
 
     let parenDepth = 1;
+    let quoteChar: string | null = null;
     let urlEnd = labelEnd + 2;
-    while (urlEnd < text.length && parenDepth > 0) {
-      const ch = text[urlEnd];
-      if (ch === '\\' && urlEnd + 1 < text.length) {
+    while (urlEnd < len && parenDepth > 0) {
+      const ch = text[urlEnd]!;
+      if (ch === '\\' && urlEnd + 1 < len) {
         urlEnd += 2;
+        continue;
+      }
+      if (quoteChar !== null) {
+        if (ch === quoteChar) {
+          quoteChar = null;
+        }
+        urlEnd += 1;
+        continue;
+      }
+      if (
+        (ch === '"' || ch === "'") &&
+        urlEnd > labelEnd + 2 &&
+        isHorizontalWhitespaceOrCr(text.charCodeAt(urlEnd - 1))
+      ) {
+        quoteChar = ch;
+        urlEnd += 1;
         continue;
       }
       if (ch === '(') {
@@ -258,7 +440,8 @@ const replaceMarkdownLinks = (text: string): string => {
       continue;
     }
 
-    result += text.slice(labelStart, labelEnd);
+    const labelSlice = text.slice(labelStart, labelEnd);
+    result += replaceMarkdownLinks(labelSlice, depth + 1);
     index = urlEnd + 1;
   }
 
@@ -266,20 +449,118 @@ const replaceMarkdownLinks = (text: string): string => {
 };
 
 /**
- * Validates a full candidate line using index-based checks (so 138k single-line
- * unclosed bold headings never slice through their midpoint) and only then
- * runs inline Markdown cleanup on at most `STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP` chars.
+ * Slices a bounded prefix of `[start, end)` without splitting a complete inline
+ * code span that starts before the cap. Massive code spans crossing the cap are
+ * truncated at the cap and closed with matching backticks so literal code content
+ * remains protected during Markdown cleanup.
+ */
+const sliceCodeSpanSafePrefix = (source: string, start: number, end: number): string => {
+  if (end - start <= STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP) {
+    return source.slice(start, end);
+  }
+
+  const capEnd = start + STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP;
+  let cursor = start;
+  let unclosedTicks: Set<number> | undefined;
+  while (cursor < capEnd) {
+    const nextTick = source.indexOf('`', cursor);
+    if (nextTick === -1 || nextTick >= capEnd) {
+      return source.slice(start, capEnd);
+    }
+    const tickCount = countBacktickRun(source, nextTick, end);
+    unclosedTicks ??= new Set<number>();
+    const spanEnd = findInlineCodeSpanEnd(source, nextTick, end, unclosedTicks);
+    if (spanEnd === -1) {
+      cursor = nextTick + tickCount;
+      continue;
+    }
+    if (spanEnd <= capEnd) {
+      cursor = spanEnd;
+      continue;
+    }
+    if (spanEnd <= capEnd + STREAMING_THOUGHT_PREVIEW_MAX_CHARS) {
+      return source.slice(start, spanEnd);
+    }
+    let safeCut = capEnd;
+    while (safeCut > nextTick + tickCount && source.charCodeAt(safeCut - 1) === 96) {
+      safeCut -= 1;
+    }
+    if (safeCut <= nextTick + tickCount) {
+      return source.slice(start, nextTick);
+    }
+    return `${source.slice(start, safeCut)}${'`'.repeat(tickCount)}`;
+  }
+
+  return source.slice(start, capEnd);
+};
+
+/** Splits a bounded line into alternating `text` and `code` segments without sentinel chars. */
+const tokenizeInlineCodeSegments = (text: string): InlineSegment[] => {
+  if (!text.includes('`')) {
+    return [{ kind: 'text', value: text }];
+  }
+
+  const len = text.length;
+  const segments: InlineSegment[] = [];
+  let cursor = 0;
+  let unclosedTicks: Set<number> | undefined;
+
+  while (cursor < len) {
+    const nextTick = text.indexOf('`', cursor);
+    if (nextTick === -1) {
+      if (cursor < len) {
+        segments.push({ kind: 'text', value: text.slice(cursor) });
+      }
+      break;
+    }
+    if (nextTick > cursor) {
+      segments.push({ kind: 'text', value: text.slice(cursor, nextTick) });
+    }
+
+    const tickCount = countBacktickRun(text, nextTick, len);
+    unclosedTicks ??= new Set<number>();
+    const spanEnd = findInlineCodeSpanEnd(text, nextTick, len, unclosedTicks);
+    if (spanEnd === -1) {
+      cursor = nextTick + tickCount;
+      continue;
+    }
+
+    let content = text.slice(nextTick + tickCount, spanEnd - tickCount);
+    if (
+      content.length >= 2 &&
+      content.startsWith(' ') &&
+      content.endsWith(' ') &&
+      content.trim().length > 0
+    ) {
+      content = content.slice(1, -1);
+    }
+    segments.push({ kind: 'code', value: content });
+    cursor = spanEnd;
+  }
+
+  return segments;
+};
+
+const cleanInlineTextSegment = (text: string): string =>
+  stripUnderscoreEmphasis(stripStarEmphasis(text.replace(/\*\*|__|~~/g, '').replace(/`+/g, '')));
+
+/**
+ * Validates a full candidate line using index-based checks (skipping formatting-only
+ * lines and unclosed bold headings with zero cleanup cost), then cleans a bounded
+ * code-span-safe prefix using segment-based Markdown stripping.
  */
 const cleanCandidateLineRange = (
   source: string,
   rawStart: number,
-  rawEnd: number
+  rawEnd: number,
+  isTrailingLine: boolean
 ): { preview: string | null; cleanedChars: number } => {
   let { start, end } = trimHorizontalRange(source, rawStart, rawEnd);
   if (
     start >= end ||
     startsWithFenceAt(source, start, end) ||
-    hasUnclosedLeadingBoldRange(source, start, end)
+    hasUnclosedLeadingBoldRange(source, start, end) ||
+    isFormattingOnlyRange(source, start, end)
   ) {
     return { preview: null, cleanedChars: 0 };
   }
@@ -289,7 +570,11 @@ const cleanCandidateLineRange = (
   if (placeholderMatch) {
     start += placeholderMatch[0].length;
     ({ start, end } = trimHorizontalRange(source, start, end));
-    if (start >= end || hasUnclosedLeadingBoldRange(source, start, end)) {
+    if (
+      start >= end ||
+      hasUnclosedLeadingBoldRange(source, start, end) ||
+      isFormattingOnlyRange(source, start, end)
+    ) {
       return { preview: null, cleanedChars: 0 };
     }
   }
@@ -307,25 +592,29 @@ const cleanCandidateLineRange = (
   if (
     start >= end ||
     startsWithFenceAt(source, start, end) ||
-    hasUnclosedLeadingBoldRange(source, start, end)
+    hasUnclosedLeadingBoldRange(source, start, end) ||
+    isFormattingOnlyRange(source, start, end)
   ) {
     return { preview: null, cleanedChars: 0 };
   }
 
-  const boundedEnd = Math.min(end, start + STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP);
-  const boundedSlice = source.slice(start, boundedEnd);
+  const boundedSlice = sliceCodeSpanSafePrefix(source, start, end);
   const cleanedChars = boundedSlice.length;
 
-  const { masked, spans, openToken, closeToken } = extractInlineCodeSpans(boundedSlice);
+  const linksResolved = replaceMarkdownLinks(boundedSlice);
+  const segments = tokenizeInlineCodeSegments(linksResolved);
+  const lastSegment = segments[segments.length - 1];
+  if (lastSegment && lastSegment.kind === 'text') {
+    lastSegment.value = stripTrailingAtxHashes(lastSegment.value);
+  }
 
-  let text = replaceMarkdownLinks(masked)
-    .replace(/\s+#+$/, '')
-    .replace(/`+/g, '')
-    .replace(/\*\*|__|~~/g, '')
-    .replace(/\*([^\s*](?:[^*\n]*[^\s*])?)\*/g, '$1')
-    .replace(/(^|[^\w])_([^\s_](?:[^_\n]*[^\s_])?)_(?=$|[^\w])/g, '$1$2');
-
-  text = restoreInlineCodeSpans(text, spans, openToken, closeToken).replace(/\s+/g, ' ').trim();
+  let text = segments
+    .map((segment) =>
+      segment.kind === 'code' ? segment.value : cleanInlineTextSegment(segment.value)
+    )
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   if (!text) {
     return { preview: null, cleanedChars };
@@ -336,13 +625,18 @@ const cleanCandidateLineRange = (
     return { preview: null, cleanedChars };
   }
 
+  if (isTrailingLine && isStreamingAgyPlaceholderPrefix(text)) {
+    return { preview: null, cleanedChars };
+  }
+
   return { preview: truncatePreview(text), cleanedChars };
 };
 
 /**
  * Scans `rawText` in a single O(n) forward index pass tracking cross-paragraph
- * HTML comments (`<!-- ... -->`) continuously, then resolves the first valid line
- * of the latest valid paragraph.
+ * HTML comments (`<!-- ... -->`) continuously while ignoring `<!--` inside inline
+ * code spans, then resolves the first valid line of the latest valid paragraph
+ * within a strict cleanup budget.
  */
 export const inspectStreamingThoughtPreview = (
   rawText: string
@@ -382,6 +676,7 @@ export const inspectStreamingThoughtPreview = (
 
     let cursor = pos;
     let visible = '';
+    let unclosedTicks: Set<number> | undefined;
     while (cursor < lineEnd) {
       if (inHtmlComment) {
         if (nextCommentClose === -1 || nextCommentClose + 3 > lineEnd) {
@@ -397,6 +692,24 @@ export const inspectStreamingThoughtPreview = (
       }
 
       if (nextCommentOpen !== -1 && nextCommentOpen < lineEnd) {
+        const nextTick = rawText.indexOf('`', cursor);
+        if (nextTick !== -1 && nextTick < nextCommentOpen) {
+          unclosedTicks ??= new Set<number>();
+          const spanEnd = findInlineCodeSpanEnd(rawText, nextTick, lineEnd, unclosedTicks);
+          if (spanEnd !== -1) {
+            visible += rawText.slice(cursor, spanEnd);
+            cursor = spanEnd;
+            if (nextCommentOpen < cursor) {
+              nextCommentOpen = rawText.indexOf('<!--', cursor);
+            }
+            continue;
+          }
+          const tickCount = countBacktickRun(rawText, nextTick, lineEnd);
+          visible += rawText.slice(cursor, nextTick + tickCount);
+          cursor = nextTick + tickCount;
+          continue;
+        }
+
         if (nextCommentOpen > cursor) {
           visible += rawText.slice(cursor, nextCommentOpen);
         }
@@ -427,6 +740,8 @@ export const inspectStreamingThoughtPreview = (
   let cleanedLineCount = 0;
   let cleanedCharCount = 0;
   let groupEnd = lines.length;
+  const lastLineIndex = lines.length - 1;
+
   while (groupEnd > 0) {
     const currentParagraphId = lines[groupEnd - 1]!.paragraphId;
     let groupStart = groupEnd - 1;
@@ -437,7 +752,12 @@ export const inspectStreamingThoughtPreview = (
     for (let index = groupStart; index < groupEnd; index += 1) {
       const candidate = lines[index]!;
       const source = candidate.text ?? rawText;
-      const result = cleanCandidateLineRange(source, candidate.start, candidate.end);
+      const result = cleanCandidateLineRange(
+        source,
+        candidate.start,
+        candidate.end,
+        index === lastLineIndex
+      );
       if (result.cleanedChars > 0) {
         cleanedLineCount += 1;
         cleanedCharCount += result.cleanedChars;
@@ -448,6 +768,12 @@ export const inspectStreamingThoughtPreview = (
           cleanedLineCount,
           cleanedCharCount,
         };
+      }
+      if (
+        cleanedLineCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES ||
+        cleanedCharCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
+      ) {
+        return { preview: null, cleanedLineCount, cleanedCharCount };
       }
     }
 

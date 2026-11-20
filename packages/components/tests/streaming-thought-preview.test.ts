@@ -8,6 +8,8 @@ import {
   resolveLiveThoughtPreviewRowKey,
   STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP,
   STREAMING_THOUGHT_PREVIEW_MAX_CHARS,
+  STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS,
+  STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES,
 } from '../src/components/ai-gui/streaming-thought-preview';
 
 const thoughtEntry = (itemIndex: number, text: string): AssistantActivityRenderItem => ({
@@ -51,6 +53,19 @@ describe('extractStreamingThoughtPreviewFromText', () => {
         "Earlier real thought.\n\n\nI'm thinking through how to approach this."
       )
     ).toBe('Earlier real thought.');
+
+    // Streaming incomplete prefixes of the agy placeholder at the trailing line are suppressed,
+    // while genuine sentences starting with "I'm" remain visible.
+    expect(extractStreamingThoughtPreviewFromText("I'm")).toBeNull();
+    expect(
+      extractStreamingThoughtPreviewFromText("I'm thinking through how to approach this")
+    ).toBeNull();
+    expect(
+      extractStreamingThoughtPreviewFromText("Earlier real thought.\n\n\nI'm thinking through how")
+    ).toBe('Earlier real thought.');
+    expect(extractStreamingThoughtPreviewFromText("I'm checking the files.")).toBe(
+      "I'm checking the files."
+    );
   });
 
   it('picks the latest non-empty paragraph across triple and double blank lines', () => {
@@ -84,12 +99,26 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     expect(
       extractStreamingThoughtPreviewFromText('**Inspecting renderer** with extra context')
     ).toBe('Inspecting renderer with extra context');
+
+    // Inline code containing `**` must not prematurely close a leading bold heading.
+    expect(extractStreamingThoughtPreviewFromText('**Checking `**` in parser')).toBeNull();
+    expect(extractStreamingThoughtPreviewFromText('**Checking `**` in parser**')).toBe(
+      'Checking ** in parser'
+    );
   });
 
-  it('skips single-line, multi-line, and cross-paragraph HTML comments', () => {
+  it('skips single-line, multi-line, and cross-paragraph HTML comments without misreading inline code', () => {
     expect(
       extractStreamingThoughtPreviewFromText('<!-- internal marker -->\nVisible thought line.')
     ).toBe('Visible thought line.');
+
+    expect(
+      extractStreamingThoughtPreviewFromText('Checking the `<!--` marker.\n\nRunning tests.')
+    ).toBe('Running tests.');
+
+    expect(extractStreamingThoughtPreviewFromText('Checking the `<!--` marker.')).toBe(
+      'Checking the <!-- marker.'
+    );
 
     expect(
       extractStreamingThoughtPreviewFromText(
@@ -134,6 +163,25 @@ describe('extractStreamingThoughtPreviewFromText', () => {
         '[Read](https://example.com/a_(b)) and [Nested](https://example.com/a_(b_(c))) plus ![Graph](https://example.com/g_(1).png)'
       )
     ).toBe('Read and Nested plus Graph');
+
+    // Quoted link titles with unbalanced parens and nested image links inside link labels.
+    expect(
+      extractStreamingThoughtPreviewFromText(
+        '[the docs](https://example.org "Read this (first") and [![alt](logo.png)](https://example.org)'
+      )
+    ).toBe('the docs and alt');
+
+    // Private-use characters such as U+E000 must pass through intact (no sentinel collision),
+    // and oversized inline code spans crossing the cleanup cap must retain literal identifiers.
+    expect(extractStreamingThoughtPreviewFromText('Keep \uE0000\uE001 and `__init__` intact')).toBe(
+      'Keep \uE0000\uE001 and __init__ intact'
+    );
+
+    const longCodeSpan = `\`__init__ ${'a'.repeat(2_000)}\``;
+    const longCodePreview = extractStreamingThoughtPreviewFromText(longCodeSpan);
+    expect(longCodePreview).not.toBeNull();
+    expect(longCodePreview!.startsWith('__init__ ')).toBe(true);
+    expect(longCodePreview!.length).toBeLessThanOrEqual(STREAMING_THOUGHT_PREVIEW_MAX_CHARS);
   });
 
   it('deterministically bounds cleanup on 138k+ thoughts, long unclosed bold, long comments, and middle paragraphs', () => {
@@ -188,6 +236,25 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     const middleResult = inspectStreamingThoughtPreview(middleValid);
     expect(middleResult.preview).toBe('Middle valid reasoning paragraph.');
     expect(middleResult.cleanedLineCount).toBe(1);
+
+    // 139k trailing formatting-only blank strikethrough lines must not trigger quadratic
+    // backtracking or unbounded line-by-line cleanup, and must still fall back to valid prose.
+    const trailingStrikethroughPad = `Valid earlier paragraph.\n\n${`~~${' '.repeat(1020)}~~\n`.repeat(136)}`;
+    expect(trailingStrikethroughPad.length).toBeGreaterThan(139_000);
+    const strikethroughResult = inspectStreamingThoughtPreview(trailingStrikethroughPad);
+    expect(strikethroughResult.preview).toBe('Valid earlier paragraph.');
+    expect(strikethroughResult.cleanedLineCount).toBe(1);
+    expect(strikethroughResult.cleanedCharCount).toBe('Valid earlier paragraph.'.length);
+
+    // Adversarial non-formatting empty-output lines (empty-label links) respect the cleanup budget.
+    const emptyLinkFlood = `Valid earlier paragraph.\n\n${`[](https://example.com/${'a'.repeat(1000)})\n`.repeat(136)}`;
+    const budgetResult = inspectStreamingThoughtPreview(emptyLinkFlood);
+    expect(budgetResult.cleanedLineCount).toBeLessThanOrEqual(
+      STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES
+    );
+    expect(budgetResult.cleanedCharCount).toBeLessThanOrEqual(
+      STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
+    );
   });
 });
 
