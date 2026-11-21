@@ -30,6 +30,29 @@ this page is the full text of the rules summarised there.
   “收尾中…” until the execution owner clears presence or starts another phase.
   It still counts as busy for submission routing and Stop; a finished history
   row alone never selects this label. See [intent](../../specs/session-finalization-status.md).
+- Explicit `running + backgroundTaskState: background` presence (always on, not
+  behind an experimental switch) indicates a finished main turn whose adapter
+  still holds background tasks (`backgroundTaskCount`, bounded `1..999`). It
+  lives in separate optional fields rather than widening `phase` (which stays
+  `'finalizing'`-only), so older mixed-version LAN clients strip the unknown
+  fields and retain `{ type: 'running' }` instead of dropping the session to
+  idle. Sidebar rows, folded group marks
+  (`failed > waiting > working > background > sending > unread`), and
+  `SessionTabBar` show a calm breathing ring (`BackgroundStatusMark`, static in
+  Low-stimulus mode) rather than the active `WorkingGrid` / spinner; when a
+  wakeup pulse arrives (`running + backgroundTaskState: running`, with
+  `backgroundTaskCount >= 1` while the main turn is already finished), sidebar
+  and tab indicators return to the active working mark. In the chat stream
+  (`background-task-status-row.tsx`), a finished turn renders a pure-typography,
+  non-expandable single line below the final answer (aligned to
+  `conversation.railInset`, no card/border, replacing any orphan un-timed
+  “Thinking” row) showing only the authoritative aggregate presence signal: calm
+  breathing dot + `<count> background tasks running` (or generic `Background
+  task running` when no count is present) during `background`, and a shimmered
+  “Handling background task” row during a wakeup pulse — never guessing which
+  historical command is still running. `ChatComposer` and the right side of
+  `SessionTabBar` remain completely unchanged (default placeholder, send arrow
+  `↑`, no extra status or instructional copy).
 - Live working/waiting UI (spinners, permission badges, Stop visibility, tab/dock
   status) must use presence (`sessionLiveStatusAtomFamily` or an explicit
   `liveSessionStatuses` map), not `SessionMeta.status` / `lastRunningSeen`.

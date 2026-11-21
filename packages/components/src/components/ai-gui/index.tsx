@@ -77,6 +77,8 @@ export interface SessionChatStreamProps {
   agentActivityTone?: AgentActivityTone;
   /** The status is live work (not waiting on the user): shimmer it. */
   agentActivityShimmer?: boolean;
+  /** Native background task status shown below a finished turn's answer. */
+  backgroundTaskStatus?: SessionChatStreamViewProps['backgroundTaskStatus'];
   /** Presence-derived activity; gates the running turn's timing and liveness. */
   liveTurnActivity?: LiveTurnActivity | null;
   historyLive?: HistoryLiveWindow;
@@ -183,6 +185,7 @@ const SessionChatStreamImpl = forwardRef<SessionChatStreamHandle, SessionChatStr
       agentActivityLabel = null,
       agentActivityTone = 'primary',
       agentActivityShimmer,
+      backgroundTaskStatus = null,
       liveTurnActivity = null,
       historyLive,
       onFileDiffClick,
@@ -327,6 +330,7 @@ const SessionChatStreamImpl = forwardRef<SessionChatStreamHandle, SessionChatStr
         agentActivityLabel={agentActivityLabel}
         agentActivityTone={agentActivityTone}
         agentActivityShimmer={agentActivityShimmer}
+        backgroundTaskStatus={backgroundTaskStatus}
         liveTurnActivity={liveTurnActivity}
         {...(historyLive ? { historyLive } : {})}
         conversationFontSize={conversationFontSize}

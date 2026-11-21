@@ -249,6 +249,7 @@ export function SessionSendProgressRing({ progress }: { progress?: number }) {
 export function SessionRowStatusIndicator({
   isWaitingPermission,
   isWorking,
+  isBackgroundWorking,
   workingStill,
   hasUnreadMessages,
   sendState,
@@ -257,6 +258,8 @@ export function SessionRowStatusIndicator({
 }: {
   isWaitingPermission?: boolean;
   isWorking?: boolean;
+  /** Session is waiting on silent native background task(s) (`backgroundTaskState: 'background'`). */
+  isBackgroundWorking?: boolean;
   /** Draw the working grid without motion (`useStillWorkingMark`). */
   workingStill?: boolean;
   hasUnreadMessages?: boolean;
@@ -270,24 +273,27 @@ export function SessionRowStatusIndicator({
   const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   let icon: ReactNode = null;
   let label: string | undefined;
+  const backgroundOnly = isBackgroundWorking === true;
+  const activeWorking = isWorking === true && !backgroundOnly;
 
   if (sendState === 'failed') {
     icon = <CircleAlert className="h-3 w-3 text-destructive" strokeWidth={2.25} />;
     label = sendLabel;
   } else if (isWaitingPermission === true) {
     icon = <Hand className="h-3 w-3 text-primary" />;
-  } else if (isWorking !== true && sendState === 'sending') {
+  } else if (!activeWorking && !backgroundOnly && sendState === 'sending') {
     icon = <SessionSendProgressRing progress={sendProgress} />;
     label = sendLabel;
-  } else if (isWorking === true || hasUnreadMessages === true) {
-    // Working grid, the working → unread "done" transition, and the unread dot
-    // are one component so it stays mounted across that change and can see it.
+  } else if (activeWorking || backgroundOnly || hasUnreadMessages === true) {
+    // Working grid, background breathing ring, working → unread "done" transition,
+    // and unread dot share one component so it stays mounted across changes.
     icon = (
       <WorkingStatusMark
-        working={isWorking === true}
+        working={activeWorking || backgroundOnly}
+        background={backgroundOnly}
         unread={hasUnreadMessages === true}
         doneTransition={!lowStimulusMode}
-        still={workingStill}
+        still={backgroundOnly ? workingStill || lowStimulusMode : workingStill}
         className="text-primary"
       />
     );
@@ -312,10 +318,13 @@ export function SessionRowStatusIndicator({
 function hasSessionRowStatus({
   isWaitingPermission,
   isWorking,
+  isBackgroundWorking,
   hasUnreadMessages,
   sendState,
 }: SessionRowStatusFlags): boolean {
-  return Boolean(isWaitingPermission || isWorking || hasUnreadMessages || sendState);
+  return Boolean(
+    isWaitingPermission || isWorking || isBackgroundWorking || hasUnreadMessages || sendState
+  );
 }
 
 /**
@@ -696,6 +705,7 @@ export function SidebarRowEndSlot({
   sessionId,
   isWaitingPermission,
   isWorking,
+  isBackgroundWorking,
   hasUnreadMessages,
   familyActivity,
   restIcon,
@@ -710,6 +720,7 @@ export function SidebarRowEndSlot({
   sessionId?: string;
   isWaitingPermission?: boolean;
   isWorking?: boolean;
+  isBackgroundWorking?: boolean;
   hasUnreadMessages?: boolean;
   /** A folded family: draws its one mark in place of the row's own flags. */
   familyActivity?: SidebarGroupActivity;
@@ -719,10 +730,16 @@ export function SidebarRowEndSlot({
 }) {
   const waiting = familyActivity ? familyActivity.waiting > 0 : isWaitingPermission;
   const unread = familyActivity ? familyActivity.unread > 0 : hasUnreadMessages;
-  const working = familyActivity ? familyActivity.working > 0 : isWorking === true;
+  const foregroundWorking = familyActivity
+    ? familyActivity.working > 0
+    : isWorking === true && isBackgroundWorking !== true;
+  const backgroundOnly = familyActivity
+    ? familyActivity.working === 0 && (familyActivity.background ?? 0) > 0
+    : isBackgroundWorking === true;
   // The end slot outlives the status mark, so the hand-over hold lives here.
-  const drawWorking = useWorkingHandOver(working, unread === true);
-  const workingStill = useStillWorkingMark(sessionId, working);
+  // Hold only foreground working so a silent background wait never flashes WorkingGrid.
+  const drawForegroundWorking = useWorkingHandOver(foregroundWorking, unread === true);
+  const workingStill = useStillWorkingMark(sessionId, foregroundWorking || backgroundOnly);
   const sendStatus = useAtomValue(sessionSendStatusAtomFamily(sessionId ?? ''));
   const sendLabel = useSessionSendLabel(sendStatus);
   const sendState = familyActivity
@@ -732,15 +749,18 @@ export function SidebarRowEndSlot({
         ? 'sending'
         : null
     : sendStatus?.state;
+  const effectiveBackgroundOnly = !drawForegroundWorking && backgroundOnly;
   const restContent = hasSessionRowStatus({
     isWaitingPermission: waiting,
-    isWorking: drawWorking,
+    isWorking: drawForegroundWorking || effectiveBackgroundOnly,
+    isBackgroundWorking: effectiveBackgroundOnly,
     hasUnreadMessages: unread,
     sendState,
   }) ? (
     <SessionRowStatusIndicator
       isWaitingPermission={waiting}
-      isWorking={drawWorking}
+      isWorking={drawForegroundWorking || effectiveBackgroundOnly}
+      isBackgroundWorking={effectiveBackgroundOnly}
       workingStill={workingStill}
       hasUnreadMessages={unread}
       sendState={sendState}
@@ -779,6 +799,7 @@ export function SidebarRowEndSlot({
 export type SessionRowStatusFlags = {
   isWaitingPermission?: boolean;
   isWorking?: boolean;
+  isBackgroundWorking?: boolean;
   hasUnreadMessages?: boolean;
   sendState?: SessionSendState | null;
 };
@@ -786,13 +807,14 @@ export type SessionRowStatusFlags = {
 /**
  * What a folded group hides, counted by the mark each hidden row would draw:
  * a row counts once, under its own priority
- * (`failed > waiting > working > sending > unread`), so the numbers add up to
+ * (`failed > waiting > working > background > sending > unread`), so the numbers add up to
  * the rows that are asking for attention.
  */
 export type SidebarGroupActivity = {
   failed: number;
   waiting: number;
   working: number;
+  background?: number;
   sending: number;
   unread: number;
 };
@@ -829,17 +851,22 @@ export function summarizeSidebarGroupActivity(
   let failed = 0;
   let waiting = 0;
   let working = 0;
+  let background = 0;
   let sending = 0;
   let unread = 0;
   for (const row of rows) {
     if (row.sendState === 'failed') failed += 1;
     else if (row.isWaitingPermission) waiting += 1;
-    else if (row.isWorking) working += 1;
+    else if (row.isWorking && !row.isBackgroundWorking) working += 1;
+    else if (row.isBackgroundWorking) background += 1;
     else if (row.sendState === 'sending') sending += 1;
     else if (row.hasUnreadMessages) unread += 1;
   }
-  if (!failed && !waiting && !working && !sending && !unread) return EMPTY_SIDEBAR_GROUP_ACTIVITY;
-  return { failed, waiting, working, sending, unread };
+  if (!failed && !waiting && !working && !background && !sending && !unread)
+    return EMPTY_SIDEBAR_GROUP_ACTIVITY;
+  return background > 0
+    ? { failed, waiting, working, background, sending, unread }
+    : { failed, waiting, working, sending, unread };
 }
 
 /** The activity of two folded groups shown by one header. */
@@ -849,10 +876,12 @@ export function addSidebarGroupActivity(
 ): SidebarGroupActivity | null {
   if (!hasSidebarGroupActivity(right)) return left ?? null;
   if (!hasSidebarGroupActivity(left)) return right ?? null;
+  const background = (left!.background ?? 0) + (right!.background ?? 0);
   return {
     failed: left!.failed + right!.failed,
     waiting: left!.waiting + right!.waiting,
     working: left!.working + right!.working,
+    ...(background > 0 ? { background } : {}),
     sending: left!.sending + right!.sending,
     unread: left!.unread + right!.unread,
   };
@@ -861,11 +890,16 @@ export function addSidebarGroupActivity(
 export function hasSidebarGroupActivity(activity: SidebarGroupActivity | null | undefined) {
   return Boolean(
     activity &&
-    (activity.failed || activity.waiting || activity.working || activity.sending || activity.unread)
+    (activity.failed ||
+      activity.waiting ||
+      activity.working ||
+      activity.background ||
+      activity.sending ||
+      activity.unread)
   );
 }
 
-/** "1 not sent · 1 waiting for approval · 2 working · 1 sending · 3 unread", omitting zeros. */
+/** "1 not sent · 1 waiting for approval · 2 working · 1 background · 1 sending · 3 unread", omitting zeros. */
 export function useSidebarGroupActivityDescription(
   activity: SidebarGroupActivity | null | undefined
 ): string | null {
@@ -885,6 +919,13 @@ export function useSidebarGroupActivityDescription(
   if (activity.working) {
     parts.push(
       t('sidebar.groupActivity.working', '{{count}} working', { count: activity.working })
+    );
+  }
+  if (activity.background) {
+    parts.push(
+      t('sidebar.groupActivity.background', '{{count}} in background', {
+        count: activity.background,
+      })
     );
   }
   if (activity.sending) {
@@ -923,7 +964,8 @@ export function SidebarGroupActivityMark({
   const description = useSidebarGroupActivityDescription(activity);
   const isWaitingPermission = (activity?.waiting ?? 0) > 0;
   const hasUnreadMessages = (activity?.unread ?? 0) > 0;
-  const drawWorking = useWorkingHandOver((activity?.working ?? 0) > 0, hasUnreadMessages);
+  const drawForegroundWorking = useWorkingHandOver((activity?.working ?? 0) > 0, hasUnreadMessages);
+  const isBackgroundOnly = !drawForegroundWorking && (activity?.background ?? 0) > 0;
   const sendState: SessionSendState | null = activity?.failed
     ? 'failed'
     : activity?.sending
@@ -931,7 +973,8 @@ export function SidebarGroupActivityMark({
       : null;
   const hasStatus = hasSessionRowStatus({
     isWaitingPermission,
-    isWorking: drawWorking,
+    isWorking: drawForegroundWorking || isBackgroundOnly,
+    isBackgroundWorking: isBackgroundOnly,
     hasUnreadMessages,
     sendState,
   });
@@ -949,7 +992,8 @@ export function SidebarGroupActivityMark({
       {hasStatus ? (
         <SessionRowStatusIndicator
           isWaitingPermission={isWaitingPermission}
-          isWorking={drawWorking}
+          isWorking={drawForegroundWorking || isBackgroundOnly}
+          isBackgroundWorking={isBackgroundOnly}
           hasUnreadMessages={hasUnreadMessages}
           sendState={sendState}
         />

@@ -25,7 +25,8 @@ the reasoning behind those rules.
 | Stream                  | `view.tsx`, `build-chat-stream-items.ts`                                                          | Stable rows and the conversation scroll engine.                                         |
 | User rows               | `view.tsx`                                                                                        | Multi-member sender metadata and desktop profile.                                       |
 | Turns                   | `assistant-turn-render-blocks.ts`                                                                 | Activity groups and foldable segments.                                                  |
-| Thought preview         | `streaming-thought-preview.ts`, `streaming-thought-preview-row.tsx`                               | Opt-in two-line live thought preview under the trailing collapsed activity header.      |
+| Thought preview & compact directory | `streaming-thought-preview.ts`, `compact-native-directory.ts`, `compact-native-directory-row.tsx` | Opt-in 2-line live summary and flat single-level process directory (`streamingThoughtPreviewFeatureEnabledAtom`). |
+| Background task status  | `background-task-status-row.tsx`                                                                  | Native post-answer row for `running + backgroundTaskState: background` waiting and wakeup pulses. |
 | Outline                 | `conversation-outline-*`                                                                          | Round ticks and navigation.                                                             |
 | Image sharing selection | [`message-selection.tsx`](message-selection.tsx)                                                  | Temporary message selection, drag rectangle, range modifiers, and edge scrolling.       |
 | Chat quotes             | [`message-quote-action.tsx`](message-quote-action.tsx)                                            | Portal action over a retained native prose selection, outside viewport layout.          |
@@ -174,21 +175,33 @@ the reasoning behind those rules.
 - `session-file-card.tsx`, `session-file-preview-dialog.tsx`, and
   [session-files-rendering.md](session-files-rendering.md) own attachment and
   image-preview rendering.
-- `streaming-thought-preview.ts` and `streaming-thought-preview-row.tsx` implement
-  the opt-in live two-line thought preview beneath the trailing collapsed
-  activity header (`streamingThoughtPreviewFeatureEnabledAtom`, skipping only
-  same-turn `footer` and `subagent_tasks` rows, hidden when `finished === true`
-  or `endedAt` is numeric): reverse-scans `block.entries` for the latest valid
-  thought (falling back to earlier thoughts in the same group across tool calls
-  or incomplete chunks), strips the Antigravity placeholder, cross-paragraph
-  HTML comments, unclosed leading `**` lines, and inline Markdown (preserving
-  inline code literals and balanced-parenthesis links) via a single-pass O(n)
-  scan with bounded per-line cleanup, and throttles switches to 1500 ms (4000 ms
-  in Low-stimulus mode) without cancelling pending updates on transient empty
-  chunks. Presentation only;
+- `streaming-thought-preview.ts`, `compact-native-directory.ts`, and
+  `compact-native-directory-row.tsx` implement the opt-in compact-native
+  process display (`streamingThoughtPreviewFeatureEnabledAtom`): while a turn
+  is live, the collapsed work header renders at most two transparent lines on
+  `conversation.railInset` (Line 1: active non-background tool or latest valid
+  thought first sentence with elapsed duration; Line 2: retained thought while
+  a tool runs, or compact tool counts while thinking after completed tools, or
+  omitted). Clicking the live header or the finished native `Worked for …`
+  header opens flat sibling directory rows directly (collapsing each valid
+  thought to its first sentence with placeholder stripping, clustering adjacent
+  completed `read` calls by the first tool's stable id, keeping an independent
+  clickable file link on standalone `read`/`edit` rows with details, expanding
+  tool sheets on row click with no "View output" badge, and tagging persisted
+  `backgroundTaskId` commands with a neutral historical `BG` micro-badge).
+  Reuses the single-pass O(n) thought scanner, 1500 ms / 4000 ms Low-stimulus
+  hold throttling, `#2353` folding, per-session expand memory, and
+  placeholder-aligned search-hit auto-expand. Presentation only;
   [decision](../../../../../.agents/notes/implemented/feature/2026-11-21-streaming-thought-preview.md).
-  Pinned by `tests/streaming-thought-preview.test.ts`,
-  `tests/streaming-thought-preview-ui.test.tsx`, and `StreamingThoughtPreview.stories.tsx`.
+- `background-task-status-row.tsx` renders the always-on, non-expandable
+  post-answer status row when a finished turn has live
+  `running + backgroundTaskState: background` presence (calm breathing dot +
+  aggregate count) or a background wakeup pulse (`Handling background task`),
+  replacing orphan un-timed "Thinking" chrome while keeping `ChatComposer`
+  untouched. Pinned by `tests/streaming-thought-preview.test.ts`,
+  `tests/streaming-thought-preview-ui.test.tsx`, `tests/session-chat-search.test.ts`,
+  `tests/session-tab-bar.test.tsx`, `tests/session-list-rows.test.ts`, and
+  `StreamingThoughtPreview.stories.tsx`.
 
 ## Spacing and themes
 

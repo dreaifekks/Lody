@@ -349,6 +349,19 @@ import {
 import { resolveLiveThoughtPreviewRowKey } from './streaming-thought-preview';
 import { StreamingThoughtPreview } from './streaming-thought-preview-row';
 import {
+  BackgroundTaskStatusRow,
+  type SessionBackgroundTaskStatus,
+} from './background-task-status-row';
+import {
+  buildCompactDirectoryEntries,
+  type CompactDirectoryEntry,
+} from './compact-native-directory';
+import {
+  CompactDirectoryEntryRow,
+  CompactDirectoryToolbarRow,
+  CompactWorkHeaderRow,
+} from './compact-native-directory-row';
+import {
   conversationTextFontSizeStyle,
   conversationReadingFontSizeStyle,
   userTextCollapsedStyle,
@@ -425,9 +438,13 @@ const MAX_EXPAND_CACHE = 500;
 /** Height of the desktop top fade; a jump lands below it (fork). */
 const CONVERSATION_TOP_FADE_PX = 48;
 
-function getExpandState(messageId: string): BubbleExpandState {
+function getExpandStateCacheKey(sessionId: string | undefined, messageId: string): string {
+  return `${sessionId ?? ''}\0${messageId}`;
+}
+
+function getExpandState(sessionId: string | undefined, messageId: string): BubbleExpandState {
   return (
-    expandStateCache.get(messageId) ?? {
+    expandStateCache.get(getExpandStateCacheKey(sessionId, messageId)) ?? {
       expandedWorkedGroups: {},
       expandedGroups: {},
       expandedByIndex: {},
@@ -436,8 +453,12 @@ function getExpandState(messageId: string): BubbleExpandState {
   );
 }
 
-function setExpandState(messageId: string, state: BubbleExpandState): void {
-  expandStateCache.set(messageId, state);
+function setExpandState(
+  sessionId: string | undefined,
+  messageId: string,
+  state: BubbleExpandState
+): void {
+  expandStateCache.set(getExpandStateCacheKey(sessionId, messageId), state);
   // Evict oldest entries if too large
   if (expandStateCache.size > MAX_EXPAND_CACHE) {
     const firstKey = expandStateCache.keys().next().value;
@@ -491,6 +512,28 @@ type AssistantVirtualContent =
       expanded: boolean;
       isLive: boolean;
       durationMs: number | null;
+    }
+  | {
+      kind: 'compact_work_header';
+      segmentKey: string;
+      expanded: boolean;
+      isLive: boolean;
+      isTurnFinished: boolean;
+      durationMs: number | null;
+      entries: readonly AssistantActivityRenderItem[];
+    }
+  | {
+      kind: 'compact_dir_toolbar';
+      segmentKey: string;
+      thoughtItemIndexes: readonly number[];
+      allThoughtsExpanded: boolean;
+    }
+  | {
+      kind: 'compact_dir_entry';
+      segmentKey: string;
+      entry: CompactDirectoryEntry;
+      expanded: boolean;
+      isLastEntry: boolean;
     }
   | { kind: 'content'; block: Extract<AssistantTurnRenderBlock, { kind: 'content' }> }
   | {
@@ -647,6 +690,7 @@ const NativeSelectionRowsContext = createContext<{
 // Keys of the list rows that are not conversation rows (the engine keys every row).
 const LEADING_ROW_KEY = '\u0000leading';
 const AGENT_ACTIVITY_ROW_KEY = '\u0000agent-activity';
+const BACKGROUND_TASK_ROW_KEY = '\u0000background-task';
 const TRAILING_ROW_KEY = '\u0000trailing';
 
 /** Fork: turn links (`turn-links.tsx`) reach the rows with the rows' own context. */
@@ -741,6 +785,8 @@ export interface SessionChatStreamViewProps {
   agentActivityTone?: AgentActivityTone;
   /** The status is live work (not waiting on the user): shimmer it. */
   agentActivityShimmer?: boolean;
+  /** Native background task status shown below a finished turn's answer. */
+  backgroundTaskStatus?: SessionBackgroundTaskStatus | null;
   /**
    * What presence says the session is doing. Only a running session's newest
    * turn reports a running time and a last update; `null` when nothing runs.
@@ -1259,6 +1305,7 @@ type AssistantTurnRowsCacheEntry = {
   copyContextAvailable: boolean;
   surfaceKey: AgentSurfaceKey;
   nextIsUser: boolean;
+  compactNativeEnabled: boolean;
 };
 const assistantTurnRowsCache = new WeakMap<SessionMessageItem, AssistantTurnRowsCacheEntry>();
 
@@ -1275,6 +1322,7 @@ export const buildChatVirtualRows = ({
   groupCreatedSessions = true,
   selectionLayouts,
   surfaceKey = '',
+  compactNativeEnabled = false,
 }: {
   /** Experimental tool calls rendered as their own surface; see `agent-surfaces`. */
   surfaceKey?: AgentSurfaceKey;
@@ -1288,6 +1336,7 @@ export const buildChatVirtualRows = ({
   expansionVersion: number;
   copyContextAvailable?: boolean;
   groupCreatedSessions?: boolean;
+  compactNativeEnabled?: boolean;
 }): ChatVirtualRow[] => {
   const rows: ChatVirtualRow[] = [];
 
@@ -1377,7 +1426,8 @@ export const buildChatVirtualRows = ({
       cachedRows.copyContextAvailable === copyContextAvailable &&
       cachedRows.surfaceKey === surfaceKey &&
       cachedRows.nextIsUser === nextIsUser &&
-      cachedRows.expansionVersion === expansionVersion
+      cachedRows.expansionVersion === expansionVersion &&
+      cachedRows.compactNativeEnabled === compactNativeEnabled
     ) {
       rows.push(...cachedRows.rows);
       continue;
@@ -1387,7 +1437,7 @@ export const buildChatVirtualRows = ({
       message,
       surfaceKey
     );
-    const cachedState = selectionLayout?.expandState ?? getExpandState(message.id);
+    const cachedState = selectionLayout?.expandState ?? getExpandState(item.sessionId, message.id);
     const cachedExpansion = cachedState.expandedGroups;
     // Collapse into a "Worked for …" summary ONLY when the turn both finished and
     // produced a genuine final answer to show. `hasVisibleFinalContent` = there is at
@@ -1542,15 +1592,258 @@ export const buildChatVirtualRows = ({
       const isWorkedGroupExpanded =
         shouldUseWorkedGroup &&
         (isWorkedSearchExpanded ||
-          (cachedState.expandedWorkedGroups[segment.key] ?? !isTurnFinished));
+          (cachedState.expandedWorkedGroups[segment.key] ??
+            (compactNativeEnabled ? false : !isTurnFinished)));
       anySegmentUsesWorkedGroup ||= shouldUseWorkedGroup && isTurnFinished;
 
+      const isCompactLive = !isTurnFinished && typeof message.endedAt !== 'number';
+
+      const appendCompactDirectoryRows = (
+        target: AssistantChatVirtualRow[],
+        dirEntries: readonly CompactDirectoryEntry[],
+        isWorkedDetail: boolean
+      ) => {
+        const lastIndex = dirEntries.length - 1;
+        dirEntries.forEach((dirEntry, entryIdx) => {
+          if (dirEntry.kind === 'thought') {
+            const thoughtSearchOpen =
+              selectionSearchBlockId === getThoughtSearchBlockId(message.id, dirEntry.itemIndex);
+            const entryExpanded =
+              thoughtSearchOpen || (cachedState.expandedByIndex[dirEntry.itemIndex] ?? false);
+            target.push({
+              type: 'assistant',
+              key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+              messageIndex,
+              itemIndex: dirEntry.itemIndex,
+              item,
+              content: {
+                kind: 'compact_dir_entry',
+                segmentKey: segment.key,
+                entry: dirEntry,
+                expanded: entryExpanded,
+                isLastEntry: entryIdx === lastIndex,
+              },
+              isWorkedDetail,
+              isLastRowForMessage: false,
+            });
+            return;
+          }
+          if (dirEntry.kind === 'read_cluster') {
+            const entryExpanded = cachedExpansion[dirEntry.id] ?? false;
+            target.push({
+              type: 'assistant',
+              key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+              messageIndex,
+              itemIndex: dirEntry.firstItemIndex,
+              item,
+              content: {
+                kind: 'compact_dir_entry',
+                segmentKey: segment.key,
+                entry: dirEntry,
+                expanded: entryExpanded,
+                isLastEntry: entryIdx === lastIndex,
+              },
+              isWorkedDetail,
+              isLastRowForMessage: false,
+            });
+            return;
+          }
+          const entryExpanded = cachedState.expandedByIndex[dirEntry.itemIndex] ?? false;
+          target.push({
+            type: 'assistant',
+            key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+            messageIndex,
+            itemIndex: dirEntry.itemIndex,
+            item,
+            content: {
+              kind: 'compact_dir_entry',
+              segmentKey: segment.key,
+              entry: dirEntry,
+              expanded: entryExpanded,
+              isLastEntry: entryIdx === lastIndex,
+            },
+            isWorkedDetail,
+            isLastRowForMessage: false,
+          });
+        });
+      };
+
       if (!shouldUseWorkedGroup) {
-        for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
-          const block = blocks[blockIndex];
-          if (block) appendBlockRows(assistantRows, block, blockIndex, false);
+        if (compactNativeEnabled) {
+          const compactEntriesByBlock = new Map<number, CompactDirectoryEntry[]>();
+          const thoughtItemIndexes: number[] = [];
+          for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+            const block = blocks[blockIndex];
+            if (block?.kind !== 'activity_group') continue;
+            const built = buildCompactDirectoryEntries(block.entries, { isLive: isCompactLive });
+            compactEntriesByBlock.set(blockIndex, built);
+            for (const dirEntry of built) {
+              if (dirEntry.kind === 'thought' && !dirEntry.isPlaceholderOnly) {
+                thoughtItemIndexes.push(dirEntry.itemIndex);
+              }
+            }
+          }
+          let insertedToolbar = false;
+          for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+            const block = blocks[blockIndex];
+            if (!block) continue;
+            if (block.kind === 'activity_group') {
+              const built = compactEntriesByBlock.get(blockIndex) ?? [];
+              if (!insertedToolbar && thoughtItemIndexes.length > 1) {
+                insertedToolbar = true;
+                assistantRows.push({
+                  type: 'assistant',
+                  key: `assistant:${message.id}:${segment.key}:compact-toolbar`,
+                  messageIndex,
+                  item,
+                  content: {
+                    kind: 'compact_dir_toolbar',
+                    segmentKey: segment.key,
+                    thoughtItemIndexes,
+                    allThoughtsExpanded: thoughtItemIndexes.every(
+                      (itemIndex) =>
+                        selectionSearchBlockId === getThoughtSearchBlockId(message.id, itemIndex) ||
+                        cachedState.expandedByIndex[itemIndex] === true
+                    ),
+                  },
+                  isWorkedDetail: false,
+                  isLastRowForMessage: false,
+                });
+              }
+              appendCompactDirectoryRows(assistantRows, built, false);
+              continue;
+            }
+            appendBlockRows(assistantRows, block, blockIndex, false);
+          }
+        } else {
+          for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+            const block = blocks[blockIndex];
+            if (block) appendBlockRows(assistantRows, block, blockIndex, false);
+          }
         }
         if (segmentSubagentTasks.length > 0) {
+          appendSubagentTasksRow(assistantRows, false);
+        }
+        continue;
+      }
+
+      if (compactNativeEnabled) {
+        const segmentActivityEntries: AssistantActivityRenderItem[] = [];
+        const compactEntriesByBlock = new Map<number, CompactDirectoryEntry[]>();
+        const thoughtItemIndexes: number[] = [];
+        for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+          const block = blocks[blockIndex];
+          if (!block || !segment.workBlockKeys.has(block.key)) continue;
+          if (block.kind === 'activity_group') {
+            segmentActivityEntries.push(...block.entries);
+            if (isWorkedGroupExpanded) {
+              const built = buildCompactDirectoryEntries(block.entries, { isLive: isCompactLive });
+              compactEntriesByBlock.set(blockIndex, built);
+              for (const dirEntry of built) {
+                if (dirEntry.kind === 'thought' && !dirEntry.isPlaceholderOnly) {
+                  thoughtItemIndexes.push(dirEntry.itemIndex);
+                }
+              }
+            }
+          }
+        }
+
+        let lastWorkBlockIndex = -1;
+        for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+          const block = blocks[blockIndex];
+          if (block && segment.workBlockKeys.has(block.key)) {
+            lastWorkBlockIndex = blockIndex;
+          }
+        }
+        let hasTrailingNonWorkContent = false;
+        if (lastWorkBlockIndex !== -1) {
+          for (let blockIndex = lastWorkBlockIndex + 1; blockIndex < segmentEnd; blockIndex += 1) {
+            const block = blocks[blockIndex];
+            if (!block || segment.workBlockKeys.has(block.key)) continue;
+            if (block.kind === 'content' && block.entry.content.type === 'system_notice') continue;
+            hasTrailingNonWorkContent = true;
+            break;
+          }
+        }
+        const isWorkHeaderLive = isCompactLive && isLastSegment && !hasTrailingNonWorkContent;
+
+        const insertCompactHeader = () => {
+          assistantRows.push({
+            type: 'assistant',
+            key: `assistant:${message.id}:${segment.key}:worked-header`,
+            messageIndex,
+            item,
+            content: {
+              kind: 'compact_work_header',
+              segmentKey: segment.key,
+              expanded: isWorkedGroupExpanded,
+              isLive: isWorkHeaderLive,
+              isTurnFinished,
+              durationMs: isLastSegment ? resolveSessionHistoryDurationMs(message) : null,
+              entries: segmentActivityEntries,
+            },
+            isLastRowForMessage: false,
+          });
+          if (isWorkedGroupExpanded && thoughtItemIndexes.length > 1) {
+            assistantRows.push({
+              type: 'assistant',
+              key: `assistant:${message.id}:${segment.key}:compact-toolbar`,
+              messageIndex,
+              item,
+              content: {
+                kind: 'compact_dir_toolbar',
+                segmentKey: segment.key,
+                thoughtItemIndexes,
+                allThoughtsExpanded: thoughtItemIndexes.every(
+                  (itemIndex) =>
+                    selectionSearchBlockId === getThoughtSearchBlockId(message.id, itemIndex) ||
+                    cachedState.expandedByIndex[itemIndex] === true
+                ),
+              },
+              isWorkedDetail: true,
+              isLastRowForMessage: false,
+            });
+          }
+        };
+
+        const insertionBlockIndex =
+          segment.firstWorkBlockIndex === -1 ? segmentStart : segment.firstWorkBlockIndex;
+        let didInsertWorkedGroup = false;
+        for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+          const block = blocks[blockIndex];
+          if (!block) continue;
+          if (!didInsertWorkedGroup && blockIndex === insertionBlockIndex) {
+            insertCompactHeader();
+            didInsertWorkedGroup = true;
+          }
+          if (segment.workBlockKeys.has(block.key)) {
+            if (isWorkedGroupExpanded) {
+              if (block.kind === 'activity_group') {
+                appendCompactDirectoryRows(
+                  assistantRows,
+                  compactEntriesByBlock.get(blockIndex) ?? [],
+                  true
+                );
+              } else {
+                appendBlockRows(assistantRows, block, blockIndex, true);
+              }
+            }
+            continue;
+          }
+          appendBlockRows(assistantRows, block, blockIndex, false);
+        }
+        if (!didInsertWorkedGroup) {
+          insertCompactHeader();
+        }
+        if (
+          isTurnFinished &&
+          isWorkedGroupExpanded &&
+          segmentSubagentTasks.length > 0 &&
+          !hasRunningSubagentTasks
+        ) {
+          appendSubagentTasksRow(assistantRows, true);
+        }
+        if ((!isTurnFinished && segmentSubagentTasks.length > 0) || hasRunningSubagentTasks) {
           appendSubagentTasksRow(assistantRows, false);
         }
         continue;
@@ -1652,6 +1945,7 @@ export const buildChatVirtualRows = ({
       copyContextAvailable,
       surfaceKey,
       nextIsUser,
+      compactNativeEnabled,
     });
     rows.push(...assistantRows);
   }
@@ -1745,7 +2039,19 @@ const engineRowOf = (row: ChatVirtualRow): EngineRow => {
         estimate: ENGINE_ROW_ESTIMATE_PX.compact,
       };
     case 'worked_group_header':
+    case 'compact_work_header':
+    case 'compact_dir_toolbar':
       return { ...base, turnId, estimate: ENGINE_ROW_ESTIMATE_PX.compact };
+    case 'compact_dir_entry':
+      return {
+        ...base,
+        turnId,
+        itemIndex: row.itemIndex ?? null,
+        itemIdentity:
+          content.entry.kind === 'tool' ? toolCallIdOf(content.entry.entry.content) : null,
+        firstItemIndex: row.itemIndex ?? null,
+        estimate: ENGINE_ROW_ESTIMATE_PX.compact,
+      };
     case 'plan':
       return { ...base, turnId, estimate: ENGINE_ROW_ESTIMATE_PX.plan };
     case 'subagent_tasks':
@@ -1770,6 +2076,18 @@ const LEADING_ENGINE_ROW: EngineRow = {
 
 const AGENT_ACTIVITY_ENGINE_ROW: EngineRow = {
   key: AGENT_ACTIVITY_ROW_KEY,
+  turnId: null,
+  turnIndex: -1,
+  itemIndex: null,
+  itemIdentity: null,
+  firstItemIndex: null,
+  placeholder: false,
+  fixed: 'agent-activity',
+  estimate: ENGINE_ROW_ESTIMATE_PX.activity,
+};
+
+const BACKGROUND_TASK_ENGINE_ROW: EngineRow = {
+  key: BACKGROUND_TASK_ROW_KEY,
   turnId: null,
   turnIndex: -1,
   itemIndex: null,
@@ -1878,6 +2196,7 @@ export const SessionChatStreamView = forwardRef<
       agentActivityTone = 'primary',
       // Waiting on the user (warning tone) is not work in progress.
       agentActivityShimmer = agentActivityTone !== 'warning',
+      backgroundTaskStatus = null,
       liveTurnActivity = null,
       historyLive = NOT_LIVE,
       conversationFontSize = DEFAULT_CONVERSATION_FONT_SIZE,
@@ -1941,8 +2260,8 @@ export const SessionChatStreamView = forwardRef<
     );
     const handleAssistantGroupExpandedChange = useCallback(
       (messageId: string, groupKey: string, expanded: boolean) => {
-        const cached = getExpandState(messageId);
-        setExpandState(messageId, {
+        const cached = getExpandState(sessionId, messageId);
+        setExpandState(sessionId, messageId, {
           ...cached,
           expandedGroups: {
             ...cached.expandedGroups,
@@ -1953,12 +2272,12 @@ export const SessionChatStreamView = forwardRef<
         // before these rows change, including when the reader was following.
         setAssistantExpansionVersion((version) => version + 1);
       },
-      []
+      [sessionId]
     );
     const handleAssistantWorkedGroupExpandedChange = useCallback(
       (messageId: string, segmentKey: string, expanded: boolean) => {
-        const cached = getExpandState(messageId);
-        setExpandState(messageId, {
+        const cached = getExpandState(sessionId, messageId);
+        setExpandState(sessionId, messageId, {
           ...cached,
           expandedWorkedGroups: {
             ...cached.expandedWorkedGroups,
@@ -1967,7 +2286,36 @@ export const SessionChatStreamView = forwardRef<
         });
         setAssistantExpansionVersion((version) => version + 1);
       },
-      []
+      [sessionId]
+    );
+    const handleAssistantItemExpandedChange = useCallback(
+      (messageId: string, itemIndex: number, expanded: boolean) => {
+        const cached = getExpandState(sessionId, messageId);
+        setExpandState(sessionId, messageId, {
+          ...cached,
+          expandedByIndex: {
+            ...cached.expandedByIndex,
+            [itemIndex]: expanded,
+          },
+        });
+        setAssistantExpansionVersion((version) => version + 1);
+      },
+      [sessionId]
+    );
+    const handleAssistantBatchItemsExpandedChange = useCallback(
+      (messageId: string, itemIndexes: readonly number[], expanded: boolean) => {
+        const cached = getExpandState(sessionId, messageId);
+        const nextExpandedByIndex = { ...cached.expandedByIndex };
+        for (const itemIndex of itemIndexes) {
+          nextExpandedByIndex[itemIndex] = expanded;
+        }
+        setExpandState(sessionId, messageId, {
+          ...cached,
+          expandedByIndex: nextExpandedByIndex,
+        });
+        setAssistantExpansionVersion((version) => version + 1);
+      },
+      [sessionId]
     );
     const handleAssistantTurnHoverChange = useCallback((messageId: string, hovered: boolean) => {
       setHoveredAssistantMessageId((current) => {
@@ -1978,6 +2326,7 @@ export const SessionChatStreamView = forwardRef<
 
     const copyContextAvailable = onCopyContext !== undefined;
     const surfaceKey = useAtomValue(agentSurfaceKeyAtom);
+    const streamingThoughtPreviewEnabled = useAtomValue(streamingThoughtPreviewFeatureEnabledAtom);
     const selectionLayouts = selectionLayoutsRef.current;
     const virtualRows = useMemo(() => {
       // Expansion lives in the module cache so virtualized child rows retain
@@ -1995,6 +2344,7 @@ export const SessionChatStreamView = forwardRef<
         selectionLayouts,
         surfaceKey,
         groupCreatedSessions: messageSelection === null,
+        compactNativeEnabled: streamingThoughtPreviewEnabled,
       });
       if (!localUserMessages?.length) return rows;
       const local = new Map(localUserMessages.map((message) => [message.id, message]));
@@ -2034,25 +2384,50 @@ export const SessionChatStreamView = forwardRef<
       localUserMessages,
       lastAssistantMessageId,
       messageFileDiffEntriesByTurn,
+      streamingThoughtPreviewEnabled,
     ]);
     // While work is in progress, a live turn whose bottom (past its footer) is
-    // a collapsed activity group carries the status itself: that label
-    // shimmers and no separate status row is added below it.
+    // a collapsed activity group (or Option C compact work header/directory) carries
+    // the status itself: that label shimmers and no separate status row is added below it.
     const liveGroupHeaderRowKey = useMemo(() => {
-      if (!agentActivityLabel || !agentActivityShimmer) return null;
+      if (!agentActivityLabel || agentActivityTone === 'warning') return null;
+      let trailingTurnMessageId: string | null = null;
       for (let index = virtualRows.length - 1; index >= 0; index -= 1) {
         const row = virtualRows[index];
         if (row?.type !== 'assistant') return null;
-        if (row.content.kind === 'footer') continue;
-        return row.item.message.finished !== true &&
+        if (trailingTurnMessageId === null) {
+          trailingTurnMessageId = row.item.message.id;
+        } else if (row.item.message.id !== trailingTurnMessageId) {
+          return null;
+        }
+        if (row.item.message.finished === true) return null;
+        if (row.content.kind === 'footer' || row.content.kind === 'subagent_tasks') continue;
+        if (
+          streamingThoughtPreviewEnabled &&
+          (row.content.kind === 'compact_dir_entry' || row.content.kind === 'compact_dir_toolbar')
+        ) {
+          continue;
+        }
+        if (row.content.kind === 'compact_work_header' && row.content.isLive) {
+          return row.key;
+        }
+        if (
+          agentActivityShimmer &&
           row.content.kind === 'activity_group_header' &&
           !row.content.expanded
-          ? row.key
-          : null;
+        ) {
+          return row.key;
+        }
+        return null;
       }
       return null;
-    }, [agentActivityLabel, agentActivityShimmer, virtualRows]);
-    const streamingThoughtPreviewEnabled = useAtomValue(streamingThoughtPreviewFeatureEnabledAtom);
+    }, [
+      agentActivityLabel,
+      agentActivityShimmer,
+      agentActivityTone,
+      streamingThoughtPreviewEnabled,
+      virtualRows,
+    ]);
     const liveThoughtPreviewRowKey = useMemo(
       () => resolveLiveThoughtPreviewRowKey(virtualRows, streamingThoughtPreviewEnabled),
       [streamingThoughtPreviewEnabled, virtualRows]
@@ -2096,8 +2471,12 @@ export const SessionChatStreamView = forwardRef<
           : null,
       [agentActivityLabel, agentActivityShimmer, agentActivityTone]
     );
+    const shouldShowBackgroundTaskRow = backgroundTaskStatus != null;
     const shouldShowAgentActivityRow =
-      shouldShowAgentActivity && liveGroupHeaderRowKey === null && liveStatusRowKey === null;
+      !shouldShowBackgroundTaskRow &&
+      shouldShowAgentActivity &&
+      liveGroupHeaderRowKey === null &&
+      liveStatusRowKey === null;
     const leadingRowCount = leadingContent == null ? 0 : 1;
 
     /**
@@ -2166,13 +2545,18 @@ export const SessionChatStreamView = forwardRef<
     const engineRowMeta = useMemo(() => {
       const meta = virtualRows.map(engineRowOf);
       if (leadingContent != null) meta.unshift(LEADING_ENGINE_ROW);
-      if (shouldShowAgentActivityRow && agentActivityLabel) meta.push(AGENT_ACTIVITY_ENGINE_ROW);
+      if (shouldShowBackgroundTaskRow) {
+        meta.push(BACKGROUND_TASK_ENGINE_ROW);
+      } else if (shouldShowAgentActivityRow && agentActivityLabel) {
+        meta.push(AGENT_ACTIVITY_ENGINE_ROW);
+      }
       if (trailingContent != null) meta.push(TRAILING_ENGINE_ROW);
       return meta;
     }, [
       agentActivityLabel,
       leadingContent,
       shouldShowAgentActivityRow,
+      shouldShowBackgroundTaskRow,
       trailingContent,
       virtualRows,
     ]);
@@ -2275,7 +2659,7 @@ export const SessionChatStreamView = forwardRef<
         if (item?.type !== 'message') return undefined;
         const layout = {
           finished: item.message.finished === true,
-          expandState: getExpandState(id),
+          expandState: getExpandState(item.sessionId, id),
           activeSearchBlockId,
         };
         selectionLayoutsRef.current = new Map(selectionLayoutsRef.current).set(id, layout);
@@ -2709,11 +3093,13 @@ export const SessionChatStreamView = forwardRef<
                 onFilePathClick={onFilePathClick}
                 onGroupExpandedChange={handleAssistantGroupExpandedChange}
                 onWorkedGroupExpandedChange={handleAssistantWorkedGroupExpandedChange}
+                onItemExpandedChange={handleAssistantItemExpandedChange}
+                onBatchItemsExpandedChange={handleAssistantBatchItemsExpandedChange}
                 isLatestTurn={row.item.message.id === lastAssistantMessageId}
                 isTurnHovered={hoveredAssistantMessageId === row.item.message.id}
                 onTurnHoverChange={handleAssistantTurnHoverChange}
                 conversationFontSize={conversationFontSize}
-                shimmerGroupHeader={row.key === liveGroupHeaderRowKey}
+                shimmerGroupHeader={row.key === liveGroupHeaderRowKey && agentActivityShimmer}
                 showThoughtPreview={row.key === liveThoughtPreviewRowKey}
                 liveStatus={row.key === liveStatusRowKey ? liveTurnStatus : null}
                 liveStatusFollowsSurface={
@@ -2729,7 +3115,14 @@ export const SessionChatStreamView = forwardRef<
           </MessageSelectionRow>
         );
       }),
-      shouldShowAgentActivityRow && agentActivityLabel ? (
+      shouldShowBackgroundTaskRow && backgroundTaskStatus ? (
+        <div key={BACKGROUND_TASK_ROW_KEY} className="shrink-0 pt-1">
+          <BackgroundTaskStatusRow
+            status={backgroundTaskStatus}
+            conversationFontSize={conversationFontSize}
+          />
+        </div>
+      ) : shouldShowAgentActivityRow && agentActivityLabel ? (
         <div
           key={AGENT_ACTIVITY_ROW_KEY}
           className="shrink-0 pt-1"
@@ -5435,23 +5828,25 @@ function ActivityProcessStep({
 
 const AssistantToolCallVirtualRow = memo(
   function AssistantToolCallVirtualRow({
+    sessionId,
     messageId,
     entry,
     onFilePathClick,
     fontSize,
   }: {
+    sessionId: SessionId;
     messageId: string;
     entry: AssistantToolCallRenderItem;
     onFilePathClick?: (filePath: string) => void;
     fontSize: ConversationFontSize;
   }) {
-    const cachedExpanded = getExpandState(messageId).expandedByIndex[entry.itemIndex];
+    const cachedExpanded = getExpandState(sessionId, messageId).expandedByIndex[entry.itemIndex];
     const [expanded, setExpandedState] = useState(cachedExpanded ?? false);
     const setExpanded = useCallback(
       (next: boolean) => {
         setExpandedState(next);
-        const cached = getExpandState(messageId);
-        setExpandState(messageId, {
+        const cached = getExpandState(sessionId, messageId);
+        setExpandState(sessionId, messageId, {
           ...cached,
           expandedByIndex: {
             ...cached.expandedByIndex,
@@ -5459,7 +5854,7 @@ const AssistantToolCallVirtualRow = memo(
           },
         });
       },
-      [entry.itemIndex, messageId]
+      [entry.itemIndex, messageId, sessionId]
     );
 
     return (
@@ -5641,6 +6036,8 @@ const assistantRowPaintsSurface = (row: ChatVirtualRow | undefined): boolean => 
       return isCardContentBlock(row.content.block);
     case 'activity_detail':
       return isAssistantToolCallActivityEntry(row.content.entry);
+    case 'compact_dir_entry':
+      return row.content.entry.kind === 'tool' && row.content.expanded;
     default:
       return false;
   }
@@ -6123,19 +6520,24 @@ export const AssistantTurnFooter = ({
 };
 
 const AssistantPlanVirtualRow = ({
+  sessionId,
   messageId,
   entries,
 }: {
+  sessionId: SessionId;
   messageId: string;
   entries: PlanEntryItem[];
 }) => {
-  const [open, setOpenState] = useState(getExpandState(messageId).planOpen);
+  const [open, setOpenState] = useState(getExpandState(sessionId, messageId).planOpen);
   const setOpen = useCallback(
     (next: boolean) => {
       setOpenState(next);
-      setExpandState(messageId, { ...getExpandState(messageId), planOpen: next });
+      setExpandState(sessionId, messageId, {
+        ...getExpandState(sessionId, messageId),
+        planOpen: next,
+      });
     },
-    [messageId]
+    [messageId, sessionId]
   );
   return <SessionPlanBar entries={entries} open={open} onOpenChange={setOpen} />;
 };
@@ -6152,6 +6554,12 @@ interface AssistantChatItemProps {
   onFilePathClick?: (filePath: string) => void;
   onGroupExpandedChange: (messageId: string, groupKey: string, expanded: boolean) => void;
   onWorkedGroupExpandedChange: (messageId: string, segmentKey: string, expanded: boolean) => void;
+  onItemExpandedChange: (messageId: string, itemIndex: number, expanded: boolean) => void;
+  onBatchItemsExpandedChange: (
+    messageId: string,
+    itemIndexes: readonly number[],
+    expanded: boolean
+  ) => void;
   isTurnHovered: boolean;
   onTurnHoverChange: (messageId: string, hovered: boolean) => void;
   /** The conversation's newest assistant turn: on mobile its actions rest visible. */
@@ -6190,6 +6598,54 @@ const areAssistantVirtualContentsEqual = (
         a.isLive === b.isLive &&
         a.durationMs === b.durationMs
       );
+    case 'compact_work_header':
+      return (
+        b.kind === 'compact_work_header' &&
+        a.segmentKey === b.segmentKey &&
+        a.expanded === b.expanded &&
+        a.isLive === b.isLive &&
+        a.isTurnFinished === b.isTurnFinished &&
+        a.durationMs === b.durationMs &&
+        a.entries.length === b.entries.length &&
+        a.entries.every((entry, idx) => entry.content === b.entries[idx]?.content)
+      );
+    case 'compact_dir_toolbar':
+      return (
+        b.kind === 'compact_dir_toolbar' &&
+        a.segmentKey === b.segmentKey &&
+        a.allThoughtsExpanded === b.allThoughtsExpanded &&
+        a.thoughtItemIndexes.length === b.thoughtItemIndexes.length
+      );
+    case 'compact_dir_entry': {
+      if (
+        b.kind !== 'compact_dir_entry' ||
+        a.segmentKey !== b.segmentKey ||
+        a.expanded !== b.expanded ||
+        a.isLastEntry !== b.isLastEntry ||
+        a.entry.kind !== b.entry.kind ||
+        a.entry.id !== b.entry.id
+      ) {
+        return false;
+      }
+      const aEntry = a.entry;
+      const bEntry = b.entry;
+      if (aEntry.kind === 'thought' && bEntry.kind === 'thought') {
+        return (
+          aEntry.entry.content === bEntry.entry.content &&
+          aEntry.isPlaceholderOnly === bEntry.isPlaceholderOnly
+        );
+      }
+      if (aEntry.kind === 'tool' && bEntry.kind === 'tool') {
+        return aEntry.entry.content === bEntry.entry.content;
+      }
+      if (aEntry.kind === 'read_cluster' && bEntry.kind === 'read_cluster') {
+        return (
+          aEntry.items.length === bEntry.items.length &&
+          aEntry.items.every((item, idx) => item.content === bEntry.items[idx]?.content)
+        );
+      }
+      return false;
+    }
     case 'content':
       return b.kind === 'content' && a.block === b.block;
     case 'activity_group_header':
@@ -6248,6 +6704,8 @@ const areAssistantChatItemPropsEqual = (
   prev.onFilePathClick === next.onFilePathClick &&
   prev.onGroupExpandedChange === next.onGroupExpandedChange &&
   prev.onWorkedGroupExpandedChange === next.onWorkedGroupExpandedChange &&
+  prev.onItemExpandedChange === next.onItemExpandedChange &&
+  prev.onBatchItemsExpandedChange === next.onBatchItemsExpandedChange &&
   prev.onFork === next.onFork &&
   prev.forkWorktreeAvailability === next.forkWorktreeAvailability &&
   prev.onForkWorktreeMenuOpen === next.onForkWorktreeMenuOpen &&
@@ -6275,6 +6733,8 @@ const AssistantChatItem = memo(function AssistantChatItem({
   onFilePathClick,
   onGroupExpandedChange,
   onWorkedGroupExpandedChange,
+  onItemExpandedChange,
+  onBatchItemsExpandedChange,
   isTurnHovered,
   onTurnHoverChange,
   isLatestTurn,
@@ -6298,15 +6758,23 @@ const AssistantChatItem = memo(function AssistantChatItem({
   };
 
   const hasWideContent =
-    content.kind === 'activity_detail' &&
-    content.entry.content.type === 'tool_call' &&
-    content.entry.content.content?.some((block) => block.type === 'diff');
+    (content.kind === 'activity_detail' &&
+      content.entry.content.type === 'tool_call' &&
+      content.entry.content.content?.some((block) => block.type === 'diff')) ||
+    (content.kind === 'compact_dir_entry' &&
+      content.expanded &&
+      content.entry.kind === 'tool' &&
+      content.entry.entry.content.content?.some((block) => block.type === 'diff'));
   const isWorkedDetail = row.isWorkedDetail === true;
   const rowBody = (() => {
     switch (content.kind) {
       case 'plan':
         return message.plan ? (
-          <AssistantPlanVirtualRow messageId={message.id} entries={message.plan} />
+          <AssistantPlanVirtualRow
+            sessionId={row.item.sessionId}
+            messageId={message.id}
+            entries={message.plan}
+          />
         ) : null;
       case 'worked_group_header':
         return (
@@ -6318,6 +6786,61 @@ const AssistantChatItem = memo(function AssistantChatItem({
             onExpandedChange={(expanded) =>
               onWorkedGroupExpandedChange(message.id, content.segmentKey, expanded)
             }
+          />
+        );
+      case 'compact_work_header':
+        return (
+          <CompactWorkHeaderRow
+            id={`${message.id}:${content.segmentKey}:compact`}
+            message={message}
+            entries={content.entries}
+            durationMs={content.durationMs}
+            expanded={content.expanded}
+            isLive={content.isLive}
+            isTurnFinished={content.isTurnFinished}
+            shimmer={shimmerGroupHeader}
+            onExpandedChange={(expanded) =>
+              onWorkedGroupExpandedChange(message.id, content.segmentKey, expanded)
+            }
+          />
+        );
+      case 'compact_dir_toolbar':
+        return (
+          <CompactDirectoryToolbarRow
+            allThoughtsExpanded={content.allThoughtsExpanded}
+            onToggleAllThoughts={() =>
+              onBatchItemsExpandedChange(
+                message.id,
+                content.thoughtItemIndexes,
+                !content.allThoughtsExpanded
+              )
+            }
+          />
+        );
+      case 'compact_dir_entry':
+        return (
+          <CompactDirectoryEntryRow
+            messageId={message.id}
+            entry={content.entry}
+            expanded={content.expanded}
+            isStreaming={message.finished !== true}
+            isLastEntry={content.isLastEntry}
+            fontSize={conversationFontSize}
+            onToggleExpanded={() => {
+              if (content.entry.kind === 'read_cluster') {
+                onGroupExpandedChange(message.id, content.entry.id, !content.expanded);
+              } else {
+                onItemExpandedChange(message.id, content.entry.itemIndex, !content.expanded);
+              }
+            }}
+            onFilePathClick={onFilePathClick}
+            renderToolDetail={(toolCall) => (
+              <CompactToolDetailBody
+                toolCall={toolCall}
+                fontSize={conversationFontSize}
+                onFilePathClick={onFilePathClick}
+              />
+            )}
           />
         );
       case 'content': {
@@ -6360,6 +6883,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
            hierarchy — see `cardSiblingGap` above and `ai-gui/AGENTS.md`. */
         return isAssistantToolCallActivityEntry(entry) ? (
           <AssistantToolCallVirtualRow
+            sessionId={row.item.sessionId}
             messageId={message.id}
             entry={entry}
             onFilePathClick={onFilePathClick}
@@ -6457,6 +6981,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
       case 'plan':
         return cardSiblingGap;
       case 'worked_group_header':
+      case 'compact_work_header':
       case 'activity_group_header':
         return turnSiblingGap;
       case 'subagent_tasks':
@@ -6470,6 +6995,8 @@ const AssistantChatItem = memo(function AssistantChatItem({
            re-open the empty band whenever the turn edited no files. */
         return conversationSurface.footerRow;
       case 'activity_detail':
+      case 'compact_dir_toolbar':
+      case 'compact_dir_entry':
         return conversationSurface.processRow;
       default:
         return turnSiblingGap;
@@ -6480,6 +7007,9 @@ const AssistantChatItem = memo(function AssistantChatItem({
   const isProcessCluster =
     isWorkedDetail ||
     content.kind === 'worked_group_header' ||
+    content.kind === 'compact_work_header' ||
+    content.kind === 'compact_dir_toolbar' ||
+    content.kind === 'compact_dir_entry' ||
     content.kind === 'activity_group_header' ||
     content.kind === 'activity_detail';
 
@@ -8364,20 +8894,20 @@ const PlanPanel = ({
      The toggle only appears when there is actually more to show, so a
      three-line plan keeps no chrome. */
   const defaultExpanded = awaitingDecision || plan.status === 'delta';
-  const cachedExpanded = getExpandState(messageId).expandedByIndex[itemIndex];
+  const cachedExpanded = getExpandState(sessionId, messageId).expandedByIndex[itemIndex];
   const [expanded, setExpandedState] = useState(cachedExpanded ?? defaultExpanded);
   // Persisted so Virtua unmounting the row while it scrolls away does not throw
   // away a reader's manual expansion.
   const setExpanded = useCallback(
     (next: boolean) => {
       setExpandedState(next);
-      const cached = getExpandState(messageId);
-      setExpandState(messageId, {
+      const cached = getExpandState(sessionId, messageId);
+      setExpandState(sessionId, messageId, {
         ...cached,
         expandedByIndex: { ...cached.expandedByIndex, [itemIndex]: next },
       });
     },
-    [itemIndex, messageId]
+    [itemIndex, messageId, sessionId]
   );
   const postHog = usePostHog();
   const jotaiStore = useStore();
@@ -9045,6 +9575,174 @@ const GenericToolCallCard = memo(function GenericToolCallCard({
         </Fragment>
       ) : null}
     </CollapsibleCard>
+  );
+});
+
+/**
+ * Reuses the conversation's native ToolDetailSheet / Diff / Permission rendering
+ * inside an expanded Option C compact directory tool row without repeating the row title.
+ */
+const CompactToolDetailBody = memo(function CompactToolDetailBody({
+  toolCall,
+  fontSize,
+  onFilePathClick,
+}: {
+  toolCall: ToolCallMessage;
+  fontSize: ConversationFontSize;
+  onFilePathClick?: (filePath: string) => void;
+}) {
+  const hasDiffContent = Boolean(toolCall.content?.some((block) => block.type === 'diff'));
+  const hasTerminalContent = Boolean(
+    toolCall.content?.some(
+      (block) => block.type === 'terminal_command' || block.type === 'terminal_output'
+    )
+  );
+  const contentBlocks = toolCall.content?.filter((block) => {
+    if (!hasDiffContent) return true;
+    return block.type !== 'terminal' && block.type !== 'terminal_output';
+  });
+  const hasOutput = Boolean(toolCall.rawOutput);
+  const hasPermission =
+    Boolean(toolCall.permissionRequest) &&
+    toolCall.permissionRequest?.outcome?.outcome !== 'cancelled';
+  const commandLines = (contentBlocks ?? []).flatMap((block) =>
+    block.type === 'terminal_command' ? [formatToolCommand(block)] : []
+  );
+  const isShellCommand = isCommandToolCall(toolCall);
+  const isRunning = toolCall.status === 'in_progress';
+  const isToolSearch = isToolSearchTitle(toolCall.title);
+
+  const nodes: ReactNode[] = [];
+  let sections: ReactNode[] = [];
+  const flushSheet = () => {
+    if (sections.length === 0) return;
+    nodes.push(<ToolDetailSheet key={`sheet-${nodes.length}`}>{sections}</ToolDetailSheet>);
+    sections = [];
+  };
+  const pushOutput = (key: string, outputs: TerminalOutputBlockType[]) => {
+    const preview = prepareTerminalOutputBlocksPreview(outputs);
+    sections.push(
+      <ToolOutputSection
+        key={key}
+        output={preview.text}
+        limited={preview.wasLimited || outputs.some((output) => output.truncated === true)}
+        exitCode={outputs[outputs.length - 1]?.exitStatus?.exitCode}
+        fontSize={fontSize}
+      />
+    );
+  };
+
+  const blocks = contentBlocks ?? [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (!block) continue;
+
+    if (block.type === 'terminal_command' || block.type === 'terminal_output') {
+      const outputs: TerminalOutputBlockType[] = [];
+      let next = block.type === 'terminal_command' ? index + 1 : index;
+      while (next < blocks.length) {
+        const nextBlock = blocks[next];
+        if (nextBlock?.type === 'terminal') {
+          next += 1;
+          continue;
+        }
+        if (nextBlock?.type !== 'terminal_output') break;
+        outputs.push(nextBlock);
+        next += 1;
+      }
+      if (block.type === 'terminal_command') {
+        sections.push(
+          <ToolCommandSection
+            key={`command-${index}`}
+            command={formatToolCommand(block)}
+            shell={isShellCommand}
+            running={isRunning}
+            fontSize={fontSize}
+          />
+        );
+      }
+      if (outputs.length > 0) pushOutput(`output-${index}`, outputs);
+      index = next - 1;
+      continue;
+    }
+
+    if (block.type === 'terminal') {
+      if (hasTerminalContent) continue;
+      sections.push(
+        <ToolCaptionSection key={`terminal-${index}`}>
+          Terminal output is streaming in your CLI
+        </ToolCaptionSection>
+      );
+      continue;
+    }
+
+    if (block.type === 'diff') {
+      flushSheet();
+      nodes.push(<DiffBlockRenderer key={`diff-${index}`} block={block} />);
+      continue;
+    }
+
+    if (block.type !== 'content') continue;
+    const { content } = block;
+    if (content.type === 'text') {
+      if (isToolCommandEcho(content.text, commandLines)) continue;
+      const verbatim = detectToolCallJsonText(content.text) ?? extractFencedToolText(content.text);
+      if (verbatim === null && toolCall.kind === 'execute') {
+        pushOutput(`text-${index}`, [
+          { type: 'terminal_output', output: content.text, stream: 'combined' },
+        ]);
+        continue;
+      }
+      sections.push(
+        isToolSearch || verbatim !== null ? (
+          <ToolVerbatimSection
+            key={`text-${index}`}
+            value={verbatim ?? content.text}
+            fontSize={fontSize}
+          />
+        ) : (
+          <ToolDetailSection key={`text-${index}`}>
+            <MarkdownRenderer
+              text={content.text}
+              size={fontSize}
+              compact
+              className={ACTIVITY_STEP_BODY_CLASS}
+              onAgentFileLinkClick={onFilePathClick}
+            />
+          </ToolDetailSection>
+        )
+      );
+      continue;
+    }
+    sections.push(
+      <ToolDetailSection key={`content-${index}`}>
+        <StandardToolContentBlock
+          content={content}
+          toolCall={toolCall}
+          onFilePathClick={onFilePathClick}
+          fontSize={fontSize}
+        />
+      </ToolDetailSection>
+    );
+  }
+
+  if (hasOutput) {
+    sections.push(
+      <ToolVerbatimSection
+        key="raw-output"
+        value={formatJsonValue(toolCall.rawOutput)}
+        fontSize={fontSize}
+      />
+    );
+  }
+  flushSheet();
+
+  if (nodes.length === 0 && !hasPermission) return null;
+  return (
+    <div className="space-y-1.5">
+      {nodes}
+      {hasPermission ? <PermissionRequestBlock toolCall={toolCall} /> : null}
+    </div>
   );
 });
 

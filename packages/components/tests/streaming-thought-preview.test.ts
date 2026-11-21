@@ -2,15 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import type { AssistantActivityRenderItem } from '../src/components/ai-gui/assistant-turn-render-blocks';
 import {
+  extractFirstThoughtPreviewFromText,
   extractLatestStreamingThoughtPreview,
   extractStreamingThoughtPreviewFromText,
   inspectStreamingThoughtPreview,
   resolveLiveThoughtPreviewRowKey,
+  stripAgyPlaceholderFromMarkdown,
   STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP,
   STREAMING_THOUGHT_PREVIEW_MAX_CHARS,
   STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS,
   STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES,
 } from '../src/components/ai-gui/streaming-thought-preview';
+import {
+  buildCompactDirectoryEntries,
+  extractFirstSentence,
+  findActiveNonBackgroundTool,
+  summarizeCompactTools,
+} from '../src/components/ai-gui/compact-native-directory';
+import { resolveBackgroundTaskStatus } from '../src/components/ai-gui/background-task-status-row';
 
 const thoughtEntry = (itemIndex: number, text: string): AssistantActivityRenderItem => ({
   itemIndex,
@@ -133,17 +142,21 @@ describe('extractStreamingThoughtPreviewFromText', () => {
     );
 
     // Backslash-escaped backtick does not open a code span, so the following HTML comment is stripped.
-    expect(
-      extractStreamingThoughtPreviewFromText('Checking \\`<!-- hidden -->` visible.')
-    ).toBe('Checking ` visible.');
+    expect(extractStreamingThoughtPreviewFromText('Checking \\`<!-- hidden -->` visible.')).toBe(
+      'Checking ` visible.'
+    );
 
     // Same-paragraph multiline inline code spans protect `<!--` across line breaks,
     // whereas a blank line ends the paragraph and lets a real HTML comment open.
     expect(
-      extractStreamingThoughtPreviewFromText('Inspecting `first line\n<!-- not a comment`\n\nRunning tests.')
+      extractStreamingThoughtPreviewFromText(
+        'Inspecting `first line\n<!-- not a comment`\n\nRunning tests.'
+      )
     ).toBe('Running tests.');
     expect(
-      extractStreamingThoughtPreviewFromText('Earlier visible.\n\nStart `unclosed\n\n<!-- real comment -->')
+      extractStreamingThoughtPreviewFromText(
+        'Earlier visible.\n\nStart `unclosed\n\n<!-- real comment -->'
+      )
     ).toBe('Start unclosed');
 
     expect(
@@ -484,6 +497,160 @@ describe('resolveLiveThoughtPreviewRowKey', () => {
         [collapsedThoughtRow('row-1', 'turn-1'), footerRow('turn-2', true)],
         true
       )
+    ).toBeNull();
+  });
+});
+
+describe('Option C compact-native directory & background task helpers', () => {
+  it('extracts first sentences without splitting on filenames or version numbers', () => {
+    expect(
+      extractFirstSentence(
+        'Checking assistant-turn-render-blocks.ts and view.tsx for v0.113.1. Next sentence.'
+      )
+    ).toBe('Checking assistant-turn-render-blocks.ts and view.tsx for v0.113.1.');
+    expect(extractFirstSentence('先检查 view.tsx 的行界。再验证展开态。')).toBe(
+      '先检查 view.tsx 的行界。'
+    );
+  });
+
+  it('strips Antigravity placeholder paragraphs from Markdown and extracts the first real paragraph excerpt', () => {
+    const raw =
+      "I'm thinking through how to approach this.\n\n\nChecking `view.tsx` first. Then checking `surface.ts`.\n\n\nSecond paragraph.";
+    expect(stripAgyPlaceholderFromMarkdown(raw)).toBe(
+      'Checking `view.tsx` first. Then checking `surface.ts`.\n\nSecond paragraph.'
+    );
+    expect(extractFirstThoughtPreviewFromText(raw)).toBe(
+      'Checking view.tsx first. Then checking surface.ts.'
+    );
+    expect(stripAgyPlaceholderFromMarkdown("I'm thinking through how to approach this.")).toBe('');
+  });
+
+  it('clusters adjacent completed read tools, skips placeholder-only thoughts, and excludes backgrounded tools from active running header', () => {
+    const entries: AssistantActivityRenderItem[] = [
+      thoughtEntry(0, "I'm thinking through how to approach this."),
+      thoughtEntry(1, "I'm thinking through how to approach this.\n\n\nInspecting files."),
+      {
+        itemIndex: 2,
+        content: {
+          type: 'tool_call',
+          toolCallId: 'r1',
+          kind: 'read',
+          title: 'Read packages/components/src/a.ts',
+          locations: [{ path: 'packages/components/src/a.ts' }],
+          status: 'completed',
+        },
+      },
+      {
+        itemIndex: 3,
+        content: {
+          type: 'tool_call',
+          toolCallId: 'r2',
+          kind: 'read',
+          title: 'Read packages/components/src/b.ts',
+          locations: [{ path: 'packages/components/src/b.ts' }],
+          status: 'completed',
+        },
+      },
+      {
+        itemIndex: 4,
+        content: {
+          type: 'tool_call',
+          toolCallId: 'bg-cmd',
+          kind: 'execute',
+          title: 'Run gh run watch 123',
+          status: 'in_progress',
+          backgroundTaskId: 'bg-123',
+        },
+      },
+    ];
+
+    expect(findActiveNonBackgroundTool(entries)).toBeNull();
+    expect(summarizeCompactTools(entries)).toEqual({
+      readFileCount: 2,
+      editFileCount: 0,
+      searchCount: 0,
+      commandCount: 0,
+      fetchCount: 0,
+      otherCount: 0,
+      backgroundCount: 1,
+    });
+
+    const dir = buildCompactDirectoryEntries(entries, { isLive: true });
+    expect(dir.map((d) => d.kind)).toEqual(['thought', 'read_cluster', 'tool']);
+    expect(dir[0]?.kind === 'thought' && dir[0].excerpt).toBe('Inspecting files.');
+    expect(dir[1]?.kind === 'read_cluster' && dir[1].id).toBe('read-cluster:r1');
+    expect(dir[1]?.kind === 'read_cluster' && dir[1].files.map((f) => f.fileName)).toEqual([
+      'a.ts',
+      'b.ts',
+    ]);
+    expect(dir[2]?.kind === 'tool' && dir[2].isBackgrounded).toBe(true);
+
+    // Appending a 3rd adjacent read preserves the read cluster's stable identity.
+    const withThirdRead: AssistantActivityRenderItem[] = [
+      ...entries.slice(0, 4),
+      {
+        itemIndex: 4,
+        content: {
+          type: 'tool_call',
+          toolCallId: 'r3',
+          kind: 'read',
+          title: 'Read packages/components/src/c.ts',
+          locations: [{ path: 'packages/components/src/c.ts' }],
+          status: 'completed',
+        },
+      },
+      { ...entries[4]!, itemIndex: 5 },
+    ];
+    const dirWithThird = buildCompactDirectoryEntries(withThirdRead, { isLive: true });
+    expect(dirWithThird[1]?.kind === 'read_cluster' && dirWithThird[1].id).toBe('read-cluster:r1');
+    expect(
+      dirWithThird[1]?.kind === 'read_cluster' && dirWithThird[1].files.map((f) => f.fileName)
+    ).toEqual(['a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('resolves silent background waiting vs wakeup pulse from backgroundTaskState and count', () => {
+    expect(
+      resolveBackgroundTaskStatus({
+        liveStatus: { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 2 },
+        hasUnfinishedAssistantTurn: false,
+        hasPendingDispatch: false,
+        isAwaitingQuestion: false,
+      })
+    ).toEqual({ mode: 'waiting', taskCount: 2 });
+
+    expect(
+      resolveBackgroundTaskStatus({
+        liveStatus: { type: 'running', backgroundTaskState: 'running', backgroundTaskCount: 1 },
+        hasUnfinishedAssistantTurn: false,
+        hasPendingDispatch: false,
+        isAwaitingQuestion: false,
+      })
+    ).toEqual({ mode: 'wakeup', taskCount: 1 });
+
+    // Active main turn, pending dispatch, finalizing, or running without backgroundTaskState/count return null.
+    expect(
+      resolveBackgroundTaskStatus({
+        liveStatus: { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 1 },
+        hasUnfinishedAssistantTurn: true,
+        hasPendingDispatch: false,
+        isAwaitingQuestion: false,
+      })
+    ).toBeNull();
+    expect(
+      resolveBackgroundTaskStatus({
+        liveStatus: { type: 'running', phase: 'finalizing' },
+        hasUnfinishedAssistantTurn: false,
+        hasPendingDispatch: false,
+        isAwaitingQuestion: false,
+      })
+    ).toBeNull();
+    expect(
+      resolveBackgroundTaskStatus({
+        liveStatus: { type: 'running' },
+        hasUnfinishedAssistantTurn: false,
+        hasPendingDispatch: false,
+        isAwaitingQuestion: false,
+      })
     ).toBeNull();
   });
 });

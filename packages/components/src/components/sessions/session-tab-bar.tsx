@@ -13,6 +13,8 @@ import { useAtomValue } from 'jotai';
 import { getAgentMetaByIdAtomFamily } from '@/atoms/agents';
 import { WORKSPACE_FOCUS_SCOPES } from '@/atoms/focus-layer';
 import { sessionLiveStatusAtomFamily } from '@/atoms/presence';
+import { lowStimulusModeEnabledAtom } from '@/atoms/settings';
+import { BackgroundStatusMark } from '@/ui/working-status-mark';
 import { Tooltip } from '@lody/ui/tooltip';
 import { useListKeyboardNavigation } from '@/ui/focus-scope';
 import { ScrollArea } from '@lody/ui/scroll-area';
@@ -460,8 +462,11 @@ function TabContent({
   t: (key: string, fallback: string) => string;
 }) {
   const liveStatus = useAtomValue(sessionLiveStatusAtomFamily(session.id));
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   const isWorking = liveStatus != null;
   const isWaiting = liveStatus?.type === 'requestPermission';
+  const isBackground =
+    liveStatus?.type === 'running' && liveStatus.backgroundTaskState === 'background';
   /* A background sub-session tab is the only place its new output is announced:
      child tabs get no sidebar row of their own, so without this the finished
      answer stays invisible until the user happens to click the tab. Suppressed
@@ -530,6 +535,8 @@ function TabContent({
       <span {...stylex.props(styles.tabIconSlot)}>
         {isWaiting ? (
           <Hand {...stylex.props(styles.waitingIcon)} />
+        ) : isBackground ? (
+          <BackgroundStatusMark still={lowStimulusMode} />
         ) : isWorking ? (
           <Spinner className="h-3 w-3 text-tab-active-accent" />
         ) : isUnread ? (
@@ -1232,6 +1239,7 @@ export function ClosedTabsPopover({
 function ClosedConversationStatus({ session }: { session: SessionMeta }) {
   const { t } = useTranslation();
   const status = useAtomValue(sessionLiveStatusAtomFamily(session.id));
+  const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
   if (status?.type === 'requestPermission')
     return (
       <Hand
@@ -1239,6 +1247,9 @@ function ClosedConversationStatus({ session }: { session: SessionMeta }) {
         aria-label={t('sessions.waitingPermission', 'Waiting for permission')}
       />
     );
+  if (status?.type === 'running' && status.backgroundTaskState === 'background') {
+    return <BackgroundStatusMark still={lowStimulusMode} />;
+  }
   if (status) return <Spinner className="h-3 w-3" />;
   if (closedSessionHasUnreadMessages(session))
     return (

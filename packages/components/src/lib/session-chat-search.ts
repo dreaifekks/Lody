@@ -3,6 +3,7 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import { unified } from 'unified';
+import { stripAgyPlaceholderFromMarkdown } from '@/components/ai-gui/streaming-thought-preview';
 
 /**
  * In-conversation search indexes PROSE ONLY: what the user typed and what the
@@ -124,16 +125,28 @@ export const getThoughtSearchBlockId = (messageId: string, itemIndex: number) =>
 export const getProposedPlanSearchBlockId = (messageId: string, itemIndex: number) =>
   `${getMessageItemPrefix(messageId, itemIndex)}:proposed-plan`;
 
+export type SessionSearchExtractOptions = {
+  /**
+   * When Option C (streaming thought preview) is enabled, thought rows render
+   * `stripAgyPlaceholderFromMarkdown(text)` and omit placeholder-only items.
+   * Index the same projected thought text so match counts and occurrence
+   * indices align with the rendered DOM.
+   */
+  stripThoughtPlaceholders?: boolean;
+};
+
 /**
  * Extract search blocks from a single message at a given index.
  * This is the building block for both batch and incremental extraction.
  */
 export const extractSearchBlocksForMessage = (
   message: SessionHistory,
-  messageIndex: number
+  messageIndex: number,
+  options?: SessionSearchExtractOptions
 ): SessionSearchBlock[] => {
   const blocks: SessionSearchBlock[] = [];
   const rawItems = Array.isArray(message.items) ? message.items : [];
+  const stripThoughtPlaceholders = options?.stripThoughtPlaceholders === true;
   rawItems.forEach((item, itemIndex) => {
     if (!isRecord(item) || typeof item.type !== 'string') {
       return;
@@ -153,16 +166,24 @@ export const extractSearchBlocksForMessage = (
               : getSearchableMarkdownText(getString(item.text) ?? ''),
         });
         return;
-      case 'thought':
+      case 'thought': {
+        const rawThought = getString(item.text) ?? '';
+        const thoughtText = stripThoughtPlaceholders
+          ? stripAgyPlaceholderFromMarkdown(rawThought)
+          : rawThought;
+        if (!thoughtText) {
+          return;
+        }
         pushBlock(blocks, {
           blockId: getThoughtSearchBlockId(message.id, itemIndex),
           messageId: message.id,
           messageIndex,
           itemIndex,
           blockType: 'thought',
-          text: getSearchableMarkdownText(getString(item.text) ?? ''),
+          text: getSearchableMarkdownText(thoughtText),
         });
         return;
+      }
       case 'proposed_plan':
         pushBlock(blocks, {
           blockId: getProposedPlanSearchBlockId(message.id, itemIndex),
@@ -181,7 +202,8 @@ export const extractSearchBlocksForMessage = (
 };
 
 export const extractSessionSearchBlocks = (
-  history: readonly SessionHistory[] | undefined
+  history: readonly SessionHistory[] | undefined,
+  options?: SessionSearchExtractOptions
 ): SessionSearchBlock[] => {
   if (!history?.length) {
     return [];
@@ -189,7 +211,7 @@ export const extractSessionSearchBlocks = (
 
   const blocks: SessionSearchBlock[] = [];
   history.forEach((message, messageIndex) => {
-    blocks.push(...extractSearchBlocksForMessage(message, messageIndex));
+    blocks.push(...extractSearchBlocksForMessage(message, messageIndex, options));
   });
 
   return blocks;

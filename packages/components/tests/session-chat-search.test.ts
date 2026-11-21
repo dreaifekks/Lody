@@ -7,9 +7,11 @@ import {
   SessionSearchProvider,
   type SessionSearchBlockMatch,
 } from '../src/components/sessions/session-search-context';
-import type { MessageContent, SessionHistory } from '@lody/shared';
+import type { MessageContent, SessionHistory, SessionId } from '@lody/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useIncrementalSearchBlocks } from '../src/hooks/use-incremental-search-blocks';
+import { createConversationViewFromHistory } from '../src/lib/conversation-view';
 import {
   buildSessionSearchResults,
   extractSearchBlocksForMessage,
@@ -17,6 +19,7 @@ import {
   getProposedPlanSearchBlockId,
   getTextSearchBlockId,
   getThoughtSearchBlockId,
+  type SessionSearchBlock,
 } from '../src/lib/session-chat-search';
 
 const worktreeId = '01234567-89ab-cdef-0123-456789abcdef';
@@ -118,7 +121,9 @@ describe('extractSessionSearchBlocks', () => {
       }),
     ];
     const blocks = extractSessionSearchBlocks(history);
-    expect(history.flatMap(extractSearchBlocksForMessage)).toEqual(blocks);
+    expect(
+      history.flatMap((message, index) => extractSearchBlocksForMessage(message, index))
+    ).toEqual(blocks);
 
     for (const query of [path, code]) {
       const results = buildSessionSearchResults(blocks, query);
@@ -137,6 +142,50 @@ describe('extractSessionSearchBlocks', () => {
       ).toEqual([query, query, query, query]);
     }
     expect(buildSessionSearchResults(blocks, 'tool-only-marker')).toEqual([]);
+  });
+
+  it('aligns thought search hits and occurrence indices with Option C placeholder stripping', () => {
+    const history: SessionHistory[] = [
+      buildMessage({
+        id: 'assistant-agy',
+        items: [
+          {
+            type: 'thought',
+            text: "I'm thinking through how to approach this.",
+          },
+          {
+            type: 'thought',
+            text: "I'm thinking through how to approach this.\n\nAfter thinking further, inspect the repository.",
+          },
+        ],
+      }),
+    ];
+
+    // Switch OFF (default): preserves legacy thought indexing including placeholders.
+    const defaultBlocks = extractSessionSearchBlocks(history);
+    expect(defaultBlocks).toHaveLength(2);
+    expect(buildSessionSearchResults(defaultBlocks, 'thinking through')).toHaveLength(2);
+    const defaultThinkingHits = buildSessionSearchResults(defaultBlocks, 'thinking');
+    expect(defaultThinkingHits).toHaveLength(3);
+    expect(
+      defaultThinkingHits
+        .filter((hit) => hit.blockId === getThoughtSearchBlockId('assistant-agy', 1))
+        .map((hit) => hit.localIndex)
+    ).toEqual([0, 1]);
+
+    // Switch ON (`stripThoughtPlaceholders: true`): placeholder-only thought is skipped,
+    // and remaining thought indexes only the visible stripped body so localIndex aligns.
+    const strippedBlocks = extractSessionSearchBlocks(history, { stripThoughtPlaceholders: true });
+    expect(strippedBlocks.map((block) => block.blockId)).toEqual([
+      getThoughtSearchBlockId('assistant-agy', 1),
+    ]);
+    expect(buildSessionSearchResults(strippedBlocks, 'thinking through')).toEqual([]);
+    const strippedThinkingHits = buildSessionSearchResults(strippedBlocks, 'thinking');
+    expect(strippedThinkingHits).toHaveLength(1);
+    expect(strippedThinkingHits[0]).toMatchObject({
+      blockId: getThoughtSearchBlockId('assistant-agy', 1),
+      localIndex: 0,
+    });
   });
 });
 
@@ -315,5 +364,42 @@ describe('rendered session search', () => {
     await renderSearch(source, 'QA_RESUMED_OK', 0, false);
     expect(marks()).toEqual([]);
     expect(container.textContent).toBe(rendered);
+  });
+
+  it('rebuilds incremental search blocks when stripThoughtPlaceholders toggles', async () => {
+    const history: SessionHistory[] = [
+      buildMessage({
+        id: 'assistant-toggle',
+        items: [
+          {
+            type: 'thought',
+            text: "I'm thinking through how to approach this.\n\nAfter thinking further, inspect the repository.",
+          },
+        ],
+      }),
+    ];
+    const view = createConversationViewFromHistory({
+      sessionId: 'session-search-toggle' as SessionId,
+      getHistory: () => history,
+      subscribe: () => () => {},
+    });
+
+    let latestBlocks: SessionSearchBlock[] = [];
+    function Probe({ stripThoughtPlaceholders }: { stripThoughtPlaceholders: boolean }) {
+      latestBlocks = useIncrementalSearchBlocks(view, true, { stripThoughtPlaceholders });
+      return null;
+    }
+
+    await act(async () => root.render(createElement(Probe, { stripThoughtPlaceholders: false })));
+    expect(buildSessionSearchResults(latestBlocks, 'thinking through')).toHaveLength(1);
+    expect(buildSessionSearchResults(latestBlocks, 'thinking')).toHaveLength(2);
+
+    await act(async () => root.render(createElement(Probe, { stripThoughtPlaceholders: true })));
+    expect(buildSessionSearchResults(latestBlocks, 'thinking through')).toEqual([]);
+    expect(buildSessionSearchResults(latestBlocks, 'thinking')).toHaveLength(1);
+
+    await act(async () => root.render(createElement(Probe, { stripThoughtPlaceholders: false })));
+    expect(buildSessionSearchResults(latestBlocks, 'thinking through')).toHaveLength(1);
+    expect(buildSessionSearchResults(latestBlocks, 'thinking')).toHaveLength(2);
   });
 });

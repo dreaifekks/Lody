@@ -383,7 +383,12 @@ describe('session-tab-bar-status-slot', () => {
     }: {
       activeTabSessionId?: string;
       parent?: SessionMeta;
-      presence?: Record<string, 'running' | 'requestPermission'>;
+      presence?: Record<
+        string,
+        | 'running'
+        | 'requestPermission'
+        | { type: 'running'; phase?: 'background' | 'finalizing'; backgroundTaskCount?: number }
+      >;
       lowStimulus?: boolean;
     } = {}
   ) {
@@ -393,7 +398,7 @@ describe('session-tab-bar-status-slot', () => {
     store.set(
       lodyPresenceStatesAtom,
       Object.fromEntries(
-        Object.entries(presence).map(([sessionId, type]) => [
+        Object.entries(presence).map(([sessionId, entry]) => [
           getLodySessionPresenceKey(
             sessionId as SessionId,
             `p-${sessionId}` as LodyPresenceInstanceId
@@ -403,7 +408,7 @@ describe('session-tab-bar-status-slot', () => {
             sessionId: sessionId as SessionId,
             machineId,
             instanceId: `p-${sessionId}` as LodyPresenceInstanceId,
-            status: { type },
+            status: typeof entry === 'string' ? { type: entry } : entry,
             updatedAt: getServerNow(),
           },
         ])
@@ -528,6 +533,60 @@ describe('session-tab-bar-status-slot', () => {
         '#session-tab-session-child svg.lucide-hand[aria-hidden="true"]'
       );
       expect(waitingMarker).not.toBeNull();
+    });
+
+    it('renders the calm background breathing ring for backgroundTaskState: background and makes it static in low-stimulus mode', async () => {
+      await renderTabBar([child('session-child', { lastMessageAt: NOW, lastReadAt: NOW })], {
+        presence: {
+          'session-child': {
+            type: 'running',
+            backgroundTaskState: 'background',
+            backgroundTaskCount: 1,
+          },
+        },
+      });
+
+      const bgIndicator = container.querySelector(
+        '#session-tab-session-child [data-session-background-indicator]'
+      );
+      expect(bgIndicator).not.toBeNull();
+      expect(bgIndicator?.getAttribute('data-session-background-indicator')).toBe('');
+      expect(
+        container.querySelector('#session-tab-session-child [data-slot="spinner"]')
+      ).toBeNull();
+
+      // In low-stimulus mode the background ring stands still without motion.
+      await renderTabBar([child('session-child', { lastMessageAt: NOW, lastReadAt: NOW })], {
+        presence: {
+          'session-child': {
+            type: 'running',
+            backgroundTaskState: 'background',
+            backgroundTaskCount: 1,
+          },
+        },
+        lowStimulus: true,
+      });
+      const stillBgIndicator = container.querySelector(
+        '#session-tab-session-child [data-session-background-indicator]'
+      );
+      expect(stillBgIndicator?.getAttribute('data-session-background-indicator')).toBe('still');
+
+      // Wakeup pulse (backgroundTaskState: 'running') restores the active spinner.
+      await renderTabBar([child('session-child', { lastMessageAt: NOW, lastReadAt: NOW })], {
+        presence: {
+          'session-child': {
+            type: 'running',
+            backgroundTaskState: 'running',
+            backgroundTaskCount: 1,
+          },
+        },
+      });
+      expect(
+        container.querySelector('#session-tab-session-child [data-session-background-indicator]')
+      ).toBeNull();
+      expect(
+        container.querySelector('#session-tab-session-child [data-slot="spinner"]')
+      ).not.toBeNull();
     });
   });
 });

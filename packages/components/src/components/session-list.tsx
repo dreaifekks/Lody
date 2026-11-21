@@ -171,6 +171,7 @@ export type SessionListRow = {
   addedLines: number;
   deletedLines: number;
   isWorking: boolean;
+  isBackgroundWorking?: boolean;
   hasUnreadMessages: boolean;
   isOffline: boolean;
   isWaitingPermission: boolean;
@@ -1197,6 +1198,7 @@ const SessionGroupRow = memo(function SessionGroupRow({
             sessionId={session.sessionId}
             isWaitingPermission={session.isWaitingPermission}
             isWorking={session.isWorking}
+            isBackgroundWorking={session.isBackgroundWorking}
             hasUnreadMessages={session.hasUnreadMessages}
             familyActivity={familyActivity}
             restIcon={

@@ -155,6 +155,7 @@ export type SidebarUpdatedItem = {
   lastReadAt?: number;
   isPinned?: boolean;
   isWorking?: boolean;
+  isBackgroundWorking?: boolean;
   hasUnreadMessages?: boolean;
   isOffline?: boolean;
   isWaitingPermission?: boolean;
@@ -1230,6 +1231,7 @@ export const UpdatedItemRow = memo(function UpdatedItemRow({
             sessionId={item.id}
             isWaitingPermission={item.isWaitingPermission}
             isWorking={item.isWorking}
+            isBackgroundWorking={item.isBackgroundWorking}
             hasUnreadMessages={item.hasUnreadMessages}
             familyActivity={familyActivity}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"

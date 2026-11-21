@@ -130,33 +130,48 @@ family is folded.
 
 ## Streaming thought preview
 
-Shows a two-line preview of the latest thought paragraph beneath the trailing
-collapsed activity group header while a turn is running. The switch is per device
-and presentation-only: it reads synced turn history (`block.entries`), never uses
-presence, never alters stored history or ACP adapters, and leaves completed-turn
-folding unchanged. Applies uniformly across providers
+Opt-in compact-native work header and single-level process directory (Option C)
+for running and finished turns. The switch is per device and presentation-only:
+it reads synced turn history (`block.entries`), never uses presence, never
+alters stored history or ACP adapters, and preserves completed-turn answer-tail
+folding (#2353). Applies uniformly across providers; turning the switch off
+retains the upstream two-layer disclosure and legacy behavior verbatim
 ([decision](../notes/implemented/feature/2026-11-21-streaming-thought-preview.md)).
 
-- **Placement and lifecycle.** Renders inside the trailing collapsed
-  `activity_group_header` virtual row (skipping only the same turn's trailing
-  `footer` and `subagent_tasks` rows) while the turn is unfinished
-  (`message.finished !== true && typeof message.endedAt !== 'number'`) and the
-  group contains at least one thought, independent of header shimmer. Sits on
-  `conversation.railInset` in compact secondary text (`line-clamp-2`,
-  `select-none`, no card fill, no icons, no added animation). Retains the last
-  valid thought while subsequent tool calls run or a newer thought chunk is
-  still unclosed/placeholder-only, and disappears immediately on manual expand
-  or turn finish.
-- **Extraction and anti-flicker.** Scans thought text in a single O(n) forward
-  pass tracking cross-paragraph HTML comments continuously, validates unclosed
-  leading `**` headings against full line bounds, and runs bounded inline
-  Markdown cleanup (1024-char prefix cap, preserving inline code literals and
-  balanced-parenthesis links) before capping output at 260 characters. Identical
-  text deduplicates without resetting the hold timer; each sentence holds for at
-  least 1500 ms (4000 ms while Low-stimulus mode is on), coalescing intermediate
-  updates and preserving any pending valid candidate when a streaming chunk
-  parses to empty within the same group.
+- **Collapsed live header (at most 2 lines, `conversation.railInset`).**
+  Transparent typography with no card fill or border. Line 1 (`13px`,
+  `.agent-shimmer` while live, disabled in Low-stimulus mode) shows
+  `Running <target> (<duration>)` when a non-background tool is `in_progress`,
+  else `Thinking · <first sentence> (<duration>)` from the latest valid thought,
+  else `Thinking… (<duration>)` when only the Antigravity placeholder has
+  arrived. Line 2 (`12px` muted, single-line truncated, never a third line)
+  retains the last valid thought excerpt while a tool runs, shows compact tool
+  counts while thinking after completed/background tools, and omits itself when
+  no tools have run yet.
+- **Single-level expanded directory.** One click on the live header or the
+  finished native `Worked for <duration>` header opens flat sibling rows
+  directly without an intermediate `ActivityGroupHeader`. Valid thoughts start
+  collapsed to one-line first-sentence excerpts (with Antigravity's placeholder
+  stripped and an `Expand all thoughts / Collapse all thoughts` toggle when more
+  than one valid thought exists); consecutive completed non-background `read`
+  tools cluster into one expandable row keyed by the first tool's stable
+  identity (so streaming a 3rd read keeps the cluster open); standalone `read`
+  and `edit` rows with outputs/diffs keep an independent clickable file name to
+  open the source file while whole-row click toggles the detail sheet; other
+  tools expand their detail sheet on whole-row click (no "View output" badge),
+  with a neutral historical `BG` micro-badge derived strictly from persisted
+  `tool_call.backgroundTaskId` (never presence). Per-session expand memory
+  (`sessionId` + `messageId`, isolating forked turns), placeholder-aligned
+  thought search indexing (`stripAgyPlaceholderFromMarkdown`), and `#2353`
+  folding all remain intact.
+- **Extraction and anti-flicker.** Reuses the single O(n) forward pass from
+  `streaming-thought-preview.ts` (cross-paragraph HTML comments, unclosed
+  leading `**` heading checks, bounded 1024-char inline Markdown cleanup,
+  placeholder stripping, and 1500 ms / 4000 ms Low-stimulus hold throttling)
+  with dot-safe first-sentence extraction (`view.tsx`, `v2.1` preserved).
 - **Code.** `packages/components/src/components/ai-gui/streaming-thought-preview.ts`,
+  `packages/components/src/components/ai-gui/compact-native-directory.ts`,
+  `packages/components/src/components/ai-gui/compact-native-directory-row.tsx`,
   `packages/components/src/components/ai-gui/streaming-thought-preview-row.tsx`,
   and minimal row wiring in `packages/components/src/components/ai-gui/view.tsx`.
 

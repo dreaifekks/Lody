@@ -395,6 +395,7 @@ const isElectron = typeof window !== 'undefined' && window.__LODY_ELECTRON__ ===
 type LocalProjectSessionItemProps = {
   session: SessionMeta;
   isWorking: boolean;
+  isBackgroundWorking?: boolean;
   isWaitingPermission: boolean;
   hasUnreadMessages: boolean;
   familyActivity?: SidebarGroupActivity;
@@ -446,6 +447,7 @@ type LocalProjectSessionItemProps = {
 const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
   session,
   isWorking,
+  isBackgroundWorking,
   isWaitingPermission,
   hasUnreadMessages,
   familyActivity,
@@ -676,6 +678,7 @@ const LocalProjectSessionItem = memo(function LocalProjectSessionItem({
             sessionId={session.id}
             isWaitingPermission={isWaitingPermission}
             isWorking={isWorking}
+            isBackgroundWorking={isBackgroundWorking}
             hasUnreadMessages={hasUnreadMessages}
             familyActivity={familyActivity}
             fadeClassName="group-hover/row:opacity-0 group-data-[menu-open]/row:opacity-0"
@@ -1012,10 +1015,12 @@ function addSidebarGroupActivity(
   left: SidebarGroupActivity,
   right: SidebarGroupActivity
 ): SidebarGroupActivity {
+  const background = (left.background ?? 0) + (right.background ?? 0);
   return {
     failed: left.failed + right.failed,
     waiting: left.waiting + right.waiting,
     working: left.working + right.working,
+    ...(background > 0 ? { background } : {}),
     sending: left.sending + right.sending,
     unread: left.unread + right.unread,
   };
@@ -1550,6 +1555,7 @@ export const LocalProjectItem = memo(function LocalProjectItem({
                 <LocalProjectSessionItem
                   session={session}
                   isWorking={activity.isWorking}
+                  isBackgroundWorking={activity.isBackgroundWorking}
                   isWaitingPermission={activity.isWaitingPermission}
                   hasUnreadMessages={activity.hasUnreadMessages}
                   familyActivity={familyActivityBySessionId.get(session.id)}
@@ -2806,6 +2812,7 @@ export function LoroAppSidebar({
         lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
+        isBackgroundWorking: task.isBackgroundWorking,
         isWorktree: task.isWorktree,
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
@@ -2835,6 +2842,7 @@ export function LoroAppSidebar({
         lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
+        isBackgroundWorking: task.isBackgroundWorking,
         isWorktree: task.isWorktree,
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
@@ -2875,6 +2883,7 @@ export function LoroAppSidebar({
         lastReadAt: task.lastReadAt,
         isPinned: task.isPinned,
         isWorking: task.isWorking,
+        isBackgroundWorking: task.isBackgroundWorking,
         isWorktree: task.isWorktree,
         hasUnreadMessages: task.hasUnreadMessages,
         isOffline: task.isOffline,
@@ -2927,6 +2936,7 @@ export function LoroAppSidebar({
             lastReadAt: session.lastReadAt,
             isPinned: Boolean(session.isPinned),
             isWorking: activity.isWorking,
+            isBackgroundWorking: activity.isBackgroundWorking,
             isWorktree: Boolean(session.isWorktree),
             externalHistoryProvider:
               session.origin === 'external-acp'

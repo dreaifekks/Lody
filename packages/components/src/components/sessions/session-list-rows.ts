@@ -189,8 +189,13 @@ export function getEffectiveLatestMessageAt(
   return maxMs;
 }
 
+export const isSessionBackgroundStatus = (status: SessionStatus | null | undefined): boolean =>
+  status?.type === 'running' && status.backgroundTaskState === 'background';
+
 export type EffectiveSessionActivitySummary = {
   isWorking: boolean;
+  /** True when the session (and rolled-up child tabs) only have silent background tasks waiting. */
+  isBackgroundWorking: boolean;
   isWaitingPermission: boolean;
   hasUnreadMessages: boolean;
   /** The latest turn of the session or one of its child Tabs ended in failure. */
@@ -209,7 +214,9 @@ export function getEffectiveSessionActivitySummary(
   // Sidebar working state is live presence only. A goal may remain active while
   // quiescent, and meta dispatch pointers can be stale in this client — deriving
   // a spinner from either shows sessions as working long after the prompt finished.
-  let isWorking = liveStatus != null;
+  const selfIsBackground = isSessionBackgroundStatus(liveStatus);
+  let hasActiveWork = liveStatus != null && !selfIsBackground;
+  let hasBackgroundWork = selfIsBackground;
   let isWaitingPermission = liveStatus?.type === 'requestPermission';
   let hasUnreadMessages = sessionHasUnreadMessages(session);
   let hasFailedTurn = hasFailedLatestTurn(session);
@@ -221,8 +228,12 @@ export function getEffectiveSessionActivitySummary(
     for (const child of children) {
       const childLiveStatus = liveSessionStatuses?.get(child.id);
       const tab = childTabActivity(child, childLiveStatus != null, readThrough);
-      if (!isWorking && tab.working) {
-        isWorking = true;
+      if (tab.working) {
+        if (isSessionBackgroundStatus(childLiveStatus)) {
+          hasBackgroundWork = true;
+        } else {
+          hasActiveWork = true;
+        }
       }
       if (!isWaitingPermission && childLiveStatus?.type === 'requestPermission') {
         isWaitingPermission = true;
@@ -241,7 +252,8 @@ export function getEffectiveSessionActivitySummary(
   }
 
   return {
-    isWorking,
+    isWorking: hasActiveWork || hasBackgroundWork,
+    isBackgroundWorking: !hasActiveWork && hasBackgroundWork,
     isWaitingPermission,
     hasUnreadMessages,
     hasFailedTurn,
@@ -354,6 +366,7 @@ export function mapSessionMetaToSessionListRow(
     addedLines: lineChange.add,
     deletedLines: lineChange.del,
     isWorking: liveStatus != null,
+    isBackgroundWorking: isSessionBackgroundStatus(liveStatus),
     hasUnreadMessages,
     isOffline,
     isWaitingPermission: liveStatus?.type === 'requestPermission',
@@ -397,6 +410,7 @@ function aggregateChildStatus(
 
   if (
     activity.isWorking === task.isWorking &&
+    activity.isBackgroundWorking === Boolean(task.isBackgroundWorking) &&
     activity.isWaitingPermission === task.isWaitingPermission &&
     activity.hasUnreadMessages === task.hasUnreadMessages &&
     activity.hasFailedTurn === Boolean(task.hasFailedTurn) &&
@@ -408,6 +422,7 @@ function aggregateChildStatus(
   return {
     ...task,
     isWorking: activity.isWorking,
+    isBackgroundWorking: activity.isBackgroundWorking,
     isWaitingPermission: activity.isWaitingPermission,
     hasUnreadMessages: activity.hasUnreadMessages,
     hasFailedTurn: activity.hasFailedTurn,

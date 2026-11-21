@@ -101,6 +101,7 @@ export type TaskListTask = {
   addedLines: number;
   deletedLines: number;
   isWorking: boolean;
+  isBackgroundWorking?: boolean;
   hasUnreadMessages: boolean;
   isOffline: boolean;
   isWaitingPermission: boolean;
@@ -851,6 +852,7 @@ const TaskGroupSection = memo(function TaskGroupSection({
                       sessionId={task.taskId}
                       isWaitingPermission={task.isWaitingPermission}
                       isWorking={task.isWorking}
+                      isBackgroundWorking={task.isBackgroundWorking}
                       hasUnreadMessages={task.hasUnreadMessages}
                       restIcon={
                         isChatTask ? (

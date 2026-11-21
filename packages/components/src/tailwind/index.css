@@ -2065,6 +2065,48 @@ pre,
   }
 }
 
+/* Native background task breathing ring (sidebar, tab bar, inline background row).
+   Restrained breath during silent wait, accent pulse during wakeup; static under
+   reduced-motion or low-stimulus mode. */
+@keyframes bg-calm-breath {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.88;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes bg-wake-pulse {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.85);
+  }
+  70%,
+  100% {
+    opacity: 0.28;
+    transform: scale(1.22);
+  }
+}
+
+.animate-bg-calm-breath {
+  animation: bg-calm-breath 3.2s ease-in-out infinite;
+}
+
+.animate-bg-wake-pulse {
+  animation: bg-wake-pulse 1.3s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-bg-calm-breath,
+  .animate-bg-wake-pulse {
+    animation: none;
+  }
+}
+
 /* Usage heatmap: each day pops in with a short scale+fade. The stagger is
    driven by an inline `animation-delay` per column, so the reveal sweeps
    left to right across the year instead of flashing all 371 cells at once.

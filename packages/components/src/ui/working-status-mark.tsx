@@ -5,23 +5,60 @@ import { cn } from '@/lib/utils';
 import { WorkingGrid } from './working-grid';
 import { WorkingGridCollapse } from './working-grid-collapse';
 
+export type BackgroundStatusMarkProps = {
+  /** Draw the breathing ring without motion (e.g. low-stimulus mode). */
+  still?: boolean;
+  /** Text colour class for the ring and inner dot. */
+  className?: string;
+};
+
+/**
+ * Restrained 12px concentric breathing ring indicating a session with native
+ * background task(s) waiting after its main turn completed
+ * (`backgroundTaskState: 'background'`), visually distinct from the active
+ * 3×3 {@link WorkingGrid} / tab spinner.
+ */
+export function BackgroundStatusMark({ still = false, className }: BackgroundStatusMarkProps) {
+  return (
+    <span
+      data-session-background-indicator={still ? 'still' : ''}
+      aria-hidden="true"
+      className={cn(
+        'relative inline-flex h-3 w-3 shrink-0 items-center justify-center text-muted-foreground',
+        className
+      )}
+    >
+      <span
+        className={cn(
+          'h-[10px] w-[10px] rounded-full border-[1.4px] border-current opacity-75',
+          !still && 'animate-bg-calm-breath'
+        )}
+      />
+      <span className="absolute h-[3.5px] w-[3.5px] rounded-full bg-current" />
+    </span>
+  );
+}
+
 export type WorkingStatusMarkProps = {
   /** The session's agent is running. */
   working: boolean;
+  /** The session is only waiting on native background task(s) (`backgroundTaskState: 'background'`). */
+  background?: boolean;
   /** The session has messages the user has not read. */
   unread: boolean;
   /** Play the working → unread transition; `false` goes straight to the dot. */
   doneTransition?: boolean;
-  /** Draw the grid without motion. */
+  /** Draw the grid / background ring without motion. */
   still?: boolean;
   /** Text colour class for the grid, transition and dot. */
   className?: string;
 };
 
 /**
- * A session's working / unread mark, with the hand-over between them:
+ * A session's working / background / unread mark, with the hand-over between them:
  *
- * - working → the {@link WorkingGrid};
+ * - working (active foreground) → the {@link WorkingGrid};
+ * - background (silent background task wait) → the {@link BackgroundStatusMark};
  * - working → unread → the {@link WorkingGridCollapse} plays once (the tiles
  *   spin and gather, the dot pops and bounces), then the unread dot; with
  *   `doneTransition={false}` the dot comes at once;
@@ -37,6 +74,7 @@ export type WorkingStatusMarkProps = {
  */
 export function WorkingStatusMark({
   working,
+  background = false,
   unread,
   doneTransition = true,
   still = false,
@@ -49,7 +87,7 @@ export function WorkingStatusMark({
     setFinishing(doneTransition && wasWorking && !working && unread);
   }
 
-  if (working) {
+  if (working && !background) {
     return (
       <WorkingGrid
         data-session-working-indicator={still ? 'still' : ''}
@@ -57,6 +95,9 @@ export function WorkingStatusMark({
         className={className}
       />
     );
+  }
+  if (background) {
+    return <BackgroundStatusMark still={still} />;
   }
   if (unread && finishing) {
     return (

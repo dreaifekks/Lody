@@ -4,9 +4,10 @@ import { useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardMembershipDialog } from '../boards/board-membership-dialog';
 import { BoardNewConversationDialog } from '../boards/board-new-conversation-dialog';
 import type { AgentRunRef } from '../shared/agent-run-ref';
-import { boardEnabledAtom } from '@/atoms/settings';
+import { boardEnabledAtom, streamingThoughtPreviewFeatureEnabledAtom } from '@/atoms/settings';
 import { useSessionOwnerAccess } from '@/hooks/use-session-owner-access';
 import { MessageQuoteAction } from '../ai-gui/message-quote-action';
+import { resolveBackgroundTaskStatus } from '../ai-gui/background-task-status-row';
 import { reportMcpDefaultsBlocked } from '../chat/mcp-defaults-recovery';
 import { usePlaintextCopy } from '@/hooks/use-plaintext-copy';
 import { useHorizontalFoldLayout } from '../mobile/use-horizontal-fold-layout';
@@ -4100,7 +4101,10 @@ export const SessionChatInterface = memo(
         t,
       ]
     );
-    const searchBlocks = useIncrementalSearchBlocks(conversationView, isSearchOpen);
+    const streamingThoughtPreviewEnabled = useAtomValue(streamingThoughtPreviewFeatureEnabledAtom);
+    const searchBlocks = useIncrementalSearchBlocks(conversationView, isSearchOpen, {
+      stripThoughtPlaceholders: streamingThoughtPreviewEnabled,
+    });
     const normalizedSearchQuery = useMemo(
       () => normalizeSessionSearchQuery(deferredSearchQuery),
       [deferredSearchQuery]
@@ -4695,6 +4699,16 @@ export const SessionChatInterface = memo(
     const isAwaitingQuestion = hasPendingAskUserQuestion(
       liveSessionStatus ?? undefined,
       permissionSessionHistory
+    );
+    const backgroundTaskStatus = useMemo(
+      () =>
+        resolveBackgroundTaskStatus({
+          liveStatus: liveSessionStatus,
+          hasUnfinishedAssistantTurn: Boolean(activeAssistantTurnId),
+          hasPendingDispatch,
+          isAwaitingQuestion,
+        }),
+      [activeAssistantTurnId, hasPendingDispatch, isAwaitingQuestion, liveSessionStatus]
     );
     const agentActivityLabel =
       initStatusLabel && !isEmptyConversation
@@ -7981,6 +7995,7 @@ export const SessionChatInterface = memo(
                                     agentActivityLabel={agentActivityLabel}
                                     agentActivityTone={agentActivityTone}
                                     agentActivityShimmer={agentActivityShimmer}
+                                    backgroundTaskStatus={backgroundTaskStatus}
                                     liveTurnActivity={liveTurnActivity}
                                     historyLive={historyLive}
                                     onFileDiffClick={onFileDiffClick}

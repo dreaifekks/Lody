@@ -836,14 +836,11 @@ const cleanCandidateLineRange = (
  * Scans `rawText` in a strictly O(n) forward index pass tracking cross-paragraph
  * HTML comments (`<!-- ... -->`) continuously while skipping same-paragraph inline
  * code spans (including multiline spans) via `buildCodeSpanEndMap` and monotonic
- * cursors, then resolves the first valid line of the latest valid paragraph within
- * a pre-deducted cleanup budget.
+ * cursors.
  */
-export const inspectStreamingThoughtPreview = (
-  rawText: string
-): StreamingThoughtPreviewInspection => {
+const scanThoughtCandidateLines = (rawText: string): CandidateLine[] => {
   if (!rawText) {
-    return { preview: null, cleanedLineCount: 0, cleanedCharCount: 0 };
+    return [];
   }
 
   const len = rawText.length;
@@ -1068,6 +1065,24 @@ export const inspectStreamingThoughtPreview = (
     pos = nextPosAfterPara;
   }
 
+  return lines;
+};
+
+/**
+ * Scans `rawText` in a strictly O(n) forward index pass tracking cross-paragraph
+ * HTML comments (`<!-- ... -->`) continuously while skipping same-paragraph inline
+ * code spans (including multiline spans) via `buildCodeSpanEndMap` and monotonic
+ * cursors, then resolves the first valid line of the latest valid paragraph within
+ * a pre-deducted cleanup budget.
+ */
+export const inspectStreamingThoughtPreview = (
+  rawText: string
+): StreamingThoughtPreviewInspection => {
+  if (!rawText) {
+    return { preview: null, cleanedLineCount: 0, cleanedCharCount: 0 };
+  }
+
+  const lines = scanThoughtCandidateLines(rawText);
   let cleanedLineCount = 0;
   let cleanedCharCount = 0;
   let groupEnd = lines.length;
@@ -1110,6 +1125,72 @@ export const inspectStreamingThoughtPreview = (
   }
 
   return { preview: null, cleanedLineCount, cleanedCharCount };
+};
+
+/**
+ * Extracts the first valid cleaned line from the FIRST valid paragraph of a thought
+ * (skipping Antigravity placeholders, HTML comments, formatting-only lines, and
+ * unclosed bold headings) within the same O(n) bounded cleanup budget.
+ */
+export const extractFirstThoughtPreviewFromText = (rawText: string): string | null => {
+  if (!rawText) {
+    return null;
+  }
+
+  const lines = scanThoughtCandidateLines(rawText);
+  let cleanedLineCount = 0;
+  let cleanedCharCount = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const remainingChars = STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS - cleanedCharCount;
+    if (cleanedLineCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES || remainingChars <= 0) {
+      return null;
+    }
+
+    const candidate = lines[index]!;
+    const source = candidate.text ?? rawText;
+    const result = cleanCandidateLineRange(source, candidate.start, candidate.end, remainingChars);
+    if (result.cleanedChars > 0) {
+      cleanedLineCount += 1;
+      cleanedCharCount += result.cleanedChars;
+    }
+    if (result.preview !== null) {
+      return result.preview;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Removes standalone Antigravity placeholder paragraphs (`"I'm thinking through how
+ * to approach this."`) and leading placeholder prefixes from a thought's Markdown
+ * body while preserving all substantive Markdown verbatim.
+ */
+export const stripAgyPlaceholderFromMarkdown = (rawText: string): string => {
+  if (!rawText) {
+    return '';
+  }
+  const paragraphs = rawText.split(/\r?\n[ \t]*\r?\n+/);
+  const kept: string[] = [];
+  for (const paragraph of paragraphs) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) continue;
+    if (
+      trimmed.toLowerCase() === AGY_PLACEHOLDER_LOWER ||
+      isStreamingAgyPlaceholderPrefix(trimmed)
+    ) {
+      continue;
+    }
+    const stripped = paragraph.replace(
+      /^\s*i'm thinking through how to approach this\.(?:[ \t]*\r?\n|[ \t]+)/i,
+      ''
+    );
+    if (stripped.trim().length > 0) {
+      kept.push(stripped.trimEnd());
+    }
+  }
+  return kept.join('\n\n').trim();
 };
 
 export const extractStreamingThoughtPreviewFromText = (rawText: string): string | null =>

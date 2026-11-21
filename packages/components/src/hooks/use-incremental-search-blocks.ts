@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionHistory } from '@lody/shared';
 import { subscribeOnFrame, type ConversationView } from '@/lib/conversation-view';
-import { extractSearchBlocksForMessage, type SessionSearchBlock } from '@/lib/session-chat-search';
+import {
+  extractSearchBlocksForMessage,
+  type SessionSearchBlock,
+  type SessionSearchExtractOptions,
+} from '@/lib/session-chat-search';
 
 const EMPTY_BLOCKS: SessionSearchBlock[] = [];
 
@@ -17,11 +21,16 @@ const EMPTY_BLOCKS: SessionSearchBlock[] = [];
  */
 export function useIncrementalSearchBlocks(
   view: ConversationView | null | undefined,
-  isSearchOpen: boolean
+  isSearchOpen: boolean,
+  options?: SessionSearchExtractOptions
 ): SessionSearchBlock[] {
+  const stripThoughtPlaceholders = options?.stripThoughtPlaceholders === true;
   const [blocks, setBlocks] = useState<SessionSearchBlock[]>(EMPTY_BLOCKS);
   const cacheRef = useRef(
-    new WeakMap<SessionHistory, { index: number; blocks: SessionSearchBlock[] }>()
+    new WeakMap<
+      SessionHistory,
+      { index: number; stripThoughtPlaceholders: boolean; blocks: SessionSearchBlock[] }
+    >()
   );
 
   useEffect(() => {
@@ -42,8 +51,16 @@ export function useIncrementalSearchBlocks(
         const turn = view.turn(i);
         if (!turn) continue;
         let cached = cache.get(turn);
-        if (!cached || cached.index !== i) {
-          cached = { index: i, blocks: extractSearchBlocksForMessage(turn, i) };
+        if (
+          !cached ||
+          cached.index !== i ||
+          cached.stripThoughtPlaceholders !== stripThoughtPlaceholders
+        ) {
+          cached = {
+            index: i,
+            stripThoughtPlaceholders,
+            blocks: extractSearchBlocksForMessage(turn, i, { stripThoughtPlaceholders }),
+          };
           cache.set(turn, cached);
         }
         for (const block of cached.blocks) next.push(block);
@@ -84,7 +101,7 @@ export function useIncrementalSearchBlocks(
       directory?.release();
       range?.release();
     };
-  }, [isSearchOpen, view]);
+  }, [isSearchOpen, stripThoughtPlaceholders, view]);
 
   return isSearchOpen ? blocks : EMPTY_BLOCKS;
 }

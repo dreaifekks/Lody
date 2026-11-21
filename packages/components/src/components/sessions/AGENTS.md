@@ -8,8 +8,9 @@ Read [README](README.md) and these rules.
 - One `SessionTabBar` gates traffic-light insets on `!useElectronFullscreen()`.
   Hide IDE/share pills below `SESSION_PAGE_HEADER_PILLS_MIN_WIDTH_PX`, retaining `⋯`.
 - Tabs share `TAB_PILL_*_CLASS`, never `--tab-active`/`--tab-inactive`.
-- One tab slot orders waiting > working > unread > agent icon. Test
-  `isWaiting` first; `sessionHasUnreadMessages` excludes closed/archived output.
+- One tab slot orders waiting > background > working > unread > agent icon.
+  Test `isWaiting` first; `backgroundTaskState: background` shows the calm breathing ring.
+  `sessionHasUnreadMessages` excludes closed/archived output.
 - `?tab` owns selection, never mirrored state. Shared closure may select a neighbour
   or draft. Close writes only `isTabClosed`; reopen clears it without unarchiving.
 - Read [Cmd/Ctrl+W rules](../../lib/commands/AGENTS.md).

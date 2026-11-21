@@ -168,10 +168,71 @@ describe('getEffectiveSessionActivitySummary child-status aggregation', () => {
 
     expect(getEffectiveSessionActivitySummary(parent, map)).toEqual({
       isWorking: false,
+      isBackgroundWorking: false,
       isWaitingPermission: false,
       hasUnreadMessages: false,
       hasFailedTurn: false,
       latestMessageAt: parent.lastMessageAt,
+    });
+  });
+
+  test('distinguishes background-only waiting from active foreground working across parent and child tabs', () => {
+    const parent = makeSession({ id: 'parent', lastMessageAt: 1_000, lastReadAt: 1_000 });
+    const child = makeSession({
+      id: 'child',
+      parentSessionId: parent.id,
+      lastMessageAt: 1_000,
+      lastReadAt: 1_000,
+    });
+    const children = buildChildSessionsByParent([parent, child]);
+
+    // Parent waiting on background task only -> isWorking + isBackgroundWorking
+    const bgPresence = new Map<string, SessionStatus>([
+      [parent.id, { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 1 }],
+    ]);
+    expect(getEffectiveSessionActivitySummary(parent, children, bgPresence)).toMatchObject({
+      isWorking: true,
+      isBackgroundWorking: true,
+    });
+    const bgRows = buildSessionListRows(
+      [parent],
+      {
+        scope: 'my',
+        currentUserId: 'user-1',
+        defaultTitle: 'Untitled',
+        liveSessionStatuses: bgPresence,
+      },
+      [parent, child]
+    );
+    expect(bgRows[0]?.isWorking).toBe(true);
+    expect(bgRows[0]?.isBackgroundWorking).toBe(true);
+
+    // Wakeup pulse (backgroundTaskState: 'running', backgroundTaskCount >= 1) -> active foreground working
+    const wakeupPresence = new Map<string, SessionStatus>([
+      [parent.id, { type: 'running', backgroundTaskState: 'running', backgroundTaskCount: 1 }],
+    ]);
+    expect(getEffectiveSessionActivitySummary(parent, children, wakeupPresence)).toMatchObject({
+      isWorking: true,
+      isBackgroundWorking: false,
+    });
+
+    // Foreground child overrides background parent so active work is never masked
+    const mixedPresence = new Map<string, SessionStatus>([
+      [parent.id, { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 1 }],
+      [child.id, { type: 'running' }],
+    ]);
+    expect(getEffectiveSessionActivitySummary(parent, children, mixedPresence)).toMatchObject({
+      isWorking: true,
+      isBackgroundWorking: false,
+    });
+
+    // Background-only child rolls up as isBackgroundWorking on an idle parent
+    const childBgPresence = new Map<string, SessionStatus>([
+      [child.id, { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 2 }],
+    ]);
+    expect(getEffectiveSessionActivitySummary(parent, children, childBgPresence)).toMatchObject({
+      isWorking: true,
+      isBackgroundWorking: true,
     });
   });
 
