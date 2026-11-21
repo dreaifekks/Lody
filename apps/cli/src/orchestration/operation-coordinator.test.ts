@@ -2098,6 +2098,7 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
   const maintenance = {
     runs: [] as MaintenanceTurnRequest[],
     support: true as boolean | undefined,
+    cachedCapabilities: new Map<string, { availableCommands?: { name: string }[] }>(),
     compactStatus: 'completed' as 'completed' | 'failed' | 'none',
     usageAfterCompact: 24_000,
     pendingUser: false,
@@ -2123,6 +2124,8 @@ const boardHarness = async ({ realDocuments = false }: { realDocuments?: boolean
       ({
         repo,
         getOrCreateSessionDoc: async (id: SessionId) => docs.get(id),
+        getAcpCapabilities: async (_machineId: MachineId, agentConfigId: string) =>
+          maintenance.cachedCapabilities.get(agentConfigId),
         onSessionDocReleased: () => () => {},
       } as never),
     executionService: {
@@ -3476,6 +3479,254 @@ describe('Board coordinator continuity', () => {
       await h.close();
     }
   });
+
+  it.each([
+    ['builtin', 'antigravity'],
+    ['registry', 'antigravity-acp'],
+  ] as const)(
+    'respects live compactionSupport=false over offline %s/%s fallback',
+    async (cliType, agentType) => {
+      const h = await largeIdleCoordinator();
+      try {
+        await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+          cliType,
+          agentType,
+          agentConfigId: 'agy-config',
+        });
+        h.maintenance.support = false;
+        h.coordinator.start();
+        h.advance(10 * 60_000 + 1);
+        await h.drain();
+        await h.drain();
+        expect(h.maintenance.runs).toEqual([]);
+        expect(records(h)).toEqual([]);
+        expect(h.warnings).toEqual([
+          expect.stringContaining('does not compact its context; idle compaction skipped'),
+        ]);
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
+  it.each([
+    {
+      label: 'builtin/antigravity with empty cached commands',
+      cliType: 'builtin' as const,
+      agentType: 'antigravity',
+      agentConfigId: 'agy-empty',
+      cachedCommands: [] as { name: string }[],
+    },
+    {
+      label: 'registry/antigravity-acp with no cache entry',
+      cliType: 'registry' as const,
+      agentType: 'antigravity-acp',
+      agentConfigId: 'agy-missing',
+      cachedCommands: undefined,
+    },
+    {
+      label: 'registry/antigravity-acp without agentConfigId',
+      cliType: 'registry' as const,
+      agentType: 'antigravity-acp',
+      agentConfigId: undefined,
+      cachedCommands: undefined,
+    },
+  ])(
+    'runs idle compaction end to end for offline $label using usage drop without a tool_call marker',
+    async ({ cliType, agentType, agentConfigId, cachedCommands }) => {
+      const h = await largeIdleCoordinator(160_000);
+      try {
+        await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+          cliType,
+          agentType,
+          ...(agentConfigId ? { agentConfigId } : {}),
+        });
+        if (agentConfigId && cachedCommands) {
+          h.maintenance.cachedCapabilities.set(agentConfigId, {
+            availableCommands: cachedCommands,
+          });
+        }
+        // No live agent process before idle compaction; the tidy step starts agy.
+        h.maintenance.support = undefined;
+        // agy emits no context_compaction tool_call marker; only usage_update drops.
+        h.maintenance.compactStatus = 'none';
+        h.maintenance.duringStep = async (request) => {
+          if (request.stepTurnId.endsWith(':memory')) {
+            h.maintenance.support = true;
+          } else if (request.stepTurnId.endsWith(':compact')) {
+            await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+              contextWindowUsage: { used: 19_430, size: 1_000_000 },
+            });
+          }
+        };
+        h.coordinator.start();
+        h.advance(10 * 60_000 + 1);
+        await h.drain();
+        await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+        await h.drain();
+        expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+        expect(h.maintenance.runs[1]!.prompt).toMatch(/^\/compact\s+\S+/);
+        expect(records(h)).toEqual([
+          expect.objectContaining({
+            kind: 'compact',
+            trigger: 'idle',
+            status: 'done',
+            usedBefore: 160_000,
+            usedAfter: 19_430,
+            renewed: true,
+          }),
+        ]);
+        const compactAssistant = (
+          h.docs.get(h.coordinatorId)!.readHistorySnapshot() as SessionHistoryInput[]
+        ).find((turn) => turn.id === `assistant:${h.maintenance.runs[1]!.stepTurnId}`);
+        expect(
+          compactAssistant?.items?.some(
+            (item) => item.type === 'tool_call' && item.activityKind === 'context_compaction'
+          )
+        ).toBe(false);
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
+  it('accepts leading-slash /compact in cached commands and skips empty offline caches for other agents', async () => {
+    const withSlash = await largeIdleCoordinator(160_000);
+    try {
+      await withSlash.repo.upsertDocMeta(getSessionRoomId(withSlash.coordinatorId), {
+        cliType: 'builtin',
+        agentType: 'codex',
+        agentConfigId: 'codex-slash',
+      });
+      withSlash.maintenance.support = undefined;
+      withSlash.maintenance.cachedCapabilities.set('codex-slash', {
+        availableCommands: [{ name: '/compact' }],
+      });
+      withSlash.maintenance.duringStep = async (request) => {
+        if (request.stepTurnId.endsWith(':memory')) withSlash.maintenance.support = true;
+      };
+      withSlash.coordinator.start();
+      withSlash.advance(10 * 60_000 + 1);
+      await withSlash.drain();
+      await settled(withSlash, 'done', (record) => 'renewed' in record && record.renewed === true);
+      expect(steps(withSlash)).toEqual(['memory', 'compact', 'renew']);
+    } finally {
+      await withSlash.close();
+    }
+
+    for (const [cliType, agentType, agentConfigId] of [
+      ['builtin', 'codex', 'codex-empty'],
+      ['custom', 'antigravity', 'custom-agy-empty'],
+    ] as const) {
+      const empty = await largeIdleCoordinator(160_000);
+      try {
+        await empty.repo.upsertDocMeta(getSessionRoomId(empty.coordinatorId), {
+          cliType,
+          agentType,
+          agentConfigId,
+        });
+        empty.maintenance.support = undefined;
+        empty.maintenance.cachedCapabilities.set(agentConfigId, { availableCommands: [] });
+        empty.coordinator.start();
+        empty.advance(10 * 60_000 + 1);
+        await empty.drain();
+        await empty.drain();
+        expect(empty.maintenance.runs).toEqual([]);
+        expect(records(empty)).toEqual([]);
+        expect(empty.warnings).toEqual([
+          expect.stringContaining('no running agent reports context compaction'),
+        ]);
+      } finally {
+        await empty.close();
+      }
+    }
+  });
+
+  it.each([
+    {
+      label: 'drops below pre-tidy usage after tidy grew context',
+      initialUsed: 20_000,
+      afterTidyUsed: 111_350,
+      afterCompactUsed: 19_430,
+      expectedUsedBefore: 20_000,
+      expectedUsedAfter: 19_430,
+    },
+    {
+      label: 'drops below post-tidy baseline while staying above pre-tidy usage',
+      initialUsed: 20_000,
+      afterTidyUsed: 111_350,
+      afterCompactUsed: 20_500,
+      expectedUsedBefore: 20_000,
+      expectedUsedAfter: undefined,
+    },
+    {
+      label: 'starts without a usage reading until tidy populates one',
+      initialUsed: undefined,
+      afterTidyUsed: 111_350,
+      afterCompactUsed: 19_430,
+      expectedUsedBefore: 111_350,
+      expectedUsedAfter: 19_430,
+    },
+  ])(
+    'judges usage drop against post-tidy baseline when manual compact $label',
+    async ({
+      initialUsed,
+      afterTidyUsed,
+      afterCompactUsed,
+      expectedUsedBefore,
+      expectedUsedAfter,
+    }) => {
+      const h = await boardHarness();
+      try {
+        h.release();
+        await h.finish(h.coordinatorId, 'coordinator-input');
+        await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+          cliType: 'builtin',
+          agentType: 'antigravity',
+          ...(initialUsed !== undefined
+            ? { contextWindowUsage: { used: initialUsed, size: 1_000_000 } }
+            : {}),
+        });
+        h.maintenance.compactStatus = 'none';
+        h.maintenance.duringStep = async (request) => {
+          if (request.stepTurnId.endsWith(':memory')) {
+            await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+              contextWindowUsage: { used: afterTidyUsed, size: 1_000_000 },
+            });
+          } else if (request.stepTurnId.endsWith(':compact')) {
+            await h.repo.upsertDocMeta(getSessionRoomId(h.coordinatorId), {
+              contextWindowUsage: { used: afterCompactUsed, size: 1_000_000 },
+            });
+          }
+        };
+        h.coordinator.start();
+        await h.drain();
+        await h.append(
+          h.coordinatorId,
+          boardMaintenanceTurn(
+            'manual-post-tidy-baseline',
+            { boardId: h.board.id, kind: 'compact', trigger: 'manual', status: 'requested' },
+            new Date(TEST_NOW_MS).toISOString()
+          )
+        );
+        await h.drain();
+        await settled(h, 'done', (record) => 'renewed' in record && record.renewed === true);
+        await h.drain();
+        expect(steps(h)).toEqual(['memory', 'compact', 'renew']);
+        const [record] = records(h);
+        expect(record).toMatchObject({
+          kind: 'compact',
+          trigger: 'manual',
+          status: 'done',
+          usedBefore: expectedUsedBefore,
+          renewed: true,
+        });
+        expect(record?.usedAfter).toBe(expectedUsedAfter);
+      } finally {
+        await h.close();
+      }
+    }
+  );
 });
 
 it('closes Inbox and SQLite even when an execution drain has a release failure', async () => {

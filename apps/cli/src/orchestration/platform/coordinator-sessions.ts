@@ -1,3 +1,4 @@
+import { antigravitySupportsContextCompaction } from '@/agent/antigravity-acp-stream';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import {
   estimateTokenCount,
@@ -279,13 +280,19 @@ export const coordinatorSessionsLayer = (
       compactionSupport: (id, meta) =>
         io(async () => {
           const live = options.executionService.contextCompactionSupport(id);
-          if (live !== undefined || !meta.agentConfigId) return live;
+          if (live !== undefined) return live;
+          // Antigravity pushes `compact` via `available_commands_update` rather than
+          // `NewSessionResponse`, so capability probes do not record it in Machine Flock.
+          if (antigravitySupportsContextCompaction(meta.cliType, meta.agentType)) return true;
+          if (!meta.agentConfigId) return undefined;
           // No agent runs yet: the commands it listed when it last started.
           const cached = await options.workspaceDocument.getAcpCapabilities(
             options.machineId as MachineId,
             meta.agentConfigId as AgentConfigId
           );
-          return cached?.availableCommands?.some((command) => command.name === 'compact')
+          return cached?.availableCommands?.some(
+            (command) => command.name.replace(/^\//, '') === 'compact'
+          )
             ? true
             : undefined;
         }),

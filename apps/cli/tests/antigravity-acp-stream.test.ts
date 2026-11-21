@@ -30,6 +30,7 @@ import { fetchAcpCapabilities } from '../src/agent/acp-capabilities';
 import {
   ANTIGRAVITY_SKIP_PERMISSIONS_ARG,
   antigravityLaunchArgs,
+  antigravitySupportsContextCompaction,
   antigravityYoloChanged,
   withAntigravityAcpStream,
 } from '../src/agent/antigravity-acp-stream';
@@ -83,6 +84,8 @@ const makeWorkdir = () => {
 /** A Session started the way the daemon starts one, on the fake agy. */
 async function startSession(
   options: {
+    cliType?: 'builtin' | 'registry' | 'custom';
+    agentType?: string;
     workdir?: string;
     configOptionValues?: Record<string, string>;
     /** Arguments after the agent, as the launch resolver appends them. */
@@ -90,6 +93,8 @@ async function startSession(
     resumeSessionId?: ACPSessionId;
   } = {}
 ): Promise<Harness> {
+  const cliType = options.cliType ?? 'registry';
+  const agentType = options.agentType ?? 'antigravity-acp';
   const workdir = options.workdir ?? makeWorkdir();
   const updates: AcpSessionNotification[] = [];
   const session = new Session(
@@ -97,8 +102,8 @@ async function startSession(
       workspaceId: 'workspace-1' as WorkspaceId,
       requesterUserId: 'user-1',
       machineId: 'machine-1',
-      agentCliType: 'registry',
-      agentType: 'antigravity-acp',
+      agentCliType: cliType,
+      agentType,
       sessionId: `session-${harnesses.length + 1}` as SessionId,
       userName: 'Test User',
       userEmail: 'test@example.com',
@@ -108,8 +113,8 @@ async function startSession(
     workdir
   );
   await session.createAgent({
-    cliType: 'registry',
-    agentType: 'antigravity-acp',
+    cliType,
+    agentType,
     command: process.execPath,
     args: [fixture, ...(options.launchArgs ?? [])],
     ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
@@ -298,11 +303,24 @@ describe('Antigravity modes through the session start chain', () => {
     });
     await expect(resumed.prompt('report-mode')).resolves.toBe('mode=auto');
   });
+
+  it.each([
+    ['builtin', 'antigravity', true],
+    ['registry', 'antigravity-acp', true],
+    ['custom', 'antigravity', false],
+    ['builtin', 'codex', false],
+  ] as const)(
+    'reports live AgentClient context compaction support for %s/%s as %s',
+    async (cliType, agentType, expected) => {
+      const harness = await startSession({ cliType, agentType });
+      expect(harness.session.agentClient?.supportsContextCompaction()).toBe(expected);
+    }
+  );
 });
 
 describe('Antigravity ACP stream', () => {
   /** The wrapper between a scripted client and agent. */
-  const wire = (options: { agentType?: string; args?: string[] } = {}) => {
+  const wire = (options: { cliType?: string; agentType?: string; args?: string[] } = {}) => {
     const toClient: AnyMessage[] = [];
     const toAgent: AnyMessage[] = [];
     const agentOut = new TransformStream<AnyMessage, AnyMessage>();
@@ -314,7 +332,11 @@ describe('Antigravity ACP stream', () => {
           write: (message) => void toAgent.push(message),
         }),
       },
-      { agentType: options.agentType ?? 'antigravity-acp', args: options.args ?? ['acp'] }
+      {
+        cliType: options.cliType ?? 'registry',
+        agentType: options.agentType ?? 'antigravity-acp',
+        args: options.args ?? ['acp'],
+      }
     );
     const clientWriter = wrapped.writable.getWriter();
     void wrapped.readable.pipeTo(
@@ -451,19 +473,140 @@ describe('Antigravity ACP stream', () => {
     vi.useRealTimers();
   });
 
-  it.each(['antigravity', 'antigravity-acp'])(
-    'reports the Streamable HTTP MCP support %s has but does not advertise',
-    async (agentType) => {
-      const wired = wire({ agentType });
-      await wired.initialize({ loadSession: true, mcpCapabilities: { sse: false } });
+  it.each([
+    ['builtin', 'antigravity'],
+    ['registry', 'antigravity-acp'],
+  ] as const)(
+    'injects Streamable HTTP MCP and compaction v1 for %s/%s while preserving existing _meta fields',
+    async (cliType, agentType) => {
+      const wired = wire({ cliType, agentType });
+      await wired.initialize({
+        loadSession: true,
+        mcpCapabilities: { sse: false },
+        _meta: {
+          antigravity: { tier: true, systemPrompt: { append: true } },
+          lody: { sessionTitle: { version: 1 } },
+        },
+      });
       expect(wired.toClient.at(-1)).toMatchObject({
         id: 0,
         result: {
-          agentCapabilities: { loadSession: true, mcpCapabilities: { sse: false, http: true } },
+          agentCapabilities: {
+            loadSession: true,
+            mcpCapabilities: { sse: false, http: true },
+            _meta: {
+              antigravity: { tier: true, systemPrompt: { append: true } },
+              lody: {
+                compaction: { version: 1 },
+                sessionTitle: { version: 1 },
+              },
+            },
+          },
         },
       });
     }
   );
+
+  it('preserves a server-provided _meta.lody.compaction declaration', async () => {
+    const wired = wire({ cliType: 'builtin', agentType: 'antigravity' });
+    await wired.initialize({
+      _meta: {
+        antigravity: { tier: true },
+        lody: { compaction: { version: 2 }, sessionTitle: { version: 1 } },
+      },
+    });
+    expect(wired.toClient.at(-1)).toMatchObject({
+      id: 0,
+      result: {
+        agentCapabilities: {
+          mcpCapabilities: { http: true },
+          _meta: {
+            antigravity: { tier: true },
+            lody: {
+              compaction: { version: 2 },
+              sessionTitle: { version: 1 },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    ['custom', 'antigravity'],
+    ['registry', 'antigravity'],
+    ['builtin', 'antigravity-acp'],
+  ] as const)(
+    'keeps HTTP MCP and YOLO mode rewriting for %s/%s without injecting _meta.lody.compaction',
+    async (cliType, agentType) => {
+      const wired = wire({
+        cliType,
+        agentType,
+        args: ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG],
+      });
+      await wired.initialize({
+        loadSession: true,
+        mcpCapabilities: { sse: false },
+        _meta: { antigravity: { tier: true } },
+      });
+      expect(wired.toClient.at(-1)).toEqual({
+        jsonrpc: '2.0',
+        id: 0,
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: {
+            loadSession: true,
+            mcpCapabilities: { sse: false, http: true },
+            _meta: { antigravity: { tier: true } },
+          },
+        },
+      });
+      await wired.start('yolo');
+      expect(wired.toAgent.at(-1)).toMatchObject({
+        method: 'session/new',
+        params: { _meta: { lody: { sessionConfig: { configOptionValues: { mode: 'default' } } } } },
+      });
+      expect(answer(wired.toClient, 1).result.modes).toEqual({
+        currentModeId: 'yolo',
+        availableModes: [...agyModes, expect.objectContaining({ id: 'yolo' })],
+      });
+    }
+  );
+
+  it.each([
+    ['builtin', 'codex'],
+    ['builtin', 'claude'],
+  ] as const)(
+    'leaves initialize untouched for non-Antigravity %s/%s',
+    async (cliType, agentType) => {
+      const wired = wire({ cliType, agentType });
+      const rawCapabilities = {
+        loadSession: true,
+        mcpCapabilities: { sse: false },
+        _meta: { vendor: { keep: true } },
+      };
+      await wired.initialize(rawCapabilities);
+      expect(wired.toClient.at(-1)).toEqual({
+        jsonrpc: '2.0',
+        id: 0,
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: rawCapabilities,
+        },
+      });
+    }
+  );
+
+  it('matches only builtin/antigravity and registry/antigravity-acp for offline compaction support', () => {
+    expect(antigravitySupportsContextCompaction('builtin', 'antigravity')).toBe(true);
+    expect(antigravitySupportsContextCompaction('registry', 'antigravity-acp')).toBe(true);
+    expect(antigravitySupportsContextCompaction('builtin', 'codex')).toBe(false);
+    expect(antigravitySupportsContextCompaction('custom', 'antigravity')).toBe(false);
+    expect(antigravitySupportsContextCompaction('registry', 'antigravity')).toBe(false);
+    expect(antigravitySupportsContextCompaction('builtin', 'antigravity-acp')).toBe(false);
+    expect(antigravitySupportsContextCompaction(undefined, 'antigravity')).toBe(false);
+    expect(antigravitySupportsContextCompaction('builtin', undefined)).toBe(false);
+  });
 
   it('runs YOLO as default in an agy process started with the skip flag', async () => {
     const wired = wire({ args: ['acp', ANTIGRAVITY_SKIP_PERMISSIONS_ARG] });

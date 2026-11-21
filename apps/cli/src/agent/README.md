@@ -591,6 +591,13 @@ models to every client, so the Zed client identity no longer matters for it.
 - HTTP MCP: agy connects to Streamable HTTP servers passed over ACP but does not
   advertise `mcpCapabilities.http`; the wrapper adds it to the initialize response, so
   workspace HTTP servers start and the builtin `lody` server uses the shared HTTP host.
+- Context compaction: agy compacts synchronously on `/compact <instructions>` and
+  refreshes `usage_update` before `session/prompt` returns, but neither advertises
+  `_meta.lody.compaction` in `initialize` nor returns `compact` in `NewSessionResponse`
+  (it pushes `compact` asynchronously in `available_commands_update`). The wrapper adds
+  `_meta.lody.compaction: { version: 1 }` unless agy already reports one, and Board
+  continuity falls back to `antigravitySupportsContextCompaction` for builtin and
+  persisted registry Antigravity when no live process runs.
 - MCP tool budget: agy declares every tool of an MCP server the client passes as a
   native function, smallest first, until a size budget it shares with skills runs out.
   A tool that does not fit is neither listed nor callable (`call_mcp_tool` answers

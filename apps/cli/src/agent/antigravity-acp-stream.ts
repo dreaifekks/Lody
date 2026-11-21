@@ -20,6 +20,10 @@ import {
  *   that selects the other side restarts the session's agent first
  *   ({@link antigravityYoloChanged}), and a switch inside a running turn is refused.
  * - Streamable HTTP MCP: agy connects to such servers but does not advertise it.
+ * - Context compaction: agy compacts synchronously on `/compact <instructions>`
+ *   and refreshes `usage_update` before `session/prompt` returns, but does not
+ *   advertise `_meta.lody.compaction` in `initialize`; the wrapper adds
+ *   `_meta.lody.compaction: { version: 1 }` unless agy already reports one.
  * - A selection saved as Lody's former Auto Review is sent as agy's own `auto`.
  *
  * Applied in `session.ts` (sessions) and `acp-runner.ts` (capability probes and
@@ -61,6 +65,7 @@ export const antigravityYoloChanged = (started: ModeSelection, turn: ModeSelecti
   selectsYolo(started) !== selectsYolo(turn);
 
 export type AntigravityAcpStreamOptions = {
+  cliType: string;
   agentType: string;
   /** The agent's launch arguments: with agy's skip flag every session is YOLO. */
   args: readonly string[];
@@ -68,19 +73,30 @@ export type AntigravityAcpStreamOptions = {
 
 const UNDERLYING_MODE_ID = 'default';
 
+const isAntigravityProvider = (
+  cliType: string | undefined,
+  agentType: string | undefined
+): boolean =>
+  (cliType === 'builtin' && agentType === 'antigravity') ||
+  (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE);
+
+/**
+ * Whether a provider is the managed or legacy registry Antigravity CLI, which
+ * compacts synchronously on `/compact <instructions>` even when no live process
+ * runs and Machine Flock has no cached `compact` command.
+ */
+export const antigravitySupportsContextCompaction = (
+  cliType: string | undefined,
+  agentType: string | undefined
+): boolean => isAntigravityProvider(cliType, agentType);
+
 /** Undo only this wrapper's session presentation before publishing Provider defaults. */
 export function antigravityProviderConfigOptions(
   cliType: string,
   agentType: string,
   options: AcpConfigOptionSummary[] | undefined
 ): AcpConfigOptionSummary[] | undefined {
-  if (
-    !(
-      (cliType === 'builtin' && agentType === 'antigravity') ||
-      (cliType === 'registry' && agentType === ANTIGRAVITY_AGENT_TYPE)
-    )
-  )
-    return options;
+  if (!isAntigravityProvider(cliType, agentType)) return options;
   // YOLO is presented only when agy reports `default`. Keep the choices and the
   // Session snapshot, changing only the published value.
   return options?.map((option) =>
@@ -117,6 +133,7 @@ export function withAntigravityAcpStream(
   options: AntigravityAcpStreamOptions
 ): acp.Stream {
   if (!isAntigravity(options.agentType)) return stream;
+  const injectsCompaction = isAntigravityProvider(options.cliType, options.agentType);
   /** Started with agy's skip flag: every session of this process is YOLO. */
   const skipsPermissions = options.args.includes(ANTIGRAVITY_SKIP_PERMISSIONS_ARG);
   /** Requests whose answer is rewritten: `initialize`, or one that reports modes. */
@@ -275,14 +292,33 @@ export function withAntigravityAcpStream(
     if (!tracked || !('result' in message) || !isRecord(message.result)) return message;
     const result = message.result;
     if (tracked === 'modes') return { ...message, result: presentResult(result) };
-    // agy connects to Streamable HTTP MCP servers but does not advertise it.
+    // agy connects to Streamable HTTP MCP servers and (for managed/legacy providers)
+    // compacts synchronously on `/compact <instructions>`, advertising neither in `initialize`.
     const capabilities = isRecord(result.agentCapabilities) ? result.agentCapabilities : {};
     const mcp = isRecord(capabilities.mcpCapabilities) ? capabilities.mcpCapabilities : {};
+    if (!injectsCompaction) {
+      return {
+        ...message,
+        result: {
+          ...result,
+          agentCapabilities: { ...capabilities, mcpCapabilities: { ...mcp, http: true } },
+        },
+      };
+    }
+    const meta = isRecord(capabilities._meta) ? capabilities._meta : {};
+    const lody = isRecord(meta.lody) ? meta.lody : {};
     return {
       ...message,
       result: {
         ...result,
-        agentCapabilities: { ...capabilities, mcpCapabilities: { ...mcp, http: true } },
+        agentCapabilities: {
+          ...capabilities,
+          mcpCapabilities: { ...mcp, http: true },
+          _meta: {
+            ...meta,
+            lody: { compaction: { version: 1 }, ...lody },
+          },
+        },
       },
     };
   };

@@ -144,3 +144,46 @@ agent」，换 agent 总要开新对话，那会是同一件事的第二个入�
 `resume`），「SessionDocument
 agent switch」（旧会话 id 随切换去掉），以及 `board-overview.test.tsx` 里头部菜单的用例。在临时
 桌面实例上用两个脚本化 agent 端到端跑过；还没有在真实 agent 上跑过。
+
+## 修复（2026-11-22）：Antigravity 协调者的空闲自动压缩
+
+现象：托管版与存量 registry 版 Antigravity（`agy 1.5.10`）作为看板协调者时，空闲自动压缩总是被跳过。
+
+实测事实：对托管的 `antigravity 1.5.10` 实测确认，它在 `available_commands_update` 里上报了 `compact`
+命令；收到带说明文本的 `/compact <说明>`（即 `COMPACT_PROMPT`）时，会在同一次 `session/prompt`
+返回前同步完成压缩并执行后续确认回复，从而在回合结束前推送下降后的 `usage_update`（实测下降比例远低于
+`USAGE_DROP_PROOF` 0.8）。边界在于裸 `/compact`（无后续文本）虽同步压缩，但当回合不触发第二次模型调用，
+`usage_update` 要到下一回合才刷新，会触发 `compaction-unconfirmed`；因此 `COMPACT_PROMPT` 必须保留
+`/compact` 后的说明文本。
+
+根因（两处断层）：
+
+1. **活进程断层**：`AgentClient.supportsContextCompaction()` 只认 `_meta.lody.compaction?.version === 1`；
+   闭源 `agy` 在 `initialize` 中只发 `_meta.antigravity`，不发 `_meta.lody.compaction`，活进程恒返回 `false`。
+2. **无活进程回退断层**：空闲 GC 或守护进程重启后没有活进程，`coordinator-sessions.ts` 回退查 Machine Flock
+   的 `acpCapability.availableCommands`；由于 `agy` 通过异步 `available_commands_update` 推送命令而不写在
+   `NewSessionResponse`，`acp-capabilities.ts` 的能力探测不从异步 `available_commands_update` 通知中采集
+   `compact`，导致缓存里没有 `compact`，回退返回 `undefined`。同时 `AcpCapabilityCacheEntrySchema` 使用了
+   `.strict()`，不能靠新增缓存字段解决，否则会破坏混合版本 LAN 节点的 `acpCapability` 同步。
+
+修法：
+
+- 在 `apps/cli/src/agent/antigravity-acp-stream.ts` 的 `withAntigravityAcpStream` 兼容层里传入
+  `cliType`，入口保持原有的 `isAntigravity(agentType)`（保留既有 YOLO 与 `mcpCapabilities.http` 兼容），
+  仅在 `initialize` 响应注入 `_meta.lody.compaction: { version: 1 }` 时按 `isAntigravityProvider(cliType, agentType)`
+  收口（仅匹配 `builtin/antigravity` 与 `registry/antigravity-acp`，活进程与离线均不对 `custom/antigravity`
+  注入或回退 compaction），保留原有 `_meta` 与 `_meta.lody` 字段且不覆盖服务端已提供的 `compaction`，
+  保持 `AgentClient` 中立不变。
+- 导出 `antigravitySupportsContextCompaction(cliType, agentType)`。`coordinator-sessions.ts` 的
+  `compactionSupport` 维持活进程结果最高优先级；仅当无活进程（`live === undefined`）时对这两类
+  Antigravity 直接返回 `true`，其余 agent 查询缓存命令时把名称归一化去掉前导 `/`。
+- `board-continuity-workflow.ts` 在 `:memory` 回合结束后、发 `/compact` 前重读最新用量作为紧邻基线
+  `beforeCompact`，用它判定 `USAGE_DROP_PROOF`（避免 `:memory` 自身拉高上下文或补出首个用量读数导致
+  误判 `compaction-unconfirmed`）；分隔线展示仍优先沿用初始 `before`（仅当其缺失时回退用
+  `beforeCompact`），且 `usedAfter` 只在严格低于展示基线时写入，避免出现上升读数。
+
+测试：`antigravity-acp-stream.test.ts` 覆盖 `initialize` 注入、已有字段与服务端声明保留、非 Antigravity
+透传、`custom/antigravity` 保留 HTTP MCP/YOLO 且不注入 compaction、`antigravitySupportsContextCompaction`
+判定，以及经 `withAntigravityAcpStream` 的 `AgentClient` 集成；`operation-coordinator.test.ts` 覆盖活进程 `false` 优先、无活进程 Antigravity 回退、
+缓存 `/compact` 前导斜杠归一化、`:memory` 拉高用量后重读基线判定，以及无 `context_compaction` tool_call
+标记、仅凭 `usage_update` 下降走通 `:memory` → `/compact` → `:renew` 的端到端流程。

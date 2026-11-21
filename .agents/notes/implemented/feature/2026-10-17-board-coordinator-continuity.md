@@ -194,3 +194,60 @@ as it was; a maintenance turn ignores the `resume` of its driving turn), "Sessio
 switch" (the old conversation id goes with the switch), and
 the header-menu case in `board-overview.test.tsx`. Run end to end on a temporary desktop with
 two scripted agents; not yet against real agents.
+
+## Fix (2026-11-22): Antigravity coordinator idle compaction
+
+Symptom: idle compaction was always skipped when a managed builtin or persisted registry
+Antigravity (`agy 1.5.10`) served as the Board coordinator.
+
+Observed behavior: testing managed `antigravity 1.5.10` directly confirmed that it announces
+`compact` via `available_commands_update`, and that sending `/compact <instructions>` (the shape
+of `COMPACT_PROMPT`) compacts synchronously and runs a follow-up confirmation reply before
+`session/prompt` returns, emitting a lowered `usage_update` well below `USAGE_DROP_PROOF` (0.8).
+The boundary is that a bare `/compact` (with no trailing text) compacts synchronously without a
+second model call, so `usage_update` does not drop until the next turn and would fail with
+`compaction-unconfirmed`; `COMPACT_PROMPT` must therefore keep trailing instructions.
+
+Causes (two gaps):
+
+1. **Live process gap**: `AgentClient.supportsContextCompaction()` checks only
+   `_meta.lody.compaction?.version === 1`; closed-source `agy` sends `_meta.antigravity` in
+   `initialize` and omits `_meta.lody.compaction`, so a live process always returned `false`.
+2. **Offline fallback gap**: after idle GC or a daemon restart, no live process runs and
+   `coordinator-sessions.ts` falls back to Machine Flock's `acpCapability.availableCommands`.
+   Because `agy` pushes commands asynchronously in `available_commands_update` instead of
+   `NewSessionResponse`, capability probes in `acp-capabilities.ts` do not capture `compact` from
+   asynchronous `available_commands_update` notifications, so the fallback returned `undefined`.
+   `AcpCapabilityCacheEntrySchema` is `.strict()`, so adding a new cache field would break
+   `acpCapability` sync across mixed-version LAN nodes.
+
+Fix:
+
+- Pass `cliType` into `withAntigravityAcpStream` (`apps/cli/src/agent/antigravity-acp-stream.ts`).
+  Keep the entry guard on `isAntigravity(agentType)` so existing YOLO mode rewriting and
+  `mcpCapabilities.http: true` compatibility stay intact for `custom/antigravity`, and gate only
+  the `_meta.lody.compaction: { version: 1 }` injection on `isAntigravityProvider(cliType, agentType)`
+  so both live and offline compaction support match only `builtin/antigravity` and
+  `registry/antigravity-acp` (never injecting or falling back for `custom/antigravity`). Preserve
+  existing `_meta` and `_meta.lody` fields and never overwrite a server-supplied `compaction`
+  declaration, keeping `AgentClient` provider-neutral.
+- Export `antigravitySupportsContextCompaction(cliType, agentType)`. In `coordinator-sessions.ts`,
+  `compactionSupport` still gives the live process result highest priority; only when
+  `live === undefined` does it return `true` for those two Antigravity providers, while
+  normalizing any leading `/` on cached command names for other agents.
+- Re-read `contextWindowUsage.used` in `board-continuity-workflow.ts` right after `:memory` and
+  before `/compact` (`beforeCompact`) so `USAGE_DROP_PROOF` is judged against the immediate
+  pre-compact baseline (preventing false `compaction-unconfirmed` when `:memory` grows context or
+  records the first usage reading). The divider keeps pre-tidy `before` when present (falling back
+  to `beforeCompact` only if `before` was absent) and records `usedAfter` only when strictly lower
+  than that display baseline.
+
+Tests: `antigravity-acp-stream.test.ts` covers `initialize` injection, preservation of existing
+`_meta` / `_meta.lody` fields and server-provided `compaction`, passthrough for non-Antigravity
+agents, keeping HTTP MCP and YOLO rewriting for `custom/antigravity` without injecting compaction,
+`antigravitySupportsContextCompaction` matching, and `AgentClient` integration through
+`withAntigravityAcpStream`; `operation-coordinator.test.ts` covers live `false`
+precedence, offline Antigravity fallback, leading-slash `/compact` normalization, post-`:memory`
+usage baseline re-reading, and an end-to-end `BoardContinuityWorkflow` run
+(`:memory` → `/compact` → `:renew`) confirmed solely by the `usage_update` drop without a
+`context_compaction` tool-call marker.

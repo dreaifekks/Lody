@@ -41,7 +41,13 @@ export type BoardCoordinatorView = {
 
 const TIDY_PROMPT = `Lody maintenance. The user does not see this turn. Your context will be compacted next, so record now what later turns must not lose: decisions and their reasons, each thread's latest conclusion, questions waiting for the user, and the user's recent corrections and preferences. Append them to the shared notes with lody_board_notes_append, and keep short Markdown files in the Board memory with MEMORY.md as their index, one line per file. Write only what is not recorded yet. Do not open sessions, do not message anyone and do not address the user; end with one short line.`;
 
-/** Instructions for the agent's own summary; Codex ignores them, the tidy turn covers it. */
+/**
+ * Instructions for the agent's own summary; Codex ignores them, the tidy turn covers it.
+ * Keep trailing instructions after `/compact`: Antigravity (`agy 1.5.10`) only runs the
+ * follow-up confirmation and refreshes `usage_update` before `session/prompt` returns when
+ * text follows `/compact` (a bare `/compact` defers the usage drop to the next turn and
+ * triggers `compaction-unconfirmed`).
+ */
 const COMPACT_PROMPT = `/compact Keep: the Board goal and rules; every thread's session id, state and latest conclusion; questions waiting for the user; the user's recent corrections and preferences; decisions and their reasons; results not handled yet. Drop: the process of finished threads, raw report JSON and tool output.`;
 
 const RENEW_PROMPT = `Lody maintenance. The user does not see this turn. Your context was just compacted. The current Board instructions follow and replace any earlier version. If your summary lacks something you need, read the Board memory index MEMORY.md. Reply with one short line.`;
@@ -532,6 +538,10 @@ export class BoardContinuityWorkflow {
         yield* write({ ...record, status: 'unsupported' });
         return;
       }
+      // The tidy turn itself runs a model/tool pass and may grow context or populate
+      // the first usage reading; judge the compaction drop against that baseline.
+      const beforeCompact =
+        (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used ?? before;
       const compacted = yield* this.step(
         maintenance,
         meta,
@@ -550,7 +560,9 @@ export class BoardContinuityWorkflow {
       );
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
       const shrank =
-        before !== undefined && after !== undefined && after < before * USAGE_DROP_PROOF;
+        beforeCompact !== undefined &&
+        after !== undefined &&
+        after < beforeCompact * USAGE_DROP_PROOF;
       if (marker !== 'completed' && !shrank) {
         yield* write({
           ...record,
@@ -559,11 +571,16 @@ export class BoardContinuityWorkflow {
         });
         return;
       }
-      // A reading the agent has not refreshed yet would show "X → X": leave it out.
+      // A reading the agent has not refreshed yet would show "X → X" (or an increase
+      // against the pre-tidy reading when the tidy turn grew context): leave it out.
+      const displayBefore = before ?? beforeCompact;
       const done: BoardMaintenanceMeta = {
         ...record,
+        ...(before === undefined && displayBefore !== undefined
+          ? { usedBefore: displayBefore }
+          : {}),
         status: 'done',
-        ...(after !== undefined && (before === undefined || after < before)
+        ...(after !== undefined && (displayBefore === undefined || after < displayBefore)
           ? { usedAfter: after }
           : {}),
         renewed: false,

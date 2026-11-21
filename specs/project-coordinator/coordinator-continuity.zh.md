@@ -292,11 +292,14 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
 - **三个回合**：整理记忆（写笔记和 `memory/`，更新 `MEMORY.md`）→ `/compact <保留清单>` →
   续接回合（带上当前看板行生成的协调者说明）。每一步开始前，用户回合或 Inbox 结果在等就让路，
   下一次空闲再来。
-- **成功的判定**：压缩回合的 assistant 条目里有已完成的压缩标记，或者上下文用量降到原来的
-  80% 以下；否则记为失败（`compaction-unconfirmed`），不显示「已整理」。
-- **能力判定**：先看正在运行的 agent 是否声明 `compaction` v1；没有运行的 agent 时看机器能力
-  缓存的可用命令里有没有 `compact`；都说不清就跳过自动整理，并只记一次日志。整理记忆回合
-  启动了 agent 之后，发 `/compact` 前再查一次。
+- **成功的判定**：压缩回合的 assistant 条目里有已完成的压缩标记，或者上下文用量降到整理记忆后、
+  紧邻 `/compact` 前重读基线的 80% 以下；否则记为失败（`compaction-unconfirmed`），不显示「已整理」。
+- **能力判定**：先看正在运行的 agent 是否声明 `compaction` v1（托管版 `builtin/antigravity` 与
+  存量 `registry/antigravity-acp` 由 `antigravity-acp-stream.ts` 流包装层在 `initialize` 中补充
+  `_meta.lody.compaction: { version: 1 }`，不误伤 `custom/antigravity`）；没有运行的 agent 时，
+  这两类 Antigravity 直接走离线回退返回支持（其 `compact` 经异步 `available_commands_update`
+  推送，不进机器能力缓存），其余 agent 看机器能力缓存的可用命令里有没有 `compact`（忽略前导 `/`）；
+  都说不清就跳过自动整理，并只记一次日志。整理记忆回合启动了 agent 之后，发 `/compact` 前再查一次。
 - **Kimi 不做**（用户 2026-10-17 的决定）：Kimi 声明了 `compaction`，但它的 `/compact` 只是
   在后台开始压缩，回合先结束，Lody 永远确认不了，结果多半是「没有整理成功（未确认）」。所以
   Kimi 按不支持处理：自动触发跳过并只记一次日志，手动「立即整理」显示和不支持的 agent 同样的

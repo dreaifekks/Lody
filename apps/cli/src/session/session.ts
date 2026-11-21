@@ -809,8 +809,9 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
 
       const input = createStdinWritableStream(agentProcess.stdin);
       const output = createStdoutReadableStream(agentProcess.stdout);
-      // LAN fork: Antigravity YOLO and HTTP MCP (no-op for other agents).
+      // LAN fork: Antigravity YOLO, HTTP MCP and compaction (no-op for other agents).
       const stream = withAntigravityAcpStream(ndJsonStream(input, output), {
+        cliType: callbacks.cliType,
         agentType: callbacks.agentType,
         args: callbacks.args ?? [],
       });
