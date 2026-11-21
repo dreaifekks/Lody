@@ -60,14 +60,48 @@ export interface AntigravityMonitorState {
  */
 const ASYNC_DISPATCH_TOOL_NAMES = new Set(['invoke_subagent', 'send_message', 'swarm']);
 
-const BG_TASK_PLACEHOLDER_PATTERN = /Tool is running as a background task with task id:\s*\S+/i;
+const NON_BACKGROUND_TOOL_KINDS = new Set([
+  'read',
+  'search',
+  'edit',
+  'write',
+  'delete',
+  'move',
+  'think',
+]);
+
+const NON_BACKGROUND_TOOL_NAMES = new Set([
+  'read_file',
+  'view_file',
+  'view_file_outline',
+  'view_code_item',
+  'edit_file',
+  'write_file',
+  'write_to_file',
+  'replace_file_content',
+  'multi_replace_file_content',
+  'grep_search',
+  'find_by_name',
+  'list_dir',
+  'search_web',
+]);
+
+const BG_TASK_PLACEHOLDER_LINE_PATTERN =
+  /^Tool is running as a background task with task id:\s+([A-Za-z0-9._:/-]+?)\.?$/i;
+
+export interface AntigravityToolIdentity {
+  kind?: string;
+  name?: string;
+}
 
 interface KnownTool {
   status: string;
+  kind?: string;
   name?: string;
   daemon: boolean;
   hasOutput: boolean;
   placeholder: boolean;
+  wakeupCounted: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -82,22 +116,107 @@ function toolName(raw: Record<string, unknown>): string | undefined {
   return typeof raw.name === 'string' ? raw.name : undefined;
 }
 
+function isNonBackgroundTool(identity: AntigravityToolIdentity): boolean {
+  const kind = identity.kind?.trim().toLowerCase();
+  if (kind && NON_BACKGROUND_TOOL_KINDS.has(kind)) return true;
+  const name = identity.name?.trim().toLowerCase();
+  if (name && NON_BACKGROUND_TOOL_NAMES.has(name)) return true;
+  return false;
+}
+
 function isDaemonTool(raw: Record<string, unknown>): boolean {
   const input = isRecord(raw.rawInput) ? raw.rawInput : isRecord(raw.args) ? raw.args : undefined;
   return input?.IsDaemon === true;
 }
 
-function outputTexts(raw: Record<string, unknown>): unknown[] {
-  const texts: unknown[] = [raw.rawOutput];
-  if (isRecord(raw.rawOutput)) texts.push(raw.rawOutput.output);
-  if (Array.isArray(raw.content)) {
-    for (const item of raw.content) {
-      if (!isRecord(item)) continue;
-      texts.push(item.text);
-      if (isRecord(item.content)) texts.push(item.content.text);
+function matchSingleLinePlaceholder(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || /[\r\n]/.test(trimmed)) return null;
+  const match = BG_TASK_PLACEHOLDER_LINE_PATTERN.exec(trimmed);
+  const taskId = match?.[1];
+  return taskId && /[A-Za-z0-9]/.test(taskId) ? taskId : null;
+}
+
+type ContentTextCheck = { kind: 'empty' } | { kind: 'single'; text: string } | { kind: 'invalid' };
+
+function inspectContentOutput(content: unknown): ContentTextCheck {
+  if (!Array.isArray(content) || content.length === 0) {
+    return { kind: 'empty' };
+  }
+  const nonEmptyParts: string[] = [];
+  for (const item of content) {
+    if (!isRecord(item)) return { kind: 'invalid' };
+    const text =
+      typeof item.text === 'string'
+        ? item.text
+        : isRecord(item.content) && typeof item.content.text === 'string'
+          ? item.content.text
+          : null;
+    if (text === null) return { kind: 'invalid' };
+    const trimmed = text.trim();
+    if (trimmed.length > 0) {
+      nonEmptyParts.push(trimmed);
     }
   }
-  return texts;
+  if (nonEmptyParts.length === 0) return { kind: 'empty' };
+  if (nonEmptyParts.length > 1) return { kind: 'invalid' };
+  return { kind: 'single', text: nonEmptyParts[0]! };
+}
+
+function matchBackgroundPlaceholder(
+  raw: Record<string, unknown>,
+  toolIdentity?: AntigravityToolIdentity
+): string | null {
+  const identity: AntigravityToolIdentity = {
+    kind: toolIdentity?.kind ?? (typeof raw.kind === 'string' ? raw.kind : undefined),
+    name: toolIdentity?.name ?? toolName(raw),
+  };
+  if (isNonBackgroundTool(identity)) return null;
+  const rawText =
+    typeof raw.rawOutput === 'string'
+      ? raw.rawOutput.trim()
+      : isRecord(raw.rawOutput) && typeof raw.rawOutput.output === 'string'
+        ? raw.rawOutput.output.trim()
+        : '';
+  const contentCheck = inspectContentOutput(raw.content);
+
+  if (rawText.length > 0) {
+    const rawTaskId = matchSingleLinePlaceholder(rawText);
+    if (rawTaskId === null) return null;
+    if (contentCheck.kind === 'empty') return rawTaskId;
+    if (contentCheck.kind === 'invalid') return null;
+    return matchSingleLinePlaceholder(contentCheck.text) !== null ? rawTaskId : null;
+  }
+
+  if (contentCheck.kind === 'single') {
+    return matchSingleLinePlaceholder(contentCheck.text);
+  }
+  return null;
+}
+
+export function hasAntigravityBackgroundPlaceholder(
+  raw: Record<string, unknown>,
+  toolIdentity?: AntigravityToolIdentity
+): boolean {
+  return matchBackgroundPlaceholder(raw, toolIdentity) !== null;
+}
+
+function isToolStillPending(tool: KnownTool): boolean {
+  return (
+    !tool.daemon &&
+    tool.status !== 'failed' &&
+    (tool.status === 'pending' || tool.status === 'in_progress')
+  );
+}
+
+function isToolWakeupOnly(tool: KnownTool): boolean {
+  return (
+    !tool.daemon &&
+    tool.status !== 'failed' &&
+    (tool.placeholder ||
+      (tool.name === 'run_workflow' && tool.status === 'completed' && !tool.hasOutput) ||
+      (tool.name !== undefined && ASYNC_DISPATCH_TOOL_NAMES.has(tool.name)))
+  );
 }
 
 function hasOutput(raw: Record<string, unknown>): boolean {
@@ -112,24 +231,35 @@ function hasOutput(raw: Record<string, unknown>): boolean {
 }
 
 /**
- * Counts the background work an Antigravity ACP v1 turn leaves behind at `end_turn`, and
- * decides from `session/list` activity when it has woken the model and finished.
+ * Tracks the background work an Antigravity ACP v1 turn leaves behind at `end_turn`, and
+ * decides from live tool updates (agy 1.5.10+) and `session/list` activity when it has
+ * finished.
  *
- * agy never reports on stdout whether background work is still pending (1.5.9 and earlier
- * send nothing after `end_turn`; 1.5.10 streams the wakeup itself), and its only
- * side-effect-free signal is `updatedAt`. Each burst of activity followed by
- * {@link AntigravityPollTimings.wakeupQuietMs} of stillness is taken as one pending item
- * finishing. Errors lean towards protecting longer:
- * wakeups agy merges into one burst keep the session protected until the 24-hour cap.
+ * Unfinished tools are tracked by `toolCallId` in `pendingToolIds` so terminal updates
+ * received during a wakeup or a later turn settle the exact tool; async dispatch tools
+ * and placeholder-only completions are tracked in `pendingWakeups`. Anonymous wakeup
+ * completions inferred from stillness (agy 1.5.9 polling or wakeup-only dispatches) are
+ * recorded in `inferredCompletions` and reconciled when a later turn replays terminal
+ * tool updates, avoiding double-decrementing still-running work.
  */
 export class AntigravitySessionTracker {
   private readonly timings: AntigravityPollTimings;
   private readonly tools = new Map<string, KnownTool>();
   private turnToolIds = new Set<string>();
-  private pending = 0;
+  private readonly pendingToolIds = new Set<string>();
+  private readonly wakeupStartedToolIds = new Set<string>();
+  private pendingWakeups = 0;
+  private inferredCompletions = 0;
   private turnEndedAtMs: number | null = null;
   private lastActivityAtMs = 0;
   private inWakeup = false;
+  private observedPostTurnLiveStream = false;
+  private awaitingReplyForSettledTool = false;
+  private wakeupSawSettledTool = false;
+  private wakeupSawCompletedHelperTool = false;
+  private wakeupSawModelOutput = false;
+  private wakeupSawLiveToolEvent = false;
+  private wakeupSawPollActivity = false;
   private expiredPendingWork = false;
 
   constructor(timings?: Partial<AntigravityPollTimings>) {
@@ -144,33 +274,104 @@ export class AntigravitySessionTracker {
   beginTurn(): void {
     this.turnToolIds = new Set();
     this.turnEndedAtMs = null;
-    this.inWakeup = false;
+    this.resetWakeupState();
+    this.wakeupStartedToolIds.clear();
+    this.awaitingReplyForSettledTool = false;
     this.expiredPendingWork = false;
   }
 
-  /** Record a tool notification Lody received live on stdout. */
-  observeLive(notification: acp.SessionNotification): void {
+  /** Record a notification Lody received live on stdout. */
+  observeLive(notification: acp.SessionNotification, nowMs = Date.now()): void {
     const raw = notification.update as unknown as Record<string, unknown>;
+    const sessionUpdate = typeof raw.sessionUpdate === 'string' ? raw.sessionUpdate : undefined;
+    const inMonitor = this.turnEndedAtMs !== null;
+    if (inMonitor && sessionUpdate !== undefined) {
+      if (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'agent_thought_chunk') {
+        this.observedPostTurnLiveStream = true;
+        this.wakeupSawModelOutput = true;
+        this.lastActivityAtMs = nowMs;
+        this.inWakeup = true;
+      } else if (sessionUpdate === 'tool_call' || sessionUpdate === 'tool_call_update') {
+        this.observedPostTurnLiveStream = true;
+        this.wakeupSawLiveToolEvent = true;
+        this.lastActivityAtMs = nowMs;
+        this.inWakeup = true;
+      }
+    }
     if (
-      (raw.sessionUpdate !== 'tool_call' && raw.sessionUpdate !== 'tool_call_update') ||
+      (sessionUpdate !== 'tool_call' && sessionUpdate !== 'tool_call_update') ||
       typeof raw.toolCallId !== 'string'
     ) {
       return;
     }
-    const prev = this.tools.get(raw.toolCallId);
+    const toolCallId = raw.toolCallId;
+    const prev = this.tools.get(toolCallId);
+    const nextKind = typeof raw.kind === 'string' ? raw.kind : prev?.kind;
+    const nextName = toolName(raw) ?? prev?.name;
+    const nextStatus =
+      typeof raw.status === 'string'
+        ? raw.status
+        : (prev?.status ?? (sessionUpdate === 'tool_call' ? 'pending' : ''));
     const outputChanged = raw.rawOutput !== undefined || raw.content !== undefined;
-    this.tools.set(raw.toolCallId, {
-      status: typeof raw.status === 'string' ? raw.status : (prev?.status ?? ''),
-      name: toolName(raw) ?? prev?.name,
+    const nextPlaceholder =
+      isNonBackgroundTool({ kind: nextKind, name: nextName }) || nextStatus === 'failed'
+        ? false
+        : outputChanged
+          ? hasAntigravityBackgroundPlaceholder(raw, { kind: nextKind, name: nextName })
+          : nextStatus === 'completed' && prev?.status !== 'completed'
+            ? false
+            : (prev?.placeholder ?? false);
+    const nextTool: KnownTool = {
+      status: nextStatus,
+      kind: nextKind,
+      name: nextName,
       daemon: (prev?.daemon ?? false) || isDaemonTool(raw),
       hasOutput: (prev?.hasOutput ?? false) || hasOutput(raw),
-      placeholder: outputChanged
-        ? outputTexts(raw).some(
-            (text) => typeof text === 'string' && BG_TASK_PLACEHOLDER_PATTERN.test(text)
-          )
-        : (prev?.placeholder ?? false),
-    });
-    this.turnToolIds.add(raw.toolCallId);
+      placeholder: nextPlaceholder,
+      wakeupCounted: prev?.wakeupCounted ?? false,
+    };
+    this.tools.set(toolCallId, nextTool);
+
+    if (!inMonitor) {
+      this.turnToolIds.add(toolCallId);
+      if (!isToolStillPending(nextTool) && !isToolWakeupOnly(nextTool)) {
+        const removed = this.pendingToolIds.delete(toolCallId);
+        this.wakeupStartedToolIds.delete(toolCallId);
+        if (removed && this.inferredCompletions > 0) {
+          this.inferredCompletions -= 1;
+        }
+      }
+      return;
+    }
+
+    if (isToolStillPending(nextTool)) {
+      if (!this.pendingToolIds.has(toolCallId)) {
+        this.pendingToolIds.add(toolCallId);
+        if (this.pendingWakeups > 0 && !this.wakeupSawSettledTool) {
+          this.wakeupStartedToolIds.add(toolCallId);
+        }
+      }
+    } else if (isToolWakeupOnly(nextTool)) {
+      this.pendingToolIds.delete(toolCallId);
+      this.wakeupStartedToolIds.delete(toolCallId);
+      if (!nextTool.wakeupCounted) {
+        this.pendingWakeups += 1;
+        nextTool.wakeupCounted = true;
+      }
+    } else {
+      const wasWakeupStarted = this.wakeupStartedToolIds.delete(toolCallId);
+      const removed = this.pendingToolIds.delete(toolCallId);
+      if (removed && !wasWakeupStarted) {
+        this.wakeupSawSettledTool = true;
+        this.awaitingReplyForSettledTool = true;
+      } else if (
+        this.pendingWakeups > 0 &&
+        !this.wakeupSawSettledTool &&
+        (wasWakeupStarted || (prev === undefined && sessionUpdate === 'tool_call'))
+      ) {
+        this.wakeupSawCompletedHelperTool = true;
+      }
+    }
   }
 
   /**
@@ -178,33 +379,77 @@ export class AntigravitySessionTracker {
    * pending, in which case the caller starts a monitor.
    */
   turnEnded(stopReason: string | undefined, nowMs: number): boolean {
-    if (stopReason === 'end_turn') this.pending += this.countTurnBackgroundWork();
+    if (stopReason === 'end_turn') {
+      for (const id of this.turnToolIds) {
+        const tool = this.tools.get(id);
+        if (!tool) continue;
+        if (isToolStillPending(tool)) {
+          this.pendingToolIds.add(id);
+        } else if (isToolWakeupOnly(tool)) {
+          this.pendingToolIds.delete(id);
+          if (!tool.wakeupCounted) {
+            this.pendingWakeups += 1;
+            tool.wakeupCounted = true;
+          }
+        }
+      }
+    }
+    if (this.effectivePendingCount() === 0) {
+      this.clearPendingState();
+      return false;
+    }
     this.turnEndedAtMs = nowMs;
     this.lastActivityAtMs = nowMs;
-    return this.pending > 0;
+    this.resetWakeupState();
+    return true;
   }
 
   /** `session/list` reported a new `updatedAt`. */
   noteActivity(nowMs: number): void {
+    this.wakeupSawPollActivity = true;
     this.lastActivityAtMs = nowMs;
     this.inWakeup = true;
   }
 
   evaluate(nowMs: number): AntigravityMonitorState {
     if (this.inWakeup && nowMs - this.lastActivityAtMs >= this.timings.wakeupQuietMs) {
-      this.inWakeup = false;
-      this.pending = Math.max(0, this.pending - 1);
+      const sawSettledTool = this.wakeupSawSettledTool;
+      const sawModelOutput = this.wakeupSawModelOutput;
+      const sawPollActivity = this.wakeupSawPollActivity;
+      const sawWakeupCompletionSignal = sawModelOutput || this.wakeupSawCompletedHelperTool;
+      const sawPollOnly = sawPollActivity && !this.wakeupSawLiveToolEvent;
+      this.resetWakeupState();
+      if (sawSettledTool) {
+        if (sawModelOutput || sawPollActivity) {
+          this.awaitingReplyForSettledTool = false;
+        }
+      } else if (this.awaitingReplyForSettledTool) {
+        if (sawWakeupCompletionSignal) {
+          this.awaitingReplyForSettledTool = false;
+        }
+      } else if (this.pendingWakeups > 0 && (sawWakeupCompletionSignal || sawPollOnly)) {
+        if (sawWakeupCompletionSignal) {
+          this.pendingWakeups -= 1;
+          this.wakeupStartedToolIds.clear();
+        } else if (this.effectivePendingCount() > 0) {
+          this.inferredCompletions += 1;
+        }
+      } else if (
+        !this.observedPostTurnLiveStream &&
+        sawPollOnly &&
+        this.effectivePendingCount() > 0
+      ) {
+        this.inferredCompletions += 1;
+      }
     }
     const endedAtMs = this.turnEndedAtMs;
-    if (endedAtMs === null || (this.pending === 0 && !this.inWakeup)) {
-      this.pending = 0;
-      this.inWakeup = false;
+    if (endedAtMs === null || (this.effectivePendingCount() === 0 && !this.inWakeup)) {
+      this.clearPendingState();
       this.expiredPendingWork = false;
       return { settled: true, state: 'idle', backgroundTaskCount: 0 };
     }
     if (nowMs - endedAtMs >= this.timings.maxDurationMs) {
-      this.pending = 0;
-      this.inWakeup = false;
+      this.clearPendingState();
       this.expiredPendingWork = true;
       return { settled: true, state: 'idle', backgroundTaskCount: 0 };
     }
@@ -214,7 +459,7 @@ export class AntigravitySessionTracker {
         this.inWakeup && nowMs - this.lastActivityAtMs < this.timings.runningGraceMs
           ? 'running'
           : 'idle',
-      backgroundTaskCount: Math.max(1, this.pending),
+      backgroundTaskCount: Math.max(1, this.effectivePendingCount()),
     };
   }
 
@@ -223,24 +468,27 @@ export class AntigravitySessionTracker {
     return this.expiredPendingWork;
   }
 
-  private countTurnBackgroundWork(): number {
-    let count = 0;
-    for (const id of this.turnToolIds) {
-      const tool = this.tools.get(id);
-      if (!tool || tool.daemon || tool.status === 'failed') continue;
-      const silentWorkflow =
-        tool.name === 'run_workflow' && tool.status === 'completed' && !tool.hasOutput;
-      if (
-        tool.status === 'pending' ||
-        tool.status === 'in_progress' ||
-        tool.placeholder ||
-        silentWorkflow ||
-        (tool.name !== undefined && ASYNC_DISPATCH_TOOL_NAMES.has(tool.name))
-      ) {
-        count += 1;
-      }
-    }
-    return count;
+  private effectivePendingCount(): number {
+    return Math.max(0, this.pendingToolIds.size + this.pendingWakeups - this.inferredCompletions);
+  }
+
+  private resetWakeupState(): void {
+    this.inWakeup = false;
+    this.wakeupSawSettledTool = false;
+    this.wakeupSawCompletedHelperTool = false;
+    this.wakeupSawModelOutput = false;
+    this.wakeupSawLiveToolEvent = false;
+    this.wakeupSawPollActivity = false;
+  }
+
+  private clearPendingState(): void {
+    this.pendingToolIds.clear();
+    this.wakeupStartedToolIds.clear();
+    this.pendingWakeups = 0;
+    this.inferredCompletions = 0;
+    this.turnEndedAtMs = null;
+    this.awaitingReplyForSettledTool = false;
+    this.resetWakeupState();
   }
 }
 

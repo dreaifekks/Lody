@@ -38,20 +38,45 @@ The fix stays inside `apps/cli/src/agent/` (`antigravity-background.ts` and
 the turn ends at `end_turn`, and `sessionActivity` keeps the process alive.
 
 - **Pending work at `end_turn`.** From the tool notifications streamed live during the
-  turn, Lody counts one pending item for each tool that is still `pending` or
-  `in_progress`, whose output is agy's "running as a background task" placeholder, or
-  that dispatches work reporting only by waking the model (`invoke_subagent`,
-  `send_message`, `swarm`, a `run_workflow` with no output). agy keeps a `schedule`
+  turn, Lody tracks still-`pending` or `in_progress` tools by `toolCallId` in
+  `pendingToolIds` (defaulting an omitted `tool_call` status to `pending`), and counts
+  wakeup-only items separately in `pendingWakeups`: tools whose complete output is a
+  standalone single-line agy "running as a background task with task id: ..." placeholder
+  (excluding non-background read/search/edit/write/delete/move/think tools and multi-block
+  outputs), or tools that dispatch work reporting only by waking the model
+  (`invoke_subagent`, `send_message`, `swarm`, a `run_workflow` with no output). A
+  `toolCallId` migrates exclusively between `pendingToolIds` and `pendingWakeups`, and
+  each wakeup-only `toolCallId` is counted at most once. agy keeps a `schedule`
   `in_progress` until it fires, so timers need no special case. `IsDaemon: true` and
   failed tools are not counted. No agy tool arguments are parsed.
-- **Release by activity.** While items are pending, Lody polls `session/list` every
-  2 seconds and reports `background`, or `running` while `updatedAt` is moving. A
-  burst of `updatedAt` changes followed by 30 seconds of stillness counts as one item
-  finished. Lody reports idle when no item remains, and after 24 hours at most,
-  matching the Core `background` cap. If `session/list` is missing or keeps failing,
-  the monitor keeps protecting until the cap.
-- **Across turns.** Items still pending when the user sends another message carry
-  into that turn, so earlier background work stays protected.
+- **Release by live completion, activity, and reconciliation.** While items are pending,
+  Lody polls `session/list` every 2 seconds and reports `background`, or `running` while
+  `updatedAt` or post-`end_turn` live wakeup notifications are moving. On agy 1.5.10+,
+  a terminal `tool_call_update` removes that exact `toolCallId` from `pendingToolIds`
+  while keeping the 30-second stillness window active so the model can finish its wakeup
+  reply; merged completions settle together without prematurely decrementing still-running
+  tools, new background tools started during a wakeup are tracked in `pendingToolIds` or
+  `pendingWakeups`, and pure `in_progress` progress updates do not trigger inferred
+  completions. When a live wakeup signal (model output or a wakeup-started helper tool
+  completing) settles a `pendingWakeups` item, `pendingWakeups` is decremented directly
+  so a later cross-turn tool completion cannot revive it; once post-`end_turn` live
+  streaming is observed for the session, delayed replies do not decrement still-running
+  `pendingToolIds`. For agy 1.5.9 and earlier (which send no post-`end_turn` tool
+  updates) or poll-only bursts without live tool events, a qualifying burst followed by
+  30 seconds of stillness increments `inferredCompletions` rather than guessing which
+  `toolCallId` finished; effective pending work is
+  `pendingToolIds.size + pendingWakeups - inferredCompletions`. Lody reports idle when
+  effective pending work reaches zero and no wakeup burst is active, and after 24 hours
+  at most, matching the Core `background` cap. When remaining pending work lacks
+  sufficient settlement evidence (for example, neither usable live settlement signals
+  nor working `session/list` poll activity are available, or several wakeup-only items
+  merge into one wakeup burst so only one item settles), the monitor can keep protecting
+  until the 24-hour cap.
+- **Across turns.** `pendingToolIds`, `pendingWakeups`, and `inferredCompletions` carry
+  into the next turn so earlier background work stays protected. When a later turn
+  receives or replays a terminal `tool_call_update` for an earlier `toolCallId`, Lody
+  removes it from `pendingToolIds` and reconciles any prior `inferredCompletions` by one
+  so the same completion is never subtracted twice.
 - **`cwd`.** Lody negotiates the `realpath` of the workdir as the Antigravity ACP
   `cwd`; agy compares edit targets by realpath, so a symlinked workdir otherwise made
   in-workspace edits ask for permission.
@@ -96,10 +121,20 @@ activity-only release rule has not been run against a real agy.
 - With agy 1.5.9 and earlier, output agy writes after `end_turn` reaches Lody only with
   the next prompt, inside the new turn, and never if the process is replaced first.
   agy 1.5.10 and later send it at once.
-- Several items that wake agy in a single burst release only one item, so the
-  session stays protected until the next burst or the 24-hour cap. Work the model
-  starts during a wakeup is not counted.
+- For wakeup-only dispatches (which emit no terminal completion update) or agy 1.5.9
+  and earlier, several items that wake agy in a single burst release only one item, so
+  the session stays protected until the next burst or the 24-hour cap. On agy 1.5.9 and
+  earlier, work the model starts during a wakeup is not visible until the next prompt and
+  is not counted; agy 1.5.10+ streams those tool notifications live so they are tracked.
 - With agy 1.5.9 and earlier, a post-`end_turn` tool waiting for a permission request
   agy does not forward still wedges that agy session until the user cancels;
   `realpath` negotiation removes the most common trigger. agy 1.5.10 forwards the
   request.
+- Because `updatedAt` and model replies carry no task attribution, if a tracked tool
+  completes in the same wave as an `updatedAt` advance and the model only replies more
+  than `wakeupQuietMs` (30s) later while a wakeup-only dispatch is also pending, that
+  delayed reply is indistinguishable from the wakeup-only dispatch completing (matching
+  the prior `wakeupQuietMs` wave contract). Conversely, when a tracked tool completes
+  with neither model output nor an `updatedAt` advance, the next wakeup reply is
+  conservatively attributed to that tool so a parallel wakeup-only dispatch stays
+  protected.

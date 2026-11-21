@@ -301,6 +301,8 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     status: string,
     extra: Record<string, unknown> = {}
   ) => n({ sessionUpdate: 'tool_call', toolCallId, name, status, title: name, ...extra });
+  const toolUpdate = (toolCallId: string, status: string, extra: Record<string, unknown> = {}) =>
+    n({ sessionUpdate: 'tool_call_update', toolCallId, status, ...extra });
 
   function promptOnce(live: acp.SessionNotification[]) {
     mockState.prompt.mockImplementationOnce(async () => {
@@ -538,5 +540,770 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     promptOnce([say('Done.')]);
     await send(harness, 'Status');
     expect(harness.client.hasUnsettledNativeWork()).toBe(false);
+  });
+
+  it('ignores non-placeholder matches in command output or non-background tools while keeping strict single-line placeholders protected', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      // Multi-line stdout quoting the placeholder phrase in prose (18fea9f4).
+      tool('cmd-quote', 'run_command', 'completed', {
+        rawOutput:
+          'Summary:\n匹配 `Tool is running as a background task with task id:` 以及其他日志\nDone.',
+      }),
+      // Source regex matching the placeholder phrase (6d6cc698).
+      tool('cmd-regex', 'run_command', 'completed', {
+        rawOutput:
+          'const BG_TASK_PLACEHOLDER_PATTERN = /Tool is running as a background task with task id:\\s*\\S+/i;',
+      }),
+      // Unit-test literal line containing quotes and trailing comma (f334318e).
+      tool('cmd-test-line', 'run_command', 'completed', {
+        rawOutput: "'Tool is running as a background task with task id: task-abc_123.',",
+      }),
+      // Single-line real placeholder returned by a read tool must never be treated as background work.
+      tool('read-1', 'read_file', 'completed', {
+        kind: 'read',
+        rawOutput: 'Tool is running as a background task with task id: task-abc_123.',
+      }),
+      // Single-line output with extra trailing text after the task id.
+      tool('cmd-extra', 'run_command', 'completed', {
+        rawOutput: 'Tool is running as a background task with task id: task-abc_123. trailing text',
+      }),
+    ]);
+    await send(harness, 'Inspect logs and files');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions).not.toHaveBeenCalled();
+
+    // A genuine single-line placeholder from run_command is still recognized and protected.
+    promptOnce([
+      tool('cmd-real-bg', 'run_command', 'completed', {
+        rawOutput: 'Tool is running as a background task with task id: task-abc_123.',
+      }),
+    ]);
+    await send(harness, 'Start background build');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('does not start the monitor when tools transition out of in_progress before end_turn', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-1', 'run_command', 'in_progress'),
+      toolUpdate('cmd-1', 'completed', { rawOutput: 'finished output' }),
+      tool('cmd-2', 'run_command', 'in_progress', {
+        rawOutput: 'Tool is running as a background task with task id: task-42.',
+      }),
+      toolUpdate('cmd-2', 'completed', { rawOutput: 'real output' }),
+      tool('cmd-3', 'run_command', 'in_progress'),
+      toolUpdate('cmd-3', 'failed', { rawOutput: 'exit code 1' }),
+    ]);
+    await send(harness, 'Run commands');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions).not.toHaveBeenCalled();
+  });
+
+  it('settles a cross-turn pending tool when its terminal update arrives during the next turn', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    // Turn 1 leaves cmd-1 running in the background.
+    promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
+    await send(harness, 'Run long task');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // Turn 2 receives cmd-1's completion mid-turn and finishes cleanly.
+    promptOnce([toolUpdate('cmd-1', 'completed', { rawOutput: 'done' }), say('Task completed.')]);
+    await send(harness, 'Check status');
+    expect(harness.client.getNativeWork()).toBeNull();
+
+    const listCallsAfterTurn2 = mockState.listSessions.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions.mock.calls.length).toBe(listCallsAfterTurn2);
+  });
+
+  it('keeps unresolved cross-turn tools protected and does not double-count async dispatch updates', async () => {
+    const toolHarness = createHarness();
+    installTranscript();
+    await toolHarness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
+    await send(toolHarness, 'Start job');
+    expect(toolHarness.client.getNativeWork()).toBe('background');
+
+    promptOnce([say('Still running.')]);
+    await send(toolHarness, 'Anything else?');
+    expect(toolHarness.client.getNativeWork()).toBe('background');
+
+    // A repeated update for the same async-dispatch toolCallId in a later turn must not increment pendingWakeups twice.
+    const subHarness = createHarness();
+    const { wakeUp } = installTranscript();
+    await subHarness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+      say('Dispatched.'),
+    ]);
+    await send(subHarness, 'Launch subagent');
+    expect(subHarness.client.getNativeWork()).toBe('background');
+
+    promptOnce([
+      toolUpdate('sub-1', 'completed', { _meta: { lody: { toolName: 'invoke_subagent' } } }),
+      say('Checked.'),
+    ]);
+    await send(subHarness, 'Check subagent');
+    expect(subHarness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // Only one wakeup is required to settle sub-1.
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(subHarness.client.getNativeWork()).toBeNull();
+  });
+
+  it('handles agy 1.5.10 post-end_turn live completions for single, merged, and staggered tasks', async () => {
+    // 1. Single task completes live post-turn: stays running during reply, settles after wakeupQuietMs.
+    const single = createHarness();
+    installTranscript();
+    await single.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
+    await send(single, 'Run build');
+    expect(single.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok' }));
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs);
+    expect(single.client.getNativeWork()).toBe('running');
+
+    await emitToLiveClient(say('Build succeeded.'));
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANTIGRAVITY_POLL_TIMINGS.runningGraceMs / 2);
+    expect(single.client.getNativeWork()).toBe('running');
+
+    // Still within wakeupQuietMs: must not settle prematurely.
+    await vi.advanceTimersByTimeAsync(DEFAULT_ANTIGRAVITY_POLL_TIMINGS.runningGraceMs);
+    expect(single.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs);
+    expect(single.client.getNativeWork()).toBeNull();
+
+    // 2. Two tasks complete in the same wakeup burst: settles directly after wakeupQuietMs.
+    const merged = createHarness();
+    installTranscript();
+    await merged.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-1', 'run_command', 'in_progress'),
+      tool('cmd-2', 'run_command', 'in_progress'),
+    ]);
+    await send(merged, 'Run two jobs');
+    expect(merged.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok 1' }));
+    await emitToLiveClient(toolUpdate('cmd-2', 'completed', { rawOutput: 'ok 2' }));
+    await emitToLiveClient(say('Both jobs finished.'));
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs);
+    expect(merged.client.getNativeWork()).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(merged.client.getNativeWork()).toBeNull();
+
+    // 3. Staggered live completions: settling cmd-1 does not prematurely decrement cmd-2.
+    const staggered = createHarness();
+    installTranscript();
+    await staggered.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-1', 'run_command', 'in_progress'),
+      tool('cmd-2', 'run_command', 'in_progress'),
+    ]);
+    await send(staggered, 'Run staggered jobs');
+    expect(staggered.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok 1' }));
+    await emitToLiveClient(say('First job finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(staggered.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(staggered.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('cmd-2', 'completed', { rawOutput: 'ok 2' }));
+    await emitToLiveClient(say('Second job finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(staggered.client.getNativeWork()).toBeNull();
+  });
+
+  it('reconciles an agy 1.5.9 poll-inferred completion when the next turn replays the second tool terminal update', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('cmd-b', 'run_command', 'in_progress'),
+    ]);
+    await send(harness, 'Run A and B');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // One anonymous poll wakeup completes while the other command is still running.
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Turn 2 replays cmd-b's completion; this must reconcile the prior inferred completion rather than decrementing cmd-a.
+    promptOnce([toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }), say('Checked.')]);
+    await send(harness, 'Status?');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('reconciles an agy 1.5.9 poll-inferred completion without decrementing a mixed invoke_subagent dispatch', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Turn 2 replays cmd-a's completion; sub-1 must remain protected until its own wakeup settles.
+    promptOnce([toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }), say('Command done.')]);
+    await send(harness, 'Any update?');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('keeps protecting a long tool started during an agy 1.5.10 post-end_turn wakeup', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
+    await send(harness, 'Run A');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await emitToLiveClient(say('A finished, starting B.'));
+    await emitToLiveClient(tool('cmd-b', 'run_command', 'in_progress'));
+
+    // After wakeup stillness, cmd-b must remain tracked and protected.
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
+    await emitToLiveClient(say('B finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('does not infer completion from live in_progress updates even when session/list updatedAt advances', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
+    await send(harness, 'Run progress job');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    await emitToLiveClient(toolUpdate('cmd-a', 'in_progress', { rawOutput: '50%' }));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+  });
+
+  it('settles an invoke_subagent wakeup even when the wakeup invokes a synchronous helper tool', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+      say('Dispatched subagent.'),
+    ]);
+    await send(harness, 'Research');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(tool('read-1', 'read_file', 'in_progress', { kind: 'read' }));
+    await emitToLiveClient(toolUpdate('read-1', 'completed', { rawOutput: 'README contents' }));
+    await emitToLiveClient(say('Subagent summary ready.'));
+
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('clears stale placeholders on output-less completed updates and migrates pending tools to wakeups exclusively', async () => {
+    // 1. Same-turn: in_progress with placeholder followed by output-less completed.
+    const sameTurn = createHarness();
+    installTranscript();
+    await sameTurn.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-1', 'run_command', 'in_progress', {
+        rawOutput: 'Tool is running as a background task with task id: task-1.',
+      }),
+      toolUpdate('cmd-1', 'completed'),
+    ]);
+    await send(sameTurn, 'Run and finish');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sameTurn.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions).not.toHaveBeenCalled();
+
+    // 2. Cross-turn: Turn 1 leaves in_progress with placeholder; Turn 2 sends output-less completed.
+    const crossTurn = createHarness();
+    installTranscript();
+    await crossTurn.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-1', 'run_command', 'in_progress', {
+        rawOutput: 'Tool is running as a background task with task id: task-2.',
+      }),
+    ]);
+    await send(crossTurn, 'Start command');
+    expect(crossTurn.client.getNativeWork()).toBe('background');
+
+    promptOnce([toolUpdate('cmd-1', 'completed'), say('Done.')]);
+    await send(crossTurn, 'Check command');
+    expect(crossTurn.client.getNativeWork()).toBeNull();
+
+    // 3. Cross-turn exclusive migration: pending tool transitions to placeholder completed and settles in one wakeup.
+    const migrated = createHarness();
+    const { wakeUp } = installTranscript();
+    await migrated.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
+    await send(migrated, 'Start job');
+    expect(migrated.client.getNativeWork()).toBe('background');
+
+    promptOnce([
+      toolUpdate('cmd-1', 'completed', {
+        rawOutput: 'Tool is running as a background task with task id: task-3.',
+      }),
+      say('Still running in background.'),
+    ]);
+    await send(migrated, 'Check job');
+    expect(migrated.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(migrated.client.getNativeWork()).toBeNull();
+  });
+
+  it('ignores multi-block content outputs that contain a placeholder line among other blocks', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-multi-block', 'run_command', 'completed', {
+        content: [
+          { type: 'content', content: { type: 'text', text: 'Header output' } },
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: task-abc_123.',
+            },
+          },
+          { type: 'content', content: { type: 'text', text: 'Footer output' } },
+        ],
+      }),
+    ]);
+    await send(harness, 'Inspect multi-block output');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions).not.toHaveBeenCalled();
+  });
+
+  it('defaults a tool_call with omitted status to pending so it stays protected after end_turn', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cmd-no-status',
+        name: 'run_command',
+        title: 'run_command',
+      }),
+    ]);
+    await send(harness, 'Run command without status');
+    expect(harness.client.getNativeWork()).toBe('background');
+  });
+
+  it('permanently settles a live-replied anonymous wakeup so a later cross-turn tool completion does not revive it', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // sub-1 completes via live model reply post-turn while cmd-a keeps running.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(say('Subagent finished its report.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Turn 2 receives cmd-a's completion; sub-1 must stay settled so the turn ends idle.
+    promptOnce([toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }), say('All done.')]);
+    await send(harness, 'Check status');
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('settles an anonymous wakeup when a helper tool runs silently past wakeupQuietMs before the final reply', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+      say('Dispatched subagent.'),
+    ]);
+    await send(harness, 'Research');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(tool('cmd-helper', 'run_command', 'in_progress'));
+
+    // Helper tool runs silently for 45s (> wakeupQuietMs) without settling sub-1 prematurely.
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('cmd-helper', 'completed', { rawOutput: 'helper output' }));
+    await emitToLiveClient(say('Final subagent summary.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('does not decrement a sibling long tool started during a tool-settled wakeup after >wakeupQuietMs silence', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
+    await send(harness, 'Run A');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await emitToLiveClient(tool('cmd-b', 'run_command', 'in_progress'));
+    await emitToLiveClient(tool('cmd-c', 'run_command', 'in_progress'));
+
+    // Both follow-up tools run silently for 45s (> wakeupQuietMs).
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // cmd-b finishes with a reply; cmd-c must remain protected until its own completion.
+    await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
+    await emitToLiveClient(say('B finished, waiting on C.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('cmd-c', 'completed', { rawOutput: 'C done' }));
+    await emitToLiveClient(say('C finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('falls back to content when rawOutput is empty and rejects mismatched multi-block content alongside a placeholder rawOutput', async () => {
+    // 1. Empty rawOutput falls back to a valid single-block content placeholder.
+    const fallback = createHarness();
+    const { wakeUp } = installTranscript();
+    await fallback.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-empty-raw', 'run_command', 'completed', {
+        rawOutput: '',
+        content: [
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: task-abc_123.',
+            },
+          },
+        ],
+      }),
+    ]);
+    await send(fallback, 'Start background task');
+    expect(fallback.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(fallback.client.getNativeWork()).toBeNull();
+
+    // 2. Placeholder rawOutput paired with multi-block content must not be treated as a placeholder.
+    mockState.listSessions.mockClear();
+    const mismatched = createHarness();
+    installTranscript();
+    await mismatched.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-mismatched', 'run_command', 'completed', {
+        rawOutput: 'Tool is running as a background task with task id: task-abc_123.',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'Header line' } },
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: task-abc_123.',
+            },
+          },
+          { type: 'content', content: { type: 'text', text: 'Footer line' } },
+        ],
+      }),
+    ]);
+    await send(mismatched, 'Inspect mismatched output');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mismatched.client.getNativeWork()).toBeNull();
+    expect(mockState.listSessions).not.toHaveBeenCalled();
+  });
+
+  it('does not decrement a still-running tracked tool when a delayed wakeup reply arrives after wakeupQuietMs', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('cmd-b', 'run_command', 'in_progress'),
+    ]);
+    await send(harness, 'Run A and B');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // cmd-a finishes live on agy 1.5.10+; the model thinks quietly for 43s (> wakeupQuietMs) before replying.
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await vi.advanceTimersByTimeAsync(43_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Delayed reply + updatedAt bump must not decrement cmd-b.
+    await emitToLiveClient(say('A finished.'));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('settles an anonymous wakeup when it only runs helper tools without emitting model text', async () => {
+    // 1. Two-step helper tool (in_progress -> completed) with updatedAt bump and no model text.
+    const twoStep = createHarness();
+    const { wakeUp: wakeTwoStep } = installTranscript();
+    await twoStep.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+      say('Dispatched subagent.'),
+    ]);
+    await send(twoStep, 'Research');
+    expect(twoStep.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    await emitToLiveClient(tool('helper-1', 'run_command', 'in_progress'));
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(twoStep.client.getNativeWork()).toBe('background');
+
+    await emitToLiveClient(toolUpdate('helper-1', 'completed', { rawOutput: 'saved result' }));
+    wakeTwoStep();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(twoStep.client.getNativeWork()).toBeNull();
+
+    // 2. One-shot helper tool arriving directly as completed with no model text.
+    const oneShot = createHarness();
+    const { wakeUp: wakeOneShot } = installTranscript();
+    await oneShot.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('sub-2', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+      say('Dispatched second subagent.'),
+    ]);
+    await send(oneShot, 'Research again');
+    expect(oneShot.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    await emitToLiveClient(
+      tool('helper-2', 'read_file', 'completed', { kind: 'read', rawOutput: 'contents' })
+    );
+    wakeOneShot();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(oneShot.client.getNativeWork()).toBeNull();
+  });
+
+  it('does not decrement a parallel anonymous wakeup when a settled tracked tool gets a delayed reply', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // cmd-a finishes live, and the model stays quiet past wakeupQuietMs before replying.
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await vi.advanceTimersByTimeAsync(43_000);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Delayed reply for cmd-a + updatedAt bump must consume awaitingReplyForSettledTool rather than sub-1.
+    await emitToLiveClient(say('A finished.'));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // sub-1's own wakeup reply later settles cleanly.
+    await emitToLiveClient(say('Subagent finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('does not treat a late content-only tool_call_update on an already-settled tool as a helper completion', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // cmd-a settles with a reply in the same wakeup burst.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await emitToLiveClient(say('A finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // A late content-only update on already-settled cmd-a must not settle sub-1.
+    await emitToLiveClient(
+      n({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'cmd-a',
+        content: [{ type: 'content', content: { type: 'text', text: 'late stdout tail' } }],
+      })
+    );
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+  });
+
+  it('settles a parallel anonymous wakeup when a settled tracked tool already advanced updatedAt without model text', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // Flow Y: cmd-a finishes with updatedAt moving but no text reply; its wakeup closes cleanly.
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // sub-1's independent wakeup reply must settle directly without being swallowed.
+    await emitToLiveClient(say('Subagent finished.'));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBeNull();
+  });
+
+  it('keeps absorbing a delayed reply after an intermediate poll-only updatedAt bump following a quiet tool settlement', async () => {
+    const harness = createHarness();
+    const { wakeUp } = installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      tool('cmd-a', 'run_command', 'in_progress'),
+      tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
+    ]);
+    await send(harness, 'Run command and subagent');
+    expect(harness.client.getNativeWork()).toBe('background');
+    await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
+
+    // Flow X variant: cmd-a completes with neither model text nor updatedAt change.
+    await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // An intermediate poll-only updatedAt bump must neither clear awaitingReplyForSettledTool nor decrement sub-1.
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // The subsequent delayed reply for cmd-a is still absorbed rather than decrementing sub-1.
+    await emitToLiveClient(say('A finished.'));
+    wakeUp();
+    await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
+    expect(harness.client.getNativeWork()).toBe('background');
+
+    // Finally sub-1's own reply settles to idle.
+    await emitToLiveClient(say('Subagent finished.'));
+    await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
+    expect(harness.client.getNativeWork()).toBeNull();
   });
 });

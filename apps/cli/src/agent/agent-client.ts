@@ -975,7 +975,7 @@ export class AgentClient implements acp.Client {
       );
       return;
     }
-    if (this.acpSessionId !== null) this.antigravityTracker?.observeLive(params);
+    if (this.acpSessionId !== null) this.antigravityTracker?.observeLive(params, Date.now());
     this.lastSessionUpdateAtMs = Date.now();
 
     // Devin publishes subagent internals under `cognition.ai/subagent_context`.

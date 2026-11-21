@@ -31,17 +31,34 @@ Core `sessionActivity` 扩展，所以 Lody 看到的是空闲会话，`SessionG
 [Session GC 尊重原生 Agent 的工作](2026-10-18-gc-respects-native-agent-work.zh.md)
 的原生工作契约：turn 在 `end_turn` 结束，由 `sessionActivity` 保持进程存活。
 
-- **`end_turn` 时的待完成项。** 根据 turn 中实时收到的工具通知，下列工具各计一项：仍处于
-  `pending` 或 `in_progress` 的工具；输出为 agy「running as a background task」占位文本的
-  工具；派出只能靠唤醒模型报告结果的工作的工具（`invoke_subagent`、`send_message`、
-  `swarm`、没有输出的 `run_workflow`）。agy 会让 `schedule` 一直保持 `in_progress`
-  直到触发，所以定时器不需要特殊处理。`IsDaemon: true` 与失败的工具不计入。不解析
-  agy 工具参数。
-- **按活动释放。** 存在待完成项时，Lody 每 2 秒查询一次 `session/list`，上报
-  `background`，`updatedAt` 变化期间上报 `running`。一段 `updatedAt` 变化之后保持
-  30 秒不变，计为完成一项。没有剩余项时上报空闲；最长 24 小时，与 Core `background`
-  上限一致。如果没有 `session/list` 或它持续失败，监视器会一直保护到上限。
-- **跨 turn。** 用户发出新消息时仍未完成的项会延续到新 turn，之前的后台工作继续受保护。
+- **`end_turn` 时的待完成项。** 根据 turn 中实时收到的工具通知，Lody 按 `toolCallId`
+  在 `pendingToolIds` 中追踪仍处于 `pending` 或 `in_progress` 的工具（首次 `tool_call`
+  省略 `status` 时默认按 `pending` 处理），并在 `pendingWakeups` 中单独计数仅靠唤醒回报
+  结果的工作：完整输出为独立单行 agy「running as a background task with task id: ...」
+  占位文本的工具（排除读写/搜索/编辑/删除/移动/思考等非后台工具与多块输出），以及派出后
+  只能靠唤醒模型报告结果的工具（`invoke_subagent`、`send_message`、`swarm`、没有输出的
+  `run_workflow`）。同一个 `toolCallId` 在 `pendingToolIds` 与 `pendingWakeups` 之间
+  严格互斥迁移，且仅唤醒项最多计一次。agy 会让 `schedule` 一直保持 `in_progress` 直到
+  触发，所以定时器不需要特殊处理。`IsDaemon: true` 与失败的工具不计入。不解析 agy 工具参数。
+- **按实时终态、活动与对账释放。** 存在待完成项时，Lody 每 2 秒查询一次 `session/list`，
+  上报 `background`，`updatedAt` 变化或 `end_turn` 后收到实时唤醒事件期间上报 `running`。
+  在 agy 1.5.10 及之后，终态 `tool_call_update` 会按 `toolCallId` 精准移除对应待完成
+  工具，同时保留 30 秒静默窗口保护模型写完唤醒回复；同波合并唤醒中终结的多个工具会一并
+  销账且不误扣其他未完成工具，唤醒期间新启动的后台工具也会纳入 `pendingToolIds` 或
+  `pendingWakeups` 追踪，纯 `in_progress` 进度更新不会触发推断扣减。通过实时唤醒信号
+  （模型唤醒回复或唤醒期辅助工具完成）结算 `pendingWakeups` 项时直接扣减 `pendingWakeups`，
+  避免后续跨轮工具终态误将其撤回；一旦会话已观测到 `end_turn` 后实时流，迟到回复也不会
+  误扣仍在运行的 `pendingToolIds`。对于 agy 1.5.9 及之前（不发送 `end_turn` 后工具更新）
+  或无实时工具事件的纯轮询活动，符合条件的唤醒在静止 30 秒后累加 `inferredCompletions`
+  （而非猜测删除某个 `toolCallId`），有效待完成数为
+  `pendingToolIds.size + pendingWakeups - inferredCompletions`。当有效待完成数归零且
+  不在唤醒窗口内时上报空闲；最长 24 小时，与 Core `background` 上限一致。当剩余待完成项
+  缺少足够结算证据时（例如既无可用的实时结算信号也无 `session/list` 轮询活动，或多个匿名
+  派发项合并在同一波唤醒中只结算了一项），监视器可持续保活至 24 小时上限。
+- **跨 turn。** 用户发出新消息时，`pendingToolIds`、`pendingWakeups` 与
+  `inferredCompletions` 会延续到新 turn，使之前的后台工作继续受保护；若新 turn 中途收到
+  或补发先前 `toolCallId` 的终态 `tool_call_update`，会立即从 `pendingToolIds` 移除并
+  对账抵消 1 笔先前轮询推断出的 `inferredCompletions`，避免同一次完成被重复扣减。
 - **`cwd`。** Lody 把工作目录的 `realpath` 作为 Antigravity ACP 的 `cwd` 协商；agy 按
   realpath 比较编辑目标，否则符号链接工作目录下的工作区内编辑也会要求审批。
 
@@ -75,7 +92,14 @@ Core `sessionActivity` 扩展，所以 Lody 看到的是空闲会话，`SessionG
 
 - agy 1.5.9 及之前，agy 在 `end_turn` 之后写出的输出要等下一个 prompt 才到 Lody，落进新的一轮；
   进程先被替换时则永远不会到。agy 1.5.10 及之后会立即发出。
-- 多个待完成项在同一段活动中唤醒 agy 时只会释放一项，会话会一直受保护，直到下一段活动或
-  24 小时上限。模型在唤醒中新启动的工作不会计入。
+- 对于没有终态工具更新的仅唤醒派发任务或 agy 1.5.9 及之前版本，多个待完成项在同一段活动中
+  唤醒 agy 时仍只会释放一项，会话会一直受保护，直到下一段活动或 24 小时上限。在 agy 1.5.9
+  及之前，模型在唤醒中新启动的工作要到下一轮才可见，因此不会计入；agy 1.5.10 及之后会实时
+  推送这些工具通知并纳入追踪。
 - agy 1.5.9 及之前，`end_turn` 后等待 agy 未转发的权限请求的工具，仍会卡住该 agy 会话，直到
   用户取消；`realpath` 协商消除了最常见的触发原因。agy 1.5.10 会转发该请求。
+- 由于 `updatedAt` 与模型文本回复都不携带任务归属，若已追踪的带 ID 工具在终结同波已推进
+  `updatedAt`，而模型超过 `wakeupQuietMs`（30 秒）后才发出迟到回复，且此时并行存在仅唤醒
+  派发项，协议输入上无法将该迟到回复与并行匿名派发项的独立完成区分（沿用既有 `wakeupQuietMs`
+  波次结算约定）；反之，若该工具终结同波既无模型输出也未推进 `updatedAt`，后续首次唤醒回复会
+  保守归属给该工具，以继续保护并行匿名派发项。
