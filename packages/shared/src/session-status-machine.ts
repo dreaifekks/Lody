@@ -1,6 +1,9 @@
+import { LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX } from './presence';
 import type {
   InitializingStage,
+  SessionBackgroundTaskState,
   SessionRunningActivity,
+  SessionRunningPhase,
   SessionStatus,
   SessionStatusType,
 } from './schema';
@@ -39,12 +42,39 @@ import { getServerNow } from './time-sync';
  *          └──────────────────┘
  */
 
+export type SessionRunningOptions = {
+  activity?: SessionRunningActivity;
+  phase?: SessionRunningPhase;
+  backgroundTaskState?: SessionBackgroundTaskState;
+  backgroundTaskCount?: number;
+};
+
+const normalizeBackgroundTaskCount = (count: number | undefined): number | undefined => {
+  if (count === undefined || !Number.isFinite(count)) return undefined;
+  const normalized = Math.trunc(count);
+  if (normalized < 1) return undefined;
+  return Math.min(normalized, LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX);
+};
+
 export const SessionStatusFactory = {
   idle(): SessionStatus {
     return { type: 'idle' };
   },
-  running(activity?: SessionRunningActivity): SessionStatus {
-    return activity ? { type: 'running', activity } : { type: 'running' };
+  running(input?: SessionRunningActivity | SessionRunningOptions): SessionStatus {
+    if (typeof input === 'string') {
+      return { type: 'running', activity: input };
+    }
+    const activity = input?.activity;
+    const phase = input?.phase;
+    const backgroundTaskState = input?.backgroundTaskState;
+    const backgroundTaskCount = normalizeBackgroundTaskCount(input?.backgroundTaskCount);
+    return {
+      type: 'running',
+      ...(activity !== undefined ? { activity } : {}),
+      ...(phase !== undefined ? { phase } : {}),
+      ...(backgroundTaskState !== undefined ? { backgroundTaskState } : {}),
+      ...(backgroundTaskCount !== undefined ? { backgroundTaskCount } : {}),
+    };
   },
   requestPermission(): SessionStatus {
     return { type: 'requestPermission' };

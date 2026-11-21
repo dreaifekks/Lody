@@ -210,13 +210,52 @@ export interface SessionActivePresenceLease {
   readonly awaitInitializationStall: Effect.Effect<SessionInitializationStall>;
 }
 
+export type NativePresenceWork = {
+  readonly kind: 'running' | 'background';
+  readonly backgroundTaskCount: number;
+};
+
+const nativeWorkToStatus = (work: NativePresenceWork): SessionStatus => {
+  const backgroundTaskCount = work.backgroundTaskCount >= 1 ? work.backgroundTaskCount : undefined;
+  if (work.kind === 'background') {
+    return SessionStatusFactory.running({
+      backgroundTaskState: 'background',
+      backgroundTaskCount,
+    });
+  }
+  return SessionStatusFactory.running(
+    backgroundTaskCount !== undefined
+      ? {
+          backgroundTaskState: 'running',
+          backgroundTaskCount,
+        }
+      : undefined
+  );
+};
+
+const sessionStatusEqual = (a: SessionStatus, b: SessionStatus): boolean => {
+  if (a.type !== b.type) return false;
+  if (a.type === 'running' && b.type === 'running') {
+    return (
+      a.activity === b.activity &&
+      a.phase === b.phase &&
+      a.backgroundTaskState === b.backgroundTaskState &&
+      a.backgroundTaskCount === b.backgroundTaskCount
+    );
+  }
+  if (a.type === 'initializing' && b.type === 'initializing') {
+    return a.stage === b.stage && a.detail === b.detail;
+  }
+  return true;
+};
+
 export interface SessionActivePresenceService {
   readonly hold: (
     sessionId: SessionId,
     phase?: SessionActivePresencePhase | null,
     detail?: string
   ) => Effect.Effect<SessionActivePresenceLease, SessionPresenceUnavailable, Scope.Scope>;
-  readonly setNativeWork: (sessionId: SessionId, work: 'running' | 'background' | null) => void;
+  readonly setNativeWork: (sessionId: SessionId, work: NativePresenceWork | null) => void;
   readonly setPhase: (
     sessionId: SessionId,
     phase: SessionActivePresencePhase | null,
@@ -244,8 +283,8 @@ export const makeSessionActivePresence = Effect.fnUntraced(function* (
   const clock = yield* Clock.Clock;
   const parent = yield* Scope.Scope;
   const active = new Map<SessionId, ActivePresenceState>();
-  const nativeWork = new Map<SessionId, 'running' | 'background'>();
-  const nativePublished = new Map<SessionId, number>();
+  const nativeWork = new Map<SessionId, NativePresenceWork>();
+  const nativePublished = new Map<SessionId, { atMs: number; status: SessionStatus }>();
   let idle = yield* Deferred.make<void>();
   yield* Deferred.succeed(idle, undefined);
   let retired = false;
@@ -310,9 +349,11 @@ export const makeSessionActivePresence = Effect.fnUntraced(function* (
   const clear = (sessionId: SessionId, state: ActivePresenceState) =>
     Effect.sync(() => {
       if (active.get(sessionId) !== state) return;
-      if (nativeWork.has(sessionId) && !retired) {
-        host.publish(sessionId, SessionStatusFactory.running());
-        nativePublished.set(sessionId, now());
+      const work = nativeWork.get(sessionId);
+      if (work && !retired) {
+        const status = nativeWorkToStatus(work);
+        host.publish(sessionId, status);
+        nativePublished.set(sessionId, { atMs: now(), status });
       } else {
         host.clear(sessionId);
         nativePublished.delete(sessionId);
@@ -396,15 +437,21 @@ export const makeSessionActivePresence = Effect.fnUntraced(function* (
         if (active.has(sessionId)) continue;
         try {
           const lastPublished = nativePublished.get(sessionId);
-          if (!nativeWork.has(sessionId)) {
+          const work = nativeWork.get(sessionId);
+          if (!work) {
             if (lastPublished !== undefined) host.clear(sessionId);
             nativePublished.delete(sessionId);
-          } else if (
-            lastPublished === undefined ||
-            now() - lastPublished >= (options.intervalMs ?? LODY_PRESENCE_HEARTBEAT_MS)
-          ) {
-            host.publish(sessionId, SessionStatusFactory.running());
-            nativePublished.set(sessionId, now());
+          } else {
+            const nextStatus = nativeWorkToStatus(work);
+            const nowMs = now();
+            if (
+              lastPublished === undefined ||
+              !sessionStatusEqual(lastPublished.status, nextStatus) ||
+              nowMs - lastPublished.atMs >= (options.intervalMs ?? LODY_PRESENCE_HEARTBEAT_MS)
+            ) {
+              host.publish(sessionId, nextStatus);
+              nativePublished.set(sessionId, { atMs: nowMs, status: nextStatus });
+            }
           }
         } catch (error) {
           host.report({ kind: 'heartbeat-failed', sessionId, cause: Cause.die(error) });
@@ -448,11 +495,9 @@ export const makeSessionActivePresence = Effect.fnUntraced(function* (
     has: (sessionId) => active.has(sessionId),
     getStatus: (sessionId) => {
       const state = active.get(sessionId);
-      return state
-        ? phaseToStatus(state.phase, state.detail)
-        : nativeWork.has(sessionId)
-          ? SessionStatusFactory.running()
-          : null;
+      if (state) return phaseToStatus(state.phase, state.detail);
+      const work = nativeWork.get(sessionId);
+      return work ? nativeWorkToStatus(work) : null;
     },
     activeSessionCount: () => new Set([...active.keys(), ...nativeWork.keys()]).size,
     retire: () => {

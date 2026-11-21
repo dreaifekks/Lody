@@ -25,6 +25,9 @@ import {
   DEEPSEEK_HARNESS_PERMISSION_MODES,
 } from './deepseek-harness';
 
+/** Upper bound for persisted `tool_call.backgroundTaskId` strings. */
+export const TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH = 128;
+
 export const MANAGED_BUILTIN_RUNTIMES = [
   { runtimeName: 'antigravity', agentType: 'antigravity', displayName: 'Antigravity' },
   { runtimeName: 'kimi-code', agentType: 'kimi', displayName: 'Kimi Code' },
@@ -2021,6 +2024,12 @@ export type MessageContent =
        * tool reads this instead. See `collectPendingScheduledTasksFromHistory`.
        */
       toolName?: string;
+      /**
+       * Background task identifier when an agent moved this tool call to run in the
+       * background. Extracted from `_meta.lody.backgroundTaskId`, bounded to
+       * `TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH`, and retained monotonically across updates.
+       */
+      backgroundTaskId?: string;
       /**
        * IANA timezone of the machine that ran a scheduling tool (Cron / ScheduleWakeup),
        * captured at persist time. Cron expressions are local-time to that machine, so the

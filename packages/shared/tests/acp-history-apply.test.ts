@@ -5,7 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 import { LODY_WIDGET_CODE_MAX_CHARS, matchAgentSurfaceToolCall } from '../src/lody-agent-tools';
 import type { SessionHistoryInput } from '../src/schema';
-import type { MessageContent, SubagentTaskPayload } from '../src/ai';
+import {
+  TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH,
+  type MessageContent,
+  type SubagentTaskPayload,
+} from '../src/ai';
+import { ToolCallMessageSchema } from '../src/message-schemas';
 import { mergeSubagentTaskPayload } from '../src/acp/claude-subagent-task';
 import { parseCodexCollabAgentTasks } from '../src/acp/codex-collab-agent-task';
 import {
@@ -1230,6 +1235,110 @@ describe('acp history apply', () => {
           summary: 'Goal code located',
         }),
       ]);
+    });
+  });
+
+  describe('tool_call backgroundTaskId and PascalCase file locations', () => {
+    it('extracts bounded backgroundTaskId from _meta.lody and retains it monotonically across updates', () => {
+      const longId = `task-${'a'.repeat(TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH + 32)}`;
+      const initial = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'bg-call-1',
+          kind: 'execute',
+          title: 'Run tests',
+          status: 'in_progress',
+          rawInput: { command: 'pnpm test' },
+          _meta: { lody: { toolName: 'run_command' } },
+        },
+      });
+      const movedToBg = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'bg-call-1',
+          status: 'completed',
+          _meta: { lody: { backgroundTaskId: `  ${longId}  ` } },
+        },
+      });
+      const emptyFollowUp = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'bg-call-1',
+          status: 'completed',
+          title: 'Run tests',
+        },
+      });
+
+      const history = applyNotificationOnHistory([], [initial, movedToBg, emptyFollowUp]);
+      const toolCalls = history
+        .flatMap((entry) => entry.items ?? [])
+        .filter(
+          (item): item is Extract<MessageContent, { type: 'tool_call' }> =>
+            item.type === 'tool_call'
+        );
+
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0]?.backgroundTaskId).toBe(
+        longId.slice(0, TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH)
+      );
+      expect(ToolCallMessageSchema.safeParse(toolCalls[0]).success).toBe(true);
+      expect(
+        ToolCallMessageSchema.safeParse({
+          ...toolCalls[0],
+          backgroundTaskId: 'x'.repeat(TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH + 1),
+        }).success
+      ).toBe(false);
+    });
+
+    it('derives locations from PascalCase Path and TargetFile when lowercase path fields are absent', () => {
+      const readCall = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'agy-read-1',
+          kind: 'read',
+          title: 'Read file',
+          status: 'completed',
+          rawInput: { Path: '/repo/src/index.ts' },
+        },
+      });
+      const editCall = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'agy-edit-1',
+          kind: 'edit',
+          title: 'Edit file',
+          status: 'completed',
+          rawInput: { TargetFile: '/repo/src/app.ts' },
+        },
+      });
+      const lowercaseWins = parseSessionNotification({
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'mixed-1',
+          kind: 'read',
+          title: 'Read file',
+          status: 'completed',
+          rawInput: { path: '/repo/lower.ts', Path: '/repo/upper.ts' },
+        },
+      });
+
+      const history = applyNotificationOnHistory([], [readCall, editCall, lowercaseWins]);
+      const toolCalls = history
+        .flatMap((entry) => entry.items ?? [])
+        .filter(
+          (item): item is Extract<MessageContent, { type: 'tool_call' }> =>
+            item.type === 'tool_call'
+        );
+
+      expect(toolCalls[0]?.locations).toEqual([{ path: '/repo/src/index.ts' }]);
+      expect(toolCalls[1]?.locations).toEqual([{ path: '/repo/src/app.ts' }]);
+      expect(toolCalls[2]?.locations).toEqual([{ path: '/repo/lower.ts' }]);
     });
   });
 });

@@ -1180,11 +1180,20 @@ const filterNotificationsForHistory = (
 
     // Claude Code sends toolResponse in updates with status=null. Keep these updates
     // so we can extract terminal output from _meta.claudeCode.toolResponse.
+    // Likewise retain updates carrying `_meta.lody.backgroundTaskId` even if
+    // terminal output was compacted away.
     const meta = (update as Record<string, unknown>)._meta;
     if (meta && typeof meta === 'object') {
       const claudeCode = (meta as Record<string, unknown>).claudeCode;
       if (claudeCode && typeof claudeCode === 'object') {
         if ((claudeCode as Record<string, unknown>).toolResponse) {
+          return true;
+        }
+      }
+      const lody = (meta as Record<string, unknown>).lody;
+      if (lody && typeof lody === 'object') {
+        const backgroundTaskId = (lody as Record<string, unknown>).backgroundTaskId;
+        if (typeof backgroundTaskId === 'string' && backgroundTaskId.trim().length > 0) {
           return true;
         }
       }

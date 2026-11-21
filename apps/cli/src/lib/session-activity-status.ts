@@ -26,7 +26,11 @@ export const resolveImageGenerationPresencePhase = (input: {
   hasActiveImageGeneration: boolean;
   current: SessionStatus | null | undefined;
 }): 'image_generation' | 'thinking' | null => {
-  if (input.current?.type !== 'running' || input.current.phase === 'finalizing') {
+  if (
+    input.current?.type !== 'running' ||
+    input.current.phase === 'finalizing' ||
+    input.current.backgroundTaskState !== undefined
+  ) {
     return null;
   }
   if (input.hasActiveImageGeneration) {

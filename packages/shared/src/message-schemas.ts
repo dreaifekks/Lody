@@ -53,6 +53,7 @@ import {
   SESSION_IMAGE_ALLOWED_MIME_TYPES,
   SESSION_IMAGE_MAX_COUNT,
   SESSION_IMAGE_MAX_SIZE_BYTES,
+  TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH,
   isSessionFileSourcePath,
   type ACPSessionId,
   type SessionTurnInputConfig,
@@ -4124,7 +4125,10 @@ export const ScheduleProposalRuleSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z
-    .object({ kind: z.literal('hours'), every: z.number().int().min(1).max(SCHEDULE_CUSTOM_HOURS_MAX) })
+    .object({
+      kind: z.literal('hours'),
+      every: z.number().int().min(1).max(SCHEDULE_CUSTOM_HOURS_MAX),
+    })
     .strict(),
   z.object({ kind: z.literal('daily'), ...proposalTimeOfDay }).strict(),
   z.object({ kind: z.literal('weekdays'), ...proposalTimeOfDay }).strict(),
@@ -4271,6 +4275,13 @@ export const ToolCallMessageSchema = z.object({
   activityKind: z.enum(['context_compaction', 'codex_retry']).optional(),
   // Canonical tool name, when the agent published one (ACP `title` is human-facing).
   toolName: SharedOptionalStringSchema,
+  // Background task identifier when the agent moved this tool call to run in the background.
+  backgroundTaskId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH)
+    .optional(),
   // IANA timezone of the machine that ran a scheduling tool (cron is local-time to it).
   schedulingTimeZone: SharedOptionalStringSchema,
   // Epoch ms when a scheduling tool call was first persisted (true creation moment;

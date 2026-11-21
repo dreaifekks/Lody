@@ -84,9 +84,18 @@ describe('native session presence leases', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const h = yield* harness({ intervalMs: 3_000 });
-        h.owner.setNativeWork(sessionId, 'background');
+        h.owner.setNativeWork(sessionId, { kind: 'background', backgroundTaskCount: 2 });
         yield* TestClock.adjust(1_000);
-        expect(h.entries.get(sessionId)).toEqual({ type: 'running' });
+        expect(h.entries.get(sessionId)).toEqual({
+          type: 'running',
+          backgroundTaskState: 'background',
+          backgroundTaskCount: 2,
+        });
+        expect(h.owner.getStatus(sessionId)).toEqual({
+          type: 'running',
+          backgroundTaskState: 'background',
+          backgroundTaskCount: 2,
+        });
         expect(h.owner.has(sessionId)).toBe(false);
 
         const turn = yield* Scope.make();
@@ -95,11 +104,19 @@ describe('native session presence leases', () => {
         h.owner.setNativeWork(sessionId, null);
         yield* TestClock.adjust(1_000);
         expect(h.entries.get(sessionId)).toEqual({ type: 'requestPermission' });
-        h.owner.setNativeWork(sessionId, 'running');
+        h.owner.setNativeWork(sessionId, { kind: 'running', backgroundTaskCount: 1 });
         yield* close(turn);
-        expect(h.entries.get(sessionId)).toEqual({ type: 'running' });
+        expect(h.entries.get(sessionId)).toEqual({
+          type: 'running',
+          backgroundTaskState: 'running',
+          backgroundTaskCount: 1,
+        });
         yield* TestClock.adjust(3_000);
-        expect(h.entries.get(sessionId)).toEqual({ type: 'running' });
+        expect(h.entries.get(sessionId)).toEqual({
+          type: 'running',
+          backgroundTaskState: 'running',
+          backgroundTaskCount: 1,
+        });
         h.owner.setNativeWork(sessionId, null);
         yield* TestClock.adjust(1_000);
         expect(h.entries.has(sessionId)).toBe(false);
@@ -107,25 +124,69 @@ describe('native session presence leases', () => {
     )
   );
 
-  it.effect('coalesces rapid native changes and retires native presence', () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const h = yield* harness();
-        h.owner.setNativeWork(sessionId, 'running');
-        h.owner.setNativeWork(sessionId, null);
-        yield* TestClock.adjust(1_000);
-        expect(h.entries.has(sessionId)).toBe(false);
-        expect(h.writes).toEqual([]);
-        h.owner.setNativeWork(sessionId, 'background');
-        yield* TestClock.adjust(1_000);
-        expect(h.entries.get(sessionId)).toEqual({ type: 'running' });
-        h.owner.retire();
-        expect(h.entries.has(sessionId)).toBe(false);
-        h.owner.setNativeWork(sessionId, 'running');
-        yield* TestClock.adjust(2_000);
-        expect(h.entries.has(sessionId)).toBe(false);
-      })
-    )
+  it.effect(
+    'coalesces rapid native changes, publishes phase/count deltas without extra ticks, and retires native presence',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* harness({ intervalMs: 10_000 });
+          h.owner.setNativeWork(sessionId, { kind: 'running', backgroundTaskCount: 0 });
+          h.owner.setNativeWork(sessionId, null);
+          yield* TestClock.adjust(1_000);
+          expect(h.entries.has(sessionId)).toBe(false);
+          expect(h.writes).toEqual([]);
+
+          // First publish for background work with 2 tasks.
+          h.owner.setNativeWork(sessionId, { kind: 'background', backgroundTaskCount: 2 });
+          yield* TestClock.adjust(1_000);
+          expect(h.entries.get(sessionId)).toEqual({
+            type: 'running',
+            backgroundTaskState: 'background',
+            backgroundTaskCount: 2,
+          });
+          expect(h.writes).toHaveLength(1);
+
+          // Unchanged state does not write again on subsequent 1s ticks before heartbeat interval.
+          yield* TestClock.adjust(5_000);
+          expect(h.writes).toHaveLength(1);
+
+          // Wakeup pulse (`background` -> `running`) publishes on the next 1s reconcile tick.
+          h.owner.setNativeWork(sessionId, { kind: 'running', backgroundTaskCount: 2 });
+          yield* TestClock.adjust(1_000);
+          expect(h.entries.get(sessionId)).toEqual({
+            type: 'running',
+            backgroundTaskState: 'running',
+            backgroundTaskCount: 2,
+          });
+          expect(h.writes).toHaveLength(2);
+
+          // Returning to background with decremented count publishes once.
+          h.owner.setNativeWork(sessionId, { kind: 'background', backgroundTaskCount: 1 });
+          yield* TestClock.adjust(1_000);
+          expect(h.entries.get(sessionId)).toEqual({
+            type: 'running',
+            backgroundTaskState: 'background',
+            backgroundTaskCount: 1,
+          });
+          expect(h.writes).toHaveLength(3);
+
+          // Unchanged for heartbeat interval refreshes once.
+          yield* TestClock.adjust(10_000);
+          expect(h.writes).toHaveLength(4);
+
+          // Core `running` with 0 background tasks omits backgroundTaskCount.
+          h.owner.setNativeWork(sessionId, { kind: 'running', backgroundTaskCount: 0 });
+          yield* TestClock.adjust(1_000);
+          expect(h.entries.get(sessionId)).toEqual({ type: 'running' });
+          expect(h.writes).toHaveLength(5);
+
+          h.owner.retire();
+          expect(h.entries.has(sessionId)).toBe(false);
+          h.owner.setNativeWork(sessionId, { kind: 'running', backgroundTaskCount: 1 });
+          yield* TestClock.adjust(2_000);
+          expect(h.entries.has(sessionId)).toBe(false);
+        })
+      )
   );
 
   it.effect('latches a deadline detected before the Turn installs its waiter', () =>

@@ -26,7 +26,11 @@ vi.mock('@agentclientprotocol/sdk', async (importOriginal) => {
   };
 });
 
-import { AcpAuthenticationRequiredError, AgentClient } from '../src/agent/agent-client';
+import {
+  AcpAuthenticationRequiredError,
+  AgentClient,
+  type NativeAgentWork,
+} from '../src/agent/agent-client';
 import type { Logger } from '../src/utils/logger';
 
 const terminalAuthMethod: AuthMethod = {
@@ -51,7 +55,7 @@ const createSilentLogger = (): Logger => ({
 
 function createClient(
   agentType = 'kimi',
-  onNativeWorkChanged?: (work: 'running' | 'background' | null) => void
+  onNativeWorkChanged?: (work: NativeAgentWork) => void
 ): AgentClient {
   return new AgentClient({
     sessionId: 'agent-client-auth-test' as SessionId,
@@ -238,7 +242,7 @@ describe('AgentClient Kimi authentication and resume', () => {
         state,
         backgroundTaskCount,
       });
-    const observed: Array<'running' | 'background' | null> = [];
+    const observed: NativeAgentWork[] = [];
     const client = createClient('claude', (work) => observed.push(work));
     connectionMocks.initialize.mockResolvedValue({
       ...initializeResponse(),
@@ -247,22 +251,32 @@ describe('AgentClient Kimi authentication and resume', () => {
     await client.startSession({} as never, '/tmp');
     expect(client.getNativeWork()).toBeNull();
 
+    await activity('idle', 2);
+    expect(client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
+    // Duplicate activity does not re-emit onNativeWorkChanged.
+    await activity('idle', 2);
     await activity('idle', 1);
-    expect(client.getNativeWork()).toBe('background');
+    expect(client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await activity('running', 1);
-    expect(client.getNativeWork()).toBe('running');
+    expect(client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 1 });
     await activity('requires_action', 0);
-    expect(client.getNativeWork()).toBe('running');
+    expect(client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 0 });
     // A level for another ACP session never replaces this session's level.
     await activity('idle', 0, 'other-session');
-    expect(client.getNativeWork()).toBe('running');
+    expect(client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 0 });
     await activity('idle', 0);
     expect(client.getNativeWork()).toBeNull();
-    expect(observed).toEqual(['background', 'running', null]);
+    expect(observed).toEqual([
+      { kind: 'background', backgroundTaskCount: 2 },
+      { kind: 'background', backgroundTaskCount: 1 },
+      { kind: 'running', backgroundTaskCount: 1 },
+      { kind: 'running', backgroundTaskCount: 0 },
+      null,
+    ]);
   });
 
   it('clears old native work when adopting a replacement ACP session', async () => {
-    const observed: Array<'running' | 'background' | null> = [];
+    const observed: NativeAgentWork[] = [];
     const client = createClient('claude', (work) => observed.push(work));
     connectionMocks.initialize.mockResolvedValue({
       ...initializeResponse(),
@@ -278,7 +292,7 @@ describe('AgentClient Kimi authentication and resume', () => {
 
     client.adoptPreparedSession({ sessionId: 'replacement' });
     expect(client.getNativeWork()).toBeNull();
-    expect(observed).toEqual(['background', null]);
+    expect(observed).toEqual([{ kind: 'background', backgroundTaskCount: 1 }, null]);
 
     await client.extNotification?.('_lody/session/activity_update', {
       version: 1,
@@ -286,7 +300,11 @@ describe('AgentClient Kimi authentication and resume', () => {
       state: 'running',
       backgroundTaskCount: 0,
     });
-    expect(observed).toEqual(['background', null, 'running']);
+    expect(observed).toEqual([
+      { kind: 'background', backgroundTaskCount: 1 },
+      null,
+      { kind: 'running', backgroundTaskCount: 0 },
+    ]);
   });
 
   it('ignores activity levels from an agent that did not advertise them', async () => {

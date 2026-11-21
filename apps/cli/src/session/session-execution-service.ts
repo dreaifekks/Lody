@@ -3575,7 +3575,9 @@ export class SessionExecutionService {
     if (!session || !client || session.hasLiveAgentProcess?.() === false) return undefined;
     const readPending = (): 'running' | 'background' | null => {
       try {
-        return client.getNativeWork() ?? (client.hasUnsettledNativeWork?.() ? 'background' : null);
+        return (
+          client.getNativeWork()?.kind ?? (client.hasUnsettledNativeWork?.() ? 'background' : null)
+        );
       } catch (cause) {
         this.deps.logger.debug(
           `[${sessionId}] Native agent work unreadable at release: ${formatErrorMessage(cause)}`

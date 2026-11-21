@@ -148,6 +148,7 @@ const VOLATILE_ITEM_KEYS_V2: ReadonlySet<string> = new Set([
   'activityKind',
   'permissionRequest',
   'toolName',
+  'backgroundTaskId',
   'schedulingTimeZone',
   'turnId',
   'isLatest',

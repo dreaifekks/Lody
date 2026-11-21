@@ -1,3 +1,4 @@
+import type { NativeAgentWork } from '@/agent/agent-client';
 import { createSessionBackend } from '@/session/session-backend';
 import { type ContentBlock } from '@agentclientprotocol/sdk';
 import { makeStreamsUpdateBinding } from '@lody/e2ee-core/adapters/loro-streams';
@@ -407,7 +408,7 @@ const runSilentPromptTurn = async (options: {
   /** No live process: the turn restores one; started configurations are recorded. */
   restore?: SessionConfig[];
   /** What the agent reports outside Lody's Turns (Core `sessionActivity`). */
-  nativeWork?: { current: 'running' | 'background' | null };
+  nativeWork?: { current: NativeAgentWork };
   /** Ordered lifecycle steps observed by the test (e.g. interruption notice before flush). */
   onLifecycleEvent?: (event: string) => void;
 }) => {
@@ -638,7 +639,7 @@ const runSilentPromptTurn = async (options: {
     service,
     interruptedNotices,
     /** Publishes a `sessionActivity` change of the live agent. */
-    changeNativeWork: (work: 'running' | 'background' | null) => {
+    changeNativeWork: (work: NativeAgentWork) => {
       if (options.nativeWork) options.nativeWork.current = work;
       sessionEvents.emit('onNativeWorkChanged', options.sessionId, work);
     },

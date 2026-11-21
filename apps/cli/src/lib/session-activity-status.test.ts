@@ -28,7 +28,7 @@ describe('resolveImageGenerationPresencePhase', () => {
     ).toBeNull();
   });
 
-  it('does not retarget finalizing presence', () => {
+  it('does not retarget finalizing or background presence', () => {
     expect(
       resolveImageGenerationPresencePhase({
         hasActiveImageGeneration: true,
@@ -39,6 +39,18 @@ describe('resolveImageGenerationPresencePhase', () => {
       resolveImageGenerationPresencePhase({
         hasActiveImageGeneration: false,
         current: { type: 'running', phase: 'finalizing' },
+      })
+    ).toBeNull();
+    expect(
+      resolveImageGenerationPresencePhase({
+        hasActiveImageGeneration: true,
+        current: { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 1 },
+      })
+    ).toBeNull();
+    expect(
+      resolveImageGenerationPresencePhase({
+        hasActiveImageGeneration: true,
+        current: { type: 'running', backgroundTaskState: 'running', backgroundTaskCount: 1 },
       })
     ).toBeNull();
   });

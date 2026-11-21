@@ -1,5 +1,5 @@
 import type * as acp from '@agentclientprotocol/sdk';
-import type { AgentConfigCliType } from '@lody/shared';
+import { TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH, type AgentConfigCliType } from '@lody/shared';
 
 export const ANTIGRAVITY_ACP_SERVER_NAME = 'Antigravity ACP Server';
 
@@ -194,6 +194,26 @@ function matchBackgroundPlaceholder(
   return null;
 }
 
+/**
+ * Extracts the bounded background task id from an Antigravity tool notification whose
+ * standalone output carries the background-task placeholder message.
+ *
+ * Excludes non-background tools, failed updates, and multi-block/multi-line outputs,
+ * and rejects ids exceeding {@link TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH} rather
+ * than truncating.
+ */
+export function extractAntigravityBackgroundTaskId(
+  raw: Record<string, unknown>,
+  toolIdentity?: AntigravityToolIdentity
+): string | undefined {
+  if (raw.status === 'failed') return undefined;
+  const taskId = matchBackgroundPlaceholder(raw, toolIdentity);
+  if (taskId === null || taskId.length > TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH) {
+    return undefined;
+  }
+  return taskId;
+}
+
 export function hasAntigravityBackgroundPlaceholder(
   raw: Record<string, unknown>,
   toolIdentity?: AntigravityToolIdentity
@@ -278,6 +298,12 @@ export class AntigravitySessionTracker {
     this.wakeupStartedToolIds.clear();
     this.awaitingReplyForSettledTool = false;
     this.expiredPendingWork = false;
+  }
+
+  getToolIdentity(toolCallId: string): AntigravityToolIdentity | undefined {
+    const tool = this.tools.get(toolCallId);
+    if (!tool) return undefined;
+    return { kind: tool.kind, name: tool.name };
   }
 
   /** Record a notification Lody received live on stdout. */

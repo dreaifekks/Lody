@@ -134,11 +134,18 @@ export const parseRateLimitEntryKey = (
 export type InitializingStage = 'git-clone' | 'managed-runtime' | 'acp' | 'resuming';
 export type SessionRunningActivity = 'image_generation';
 export type SessionRunningPhase = 'finalizing';
+export type SessionBackgroundTaskState = 'background' | 'running';
 export type PermissionRequestKind = 'permission' | 'ask_user_question';
 
 export type SessionStatus =
   | { type: 'idle' }
-  | { type: 'running'; activity?: SessionRunningActivity; phase?: SessionRunningPhase }
+  | {
+      type: 'running';
+      activity?: SessionRunningActivity;
+      phase?: SessionRunningPhase;
+      backgroundTaskState?: SessionBackgroundTaskState;
+      backgroundTaskCount?: number;
+    }
   | { type: 'requestPermission' }
   | {
       type: 'initializing';

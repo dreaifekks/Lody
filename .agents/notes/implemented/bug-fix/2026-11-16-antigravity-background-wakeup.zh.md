@@ -59,6 +59,20 @@ Core `sessionActivity` 扩展，所以 Lody 看到的是空闲会话，`SessionG
   `inferredCompletions` 会延续到新 turn，使之前的后台工作继续受保护；若新 turn 中途收到
   或补发先前 `toolCallId` 的终态 `tool_call_update`，会立即从 `pendingToolIds` 移除并
   对账抵消 1 笔先前轮询推断出的 `inferredCompletions`，避免同一次完成被重复扣减。
+- **Presence 与工具调用元信息透传。** `AgentClient.getNativeWork()` 与 `onNativeWorkChanged`
+  统一携带 `{ kind: 'running' | 'background'; backgroundTaskCount }`，覆盖 Antigravity 合成
+  追踪器（未结算期间按 `Math.max(1, effectivePendingCount)` 上报，结算后归 `0`）与 Core
+  `sessionActivity`。无活跃 turn lease 时，`session-active-presence.ts` 在后台等待期发布
+  `{ type: 'running', backgroundTaskState: 'background', backgroundTaskCount }`，唤醒脉冲期
+  发布 `{ type: 'running', backgroundTaskState: 'running', backgroundTaskCount }`
+  （`running` 且计数为 `0` 时省略两个可选字段），计数上限 `1..999`，且仅在状态/计数变化或
+  30s 心跳到期时写入。保持 `phase` 仅允许 `'finalizing'`，确保混合版本 LAN 的基准旧客户端剥离
+  未知字段后仍稳定保留 `{ type: 'running' }` 而不丢弃整条 presence。在 Antigravity 工具通知上，
+  `normalizeAntigravityToolNotification` 复用同一套严格的独立单行/单块占位检测（排除读写/
+  搜索/编辑/删除/移动/思考等非后台工具与失败更新）提取任务 id 注入 `_meta.lody.backgroundTaskId`
+  （超 128 字符直接拒绝不截断，经 `history-apply.ts` 单调持久化为 `tool_call.backgroundTaskId`），
+  并补齐 PascalCase `CommandLine`/`Cwd`（`Path`/`TargetFile` 路径回退在 `tool-call-history.ts`
+  中处理）。
 - **`cwd`。** Lody 把工作目录的 `realpath` 作为 Antigravity ACP 的 `cwd` 协商；agy 按
   realpath 比较编辑目标，否则符号链接工作目录下的工作区内编辑也会要求审批。
 

@@ -499,7 +499,7 @@ describe('SessionExecutionService', () => {
     const turn = await runSilentPromptTurn({
       sessionId: 'background-settles',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
     });
     expect(turn.notificationFacts).toEqual([]);
     expect(turn.service.getExecutionSnapshot('background-settles' as SessionId).hasActiveTurn).toBe(
@@ -508,7 +508,7 @@ describe('SessionExecutionService', () => {
     expect(turn.service.hasPendingNativeWork('background-settles' as SessionId)).toBe(true);
     expect(turn.sessionDoc.setLastMessageAt).not.toHaveBeenCalled();
 
-    turn.changeNativeWork('running');
+    turn.changeNativeWork({ kind: 'running', backgroundTaskCount: 1 });
     await turn.service.drainInboxExecutions();
     expect(turn.notificationFacts).toEqual([]);
 
@@ -525,7 +525,7 @@ describe('SessionExecutionService', () => {
     const turn = await runSilentPromptTurn({
       sessionId: 'background-interrupted',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
     });
     turn.endAgentProcess();
     await vi.waitFor(() => expect(turn.notificationFacts).toHaveLength(1));
@@ -543,7 +543,7 @@ describe('SessionExecutionService', () => {
     const turn = await runSilentPromptTurn({
       sessionId: 'background-crashed',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
     });
     turn.crashAgentProcess();
     await vi.waitFor(() => expect(turn.notificationFacts).toHaveLength(1));
@@ -561,7 +561,7 @@ describe('SessionExecutionService', () => {
     const turn = await runSilentPromptTurn({
       sessionId: 'background-gc-destroyed-doc',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
       onLifecycleEvent: (event) => events.push(event),
     });
     turn.endAgentProcess({ destroyDoc: true });
@@ -581,7 +581,7 @@ describe('SessionExecutionService', () => {
     const stopped = await runSilentPromptTurn({
       sessionId: 'background-stopped',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
     });
     await stopped.service.cancelSession({
       sessionId: 'background-stopped' as SessionId,
@@ -597,7 +597,7 @@ describe('SessionExecutionService', () => {
     const archived = await runSilentPromptTurn({
       sessionId: 'background-archived',
       hasPromptEventsForTurn: true,
-      nativeWork: { current: 'background' },
+      nativeWork: { current: { kind: 'background', backgroundTaskCount: 1 } },
     });
     archived.service.withdrawNativeWorkCompletion('background-archived' as SessionId);
     archived.endAgentProcess();

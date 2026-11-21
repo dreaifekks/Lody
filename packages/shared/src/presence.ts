@@ -20,6 +20,8 @@ export const LODY_PRESENCE_TTL_MS = 90_000;
 export const LODY_PRESENCE_HEARTBEAT_MS = 30_000;
 /** Upper bound for any free-text presence detail; presence is not a transcript store. */
 export const LODY_PRESENCE_DETAIL_MAX_LENGTH = 280;
+/** Upper bound for bounded background task counts carried in session running presence. */
+export const LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX = 999;
 
 export type LodyPresenceInstanceId = string & { __brand: 'LodyPresenceInstanceId' };
 
@@ -86,8 +88,17 @@ const ActiveSessionStatusSchema = z.preprocess(
       type: z.literal('running'),
       activity: z.enum(['image_generation']).optional(),
       // Optional so an older running parser strips it and keeps `{ type: 'running' }`.
-      // Do not encode this as `activity`: an unknown activity enum drops the entry.
+      // Keep `phase` restricted to `'finalizing'` so baseline LAN clients that parse
+      // `phase: z.literal('finalizing').optional()` never reject background entries;
+      // carry background waiting/wakeup in the separate optional fields below.
       phase: z.literal('finalizing').optional(),
+      backgroundTaskState: z.enum(['background', 'running']).optional(),
+      backgroundTaskCount: z
+        .number()
+        .int()
+        .min(1)
+        .max(LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX)
+        .optional(),
     }),
     z.object({
       type: z.literal('requestPermission'),
@@ -196,6 +207,13 @@ const MinimalActiveSessionStatusSchema = z.preprocess(
       type: z.literal('running'),
       activity: z.enum(['image_generation']).optional(),
       phase: z.literal('finalizing').optional(),
+      backgroundTaskState: z.enum(['background', 'running']).optional(),
+      backgroundTaskCount: z
+        .number()
+        .int()
+        .min(1)
+        .max(LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX)
+        .optional(),
     }),
     z.object({ type: z.literal('requestPermission') }),
     z.object({

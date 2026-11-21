@@ -77,6 +77,23 @@ the turn ends at `end_turn`, and `sessionActivity` keeps the process alive.
   receives or replays a terminal `tool_call_update` for an earlier `toolCallId`, Lody
   removes it from `pendingToolIds` and reconciles any prior `inferredCompletions` by one
   so the same completion is never subtracted twice.
+- **Presence and tool-call metadata propagation.** `AgentClient.getNativeWork()` and
+  `onNativeWorkChanged` now carry `{ kind: 'running' | 'background'; backgroundTaskCount }`
+  for both Antigravity's synthesized tracker (reporting `Math.max(1, effectivePendingCount)`
+  while unsettled and `0` when settled) and Core `sessionActivity`. When no turn lease is
+  active, `session-active-presence.ts` publishes
+  `{ type: 'running', backgroundTaskState: 'background', backgroundTaskCount }` during
+  background waits and `{ type: 'running', backgroundTaskState: 'running', backgroundTaskCount }`
+  during wakeup pulses (omitting both fields when `backgroundTaskCount` is `0` on `running`),
+  bounded to `1..999` and written only on state/count changes or the 30s heartbeat. Keeping
+  `phase` strictly `'finalizing'` preserves rolling-upgrade compatibility with baseline LAN
+  clients, which strip unknown optional fields and retain `{ type: 'running' }`. On
+  Antigravity tool notifications, `normalizeAntigravityToolNotification` uses the same strict
+  standalone single-line/single-block placeholder check (excluding non-background
+  read/search/edit/write/delete/move/think tools and failed updates) to extract the task id
+  into `_meta.lody.backgroundTaskId` (rejecting >128-char ids instead of truncating,
+  persisted monotonically as `tool_call.backgroundTaskId`) and maps PascalCase
+  `CommandLine`/`Cwd` (with `Path`/`TargetFile` location fallback in `tool-call-history.ts`).
 - **`cwd`.** Lody negotiates the `realpath` of the workdir as the Antigravity ACP
   `cwd`; agy compares edit targets by realpath, so a symlinked workdir otherwise made
   in-workspace edits ask for permission.

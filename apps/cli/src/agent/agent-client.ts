@@ -1,5 +1,6 @@
 import {
   AntigravitySessionTracker,
+  extractAntigravityBackgroundTaskId,
   isAntigravityServer,
   runAntigravityPollLoop,
   type AntigravityPollTimings,
@@ -607,8 +608,19 @@ export interface AgentClientOptions {
   antigravityPollTimings?: Partial<AntigravityPollTimings>;
 }
 
+export type NativeAgentWorkState = {
+  readonly kind: 'running' | 'background';
+  readonly backgroundTaskCount: number;
+};
+
 /** See {@link AgentClient.getNativeWork}. */
-export type NativeAgentWork = 'running' | 'background' | null;
+export type NativeAgentWork = NativeAgentWorkState | null;
+
+export const nativeAgentWorkEqual = (a: NativeAgentWork, b: NativeAgentWork): boolean => {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.kind === b.kind && a.backgroundTaskCount === b.backgroundTaskCount;
+};
 
 export type AcpWriteTextFileEvidence = {
   readonly path: string;
@@ -1061,17 +1073,59 @@ export class AgentClient implements acp.Client {
       (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update')
     )
       return notification;
-    // Native agy puts identity outside ACP's standard tool fields. Project it
-    // into the shared contract before history strips the unstructured payload.
-    const native = z.object({ name: z.string().trim().min(1).max(160) }).safeParse(update);
-    if (!native.success) return notification;
+    // Native agy puts identity and PascalCase tool arguments outside ACP's
+    // standard tool fields. Project them into the shared contract before
+    // history strips the unstructured payload.
     const lody = isRecord(update._meta?.lody) ? update._meta.lody : undefined;
-    if (typeof lody?.toolName === 'string' && lody.toolName.length > 0) return notification;
+    let nextLody: Record<string, unknown> | undefined;
+
+    if (!(typeof lody?.toolName === 'string' && lody.toolName.length > 0)) {
+      const native = z.object({ name: z.string().trim().min(1).max(160) }).safeParse(update);
+      if (native.success) {
+        nextLody = { ...(nextLody ?? lody), toolName: native.data.name };
+      }
+    }
+
+    if (!(typeof lody?.backgroundTaskId === 'string' && lody.backgroundTaskId.trim().length > 0)) {
+      const trackedIdentity = this.antigravityTracker?.getToolIdentity(update.toolCallId);
+      const backgroundTaskId = extractAntigravityBackgroundTaskId(
+        update as unknown as Record<string, unknown>,
+        trackedIdentity
+      );
+      if (backgroundTaskId !== undefined) {
+        nextLody = { ...(nextLody ?? lody), backgroundTaskId };
+      }
+    }
+
+    let nextRawInput: Record<string, unknown> | undefined;
+    if (isRecord(update.rawInput)) {
+      const commandLine = update.rawInput.CommandLine;
+      if (
+        update.rawInput.command === undefined &&
+        typeof commandLine === 'string' &&
+        commandLine.trim().length > 0
+      ) {
+        const cwd =
+          update.rawInput.cwd === undefined &&
+          typeof update.rawInput.Cwd === 'string' &&
+          update.rawInput.Cwd.length > 0
+            ? update.rawInput.Cwd
+            : undefined;
+        nextRawInput = {
+          ...update.rawInput,
+          command: commandLine,
+          ...(cwd !== undefined ? { cwd } : {}),
+        };
+      }
+    }
+
+    if (!nextLody && !nextRawInput) return notification;
     return {
       ...notification,
       update: {
         ...update,
-        _meta: { ...update._meta, lody: { ...lody, toolName: native.data.name } },
+        ...(nextRawInput ? { rawInput: nextRawInput } : {}),
+        ...(nextLody ? { _meta: { ...update._meta, lody: nextLody } } : {}),
       },
     };
   }
@@ -1666,7 +1720,7 @@ export class AgentClient implements acp.Client {
           const previous = this.getNativeWork();
           this.nativeActivity = event.update;
           const current = this.getNativeWork();
-          if (previous !== current) this.options.onNativeWorkChanged?.(current);
+          if (!nativeAgentWorkEqual(previous, current)) this.options.onNativeWorkChanged?.(current);
         }
         return;
       case 'rateLimits':
@@ -2495,7 +2549,8 @@ export class AgentClient implements acp.Client {
     this.acpSessionId = sessionResponse.sessionId;
     this.initializeAntigravitySession(sessionResponse.sessionId, false);
     const currentWork = this.getNativeWork();
-    if (previousWork !== currentWork) this.options.onNativeWorkChanged?.(currentWork);
+    if (!nativeAgentWorkEqual(previousWork, currentWork))
+      this.options.onNativeWorkChanged?.(currentWork);
     this.devinSubagentTaskIds.clear();
     this.authenticationRequired = false;
     this.logger.debug(
@@ -2707,7 +2762,8 @@ export class AgentClient implements acp.Client {
     const previous = this.getNativeWork();
     this.nativeActivity = { version: 1, sessionId, state, backgroundTaskCount };
     const current = this.getNativeWork();
-    if (emitWorkChange && previous !== current) this.options.onNativeWorkChanged?.(current);
+    if (emitWorkChange && !nativeAgentWorkEqual(previous, current))
+      this.options.onNativeWorkChanged?.(current);
   }
 
   private initializeAntigravitySession(sessionId: string, emitWorkChange = true): void {
@@ -2795,8 +2851,13 @@ export class AgentClient implements acp.Client {
   getNativeWork(): NativeAgentWork {
     const activity = this.nativeActivity;
     if (!activity || activity.sessionId !== this.acpSessionId) return null;
-    if (activity.state !== 'idle') return 'running';
-    return activity.backgroundTaskCount > 0 ? 'background' : null;
+    const backgroundTaskCount = Number.isFinite(activity.backgroundTaskCount)
+      ? Math.max(0, Math.trunc(activity.backgroundTaskCount))
+      : 0;
+    if (activity.state !== 'idle') {
+      return { kind: 'running', backgroundTaskCount };
+    }
+    return backgroundTaskCount > 0 ? { kind: 'background', backgroundTaskCount } : null;
   }
 
   /** True while native work is active or reached the Antigravity monitor cap unsettled. */
@@ -2815,7 +2876,7 @@ export class AgentClient implements acp.Client {
       this.nativeActivity.sessionId !== this.acpSessionId
     )
       return 'unknown';
-    return this.getNativeWork() ?? 'idle';
+    return this.getNativeWork()?.kind ?? 'idle';
   }
 
   /** Raw prompts and steer submissions remain owned after their local waits end. */

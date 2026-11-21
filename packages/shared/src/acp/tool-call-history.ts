@@ -44,32 +44,33 @@ export const deriveLocationsFromToolCallContent = (
 export const deriveLocationsFromRawInput = (rawInput: unknown): ToolCallLocations | undefined => {
   if (!rawInput || typeof rawInput !== 'object') return undefined;
   const record = rawInput as Record<string, unknown>;
+  const args =
+    record.args && typeof record.args === 'object'
+      ? (record.args as Record<string, unknown>)
+      : undefined;
 
-  const candidates: unknown[] = [
-    record.path,
-    record.file_path,
-    record.filePath,
-    record.absolute_file_path,
-  ];
+  const collect = (candidates: unknown[]): ToolCallLocations | undefined => {
+    const unique = new Set<string>();
+    for (const value of candidates) {
+      if (typeof value !== 'string' || value.length === 0) continue;
+      unique.add(value);
+    }
+    if (unique.size === 0) return undefined;
+    return Array.from(unique).map((path) => ({ path }));
+  };
 
-  const args = record.args;
-  if (args && typeof args === 'object') {
-    const argsRecord = args as Record<string, unknown>;
-    candidates.push(
-      argsRecord.path,
-      argsRecord.file_path,
-      argsRecord.filePath,
-      argsRecord.absolute_file_path
-    );
-  }
-
-  const unique = new Set<string>();
-  for (const value of candidates) {
-    if (typeof value !== 'string' || value.length === 0) continue;
-    unique.add(value);
-  }
-  if (unique.size === 0) return undefined;
-  return Array.from(unique).map((path) => ({ path }));
+  return (
+    collect([
+      record.path,
+      record.file_path,
+      record.filePath,
+      record.absolute_file_path,
+      args?.path,
+      args?.file_path,
+      args?.filePath,
+      args?.absolute_file_path,
+    ]) ?? collect([record.Path, record.TargetFile, args?.Path, args?.TargetFile])
+  );
 };
 
 /** An image block, or a blob resource identified as an image by MIME type or data URI. */

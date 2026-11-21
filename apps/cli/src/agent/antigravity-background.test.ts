@@ -336,19 +336,24 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('cmd-2', 'run_command', 'in_progress', { rawInput: { CommandLine: 'pnpm test' } }),
     ]);
     await expect(send(harness, 'Run suite')).resolves.toEqual({ stopReason: 'end_turn' });
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // A long silent command stays protected well past the idle GC timeout.
     await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // It finishes and agy wakes the model: running while the transcript moves, then released.
     wakeUp();
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
-    expect(harness.client.getNativeWork()).toBe('running');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
     expect(harness.client.getNativeWork()).toBeNull();
-    expect(harness.workChanges).toEqual(['background', 'running', 'background', null]);
+    expect(harness.workChanges).toEqual([
+      { kind: 'background', backgroundTaskCount: 1 },
+      { kind: 'running', backgroundTaskCount: 1 },
+      { kind: 'background', backgroundTaskCount: 1 },
+      null,
+    ]);
 
     const listCalls = mockState.listSessions.mock.calls.length;
     await vi.advanceTimersByTimeAsync(60_000);
@@ -370,15 +375,24 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     ]);
     await send(harness, 'Research');
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
     expect(harness.client.getNativeWork()).toBeNull();
+    expect(harness.workChanges).toEqual([
+      { kind: 'background', backgroundTaskCount: 2 },
+      { kind: 'running', backgroundTaskCount: 2 },
+      { kind: 'background', backgroundTaskCount: 2 },
+      { kind: 'background', backgroundTaskCount: 1 },
+      { kind: 'running', backgroundTaskCount: 1 },
+      { kind: 'background', backgroundTaskCount: 1 },
+      null,
+    ]);
   });
 
   it('protects a pending schedule until the 24-hour cap when it never wakes agy', async () => {
@@ -392,7 +406,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     ]);
     await send(harness, 'Remind me in two days');
     await vi.advanceTimersByTimeAsync(23 * 60 * 60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(60 * 60_000 + listPollIntervalMs);
     expect(harness.client.getNativeWork()).toBeNull();
   });
@@ -406,7 +420,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(harness, 'Run');
     await vi.advanceTimersByTimeAsync(60 * 60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
   });
 
   it('does not protect daemon processes or failed tools', async () => {
@@ -435,9 +449,9 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     // The next turn has no background work of its own; the command is still running.
     promptOnce([say('README read.')]);
     await send(harness, 'Read the README');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(60 * 60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
@@ -498,14 +512,20 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     await closeHarness.client.startSession({} as never, '/synthetic/project');
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(closeHarness, 'Run');
-    expect(closeHarness.client.getNativeWork()).toBe('background');
+    expect(closeHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
     expect(closeHarness.client.hasUnsettledNativeWork()).toBe(true);
 
     await closeHarness.client.closeSession('agy-sess-1' as ACPSessionId);
     await Promise.resolve();
-    expect(closeHarness.client.getNativeWork()).toBe('background');
+    expect(closeHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
     expect(closeHarness.client.hasUnsettledNativeWork()).toBe(true);
-    expect(closeHarness.workChanges).toEqual(['background']);
+    expect(closeHarness.workChanges).toEqual([{ kind: 'background', backgroundTaskCount: 1 }]);
 
     mockState.abortController = new AbortController();
     const abortHarness = createHarness();
@@ -513,13 +533,186 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     await abortHarness.client.startSession({} as never, '/synthetic/project');
     promptOnce([tool('cmd-2', 'run_command', 'in_progress')]);
     await send(abortHarness, 'Run');
-    expect(abortHarness.client.getNativeWork()).toBe('background');
+    expect(abortHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     mockState.abortController.abort();
     await Promise.resolve();
-    expect(abortHarness.client.getNativeWork()).toBe('background');
+    expect(abortHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
     expect(abortHarness.client.hasUnsettledNativeWork()).toBe(true);
-    expect(abortHarness.workChanges).toEqual(['background']);
+    expect(abortHarness.workChanges).toEqual([{ kind: 'background', backgroundTaskCount: 1 }]);
+  });
+
+  it('injects _meta.lody.backgroundTaskId from placeholder output and normalizes run_command CommandLine', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    promptOnce([
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'bg-cmd-1',
+        name: 'run_command',
+        title: 'Run tests',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { CommandLine: 'pnpm test', Cwd: '/synthetic/project' },
+      }),
+      n({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'bg-cmd-1',
+        status: 'completed',
+        content: [
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: task-abc_123.',
+            },
+          },
+        ],
+      }),
+    ]);
+
+    await send(harness, 'Run tests');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
+
+    const initialUpdate = harness.updates.find(
+      (msg) => msg.update.sessionUpdate === 'tool_call' && msg.update.toolCallId === 'bg-cmd-1'
+    );
+    expect(initialUpdate?.update).toMatchObject({
+      rawInput: {
+        CommandLine: 'pnpm test',
+        Cwd: '/synthetic/project',
+        command: 'pnpm test',
+        cwd: '/synthetic/project',
+      },
+      _meta: { lody: { toolName: 'run_command' } },
+    });
+
+    const bgUpdate = harness.updates.find(
+      (msg) =>
+        msg.update.sessionUpdate === 'tool_call_update' && msg.update.toolCallId === 'bg-cmd-1'
+    );
+    expect(bgUpdate?.update).toMatchObject({
+      _meta: { lody: { backgroundTaskId: 'task-abc_123' } },
+    });
+  });
+
+  it('ignores placeholder phrases in read/edit/multi-line/multi-block/failed outputs and rejects oversized task ids', async () => {
+    const harness = createHarness();
+    installTranscript();
+    await harness.client.startSession({} as never, '/synthetic/project');
+
+    const oversizedId = 'task-' + 'x'.repeat(130);
+
+    promptOnce([
+      // Read tool whose content quotes the exact placeholder line must not be tagged or counted.
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'read-1',
+        name: 'read_file',
+        title: 'Read antigravity-background.ts',
+        kind: 'read',
+        status: 'in_progress',
+      }),
+      n({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'read-1',
+        status: 'completed',
+        content: [
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: quoted-from-read.',
+            },
+          },
+        ],
+      }),
+      // Command tool returning multi-line file contents quoting the phrase must not be tagged or counted.
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cmd-multiline',
+        name: 'run_command',
+        title: 'Run cat file.txt',
+        kind: 'execute',
+        status: 'completed',
+        rawOutput:
+          'line 1\nTool is running as a background task with task id: quoted-multiline\nline 3',
+      }),
+      // Command tool returning multi-block content with a placeholder line must not be tagged or counted.
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cmd-multiblock',
+        name: 'run_command',
+        title: 'Run inspect',
+        kind: 'execute',
+        status: 'completed',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'Header' } },
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Tool is running as a background task with task id: quoted-multiblock.',
+            },
+          },
+        ],
+      }),
+      // Failed tool emitting a placeholder line must not be tagged or counted.
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cmd-failed',
+        name: 'run_command',
+        title: 'Run failing command',
+        kind: 'execute',
+        status: 'failed',
+        rawOutput: 'Tool is running as a background task with task id: failed-task.',
+      }),
+      // Command tool with an oversized (>128 chars) task id is rejected for metadata (no silent truncation)
+      // while still counting toward background protection.
+      n({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cmd-oversized',
+        name: 'run_command',
+        title: 'Run long job',
+        kind: 'execute',
+        status: 'in_progress',
+      }),
+      n({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'cmd-oversized',
+        status: 'completed',
+        rawOutput: `Tool is running as a background task with task id: ${oversizedId}.`,
+      }),
+    ]);
+
+    await send(harness, 'Inspect files and run job');
+
+    // Only cmd-oversized counted as background work; read-1, cmd-multiline, cmd-multiblock, cmd-failed did not.
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
+
+    for (const [sessionUpdate, toolCallId] of [
+      ['tool_call_update', 'read-1'],
+      ['tool_call', 'cmd-multiline'],
+      ['tool_call', 'cmd-multiblock'],
+      ['tool_call', 'cmd-failed'],
+      ['tool_call_update', 'cmd-oversized'],
+    ] as const) {
+      const matched = harness.updates.find(
+        (msg) => msg.update.sessionUpdate === sessionUpdate && msg.update.toolCallId === toolCallId
+      );
+      expect(
+        (matched?.update as { _meta?: { lody?: { backgroundTaskId?: string } } })?._meta?.lody
+          ?.backgroundTaskId
+      ).toBeUndefined();
+    }
   });
 
   it('retains unsettled marker when the 24-hour protection cap releases GC until a new turn starts', async () => {
@@ -584,7 +777,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       }),
     ]);
     await send(harness, 'Start background build');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
@@ -621,7 +814,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
     // Turn 1 leaves cmd-1 running in the background.
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(harness, 'Run long task');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // Turn 2 receives cmd-1's completion mid-turn and finishes cleanly.
@@ -642,11 +835,17 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(toolHarness, 'Start job');
-    expect(toolHarness.client.getNativeWork()).toBe('background');
+    expect(toolHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     promptOnce([say('Still running.')]);
     await send(toolHarness, 'Anything else?');
-    expect(toolHarness.client.getNativeWork()).toBe('background');
+    expect(toolHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     // A repeated update for the same async-dispatch toolCallId in a later turn must not increment pendingWakeups twice.
     const subHarness = createHarness();
@@ -658,14 +857,20 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Dispatched.'),
     ]);
     await send(subHarness, 'Launch subagent');
-    expect(subHarness.client.getNativeWork()).toBe('background');
+    expect(subHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     promptOnce([
       toolUpdate('sub-1', 'completed', { _meta: { lody: { toolName: 'invoke_subagent' } } }),
       say('Checked.'),
     ]);
     await send(subHarness, 'Check subagent');
-    expect(subHarness.client.getNativeWork()).toBe('background');
+    expect(subHarness.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // Only one wakeup is required to settle sub-1.
@@ -682,20 +887,20 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(single, 'Run build');
-    expect(single.client.getNativeWork()).toBe('background');
+    expect(single.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok' }));
     await vi.advanceTimersByTimeAsync(listPollIntervalMs);
-    expect(single.client.getNativeWork()).toBe('running');
+    expect(single.client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 1 });
 
     await emitToLiveClient(say('Build succeeded.'));
     await vi.advanceTimersByTimeAsync(DEFAULT_ANTIGRAVITY_POLL_TIMINGS.runningGraceMs / 2);
-    expect(single.client.getNativeWork()).toBe('running');
+    expect(single.client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 1 });
 
     // Still within wakeupQuietMs: must not settle prematurely.
     await vi.advanceTimersByTimeAsync(DEFAULT_ANTIGRAVITY_POLL_TIMINGS.runningGraceMs);
-    expect(single.client.getNativeWork()).toBe('background');
+    expect(single.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(wakeupQuietMs);
     expect(single.client.getNativeWork()).toBeNull();
@@ -710,14 +915,14 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('cmd-2', 'run_command', 'in_progress'),
     ]);
     await send(merged, 'Run two jobs');
-    expect(merged.client.getNativeWork()).toBe('background');
+    expect(merged.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok 1' }));
     await emitToLiveClient(toolUpdate('cmd-2', 'completed', { rawOutput: 'ok 2' }));
     await emitToLiveClient(say('Both jobs finished.'));
     await vi.advanceTimersByTimeAsync(listPollIntervalMs);
-    expect(merged.client.getNativeWork()).toBe('running');
+    expect(merged.client.getNativeWork()).toEqual({ kind: 'running', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
     expect(merged.client.getNativeWork()).toBeNull();
@@ -732,16 +937,25 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('cmd-2', 'run_command', 'in_progress'),
     ]);
     await send(staggered, 'Run staggered jobs');
-    expect(staggered.client.getNativeWork()).toBe('background');
+    expect(staggered.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 2,
+    });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-1', 'completed', { rawOutput: 'ok 1' }));
     await emitToLiveClient(say('First job finished.'));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(staggered.client.getNativeWork()).toBe('background');
+    expect(staggered.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(staggered.client.getNativeWork()).toBe('background');
+    expect(staggered.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     await emitToLiveClient(toolUpdate('cmd-2', 'completed', { rawOutput: 'ok 2' }));
     await emitToLiveClient(say('Second job finished.'));
@@ -759,18 +973,18 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('cmd-b', 'run_command', 'in_progress'),
     ]);
     await send(harness, 'Run A and B');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // One anonymous poll wakeup completes while the other command is still running.
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Turn 2 replays cmd-b's completion; this must reconcile the prior inferred completion rather than decrementing cmd-a.
     promptOnce([toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }), say('Checked.')]);
     await send(harness, 'Status?');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
@@ -788,17 +1002,17 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Turn 2 replays cmd-a's completion; sub-1 must remain protected until its own wakeup settles.
     promptOnce([toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }), say('Command done.')]);
     await send(harness, 'Any update?');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
@@ -813,7 +1027,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
     await send(harness, 'Run A');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
@@ -822,10 +1036,10 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     // After wakeup stillness, cmd-b must remain tracked and protected.
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
     await emitToLiveClient(say('B finished.'));
@@ -840,16 +1054,16 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
     await send(harness, 'Run progress job');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     await emitToLiveClient(toolUpdate('cmd-a', 'in_progress', { rawOutput: '50%' }));
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
   });
 
   it('settles an invoke_subagent wakeup even when the wakeup invokes a synchronous helper tool', async () => {
@@ -862,7 +1076,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Dispatched subagent.'),
     ]);
     await send(harness, 'Research');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(tool('read-1', 'read_file', 'in_progress', { kind: 'read' }));
@@ -901,7 +1115,10 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       }),
     ]);
     await send(crossTurn, 'Start command');
-    expect(crossTurn.client.getNativeWork()).toBe('background');
+    expect(crossTurn.client.getNativeWork()).toEqual({
+      kind: 'background',
+      backgroundTaskCount: 1,
+    });
 
     promptOnce([toolUpdate('cmd-1', 'completed'), say('Done.')]);
     await send(crossTurn, 'Check command');
@@ -914,7 +1131,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-1', 'run_command', 'in_progress')]);
     await send(migrated, 'Start job');
-    expect(migrated.client.getNativeWork()).toBe('background');
+    expect(migrated.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     promptOnce([
       toolUpdate('cmd-1', 'completed', {
@@ -923,7 +1140,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Still running in background.'),
     ]);
     await send(migrated, 'Check job');
-    expect(migrated.client.getNativeWork()).toBe('background');
+    expect(migrated.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
@@ -971,7 +1188,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       }),
     ]);
     await send(harness, 'Run command without status');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
   });
 
   it('permanently settles a live-replied anonymous wakeup so a later cross-turn tool completion does not revive it', async () => {
@@ -984,13 +1201,13 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     // sub-1 completes via live model reply post-turn while cmd-a keeps running.
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(say('Subagent finished its report.'));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Turn 2 receives cmd-a's completion; sub-1 must stay settled so the turn ends idle.
     promptOnce([toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }), say('All done.')]);
@@ -1008,14 +1225,14 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Dispatched subagent.'),
     ]);
     await send(harness, 'Research');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(tool('cmd-helper', 'run_command', 'in_progress'));
 
     // Helper tool runs silently for 45s (> wakeupQuietMs) without settling sub-1 prematurely.
     await vi.advanceTimersByTimeAsync(45_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     await emitToLiveClient(toolUpdate('cmd-helper', 'completed', { rawOutput: 'helper output' }));
     await emitToLiveClient(say('Final subagent summary.'));
@@ -1030,7 +1247,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     promptOnce([tool('cmd-a', 'run_command', 'in_progress')]);
     await send(harness, 'Run A');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
@@ -1039,13 +1256,13 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
 
     // Both follow-up tools run silently for 45s (> wakeupQuietMs).
     await vi.advanceTimersByTimeAsync(45_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     // cmd-b finishes with a reply; cmd-c must remain protected until its own completion.
     await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
     await emitToLiveClient(say('B finished, waiting on C.'));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await emitToLiveClient(toolUpdate('cmd-c', 'completed', { rawOutput: 'C done' }));
     await emitToLiveClient(say('C finished.'));
@@ -1074,7 +1291,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       }),
     ]);
     await send(fallback, 'Start background task');
-    expect(fallback.client.getNativeWork()).toBe('background');
+    expect(fallback.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     wakeUp();
@@ -1119,22 +1336,22 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('cmd-b', 'run_command', 'in_progress'),
     ]);
     await send(harness, 'Run A and B');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // cmd-a finishes live on agy 1.5.10+; the model thinks quietly for 43s (> wakeupQuietMs) before replying.
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
     await vi.advanceTimersByTimeAsync(43_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Delayed reply + updatedAt bump must not decrement cmd-b.
     await emitToLiveClient(say('A finished.'));
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     await emitToLiveClient(toolUpdate('cmd-b', 'completed', { rawOutput: 'B done' }));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
@@ -1152,12 +1369,12 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Dispatched subagent.'),
     ]);
     await send(twoStep, 'Research');
-    expect(twoStep.client.getNativeWork()).toBe('background');
+    expect(twoStep.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     await emitToLiveClient(tool('helper-1', 'run_command', 'in_progress'));
     await vi.advanceTimersByTimeAsync(45_000);
-    expect(twoStep.client.getNativeWork()).toBe('background');
+    expect(twoStep.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     await emitToLiveClient(toolUpdate('helper-1', 'completed', { rawOutput: 'saved result' }));
     wakeTwoStep();
@@ -1174,7 +1391,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       say('Dispatched second subagent.'),
     ]);
     await send(oneShot, 'Research again');
-    expect(oneShot.client.getNativeWork()).toBe('background');
+    expect(oneShot.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     await emitToLiveClient(
@@ -1195,19 +1412,19 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // cmd-a finishes live, and the model stays quiet past wakeupQuietMs before replying.
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
     await vi.advanceTimersByTimeAsync(43_000);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Delayed reply for cmd-a + updatedAt bump must consume awaitingReplyForSettledTool rather than sub-1.
     await emitToLiveClient(say('A finished.'));
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // sub-1's own wakeup reply later settles cleanly.
     await emitToLiveClient(say('Subagent finished.'));
@@ -1225,14 +1442,14 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
 
     // cmd-a settles with a reply in the same wakeup burst.
     await vi.advanceTimersByTimeAsync(10_000);
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
     await emitToLiveClient(say('A finished.'));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // A late content-only update on already-settled cmd-a must not settle sub-1.
     await emitToLiveClient(
@@ -1243,7 +1460,7 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       })
     );
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
   });
 
   it('settles a parallel anonymous wakeup when a settled tracked tool already advanced updatedAt without model text', async () => {
@@ -1256,14 +1473,14 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // Flow Y: cmd-a finishes with updatedAt moving but no text reply; its wakeup closes cleanly.
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // sub-1's independent wakeup reply must settle directly without being swallowed.
     await emitToLiveClient(say('Subagent finished.'));
@@ -1282,24 +1499,24 @@ describe('Antigravity ACP v1 background lifecycle and GC protection', () => {
       tool('sub-1', 'invoke_subagent', 'completed', { rawOutput: { ok: true } }),
     ]);
     await send(harness, 'Run command and subagent');
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 2 });
     await vi.advanceTimersByTimeAsync(listPollIntervalMs * 2);
 
     // Flow X variant: cmd-a completes with neither model text nor updatedAt change.
     await emitToLiveClient(toolUpdate('cmd-a', 'completed', { rawOutput: 'A done' }));
     await vi.advanceTimersByTimeAsync(wakeupQuietMs + listPollIntervalMs);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // An intermediate poll-only updatedAt bump must neither clear awaitingReplyForSettledTool nor decrement sub-1.
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // The subsequent delayed reply for cmd-a is still absorbed rather than decrementing sub-1.
     await emitToLiveClient(say('A finished.'));
     wakeUp();
     await vi.advanceTimersByTimeAsync(WAKEUP_DONE);
-    expect(harness.client.getNativeWork()).toBe('background');
+    expect(harness.client.getNativeWork()).toEqual({ kind: 'background', backgroundTaskCount: 1 });
 
     // Finally sub-1's own reply settles to idle.
     await emitToLiveClient(say('Subagent finished.'));

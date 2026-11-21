@@ -1,5 +1,10 @@
 import { parseLodyMessagePhase } from './schema';
-import type { MessageContent, ModelInfo, SubagentRunItem } from '../ai';
+import {
+  TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH,
+  type MessageContent,
+  type ModelInfo,
+  type SubagentRunItem,
+} from '../ai';
 import { isLodySubagentEvent, type LodySubagentEvent } from 'acp-extension-core';
 import type { SessionHistoryInput, SessionPlanEntry } from '../schema';
 import type { AgentHistoryTargets } from '../history-agent-window';
@@ -79,6 +84,18 @@ const resolveAcpToolName = (meta: unknown): string | undefined => {
   const legacyNeutral = record?.toolName;
   if (typeof legacyNeutral === 'string' && legacyNeutral.length > 0) return legacyNeutral;
   return getClaudeCodeToolName(meta);
+};
+
+const resolveAcpBackgroundTaskId = (meta: unknown): string | undefined => {
+  const record = asRecordOrUndefined(meta);
+  const lody = asRecordOrUndefined(record?.lody);
+  const raw = lody?.backgroundTaskId;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length > TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH
+    ? trimmed.slice(0, TOOL_CALL_BACKGROUND_TASK_ID_MAX_LENGTH)
+    : trimmed;
 };
 
 /** Narrow an unstructured ACP `rawInput`/`rawOutput` to the plain-object shape history stores. */
@@ -1058,6 +1075,9 @@ const mergeToolCallMessage = (
     // The first-persisted stamp wins; a replayed/retried update must not move it.
     recordedAtMs: prev.recordedAtMs ?? incoming.recordedAtMs,
     toolName: incoming.toolName ?? prev.toolName,
+    ...(prev.backgroundTaskId !== undefined || incoming.backgroundTaskId !== undefined
+      ? { backgroundTaskId: prev.backgroundTaskId ?? incoming.backgroundTaskId }
+      : {}),
     activityKind: incoming.activityKind !== undefined ? incoming.activityKind : prev.activityKind,
   };
 };
@@ -1414,6 +1434,9 @@ const buildToolCallMessageForHistory = (
   // deriver switches on; `title` stays whatever the agent chose to show.
   const toolName =
     resolveAcpToolName((update as ToolCallUpdateWithMeta)._meta) ?? previousTool?.toolName;
+  const backgroundTaskId =
+    resolveAcpBackgroundTaskId((update as ToolCallUpdateWithMeta)._meta) ??
+    previousTool?.backgroundTaskId;
   const activityKind = getToolCallActivityKind((update as ToolCallUpdateWithMeta)._meta);
   const isSchedulingTool = toolName !== undefined && SCHEDULING_TOOL_NAMES.has(toolName);
   const input = asRecordOrUndefined(update.rawInput);
@@ -1422,6 +1445,7 @@ const buildToolCallMessageForHistory = (
     toolCallId: update.toolCallId,
     title: truncateToolTitleForHistory(update.title),
     toolName,
+    ...(backgroundTaskId !== undefined ? { backgroundTaskId } : {}),
     kind: kind ?? undefined,
     status: update.status ?? previousTool?.status ?? 'pending',
     content: content.length ? content : undefined,

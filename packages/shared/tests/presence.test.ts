@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX,
   LODY_PRESENCE_TTL_MS,
+  SessionStatusFactory,
   collectOnlineMachineIdsFromPresence,
   collectViewedSessionIdsFromPresence,
   findFreshMachinePresenceState,
@@ -295,6 +297,194 @@ describe('presence helpers', () => {
       kind: 'session',
       sessionId,
       status: { type: 'initializing' },
+    });
+  });
+
+  it('accepts bounded running backgroundTaskState and count across full/minimal modes while keeping baseline LAN schemas compatible', () => {
+    const bgKey = getLodySessionPresenceKey(sessionId, instanceId);
+    const wakeupSessionId = '01020304-1111-4222-8333-010203040599' as SessionId;
+    const wakeupKey = getLodySessionPresenceKey(wakeupSessionId, instanceId);
+    const states = {
+      [bgKey]: {
+        kind: 'session',
+        sessionId,
+        machineId,
+        instanceId,
+        status: SessionStatusFactory.running({
+          backgroundTaskState: 'background',
+          backgroundTaskCount: 3,
+        }),
+        updatedAt: 120,
+      },
+      [wakeupKey]: {
+        kind: 'session',
+        sessionId: wakeupSessionId,
+        machineId,
+        instanceId,
+        status: SessionStatusFactory.running({
+          backgroundTaskState: 'running',
+          backgroundTaskCount: 2,
+        }),
+        updatedAt: 120,
+      },
+    };
+
+    for (const minimal of [false, true]) {
+      const parsed = parseLodyPresenceStates(states, { minimal });
+      expect(parsed[bgKey]).toMatchObject({
+        status: { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 3 },
+      });
+      expect(parsed[wakeupKey]).toMatchObject({
+        status: { type: 'running', backgroundTaskState: 'running', backgroundTaskCount: 2 },
+      });
+    }
+
+    // Loro null roundtrip on optional running fields degrades cleanly to `{ type: 'running' }`.
+    const nulled = parseLodyPresenceStates(
+      {
+        [bgKey]: {
+          kind: 'session',
+          sessionId,
+          machineId,
+          instanceId,
+          status: {
+            type: 'running',
+            phase: null,
+            backgroundTaskState: null,
+            backgroundTaskCount: null,
+          },
+          updatedAt: 120,
+        },
+      },
+      { minimal: true }
+    );
+    expect(nulled[bgKey]).toMatchObject({ status: { type: 'running' } });
+
+    // Baseline (`origin/lan-hub`) full & minimal schemas where `phase` is strictly
+    // `z.literal('finalizing').optional()`: unknown `backgroundTaskState` /
+    // `backgroundTaskCount` fields are stripped and the session stays `{ type: 'running' }`
+    // instead of dropping the whole entry to idle.
+    const omitNullValuesBaseline = (value: unknown): unknown => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value)) {
+        if (entry === null || entry === undefined) continue;
+        out[key] = entry;
+      }
+      return out;
+    };
+    const baselineFullStatusSchema = z.preprocess(
+      omitNullValuesBaseline,
+      z.discriminatedUnion('type', [
+        z.object({
+          type: z.literal('running'),
+          activity: z.enum(['image_generation']).optional(),
+          phase: z.literal('finalizing').optional(),
+        }),
+        z.object({ type: z.literal('requestPermission') }),
+        z.object({
+          type: z.literal('initializing'),
+          stage: z.enum(['git-clone', 'managed-runtime', 'acp', 'resuming']).optional(),
+          detail: z.string().max(280).optional(),
+        }),
+      ])
+    );
+    const baselineMinimalStatusSchema = z.preprocess(
+      omitNullValuesBaseline,
+      z.discriminatedUnion('type', [
+        z.object({
+          type: z.literal('running'),
+          activity: z.enum(['image_generation']).optional(),
+          phase: z.literal('finalizing').optional(),
+        }),
+        z.object({ type: z.literal('requestPermission') }),
+        z.object({
+          type: z.literal('initializing'),
+          stage: z.enum(['git-clone', 'managed-runtime', 'acp', 'resuming']).optional(),
+        }),
+      ])
+    );
+    const baselineFullSessionSchema = z.object({
+      kind: z.literal('session'),
+      sessionId: z.string().min(1),
+      machineId: z.string().min(1),
+      instanceId: z.string().min(1),
+      status: baselineFullStatusSchema,
+      updatedAt: z.number().finite(),
+    });
+    const baselineMinimalSessionSchema = z.object({
+      kind: z.literal('session'),
+      sessionId: z.string().length(36).uuid(),
+      machineId: z.string().length(36).uuid(),
+      instanceId: z.string().length(36).uuid(),
+      status: baselineMinimalStatusSchema,
+      updatedAt: z.number().finite(),
+    });
+
+    for (const entry of [states[bgKey], states[wakeupKey]]) {
+      const fullResult = baselineFullSessionSchema.safeParse(entry);
+      expect(fullResult.success).toBe(true);
+      if (fullResult.success) {
+        expect(fullResult.data.status).toEqual({ type: 'running' });
+      }
+      const minimalResult = baselineMinimalSessionSchema.safeParse(entry);
+      expect(minimalResult.success).toBe(true);
+      if (minimalResult.success) {
+        expect(minimalResult.data.status).toEqual({ type: 'running' });
+      }
+    }
+
+    // Out-of-range or non-integer backgroundTaskCount, unknown backgroundTaskState,
+    // and non-finalizing phases are rejected.
+    for (const badStatus of [
+      { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 0 },
+      { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: -1 },
+      {
+        type: 'running',
+        backgroundTaskState: 'background',
+        backgroundTaskCount: LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX + 1,
+      },
+      { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: 1.5 },
+      { type: 'running', backgroundTaskState: 'background', backgroundTaskCount: '2' },
+      { type: 'running', backgroundTaskState: 'arbitrary free text' },
+      { type: 'running', phase: 'background' },
+      { type: 'running', phase: 'arbitrary free text' },
+    ]) {
+      const input = {
+        [bgKey]: {
+          kind: 'session',
+          sessionId,
+          machineId,
+          instanceId,
+          status: badStatus,
+          updatedAt: 120,
+        },
+      };
+      expect(parseLodyPresenceStates(input)).toEqual({});
+      expect(parseLodyPresenceStates(input, { minimal: true })).toEqual({});
+    }
+
+    // SessionStatusFactory clamps positive counts and omits non-positive/non-finite counts.
+    expect(SessionStatusFactory.running()).toEqual({ type: 'running' });
+    expect(SessionStatusFactory.running('image_generation')).toEqual({
+      type: 'running',
+      activity: 'image_generation',
+    });
+    expect(
+      SessionStatusFactory.running({ backgroundTaskState: 'background', backgroundTaskCount: 0 })
+    ).toEqual({
+      type: 'running',
+      backgroundTaskState: 'background',
+    });
+    expect(
+      SessionStatusFactory.running({
+        backgroundTaskState: 'background',
+        backgroundTaskCount: LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX + 50,
+      })
+    ).toEqual({
+      type: 'running',
+      backgroundTaskState: 'background',
+      backgroundTaskCount: LODY_PRESENCE_BACKGROUND_TASK_COUNT_MAX,
     });
   });
 
