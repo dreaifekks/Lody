@@ -141,21 +141,20 @@ retains the upstream two-layer disclosure and legacy behavior verbatim
 - **Collapsed live header (fixed two-tier layout on `conversation.railInset`).**
   Transparent typography with no card fill or border whose two tiers never swap
   positions:
-  - Row 1 (`13px`, single-line `nowrap`, `container-type: inline-size`, outer
-    `.agent-shimmer` wrapper while live, disabled in Low-stimulus mode) always
-    owns status, completed/background tool counts, and elapsed duration—never
-    thought text: `Thinking (<duration>)` or
-    `Thinking · <toolCounts> (<duration>)` while thinking (including
-    placeholder-only starts, without jumping between `Thinking…` and
-    `Thinking`), and `Running <target> (<duration>)` or
+  - Row 1 (`13px`, single-line `nowrap`, outer `.agent-shimmer` wrapper while
+    live, disabled in Low-stimulus mode) always owns status,
+    completed/background tool counts, and elapsed duration—never thought text:
+    `Thinking (<duration>)` or `Thinking · <toolCounts> (<duration>)` while
+    thinking (including placeholder-only starts, without jumping between
+    `Thinking…` and `Thinking`), and `Running <target> (<duration>)` or
     `Running <target> · <toolCounts> (<duration>)` while a non-background tool
     is `in_progress`. Status verbs and `(<duration>)` keep `flexShrink: 0`.
-    While a tool runs, `<target>` (`flex: 0 10000 auto`) yields first so
-    moderate tool counts fit untruncated, while running-state `<toolCounts>`
-    adds `maxWidth: max(0px, calc(100cqi - 205px))` (`flex: 0 1 auto`) so heavy
-    multi-category counts never crush `<target>` to `0px` or squeeze
-    `(<duration>)` out on 390px viewports (thinking-state `<toolCounts>` keeps
-    the full row width).
+    While a tool runs, `<target>` (`flex: 0 10000 auto`, with a `64px` minimum
+    floor when `shortTarget.length >= 10` and counts are present) yields first
+    so short targets never cap counts and moderate counts stay untruncated,
+    while heavy multi-category counts truncate gracefully (`flex: 0 1 auto`)
+    without collapsing `<target>` to `0px` or squeezing `(<duration>)` out on
+    390px viewports.
   - Row 2 (`12px` muted `secondaryLabel`, natural multi-line `pre-line` wrapping
     with `overflow-wrap: anywhere` and no `line-clamp`) appears only when
     `isLive && !expanded` and a valid thought exists (after stripping

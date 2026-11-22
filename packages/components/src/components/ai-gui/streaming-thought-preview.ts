@@ -507,6 +507,94 @@ const isEmptyLinkOnlyRange = (text: string, start: number, end: number): boolean
 };
 
 /**
+ * Builds an O(n) map of matching `[` → `]` positions in `text` (respecting `\` escapes
+ * and inline code spans) so repeated unclosed `[` sequences never trigger quadratic scans.
+ */
+const buildBracketCloseMap = (
+  text: string,
+  codeSpanEndMap: Map<number, number> | null
+): Map<number, number> => {
+  const map = new Map<number, number>();
+  const stack: number[] = [];
+  const len = text.length;
+  let index = 0;
+  while (index < len) {
+    const code = text.charCodeAt(index);
+    if (code === 92 && index + 1 < len) {
+      index += 2;
+      continue;
+    }
+    if (code === 96) {
+      const spanEnd = codeSpanEndMap?.get(index);
+      index = spanEnd ?? index + countBacktickRun(text, index, len);
+      continue;
+    }
+    if (code === 91) {
+      stack.push(index);
+    } else if (code === 93 && stack.length > 0) {
+      map.set(stack.pop()!, index);
+    }
+    index += 1;
+  }
+  return map;
+};
+
+/**
+ * Builds an O(n) map of matching `(` → `)` positions in `text` (respecting `\` escapes
+ * and whitespace-preceded quoted link titles) so repeated unclosed `[label](` sequences
+ * never rescan the tail quadratically.
+ */
+const buildParenCloseMap = (text: string): Map<number, number> => {
+  const map = new Map<number, number>();
+  const stack: number[] = [];
+  const len = text.length;
+  let quoteChar: string | null = null;
+  let index = 0;
+  while (index < len) {
+    const ch = text[index]!;
+    if (ch === '\\' && index + 1 < len) {
+      index += 2;
+      continue;
+    }
+    if (quoteChar !== null) {
+      if (ch === quoteChar) {
+        quoteChar = null;
+      }
+      index += 1;
+      continue;
+    }
+    if (
+      (ch === '"' || ch === "'") &&
+      index > 0 &&
+      isHorizontalWhitespaceOrCr(text.charCodeAt(index - 1))
+    ) {
+      quoteChar = ch;
+      index += 1;
+      continue;
+    }
+    if (ch === '(') {
+      stack.push(index);
+    } else if (ch === ')' && stack.length > 0) {
+      map.set(stack.pop()!, index);
+    }
+    index += 1;
+  }
+  return map;
+};
+
+const hasAngleBracketDestination = (
+  text: string,
+  openParenIndex: number,
+  limit: number
+): boolean => {
+  let cursor = openParenIndex + 1;
+  while (cursor < limit && isHorizontalWhitespaceOrCr(text.charCodeAt(cursor))) {
+    cursor += 1;
+  }
+  return cursor < limit && text.charCodeAt(cursor) === 60;
+};
+
+/**
  * Replaces Markdown links/images `[label](url "title")` / `![alt](url)` with their
  * label text in O(n) time: skips inline code spans via `buildCodeSpanEndMap`, supports
  * `<url>` destinations, ignores parentheses inside quoted link titles, balances nested
@@ -517,12 +605,25 @@ const replaceMarkdownLinks = (text: string, depth = 0): string => {
     return text;
   }
 
+  const lastCloseBracket = text.lastIndexOf(']');
+  const lastCloseParen = text.lastIndexOf(')');
+  if (lastCloseBracket === -1 || lastCloseParen === -1) {
+    return text;
+  }
+
   const len = text.length;
   const codeSpanEndMap = buildCodeSpanEndMap(text, 0, len);
+  let bracketCloseMap: Map<number, number> | null = null;
+  let parenCloseMap: Map<number, number> | null = null;
   let result = '';
   let index = 0;
 
   while (index < len) {
+    if (index >= lastCloseBracket || index >= lastCloseParen) {
+      result += text.slice(index);
+      break;
+    }
+
     if (text.charCodeAt(index) === 96) {
       const spanEnd = codeSpanEndMap?.get(index);
       if (spanEnd !== undefined) {
@@ -543,38 +644,63 @@ const replaceMarkdownLinks = (text: string, depth = 0): string => {
       continue;
     }
 
-    const labelStart = isImage ? index + 2 : index + 1;
-    let labelDepth = 1;
-    let labelEnd = labelStart;
-    while (labelEnd < len && labelDepth > 0) {
-      const code = text.charCodeAt(labelEnd);
-      if (code === 92 && labelEnd + 1 < len) {
-        labelEnd += 2;
-        continue;
-      }
-      if (code === 96) {
-        const spanEnd = codeSpanEndMap?.get(labelEnd);
-        labelEnd = spanEnd ?? labelEnd + countBacktickRun(text, labelEnd, len);
-        continue;
-      }
-      if (code === 91) {
-        labelDepth += 1;
-      } else if (code === 93) {
-        labelDepth -= 1;
-        if (labelDepth === 0) {
-          break;
+    const openBracketIndex = isImage ? index + 1 : index;
+    const labelStart = openBracketIndex + 1;
+    let labelEnd = -1;
+    if (bracketCloseMap !== null) {
+      labelEnd = bracketCloseMap.get(openBracketIndex) ?? -1;
+    } else {
+      let labelDepth = 1;
+      let cursor = labelStart;
+      while (cursor < len && labelDepth > 0) {
+        const code = text.charCodeAt(cursor);
+        if (code === 92 && cursor + 1 < len) {
+          cursor += 2;
+          continue;
         }
+        if (code === 96) {
+          const spanEnd = codeSpanEndMap?.get(cursor);
+          cursor = spanEnd ?? cursor + countBacktickRun(text, cursor, len);
+          continue;
+        }
+        if (code === 91) {
+          labelDepth += 1;
+        } else if (code === 93) {
+          labelDepth -= 1;
+          if (labelDepth === 0) {
+            labelEnd = cursor;
+            break;
+          }
+        }
+        cursor += 1;
       }
-      labelEnd += 1;
+      if (labelEnd === -1) {
+        bracketCloseMap = buildBracketCloseMap(text, codeSpanEndMap);
+      }
     }
 
-    if (labelDepth !== 0 || text[labelEnd + 1] !== '(') {
+    if (labelEnd === -1 || text[labelEnd + 1] !== '(') {
       result += text[index];
       index += 1;
       continue;
     }
 
-    const urlEnd = findMarkdownLinkDestinationEnd(text, labelEnd + 1, len);
+    const openParenIndex = labelEnd + 1;
+    if (openParenIndex >= lastCloseParen) {
+      result += text.slice(index);
+      break;
+    }
+
+    let urlEnd: number;
+    if (parenCloseMap !== null && !hasAngleBracketDestination(text, openParenIndex, len)) {
+      urlEnd = parenCloseMap.get(openParenIndex) ?? -1;
+    } else {
+      urlEnd = findMarkdownLinkDestinationEnd(text, openParenIndex, len);
+      if (urlEnd === -1 && parenCloseMap === null) {
+        parenCloseMap = buildParenCloseMap(text);
+      }
+    }
+
     if (urlEnd === -1) {
       result += text[index];
       index += 1;
@@ -1238,12 +1364,10 @@ export const inspectLatestThoughtParagraph = (
 
     for (let index = groupStart; index < groupEnd; index += 1) {
       if (
-        discardedLineCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES ||
-        discardedCharCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
+        paragraphLines.length === 0 &&
+        (discardedLineCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES ||
+          discardedCharCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS)
       ) {
-        if (paragraphLines.length > 0) {
-          break;
-        }
         return { preview: null, cleanedLineCount, cleanedCharCount };
       }
 

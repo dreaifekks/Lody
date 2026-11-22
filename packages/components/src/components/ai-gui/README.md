@@ -180,12 +180,11 @@ the reasoning behind those rules.
   process display (`streamingThoughtPreviewFeatureEnabledAtom`): while a turn
   is live, the collapsed work header renders a fixed two-tier transparent layout
   on `conversation.railInset` whose rows never swap places (Row 1 single-line
-  `nowrap` with `container-type: inline-size`: `Thinking` or `Running <target>`
-  + persistent completed/background tool counts + `(<duration>)`, with
-  `flexShrink: 0` on verb/duration, `<target>` yielding first via
-  `flex: 0 10000 auto`, and running-state `<toolCounts>` capped at
-  `max(0px, calc(100cqi - 205px))` so 390px viewports preserve both target and
-  duration while letting moderate counts stay untruncated; Row 2
+  `nowrap`: `Thinking` or `Running <target>` + persistent completed/background
+  tool counts + `(<duration>)`, with `flexShrink: 0` on verb/duration,
+  `<target>` yielding first via `flex: 0 10000 auto` with a `64px` floor when
+  `shortTarget.length >= 10` alongside counts, and `<toolCounts>` shrinking
+  only when needed via `flex: 0 1 auto` without an artificial width cap; Row 2
   collapsed-only: complete latest valid thought paragraph extracted via
   `extractLatestCompactThoughtParagraph` with natural `pre-line` /
   `overflow-wrap: anywhere` wrapping and no 32-line/8,192-char truncation on

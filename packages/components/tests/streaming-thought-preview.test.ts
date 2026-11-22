@@ -513,6 +513,27 @@ describe('extractLatestThoughtParagraphFromText & extractLatestCompactThoughtPar
 
     const emptyLinkFlood = `Valid fallback.\n\n${`[](https://example.com/${'a'.repeat(1000)})\n`.repeat(136)}`;
     expect(extractLatestThoughtParagraphFromText(emptyLinkFlood)).toBe('Valid fallback.');
+
+    // An oversized empty-output line between two valid sentences inside the active paragraph
+    // must not drop the following sentence.
+    const midParagraphEmptyImage = [
+      'First valid sentence.',
+      `![** **](data:image/png;base64,${'A'.repeat(9_000)})`,
+      'Second valid sentence after empty image.',
+    ].join('\n');
+    expect(extractLatestThoughtParagraphFromText(midParagraphEmptyImage)).toBe(
+      'First valid sentence.\nSecond valid sentence after empty image.'
+    );
+
+    // 56 KB of repeated unclosed `[file](` stays strictly linear O(n) with or without a trailing valid link.
+    const repeatedUnclosedLinks = `${'[file]('.repeat(8_000)} tail`;
+    expect(extractLatestThoughtParagraphFromText(repeatedUnclosedLinks)).toBe(
+      repeatedUnclosedLinks
+    );
+    const repeatedUnclosedWithTrailingLink = `${'[file]('.repeat(8_000)} [ok](https://example.com/path)`;
+    expect(extractLatestThoughtParagraphFromText(repeatedUnclosedWithTrailingLink)).toBe(
+      `${'[file]('.repeat(8_000)} ok`
+    );
   });
 
   it('scans entries backwards, retains previous valid paragraph across tools, and falls back past invalid newest thoughts', () => {
