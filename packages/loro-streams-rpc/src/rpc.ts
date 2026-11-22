@@ -138,6 +138,8 @@ import type {
   SessionHistoryWriteResponse,
   FilePreviewV3Request,
   FilePreviewV3Response,
+  CodeNavQueryRequest,
+  CodeNavQueryResponse,
   SessionDirectoryListRequest,
   SessionDirectoryListResponse,
 } from '@lody/shared';
@@ -151,6 +153,10 @@ import {
   FilePreviewV3ErrorCodeSchema,
   FilePreviewV3ErrorSchema,
   FilePreviewV3ResponseSchema,
+  CodeNavErrorCodeSchema,
+  CodeNavQueryErrorSchema,
+  CodeNavQueryResponseSchema,
+  codeNavError,
   SessionDirectoryListResponseSchema,
   deriveCodeCollabV2ContentKeyBytes,
   deriveCodeCollabV2ContentKeyId,
@@ -318,6 +324,8 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'file/download-chunk',
   // One folder of the session's own workspace; same envelope and owner check as file/preview.
   'file/list-dir',
+  // Read-only AST code navigation; independent of Code Collab.
+  'code-nav/query',
   'session/cancel',
   'session/live-status',
   'session/withdraw-input',
@@ -629,6 +637,11 @@ export const LoroFileListDirRpcRequestSchema = BaseRpcRequestSchema.extend({
   params: CodeCollabV2RpcContentEnvelopeSchema,
 }).strict();
 
+export const LoroCodeNavQueryRpcRequestSchema = BaseRpcRequestSchema.extend({
+  method: z.literal('code-nav/query'),
+  params: CodeCollabV2RpcContentEnvelopeSchema,
+}).strict();
+
 /**
  * Methods whose params/results travel inside the encrypted owner-session
  * envelope. Every encrypt, decrypt, and error-decode site must consult this —
@@ -641,6 +654,7 @@ export const isOwnerScopedEncryptedRpcMethod = (method: string): boolean =>
   method === 'file/preview' ||
   method === 'file/download-chunk' ||
   method === 'file/list-dir' ||
+  method === 'code-nav/query' ||
   method === 'session/history-read' ||
   method === 'session/history-watch' ||
   method === 'session/history-write';
@@ -908,6 +922,7 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroFilePreviewRpcRequestSchema,
   LoroFileDownloadRpcRequestSchema,
   LoroFileListDirRpcRequestSchema,
+  LoroCodeNavQueryRpcRequestSchema,
   LoroSessionCancelRpcRequestSchema,
   LoroSessionLiveStatusRpcRequestSchema,
   LoroSessionWithdrawInputRpcRequestSchema,
@@ -1750,6 +1765,7 @@ export type LoroMachineRpcResult =
   | FilePreviewV3Response
   | FileDownloadResponse
   | SessionDirectoryListResponse
+  | CodeNavQueryResponse
   | MachineProviderRateLimitsRefreshResponse
   | MachineAcpCapabilitiesRefreshResponse
   | MachineAcpAuthenticateResponse
@@ -2058,6 +2074,21 @@ const toLegacyRpcErrorResponse = (
     return parsed.success ? parsed.data : { status: 'error', code: 'transient_io' };
   }
 
+  if (method === 'code-nav/query') {
+    const parsedData = CodeNavQueryErrorSchema.safeParse(error.data);
+    if (parsedData.success) {
+      return {
+        ...parsedData.data,
+        message: parsedData.data.message ?? error.message,
+      };
+    }
+    const parsedCode = CodeNavErrorCodeSchema.safeParse(error.code);
+    return codeNavError(parsedCode.success ? parsedCode.data : 'transient_io', {
+      message: error.message,
+      retryable: error.code === 'request_failed' || error.code === 'machine_rpc_unavailable',
+    });
+  }
+
   if (method === 'file/preview' || method === 'file/list-dir') {
     const parsedData = FilePreviewV3ErrorSchema.safeParse(error.data);
     if (parsedData.success) {
@@ -2308,6 +2339,10 @@ const parseRpcSuccessResult = async (
       const listParsed = SessionDirectoryListResponseSchema.safeParse(decrypted);
       return listParsed.success ? listParsed.data : null;
     }
+    if (response.method === 'code-nav/query') {
+      const navParsed = CodeNavQueryResponseSchema.safeParse(decrypted);
+      return navParsed.success ? navParsed.data : null;
+    }
     if (
       response.method === 'code-collab/open-diff-manifest' ||
       response.method === 'code-collab/read-blob'
@@ -2432,6 +2467,7 @@ const DIRECT_RPC_METHODS: ReadonlySet<string> = new Set([
   'file/preview',
   'file/list-dir',
   'file/download-chunk',
+  'code-nav/query',
   'local-project/git-state',
   'local-project/control',
   'machine/memory',
@@ -3687,6 +3723,18 @@ export class LoroStreamsMachineRpcClient {
     })) as SessionDirectoryListResponse | null;
   }
 
+  async queryCodeNav(
+    options: CodeNavQueryRequest & { ownerSessionId?: string; timeoutMs?: number }
+  ): Promise<CodeNavQueryResponse | null> {
+    const { ownerSessionId, timeoutMs, ...params } = options;
+    return (await this.sendRequest({
+      method: 'code-nav/query',
+      timeoutMs: timeoutMs ?? 15_000,
+      ownerSessionId: ownerSessionId ?? options.sessionId,
+      params,
+    })) as CodeNavQueryResponse | null;
+  }
+
   async requestFilePreview(
     options: Omit<FilePreviewV3Request, 'v'> & { ownerSessionId?: string; timeoutMs?: number }
   ): Promise<FilePreviewV3Response | null> {
@@ -4343,6 +4391,12 @@ export class LoroStreamsMachineRpcClient {
           params: SessionDirectoryListRequest;
         }
       | {
+          method: 'code-nav/query';
+          timeoutMs: number;
+          ownerSessionId: string;
+          params: CodeNavQueryRequest;
+        }
+      | {
           method: 'session/automation-control';
           timeoutMs: number;
           ownerSessionId: string;
@@ -4451,6 +4505,7 @@ export class LoroStreamsMachineRpcClient {
       args.method === 'file/preview' ||
       args.method === 'file/download-chunk' ||
       args.method === 'file/list-dir' ||
+      args.method === 'code-nav/query' ||
       args.method === 'session/history-read' ||
       args.method === 'session/history-watch' ||
       args.method === 'session/automation-control' ||
@@ -4746,6 +4801,7 @@ export class LoroStreamsMachineRpcClient {
         case 'file/download-chunk':
         case 'file/preview':
         case 'file/list-dir':
+        case 'code-nav/query':
           request = {
             ...envelope,
             method: args.method,

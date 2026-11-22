@@ -1,4 +1,11 @@
-import { formatSshDestination, isSshUrlHost, parseSshDestination, toSshDestination, type LanSshDestination, type SshDestination } from './lan-ssh';
+import {
+  formatSshDestination,
+  isSshUrlHost,
+  parseSshDestination,
+  toSshDestination,
+  type LanSshDestination,
+  type SshDestination,
+} from './lan-ssh';
 import type { LaunchLocalPathInput, LocalPathCommandSpec } from './electron-ipc';
 import { parseCustomAcpCommandLine } from './custom-acp-command';
 export type PathLauncherPlatform = 'darwin' | 'win32' | 'linux' | 'unknown';
@@ -19,7 +26,98 @@ export type PathLauncherOption =
 export type CustomPathLauncherTemplateValidation =
   | { ok: true }
   | { ok: false; reason: 'empty' | 'missing_path' | 'invalid_syntax' | 'path_in_command' };
+export type PathLauncherFileTarget = {
+  /** Absolute path, or path relative to `targetPath` (worktree/project folder). */
+  filePath?: string;
+  /** 1-based line number. */
+  line?: number;
+  /** 1-based column number (applied only when `line` is set). */
+  column?: number;
+};
 const PATH_LAUNCHER_PATH_PLACEHOLDER = '{path}';
+
+function normalizePositiveInt(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+function formatLineColumnSuffix(fileTarget?: PathLauncherFileTarget): {
+  readonly line?: number;
+  readonly column?: number;
+  readonly suffix: string;
+} {
+  const line = normalizePositiveInt(fileTarget?.line);
+  if (line === undefined) return { suffix: '' };
+  const column = normalizePositiveInt(fileTarget?.column);
+  return {
+    line,
+    ...(column === undefined ? {} : { column }),
+    suffix: column === undefined ? `:${line}` : `:${line}:${column}`,
+  };
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('\\\\');
+}
+
+function normalizePosixPathSegments(rawPath: string): string {
+  const segments: string[] = [];
+  for (const part of rawPath.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      segments.pop();
+    } else {
+      segments.push(part);
+    }
+  }
+  return `/${segments.join('/')}`;
+}
+
+function resolvePosixFileTargetPath(folderPath: string, filePath: string): string {
+  const trimmed = filePath.trim();
+  if (!trimmed || trimmed.includes('\0')) {
+    throw new Error('Invalid file target path');
+  }
+  if (trimmed.startsWith('/')) {
+    return normalizePosixPathSegments(trimmed);
+  }
+  const normalizedFolder = normalizePosixPathSegments(folderPath);
+  const joined = normalizePosixPathSegments(`${normalizedFolder}/${trimmed}`);
+  const prefix = normalizedFolder === '/' ? '/' : `${normalizedFolder}/`;
+  if (joined !== normalizedFolder && !joined.startsWith(prefix)) {
+    throw new Error('Relative file target escapes the workspace folder');
+  }
+  return joined;
+}
+
+function resolveLocalFileTargetPath(
+  folderPath: string,
+  filePath: string,
+  platform: PathLauncherPlatform
+): string {
+  const trimmed = filePath.trim();
+  if (!trimmed || trimmed.includes('\0')) {
+    throw new Error('Invalid file target path');
+  }
+  if (platform === 'win32' || isWindowsAbsolutePath(folderPath)) {
+    if (isWindowsAbsolutePath(trimmed)) return trimmed;
+    const normalizedRel = trimmed.replaceAll('/', '\\');
+    const parts = normalizedRel.split('\\').filter((segment) => segment && segment !== '.');
+    if (parts.includes('..')) {
+      throw new Error('Relative file target cannot traverse outside the workspace folder');
+    }
+    const base = folderPath.replace(/[\\/]+$/u, '');
+    return parts.length > 0 ? `${base}\\${parts.join('\\')}` : base;
+  }
+  return resolvePosixFileTargetPath(folderPath, trimmed);
+}
+
+function hasFileTarget(fileTarget?: PathLauncherFileTarget): boolean {
+  if (!fileTarget) return false;
+  return (
+    Boolean(fileTarget.filePath?.trim()) || normalizePositiveInt(fileTarget.line) !== undefined
+  );
+}
 function normalizePlatform(platform?: string | null): PathLauncherPlatform {
   return platform === 'darwin' || platform === 'win32' || platform === 'linux'
     ? platform
@@ -75,18 +173,44 @@ function parseCustomPathLauncherCommandTemplate(
 function buildSublimePathLauncherInput(
   targetPath: string,
   platform: PathLauncherPlatform,
-  label: string
+  label: string,
+  fileTarget?: PathLauncherFileTarget
 ): LaunchLocalPathInput {
-  const subl = (command: string) => ({ command, args: [targetPath] });
+  const { line, suffix } = formatLineColumnSuffix(fileTarget);
+  const resolvedFile = fileTarget?.filePath?.trim()
+    ? resolveLocalFileTargetPath(targetPath, fileTarget.filePath, platform)
+    : undefined;
+  const sublArgs = resolvedFile
+    ? [targetPath, `${resolvedFile}${suffix}`]
+    : line !== undefined
+      ? [`${targetPath}${suffix}`]
+      : [targetPath];
+  const subl = (command: string) => ({ command, args: sublArgs });
   const base = { kind: 'command' as const, targetPath, label };
 
   switch (platform) {
     case 'darwin':
+      if (line !== undefined) {
+        // `open -a` does not understand `:line[:col]`; try `subl` first, then open the file.
+        return {
+          ...base,
+          command: subl('subl'),
+          fallbackCommands: [
+            subl('/usr/local/bin/subl'),
+            { command: '/usr/bin/open', args: ['-a', 'Sublime Text', resolvedFile ?? targetPath] },
+          ],
+        };
+      }
       // `open -a` is the only reliable entry point on macOS (subl is rarely on
       // PATH); fall back to the CLI if the user symlinked it.
       return {
         ...base,
-        command: { command: '/usr/bin/open', args: ['-a', 'Sublime Text', targetPath] },
+        command: {
+          command: '/usr/bin/open',
+          args: resolvedFile
+            ? ['-a', 'Sublime Text', targetPath, resolvedFile]
+            : ['-a', 'Sublime Text', targetPath],
+        },
         fallbackCommands: [subl('subl'), subl('/usr/local/bin/subl')],
       };
     case 'win32':
@@ -200,22 +324,45 @@ function isEditorCliLauncherId(id: string): id is keyof typeof EDITOR_CLI_LAUNCH
   return Object.prototype.hasOwnProperty.call(EDITOR_CLI_LAUNCHERS, id);
 }
 
-export function buildVSCodePathLauncherFallbackUrl(
-  targetPath: string,
-  targetKind: 'file' | 'directory' = 'directory'
-): string {
+function encodeEditorLocalUrlPath(targetPath: string, targetKind: 'file' | 'directory'): string {
   const normalizedPath = targetPath.replaceAll('\\', '/');
   const absolutePath = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`;
   const urlPath =
     targetKind === 'directory' && !absolutePath.endsWith('/') ? `${absolutePath}/` : absolutePath;
-  const encodedPath = urlPath
+  return urlPath
     .split('/')
     .map((segment, index) =>
       index === 1 && /^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)
     )
     .join('/');
+}
 
-  return `vscode://file${encodedPath}?windowId=_blank`;
+export function buildVSCodePathLauncherFallbackUrl(
+  targetPath: string,
+  targetKind: 'file' | 'directory' = 'directory',
+  fileTarget?: PathLauncherFileTarget
+): string {
+  return buildEditorLocalFallbackUrl('vscode', targetPath, targetKind, fileTarget);
+}
+
+function buildEditorLocalFallbackUrl(
+  scheme: 'vscode' | 'cursor',
+  targetPath: string,
+  targetKind: 'file' | 'directory',
+  fileTarget?: PathLauncherFileTarget
+): string {
+  const { suffix } = formatLineColumnSuffix(fileTarget);
+  const filePath = fileTarget?.filePath?.trim();
+  const effectivePath = filePath
+    ? resolveLocalFileTargetPath(
+        targetPath,
+        filePath,
+        isWindowsAbsolutePath(targetPath) ? 'win32' : 'unknown'
+      )
+    : targetPath;
+  const effectiveKind: 'file' | 'directory' = filePath || suffix ? 'file' : targetKind;
+  const encodedPath = encodeEditorLocalUrlPath(effectivePath, effectiveKind);
+  return `${scheme}://file${encodedPath}${suffix}?windowId=_blank`;
 }
 
 /** The editor's CLI with `args`: by name first, then where each platform installs it. */
@@ -257,19 +404,48 @@ function buildEditorCliLauncherInput(
   targetPath: string,
   platform: PathLauncherPlatform,
   label: string,
-  targetKind: 'file' | 'directory'
+  targetKind: 'file' | 'directory',
+  fileTarget?: PathLauncherFileTarget
 ): LaunchLocalPathInput {
   const { newWindowFlag } = EDITOR_CLI_LAUNCHERS[id];
+  const targetRequested = hasFileTarget(fileTarget);
+  const { line, suffix } = formatLineColumnSuffix(fileTarget);
+  const resolvedFile = fileTarget?.filePath?.trim()
+    ? resolveLocalFileTargetPath(targetPath, fileTarget.filePath, platform)
+    : undefined;
+
+  let args: string[];
+  if (id === 'zed') {
+    if (resolvedFile) {
+      args = [targetPath, `${resolvedFile}${suffix}`];
+    } else if (line !== undefined) {
+      args = [`${targetPath}${suffix}`];
+    } else {
+      args = [targetPath];
+    }
+  } else if (resolvedFile) {
+    args = [
+      ...(newWindowFlag ? [newWindowFlag] : []),
+      targetPath,
+      ...(line !== undefined ? ['-g', `${resolvedFile}${suffix}`] : [resolvedFile]),
+    ];
+  } else if (line !== undefined) {
+    args = [...(newWindowFlag ? [newWindowFlag] : []), '-g', `${targetPath}${suffix}`];
+  } else {
+    args = newWindowFlag ? [newWindowFlag, targetPath] : [targetPath];
+  }
+
+  const fallbackUrl =
+    id === 'vscode'
+      ? buildEditorLocalFallbackUrl('vscode', targetPath, targetKind, fileTarget)
+      : id === 'cursor' && targetRequested
+        ? buildEditorLocalFallbackUrl('cursor', targetPath, targetKind, fileTarget)
+        : undefined;
+
   return {
     kind: 'command',
-    ...buildEditorCliCommands(
-      id,
-      platform,
-      newWindowFlag ? [newWindowFlag, targetPath] : [targetPath]
-    ),
-    ...(id === 'vscode'
-      ? { fallbackUrl: buildVSCodePathLauncherFallbackUrl(targetPath, targetKind) }
-      : {}),
+    ...buildEditorCliCommands(id, platform, args),
+    ...(fallbackUrl ? { fallbackUrl } : {}),
     targetPath,
     label,
   };
@@ -279,10 +455,15 @@ export function buildPathLauncherLaunchInput(
   launcher: PathLauncherOption,
   targetPath: string,
   platform?: string | null,
-  targetKind: 'file' | 'directory' = 'directory'
+  targetKind: 'file' | 'directory' = 'directory',
+  fileTarget?: PathLauncherFileTarget
 ): LaunchLocalPathInput {
+  const normalizedPlatform = normalizePlatform(platform);
   if (launcher.kind === 'custom') {
-    const parsed = parseCustomPathLauncherCommandTemplate(launcher.commandTemplate, targetPath);
+    const resolvedTarget = fileTarget?.filePath?.trim()
+      ? resolveLocalFileTargetPath(targetPath, fileTarget.filePath, normalizedPlatform)
+      : targetPath;
+    const parsed = parseCustomPathLauncherCommandTemplate(launcher.commandTemplate, resolvedTarget);
     if (!parsed.ok) {
       throw new Error(`Invalid path launcher command template: ${parsed.reason}`);
     }
@@ -298,14 +479,20 @@ export function buildPathLauncherLaunchInput(
     return buildEditorCliLauncherInput(
       launcher.id,
       targetPath,
-      normalizePlatform(platform),
+      normalizedPlatform,
       launcher.label,
-      targetKind
+      targetKind,
+      fileTarget
     );
   }
 
   if (launcher.id === 'sublime') {
-    return buildSublimePathLauncherInput(targetPath, normalizePlatform(platform), launcher.label);
+    return buildSublimePathLauncherInput(
+      targetPath,
+      normalizedPlatform,
+      launcher.label,
+      fileTarget
+    );
   }
 
   if (launcher.id === 'delta') {
@@ -421,7 +608,8 @@ export function buildRemotePathLauncherLaunchInput(
   targetPath: string,
   /** As `resolveRemotePathDestination` gives it for the launcher. */
   destination: SshDestination,
-  platform?: string | null
+  platform?: string | null,
+  fileTarget?: PathLauncherFileTarget
 ): LaunchLocalPathInput {
   if (launcher.kind !== 'builtin' || !isEditorCliLauncherId(launcher.id)) {
     throw new Error(
@@ -436,28 +624,68 @@ export function buildRemotePathLauncherLaunchInput(
     throw new Error(`Path launcher ${launcher.id} cannot be handed that machine`);
   }
 
-  const folder = targetPath
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
+  const encodePosix = (posixPath: string) =>
+    posixPath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+
+  const folder = encodePosix(targetPath);
+  const targetRequested = hasFileTarget(fileTarget);
+  const { line, suffix } = formatLineColumnSuffix(fileTarget);
+  const explicitFilePath = fileTarget?.filePath?.trim();
+  const resolvedFile = explicitFilePath
+    ? resolvePosixFileTargetPath(targetPath, explicitFilePath)
+    : undefined;
+  const encodedFile = resolvedFile ? encodePosix(resolvedFile) : folder;
+
   const { newWindowFlag } = EDITOR_CLI_LAUNCHERS[launcher.id];
   const authority = formatVsCodeRemoteAuthority(reached);
-  const args =
-    launcher.id === 'zed'
-      ? [`ssh://${formatSshDestination(reached)}${folder}`]
-      : [
-          ...(newWindowFlag ? [newWindowFlag] : []),
-          '--folder-uri',
-          `vscode-remote://${authority}${folder}`,
-        ];
+
+  let args: string[];
+  if (launcher.id === 'zed') {
+    const sshDest = formatSshDestination(reached);
+    if (resolvedFile && encodedFile !== folder) {
+      args = [`ssh://${sshDest}${folder}`, `ssh://${sshDest}${encodedFile}${suffix}`];
+    } else {
+      args = [`ssh://${sshDest}${encodedFile}${suffix}`];
+    }
+  } else if (resolvedFile) {
+    args = [
+      ...(newWindowFlag ? [newWindowFlag] : []),
+      '--folder-uri',
+      `vscode-remote://${authority}${folder}`,
+      ...(line !== undefined ? ['-g'] : []),
+      '--file-uri',
+      `vscode-remote://${authority}${encodedFile}${suffix}`,
+    ];
+  } else if (line !== undefined) {
+    args = [
+      ...(newWindowFlag ? [newWindowFlag] : []),
+      '-g',
+      '--file-uri',
+      `vscode-remote://${authority}${folder}${suffix}`,
+    ];
+  } else {
+    args = [
+      ...(newWindowFlag ? [newWindowFlag] : []),
+      '--folder-uri',
+      `vscode-remote://${authority}${folder}`,
+    ];
+  }
+
+  const fallbackUrl =
+    launcher.id === 'vscode'
+      ? `vscode://vscode-remote/${authority}${encodedFile}${suffix}?windowId=_blank`
+      : launcher.id === 'cursor' && targetRequested
+        ? `cursor://vscode-remote/${authority}${encodedFile}${suffix}?windowId=_blank`
+        : undefined;
+
   return {
     kind: 'command',
     ...buildEditorCliCommands(launcher.id, normalizePlatform(platform), args),
-    ...(launcher.id === 'vscode'
-      ? { fallbackUrl: `vscode://vscode-remote/${authority}${folder}?windowId=_blank` }
-      : {}),
+    ...(fallbackUrl ? { fallbackUrl } : {}),
     targetPath,
     label: launcher.label,
   };
 }
-

@@ -2465,6 +2465,112 @@ describe('LoroStreamsMachineRpcServer', () => {
     server.stop();
   });
 
+  it('serves code-nav/query over owner-scoped encrypted envelope and direct transport, rejecting owner mismatch', async () => {
+    const { isDirectRpcMethod, isOwnerScopedEncryptedRpcMethod } = await import('../src/rpc');
+    expect(isDirectRpcMethod('code-nav/query')).toBe(true);
+    expect(isOwnerScopedEncryptedRpcMethod('code-nav/query')).toBe(true);
+
+    const workspaceId = 'workspace-1' as WorkspaceId;
+    const machineId = 'machine-1' as MachineId;
+    const fake = createFakeStreamClient();
+    const queryCodeNav = vi.fn(async () => ({
+      type: 'code-nav/query' as const,
+      status: 'ok' as const,
+      action: 'enclosing' as const,
+      path: 'src/app.ts',
+      chain: [{ name: 'boot', kind: 'function' as const, startLine: 1, endLine: 10 }],
+      provider: 'ast-grep' as const,
+    }));
+    const server = new LoroStreamsMachineRpcServer({
+      logger: createSilentLogger(),
+      workspaceId,
+      machineId,
+      streamClient: fake.streamClient,
+      getMachineStatus: vi.fn(),
+      refreshMachineAcpCapabilities: vi.fn(),
+      resolveCodeCollabOwnerSessionId: vi.fn(
+        async (): Promise<SessionId> => 'session-parent' as SessionId
+      ),
+      queryCodeNav,
+    });
+
+    fake.pushBatch({
+      messages: [
+        {
+          jsonrpc: '2.0',
+          id: 'req-nav-1',
+          method: 'code-nav/query',
+          rpcVersion: '1',
+          machineId,
+          workspaceId,
+          replyTo: 'workspace-1:rpc:res:machine-1',
+          sentAt: Date.now(),
+          expiresAt: Date.now() + 5000,
+          params: await encryptCodeCollabV2RpcPayload('session-parent', {
+            action: 'enclosing',
+            sessionId: 'session-child',
+            path: 'src/app.ts',
+            startLine: 3,
+            endLine: 5,
+          }),
+        },
+        {
+          jsonrpc: '2.0',
+          id: 'req-nav-2',
+          method: 'code-nav/query',
+          rpcVersion: '1',
+          machineId,
+          workspaceId,
+          replyTo: 'workspace-1:rpc:res:machine-1',
+          sentAt: Date.now(),
+          expiresAt: Date.now() + 5000,
+          params: await encryptCodeCollabV2RpcPayload('session-wrong-owner', {
+            action: 'enclosing',
+            sessionId: 'session-child',
+            path: 'src/app.ts',
+            startLine: 3,
+            endLine: 5,
+          }),
+        },
+      ],
+      nextOffset: '2',
+      cursor: 'cursor-2',
+      upToDate: true,
+    });
+
+    await server.start();
+    await vi.waitFor(() => {
+      expect(fake.appended).toHaveLength(2);
+    });
+
+    expect(queryCodeNav).toHaveBeenCalledTimes(1);
+    const okReply = fake.appended.find(
+      (entry) => (entry.value as { id?: string }).id === 'req-nav-1'
+    )?.value as { result: CodeCollabV2RpcContentEnvelope };
+    await expect(decryptCodeCollabV2RpcPayload(okReply.result, 'session-parent')).resolves.toEqual({
+      type: 'code-nav/query',
+      status: 'ok',
+      action: 'enclosing',
+      path: 'src/app.ts',
+      chain: [{ name: 'boot', kind: 'function', startLine: 1, endLine: 10 }],
+      provider: 'ast-grep',
+    });
+
+    const deniedReply = fake.appended.find(
+      (entry) => (entry.value as { id?: string }).id === 'req-nav-2'
+    )?.value as { error: { code: string; data: CodeCollabV2RpcContentEnvelope } };
+    expect(deniedReply.error.code).toBe('permission_denied');
+    await expect(
+      decryptCodeCollabV2RpcPayload(deniedReply.error.data, 'session-wrong-owner')
+    ).resolves.toMatchObject({
+      type: 'code-nav/query',
+      status: 'error',
+      code: 'permission_denied',
+    });
+
+    server.stop();
+  });
+
   it('decrypts Code Collab current diff requests and encrypts current diff results', async () => {
     const workspaceId = 'workspace-1' as WorkspaceId;
     const machineId = 'machine-1' as MachineId;

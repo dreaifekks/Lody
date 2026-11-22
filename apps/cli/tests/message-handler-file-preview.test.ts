@@ -224,6 +224,7 @@ describe('MessageHandler file preview workspace lifecycle', () => {
     ['code-collab/open-current-diff', { sessionId, path: 'artifact.txt' }],
     ['code-collab/open-all-changes-diff', { sessionId }],
     ['code-collab/open-turn-diff', { sessionId, path: 'artifact.txt', turnId: 'synthetic' }],
+    ['code-nav/query', { action: 'diff-outline', sessionId, scope: 'uncommitted' }],
   ])('denies Guest encrypted read query %s before machine work', async (method, params) => {
     await encryptedHandler();
     const f = encryptedRpcFixture({ guest: true });
@@ -241,7 +242,9 @@ describe('MessageHandler file preview workspace lifecycle', () => {
         queryId: 'denied',
         method,
         params:
-          method.startsWith('session/history-') || method.startsWith('code-collab/')
+          method.startsWith('session/history-') ||
+          method.startsWith('code-collab/') ||
+          method === 'code-nav/query'
             ? await encryptCodeCollabV2RpcPayload(sessionId, params)
             : params,
       } as E2eeQueryInput;

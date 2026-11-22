@@ -130,6 +130,11 @@ import {
   filePreviewV3Error,
   type FilePreviewV3Request,
   type FilePreviewV3Response,
+  CodeNavQueryRequestSchema,
+  CodeNavErrorCodeSchema,
+  codeNavError,
+  type CodeNavQueryRequest,
+  type CodeNavQueryResponse,
 } from '@lody/shared';
 import {
   CodeCollabV2LspRpcParamsSchema,
@@ -361,6 +366,23 @@ const toFilePreviewRpcError = (
   };
 };
 
+const toCodeNavRpcError = (
+  error: unknown,
+  message: string
+): { code: string; message: string; data?: unknown } => {
+  const rawCode =
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined;
+  const parsed = rawCode ? CodeNavErrorCodeSchema.safeParse(rawCode) : undefined;
+  const code = parsed?.success ? parsed.data : 'transient_io';
+  return {
+    code,
+    message,
+    data: codeNavError(code, { message, retryable: code === 'transient_io' || code === 'timeout' }),
+  };
+};
+
 const codeCollabOwnerMismatchError = (): Error & {
   code: 'permission_denied';
   toRpcError: () => CodeCollabV2Error;
@@ -572,6 +594,8 @@ type RpcServerDeps = {
   listSessionDirectory?: (
     args: SessionDirectoryListRequest
   ) => Promise<SessionDirectoryListResponse>;
+  /** `code-nav/query`: read-only AST code navigation; independent of Code Collab. */
+  queryCodeNav?: (args: CodeNavQueryRequest) => Promise<CodeNavQueryResponse>;
   refreshCodeCollabText?: (
     args: CodeCollabV2RefreshTextRequest
   ) => Promise<CodeCollabV2RefreshTextResponse>;
@@ -2435,6 +2459,21 @@ export class LoroStreamsMachineRpcServer {
           });
           return;
         }
+        case 'code-nav/query': {
+          const decoded = await this.decryptCodeCollabV2RequestParams(request.params);
+          codeCollabOwnerSessionId = decoded.ownerSessionId;
+          const params = CodeNavQueryRequestSchema.parse(decoded.payload);
+          await this.verifyCodeCollabV2OwnerSession(decoded.ownerSessionId, params.sessionId);
+          const response: CodeNavQueryResponse = this.deps.queryCodeNav
+            ? await this.deps.queryCodeNav(params)
+            : codeNavError('unavailable', {
+                message: 'Code navigation is not available on this machine.',
+              });
+          await appendResultResponse(request.replyTo, request.id, request.method, response, {
+            codeCollabOwnerSessionId: decoded.ownerSessionId,
+          });
+          return;
+        }
         case 'session/preview-create': {
           if (!this.deps.createSessionPreview) {
             await appendErrorResponse(request.replyTo, request.id, request.method, {
@@ -2636,7 +2675,9 @@ export class LoroStreamsMachineRpcServer {
             request.method === 'file/download-chunk' ||
             request.method === 'file/list-dir'
           ? toFilePreviewRpcError(failure, message)
-          : null;
+          : request.method === 'code-nav/query'
+            ? toCodeNavRpcError(failure, message)
+            : null;
       await appendErrorResponse(
         request.replyTo,
         request.id,
@@ -2783,6 +2824,7 @@ export class LoroStreamsMachineRpcServer {
       | FilePreviewV3Response
       | FileDownloadResponse
       | SessionDirectoryListResponse
+      | CodeNavQueryResponse
       | SessionPreviewCreateResponse
       | SessionPreviewRevokeResponse
       | SessionPreviewStatusResponse

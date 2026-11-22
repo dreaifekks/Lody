@@ -36,6 +36,7 @@ const bundledNodeBuiltins = new Set([
 ]);
 
 const explicitlyExternal = new Set([
+  '@ast-grep/napi',
   '@loro-dev/roost-node',
   '@napi-rs/keyring',
   'better-sqlite3',
@@ -71,6 +72,7 @@ const runtimeEntries = {
     __dirname,
     'src/lib/code-collab/workspace-watch-worker.ts'
   ),
+  'code-nav-worker': path.resolve(__dirname, 'src/lib/code-nav/code-nav-worker.ts'),
 };
 const adapterEntries = {
   'codex-acp': path.resolve(__dirname, 'src/codex-acp-entry.ts'),
@@ -101,7 +103,13 @@ export default defineConfig(({ mode }) => ({
     ],
   },
   ssr: {
-    external: ['bufferutil', 'utf-8-validate', 'typescript', '@loro-dev/roost-node'],
+    external: [
+      'bufferutil',
+      'utf-8-validate',
+      'typescript',
+      '@loro-dev/roost-node',
+      '@ast-grep/napi',
+    ],
     noExternal: true,
   },
   build: {
@@ -128,6 +136,7 @@ export default defineConfig(({ mode }) => ({
         id.endsWith('.node') ||
         bundledNodeBuiltins.has(id) ||
         explicitlyExternal.has(id) ||
+        id.startsWith('@ast-grep/napi') ||
         id.includes('/node_modules/@loro-dev/roost-node/'),
       output: {
         // Keep dependency sourcemaps out of the large CLI entry.

@@ -234,6 +234,8 @@ provides LocalProjects. See the [decision](../../../../.agents/notes/implemented
   Storage responsibilities: [history writes](../../../../.agents/docs/session-history-writes.md).
 - `code-collab/` — unified Code Collab v2 filesystem RPC service
   ([AGENTS.md](code-collab/AGENTS.md)).
+- `code-nav/` — read-only AST code navigation (`code-nav/query`) over `@ast-grep/napi`
+  with an isolated recyclable worker and bounded L1/L2 caches; independent of Code Collab.
 - `file-preview/` — the `file/preview` (File Preview v3) read path
   ([AGENTS.md](file-preview/AGENTS.md)).
 - `loro/workspace-presence.ts` — native workspace/remote-generation owner;

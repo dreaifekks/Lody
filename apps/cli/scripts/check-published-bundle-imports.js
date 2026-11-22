@@ -24,6 +24,7 @@ const dependencyBlocks = [
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 const workspacePackageNames = new Set();
 const requiredPublishedRuntimeDependencies = [
+  '@ast-grep/napi',
   '@loro-dev/roost-node',
   '@napi-rs/keyring',
   'better-sqlite3',
@@ -41,6 +42,7 @@ const requiredPublishedRuntimeDependencies = [
 // through tty.WriteStream, where EAGAIN is masked and can block (microsoft/node-pty#833).
 const requiredExactPublishedRuntimeDependencies = ['loro-crdt'];
 const requiredPinnedPublishedRuntimeDependencies = new Map([
+  ['@ast-grep/napi', '0.51.2'],
   ['@lydell/node-pty', '1.2.0-beta.14'],
   ['@loro-dev/roost-node', '0.3.1'],
 ]);
@@ -105,6 +107,7 @@ runDevinAdapterBundleSmoke();
 runPublishedRuntimeSmoke();
 runPublishedInternalCommandSmoke();
 runWorkspaceWatchWorkerSmoke();
+runCodeNavWorkerSmoke();
 runDiffWorkerSmoke();
 runTurnDiffStoreWorkerSmoke();
 
@@ -389,6 +392,11 @@ const probeDb = new Database(':memory:');
 probeDb.exec('CREATE TABLE t(a)');
 probeDb.close();
 requireFromBundle('@lydell/node-pty');
+const astGrep = requireFromBundle('@ast-grep/napi');
+const astProbe = astGrep.parse(astGrep.Lang.TypeScript, 'export function probeOk() { return 1; }');
+if (!astProbe.root().find({ rule: { kind: 'function_declaration' } })) {
+  throw new Error('Published @ast-grep/napi parse probe failed');
+}
 requireFromBundle.resolve('loro-crdt');
 requireFromBundle.resolve('tinypool');
 const { RoostNativeClient } = await import('@loro-dev/roost-node');
@@ -617,6 +625,59 @@ try {
     });
   } catch (error) {
     console.error('Published CLI turn-diff worker smoke failed.');
+    if (error && typeof error === 'object') {
+      if ('stdout' in error && error.stdout) console.error(String(error.stdout));
+      if ('stderr' in error && error.stderr) console.error(String(error.stderr));
+    }
+    process.exit(1);
+  }
+}
+
+function runCodeNavWorkerSmoke() {
+  const workerPath = path.join(distDir, 'code-nav-worker.js');
+  if (!fs.existsSync(workerPath)) {
+    console.error(`Published CLI code-nav worker is missing: ${workerPath}`);
+    process.exit(1);
+  }
+  const smokeScript = `
+const { spawn } = await import('node:child_process');
+const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+const { tmpdir } = await import('node:os');
+const path = await import('node:path');
+const root = await mkdtemp(path.join(tmpdir(), 'lody-code-nav-worker-smoke-'));
+await writeFile(path.join(root, 'sample.ts'), 'export function smokeFn() {\\n  return 42;\\n}\\n');
+const child = spawn(process.execPath, [${JSON.stringify(workerPath)}], {
+  env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, LANG: process.env.LANG },
+  stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+});
+const timeout = setTimeout(() => { child.kill('SIGKILL'); process.exit(2); }, 8000);
+child.on('message', (message) => {
+  if (message?.type !== 'code-nav/result' || message.id !== 1) return;
+  if (message.response?.status !== 'ok' || message.response?.action !== 'enclosing') process.exit(3);
+  if (message.response.chain?.[0]?.name !== 'smokeFn') process.exit(4);
+  child.send({ type: 'code-nav/shutdown' });
+});
+child.on('exit', async (code) => {
+  clearTimeout(timeout);
+  await rm(root, { recursive: true, force: true });
+  process.exit(code === 0 ? 0 : 5);
+});
+child.send({
+  type: 'code-nav/query',
+  id: 1,
+  action: 'enclosing',
+  input: { workspaceRoot: root, path: 'sample.ts', startLine: 2, endLine: 2 },
+});
+`;
+  try {
+    execFileSync(process.execPath, ['--input-type=module', '--eval', smokeScript], {
+      cwd: cliRoot,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 12_000,
+    });
+  } catch (error) {
+    console.error('Published CLI code-nav worker smoke failed.');
     if (error && typeof error === 'object') {
       if ('stdout' in error && error.stdout) console.error(String(error.stdout));
       if ('stderr' in error && error.stderr) console.error(String(error.stderr));

@@ -50,6 +50,7 @@ import {
   CodeCollabV2SaveTextResponseSchema,
 } from './code-collab';
 import { FilePreviewV3RequestSchema, FilePreviewV3ResponseSchema } from './file-preview';
+import { CodeNavQueryRequestSchema, CodeNavQueryResponseSchema } from './code-nav';
 import {
   MachineStatusResponseSchema,
   MachinePingResponseSchema,
@@ -670,6 +671,10 @@ export const LocalMachineRpcRequestSchema = z.discriminatedUnion('method', [
     method: z.literal('file/preview'),
     params: FilePreviewV3RequestSchema,
   }).strict(),
+  BaseLocalMachineRpcRequestSchema.extend({
+    method: z.literal('code-nav/query'),
+    params: CodeNavQueryRequestSchema,
+  }).strict(),
   // Electron's same-machine preview route. This method deliberately has no
   // Loro Streams counterpart: the desktop user may inspect any local file,
   // while remote requests retain File Preview v3's restricted-root policy.
@@ -922,6 +927,7 @@ export const SessionLiveStatusResponseSchema = z.discriminatedUnion('success', [
 ]);
 
 export const LocalMachineRpcResultSchema = z.union([
+  CodeNavQueryResponseSchema,
   LanRpcForwardResultSchema,
   BoardFileListSchema,
   // Before the looser session responses, which would strip its fields.

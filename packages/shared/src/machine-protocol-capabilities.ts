@@ -1,3 +1,5 @@
+import { CODE_NAV_PROTOCOL_VERSION } from './code-nav';
+
 /**
  * Durable protocols understood by a Machine daemon.
  *
@@ -73,6 +75,7 @@ export const MACHINE_PROTOCOL_CAPABILITIES = {
   providerRateLimitsRefresh: 'providerRateLimitsRefresh',
   codeCollabAllChangesScope: 'codeCollabAllChangesScope',
   codeCollabDiffBlobs: 'codeCollabDiffBlobs',
+  codeNav: 'codeNav',
   sessionHistory: 'sessionHistory',
   sessionHistoryIncremental: 'sessionHistoryIncremental',
   sessionHistoryWatch: 'sessionHistoryWatch',
@@ -210,6 +213,7 @@ export const PROJECT_REPOSITORY_MEMBERS_PROTOCOL_VERSION = 1;
 export const CURRENT_MACHINE_PROTOCOL_CAPABILITIES: MachineProtocolCapabilities = {
   [MACHINE_PROTOCOL_CAPABILITIES.machineIdentityRestore]: 1,
   [MACHINE_PROTOCOL_CAPABILITIES.codeCollabDiffBlobs]: CODE_COLLAB_DIFF_BLOBS_PROTOCOL_VERSION,
+  [MACHINE_PROTOCOL_CAPABILITIES.codeNav]: CODE_NAV_PROTOCOL_VERSION,
   // `session/live-status` accepts `includeActivity` and may answer with `activity`.
   [MACHINE_PROTOCOL_CAPABILITIES.sessionLiveActivity]: 1,
   // `machine/status` accepts `includeDisk` and may answer with `disk`.
@@ -906,5 +910,16 @@ export function machineSupportsAndroidEmulatorQuality(
     machine,
     MACHINE_PROTOCOL_CAPABILITIES.androidEmulatorQuality,
     1
+  );
+}
+
+/** Whether the target daemon serves read-only `code-nav/query` symbol/caller lookups. */
+export function machineSupportsCodeNav(
+  machine: MachineProtocolCapabilityCarrier | null | undefined
+): boolean {
+  return machineSupportsProtocolCapability(
+    machine,
+    MACHINE_PROTOCOL_CAPABILITIES.codeNav,
+    CODE_NAV_PROTOCOL_VERSION
   );
 }

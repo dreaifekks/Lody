@@ -450,6 +450,7 @@ import {
   type FilePreviewWorkspaceResolver,
 } from '@/lib/file-preview/file-preview-service';
 import { listSessionDirectory } from '@/lib/file-preview/session-directory-listing';
+import { CodeNavService, type CodeNavWorkspaceResolver } from '@/lib/code-nav';
 import {
   CodeCollabV2DiffStore,
   type CodeCollabV2DiffStoreEvent,
@@ -1107,6 +1108,8 @@ export class MessageHandler {
   // File Preview v3. Separate from Code Collab on purpose: previewing a file must
   // not start a workspace watcher or publish a file index.
   private filePreviewService: FilePreviewService;
+  // Read-only AST code navigation (`code-nav/query`). Independent of Code Collab.
+  private codeNavService: CodeNavService;
   private encryptedFileReader?: FilePreviewService;
   private encryptedCodeCollabReader?: CodeCollabV2Service;
   private diffBlobReader!: CodeCollabV2Service;
@@ -3542,6 +3545,32 @@ export class MessageHandler {
       resolveWorkspace: this.resolveFilePreviewWorkspace,
       ...(this.cloudPort.kind === 'local' ? { pathPolicy: { allowArbitraryPaths: true } } : {}),
     });
+    const resolveCodeNavWorkspace: CodeNavWorkspaceResolver = async (sessionId, rootId) => {
+      const resolved = config.encryptedWorkspace
+        ? await this.resolveEncryptedCodeCollabV2Workspace(sessionId, { rootId })
+        : await this.resolveCodeCollabV2Workspace(sessionId, { rootId });
+      if (resolved.ok) {
+        return {
+          ok: true,
+          ownerSessionId: resolved.ownerSessionId,
+          workspaceRoot: resolved.workspaceRoot,
+          ...(resolved.allChangesBaseBranch
+            ? { preferredBaseBranch: resolved.allChangesBaseBranch }
+            : {}),
+        };
+      }
+      return {
+        ok: false,
+        code:
+          resolved.code === 'workspace_root_unavailable'
+            ? 'workspace_unavailable'
+            : resolved.code === 'machine_offline'
+              ? 'unavailable'
+              : resolved.code,
+        message: resolved.message,
+      };
+    };
+    this.codeNavService = new CodeNavService({ resolveWorkspace: resolveCodeNavWorkspace });
     this.diffBlobStoreReader = new CodeCollabV2DiffStore(this.workspaceId, { readOnly: true });
     this.diffBlobReader = new CodeCollabV2Service({
       diffStore: this.diffBlobStoreReader,
@@ -4216,6 +4245,7 @@ export class MessageHandler {
           ? this.resolveEncryptedCodeCollabOwnerSessionId
           : this.resolveCodeCollabV2OwnerSessionId,
         previewFile: async (request) => await fileReader.previewFile(request),
+        queryCodeNav: async (request) => await this.codeNavService.query(request),
         // Ordinary workspaces only; an encrypted reader has no folder listing yet, so the
         // server answers `unsupported_protocol` there.
         ...(this.encryptedFileReader
@@ -8609,6 +8639,9 @@ export class MessageHandler {
       case 'file/preview':
         await assertOwner(request.params.sessionId as SessionId);
         return await this.filePreviewService.previewFile(request.params);
+      case 'code-nav/query':
+        await assertOwner(request.params.sessionId as SessionId);
+        return await this.codeNavService.query(request.params);
       case 'file/resolve-local':
         return await this.filePreviewService.resolveLocalFile(
           request.params,
@@ -12703,6 +12736,7 @@ export class MessageHandler {
     this.sessionDispatchWatcher.stop();
     this.diffBlobReader?.dispose();
     this.codeCollabV2Service.dispose();
+    await this.codeNavService.dispose();
     for (const handle of this.sessionLifecycleWatchHandles) handle.unsubscribe();
     this.sessionLifecycleWatchHandles = [];
     if (this.worktreeGcTimer) {

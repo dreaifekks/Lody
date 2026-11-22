@@ -35,6 +35,7 @@ const require = createRequire(import.meta.url)
 // strict layout exposes transitive deps only next to the package that
 // declares them (.pnpm/<pkg>/node_modules/<dep>), not under apps/cli.
 const CLI_RUNTIME_PACKAGE_CHAIN = [
+  { name: '@ast-grep/napi', from: 'cli' },
   { name: '@loro-dev/roost-node', from: 'cli', entry: '@loro-dev/roost-node/native' },
   { name: '@napi-rs/keyring', from: 'cli' },
   { name: 'better-sqlite3', from: 'cli' },
@@ -67,6 +68,93 @@ export const stagedNodeModulesDir = path.join(stagedCliDir, 'node_modules')
 export const stagedSqliteDir = path.join(stagedNodeModulesDir, 'better-sqlite3')
 export const stagedNodePtyDir = path.join(stagedNodeModulesDir, '@lydell', 'node-pty')
 export const stagedRoostDir = path.join(stagedNodeModulesDir, '@loro-dev', 'roost-node')
+export const stagedAstGrepDir = path.join(stagedNodeModulesDir, '@ast-grep', 'napi')
+
+export function astGrepBinaryPackageName({ platform, arch }) {
+  if (!['darwin', 'linux', 'win32'].includes(platform) || !['arm64', 'x64'].includes(arch)) {
+    throw new Error(`No @ast-grep/napi native binding for ${platform}-${arch}`)
+  }
+  const suffix = platform === 'linux' ? '-gnu' : platform === 'win32' ? '-msvc' : ''
+  return `@ast-grep/napi-${platform}-${arch}${suffix}`
+}
+
+export function astGrepPrebuildFileName(target) {
+  const triple = astGrepBinaryPackageName(target).slice('@ast-grep/napi-'.length)
+  return `ast-grep-napi.${triple}.node`
+}
+
+export function stagedAstGrepBinaryDir(target, nodeModulesDir = stagedNodeModulesDir) {
+  return path.join(nodeModulesDir, ...astGrepBinaryPackageName(target).split('/'))
+}
+
+export function stagedAstGrepBindingPath(target, nodeModulesDir = stagedNodeModulesDir) {
+  return path.join(stagedAstGrepBinaryDir(target, nodeModulesDir), astGrepPrebuildFileName(target))
+}
+
+export function stageAstGrepBinding(
+  wrapperSourceDir,
+  destinationNodeModulesDir,
+  target,
+  { fetchBinaryPackage = fetchNativeBinaryPackage } = {}
+) {
+  const packageName = astGrepBinaryPackageName(target)
+  const binaryFile = astGrepPrebuildFileName(target)
+  const wrapperPkgPath = path.join(wrapperSourceDir, 'package.json')
+  if (!fs.existsSync(wrapperPkgPath)) {
+    throw new Error(
+      `@ast-grep/napi wrapper not found at ${wrapperSourceDir}. Run pnpm install first.`
+    )
+  }
+  const metadata = JSON.parse(fs.readFileSync(wrapperPkgPath, 'utf8'))
+  const version = metadata.optionalDependencies?.[packageName]
+  if (!version || version !== metadata.version) {
+    throw new Error(
+      `@ast-grep/napi@${metadata.version} is missing exact optional dependency ${packageName}`
+    )
+  }
+  const sibling = path.join(path.dirname(wrapperSourceDir), packageName.slice('@ast-grep/'.length))
+  const installed = fs.existsSync(path.join(sibling, 'package.json')) ? sibling : undefined
+  let downloaded
+  try {
+    const sourcePkgDir =
+      installed ?? (downloaded = fetchBinaryPackage(packageName, version)).packageDir
+    const childMeta = JSON.parse(fs.readFileSync(path.join(sourcePkgDir, 'package.json'), 'utf8'))
+    if (childMeta.name !== packageName || childMeta.version !== version) {
+      throw new Error(
+        `@ast-grep/napi platform package version mismatch: expected ${packageName}@${version}`
+      )
+    }
+    if (!fs.existsSync(path.join(sourcePkgDir, binaryFile))) {
+      throw new Error(
+        `@ast-grep/napi platform package ${packageName}@${version} is missing ${binaryFile}`
+      )
+    }
+    const scopeDir = path.join(destinationNodeModulesDir, '@ast-grep')
+    fs.mkdirSync(scopeDir, { recursive: true })
+    for (const entry of fs.readdirSync(scopeDir)) {
+      if (entry.startsWith('napi-')) {
+        fs.rmSync(path.join(scopeDir, entry), { recursive: true, force: true })
+      }
+    }
+    const targetDir = stagedAstGrepBinaryDir(target, destinationNodeModulesDir)
+    copyPackageDir(sourcePkgDir, targetDir, { isTopLevel: false })
+    return stagedAstGrepBindingPath(target, destinationNodeModulesDir)
+  } finally {
+    downloaded?.cleanup()
+  }
+}
+
+export function installEmbeddedAstGrepBinding(target) {
+  if (!fs.existsSync(path.join(stagedAstGrepDir, 'package.json'))) {
+    throw new Error(
+      `Staged @ast-grep/napi not found at ${stagedAstGrepDir}. Run \`pnpm run sync:cli\` first.`
+    )
+  }
+  const wrapper = resolvePackageDir('@ast-grep/napi', cliAppRoot)
+  const bindingPath = stageAstGrepBinding(wrapper, stagedNodeModulesDir, target)
+  console.log(`Staged embedded @ast-grep/napi binding (${target.platform}-${target.arch})`)
+  return bindingPath
+}
 
 export function roostPrebuildFileName({ platform, arch }) {
   if (!['darwin', 'linux', 'win32'].includes(platform) || !['arm64', 'x64'].includes(arch)) {
