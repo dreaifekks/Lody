@@ -567,10 +567,8 @@ export function DesktopRunConfigMenu({
   );
   const selectedRole: AgentRole | undefined = selectedRoleItem?.role;
 
-  /* The half of the face that describes the run configuration rather than what
-     was picked. Built as parts so the separator dots can be placed by the
-     caller: inside the trigger it continues the agent name, while a Role
-     renders it OUTSIDE the trigger, where a leading dot would dangle. */
+  /* The half of the face that describes the run configuration when no Role is
+     selected: inside the trigger it continues the agent name. */
   const configFaceParts: ReactNode[] = [];
   if (modelLabel) {
     configFaceParts.push(
@@ -594,38 +592,27 @@ export function DesktopRunConfigMenu({
   if (fastOn) {
     configFaceParts.push(<Zap key="fast" {...stylex.props(surface.faceLive)} aria-hidden="true" />);
   }
-  /* Permission joins the face ONLY behind a Role, and only one the Role pins:
-     otherwise the standalone permission button is showing the same value a step
-     to the right, and saying it twice is worse than saying it once. */
+  /* Behind a selected Role, model/reasoning stay hidden on the footer so the
+     Role name stands on its own. Only a warning-tone permission pinned by the
+     Role (e.g. YOLO / Full access) stays visible beside the button, because the
+     standalone permission button is hidden while the Role pins permission. */
   const permissionFace = resolvePermissionModeFace({
     modeOptions,
     selectedModeId,
     configOptionSelectors,
     configOptionValues,
   });
-  if (
-    selectedRoleItem &&
-    permissionFace.label &&
-    doesAgentRolePinPermissionMode(selectedRoleItem.instance.runConfig, permissionFace.source)
-  ) {
-    // A warning-tone permission (full access / skip permissions) keeps its
-    // amber shield here. The rest of the face is deliberately quiet because a
-    // Role already decided it — but "this Role runs with full access" is not a
-    // detail, and it is the one value that no longer has a button carrying it.
+  const pinnedWarningPermissionLabel = useMemo(() => {
+    if (
+      !selectedRoleItem ||
+      !permissionFace.label ||
+      !doesAgentRolePinPermissionMode(selectedRoleItem.instance.runConfig, permissionFace.source)
+    ) {
+      return null;
+    }
     const warning = classifyPermissionModeFace(permissionFace.value);
-    configFaceParts.push(
-      warning.kind !== 'hidden' && warning.tone === 'warning' ? (
-        <span key="permission" {...stylex.props(surface.faceGroup, surface.faceWarning)}>
-          <ShieldAlert {...stylex.props(surface.glyph14)} aria-hidden="true" />
-          {permissionFace.label}
-        </span>
-      ) : (
-        <span key="permission" {...stylex.props(surface.faceFixed)}>
-          {permissionFace.label}
-        </span>
-      )
-    );
-  }
+    return warning.kind !== 'hidden' && warning.tone === 'warning' ? permissionFace.label : null;
+  }, [permissionFace.label, permissionFace.source, permissionFace.value, selectedRoleItem]);
   const withFaceDots = (parts: ReactNode[], leadingDot: boolean): ReactNode[] =>
     parts.flatMap((part, index) =>
       index === 0 && !leadingDot ? [part] : [<FaceDot key={`dot-${index}`} />, part]
@@ -1013,13 +1000,17 @@ export function DesktopRunConfigMenu({
     </Menu.Root>
   );
 
-  /* The values a Role pins, stated but INERT: only the Role itself is a control,
-     because changing one of these by hand is what stops the configuration being
-     that Role — and a knob that silently unnames the thing beside it is a trap.
-     The Detailed tab is where they are changed. */
+  /* Beside a selected Role, only a warning-tone pinned permission (e.g. YOLO /
+     Full access) stays visible as an inert badge; model/reasoning stay inside
+     the Role menu so the footer reads cleanly as the Role itself. */
   const roleConfigFace =
-    selectedRole && configFaceParts.length > 0 ? (
-      <span {...stylex.props(surface.faceInert)}>{withFaceDots(configFaceParts, false)}</span>
+    selectedRole && pinnedWarningPermissionLabel ? (
+      <span {...stylex.props(surface.faceInert)}>
+        <span {...stylex.props(surface.faceGroup, surface.faceWarning)}>
+          <ShieldAlert {...stylex.props(surface.glyph14)} aria-hidden="true" />
+          {pinnedWarningPermissionLabel}
+        </span>
+      </span>
     ) : null;
 
   return roleConfigFace ? (

@@ -619,8 +619,8 @@ export const ExistingSessionRoles: Story = {
 };
 
 /**
- * A Role the composer currently IS: the footer names it and states its values
- * beside the button, and the permission button is gone because the Role pins it.
+ * A Role the composer currently IS: the footer names the Role alone, hiding
+ * model/reasoning clutter and the standalone permission button.
  */
 export const RoleSelected: Story = {
   args: { initialInstanceId: getAgentRoleTargets(reviewer)[0]!.id },
@@ -630,9 +630,8 @@ export const RoleSelected: Story = {
 };
 
 /**
- * A Role that pins full access keeps the amber shield in the face. The rest of
- * the face is quiet because the Role decided it, but this is the one value that
- * no longer has a button of its own carrying the warning.
+ * A Role that pins full access keeps only the inert amber shield badge beside
+ * the Role button, because the standalone permission button is hidden.
  */
 export const RoleWithWarningPermission: Story = {
   args: {
@@ -915,8 +914,8 @@ export const RegistryYoloRoleSubmenu: Story = {
 
 /**
  * Registry Antigravity YOLO Role selected on the composer footer: keeps the
- * Role name on the trigger, states `Gemini 4 Neon · Extra · ⚠ YOLO` beside it,
- * and drops the standalone permission button.
+ * Role name on the trigger, shows only the inert `⚠ YOLO` badge beside it
+ * (hiding model/reasoning), and drops the standalone permission button.
  */
 export const RegistryYoloRoleSelected: Story = {
   render: () => <RegistryYoloStoryShell initialInstanceId={antigravityRoleItems[0]!.instance.id} />,

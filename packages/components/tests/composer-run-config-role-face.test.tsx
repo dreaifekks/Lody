@@ -194,7 +194,7 @@ describe('DesktopRunConfigMenu role face', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('gives the button to the Role alone and leaves its values inert beside it', async () => {
+  it('gives the footer to the Role alone when it pins non-warning settings', async () => {
     const view = await render({
       agentRoles: {
         items: [roleItem],
@@ -203,38 +203,56 @@ describe('DesktopRunConfigMenu role face', () => {
       },
     });
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
-    // The Role IS the whole run configuration, so it is the only thing to click.
+    // The Role IS the whole run configuration, so it is the only thing on the footer.
     expect(trigger?.textContent).toContain('Code Reviewer');
     expect(trigger?.textContent).not.toContain('Codex Primary');
     expect(trigger?.textContent).not.toContain('5.5');
-
-    // Its values are still stated — outside the button, and outside every other
-    // control: changing one by hand is what stops the configuration being that
-    // Role, so it must not be a knob sitting next to the Role's own name.
-    expect(view.textContent).toContain('5.5');
-    const valueFace = [...view.querySelectorAll('span')].find(
-      (node) => node.textContent === '5.5' || node.textContent?.startsWith('5.5')
-    );
-    expect(valueFace?.closest('button')).toBeNull();
+    // Non-warning model / reasoning / permission values stay inside the Role menu.
+    expect(view.textContent).not.toContain('5.5');
+    expect(view.textContent).not.toContain('Read-only');
   });
 
-  it('states the permission the Role pins, since it is part of what was picked', async () => {
+  it('keeps an inert warning badge beside the Role when it pins full access', async () => {
+    const fullAccessRole = singleMachineRole({
+      ...role,
+      instances: [
+        {
+          ...getAgentRoleTargets(role)[0]!,
+          runConfig: { modelId: 'gpt-5.5', modeId: 'agent-full-access' },
+        },
+      ],
+    });
+    const fullAccessItem = { ...composerItemsOf(fullAccessRole)[0]!, agentConfig };
     const view = await render({
+      modeOptions: [
+        ...baseProps.modeOptions!,
+        { value: 'agent-full-access', label: 'Full access' },
+      ],
+      selectedModeId: 'agent-full-access',
       agentRoles: {
-        items: [roleItem],
-        selectedInstanceId: roleItem.instance.id,
+        items: [fullAccessItem],
+        selectedInstanceId: fullAccessItem.instance.id,
         onSelect: () => undefined,
       },
     });
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
-    expect(trigger?.textContent).not.toContain('Read-only');
-    // Beside the button, with the rest of the values the Role decided — the
-    // composer drops its own permission button while a Role pins it.
-    expect(view.textContent).toContain('Read-only');
+    expect(trigger?.textContent).toContain('Code Reviewer');
+    expect(trigger?.textContent).not.toContain('Full access');
+    expect(view.textContent).not.toContain('5.5');
+    expect(view.textContent).toContain('Full access');
+    const warningFace = [...view.querySelectorAll('span')].find(
+      (node) => node.textContent === 'Full access'
+    );
+    expect(warningFace?.closest('button')).toBeNull();
   });
 
   it('leaves permission out of the face when the Role does not pin it', async () => {
     const view = await render({
+      modeOptions: [
+        ...baseProps.modeOptions!,
+        { value: 'agent-full-access', label: 'Full access' },
+      ],
+      selectedModeId: 'agent-full-access',
       agentRoles: {
         items: [
           {
@@ -253,10 +271,10 @@ describe('DesktopRunConfigMenu role face', () => {
         onSelect: () => undefined,
       },
     });
-    expect(view.textContent).not.toContain('Read-only');
+    expect(view.textContent).not.toContain('Full access');
   });
 
-  it('keeps a registry Antigravity YOLO Role on the button and states its config-option model, effort, and YOLO beside it', async () => {
+  it('keeps a registry Antigravity YOLO Role on the button and shows only the inert YOLO warning beside it', async () => {
     const antigravityConfig: AgentConfigMeta = {
       id: 'config-antigravity' as AgentConfigId,
       machineId,
@@ -352,9 +370,14 @@ describe('DesktopRunConfigMenu role face', () => {
     const trigger = view.querySelector('button[aria-label="Run configuration"]');
     expect(trigger?.textContent).toContain('Global Review');
     expect(trigger?.textContent).not.toContain('Gemini 4 Neon');
-    expect(view.textContent).toContain('Gemini 4 Neon');
-    expect(view.textContent).toContain('Extra');
+    expect(trigger?.textContent).not.toContain('YOLO');
+    expect(view.textContent).not.toContain('Gemini 4 Neon');
+    expect(view.textContent).not.toContain('Extra');
     expect(view.textContent).toContain('YOLO');
+    const yoloBadge = [...view.querySelectorAll('span')].find(
+      (node) => node.textContent === 'YOLO'
+    );
+    expect(yoloBadge?.closest('button')).toBeNull();
   });
 
   const openMenu = async (view: HTMLElement) => {
