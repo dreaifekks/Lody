@@ -2163,10 +2163,14 @@ export class AgentClient implements acp.Client {
     const canForkSession = this.supportsFork && hasForkMethod;
 
     // Pi advertises loadSession only for history import; a live resume must not replay it.
+    // Antigravity (`agy acp --process-per-session`) streams `session/load` replay
+    // notifications asynchronously past its JSON-RPC response, which can bleed into the
+    // next turn; `session/resume` restores the session and MCP servers without replay.
     const preferResumeOverLoad =
-      this.options.agentConfig?.cliType === 'builtin' &&
-      (this.options.agentConfig.agentType === 'kimi' ||
-        this.options.agentConfig.agentType === 'pi');
+      (this.options.agentConfig?.cliType === 'builtin' &&
+        (this.options.agentConfig.agentType === 'kimi' ||
+          this.options.agentConfig.agentType === 'pi')) ||
+      this.isAntigravityServer();
     const shouldResume = Boolean(
       resumeSessionId && canResumeSession && (preferResumeOverLoad || !canLoadSession)
     );

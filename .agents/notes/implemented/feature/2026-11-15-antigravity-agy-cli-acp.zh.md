@@ -152,6 +152,14 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 `default`，再写入共享能力快照及各模型配置行；当前会话仍显示自己的选择，选项列表不变。
 否则无关的新会话、Role 或定时会从共享缓存继承另一会话的免批策略。原生模式按 agent 的报告保留。
 
+对 `isAntigravityServer()`（内置、运行 agy 的已有 registry 以及自定义 `Antigravity ACP Server`），
+只要服务端声明了 `sessionCapabilities.resume`，`AgentClient.startSession` 优先走 `session/resume`
+而不是 `session/load`（仅在未声明 `resume` 时回退到 `session/load`）。2026-11-22 在 Linux x86_64
+的 agy 1.5.10（`--process-per-session`）实测确认：`session/load` 的历史回放通知不保证在 JSON-RPC
+响应之前排空，多步会话的尾部思考与最终回答会在 `session/load` 返回百余毫秒后继续到达并串进新一轮；
+而 `session/resume` 走同一会话恢复路径但跳过历史回放，同样会预加载并调用 ACP 传入的 MCP 服务、保留
+上下文与配置状态并启动实时更新流。
+
 ## 备选方案
 
 - 固定到 registry 1.5.0：否决，它是同一个不加载插件的服务。

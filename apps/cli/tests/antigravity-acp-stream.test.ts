@@ -304,6 +304,30 @@ describe('Antigravity modes through the session start chain', () => {
     await expect(resumed.prompt('report-mode')).resolves.toBe('mode=auto');
   });
 
+  it('resumes builtin Antigravity YOLO sessions via session/resume without rewriting mode', async () => {
+    const first = await startSession({
+      cliType: 'builtin',
+      agentType: 'antigravity',
+      configOptionValues: { mode: 'yolo' },
+      launchArgs: [ANTIGRAVITY_SKIP_PERMISSIONS_ARG],
+    });
+    const acpSessionId = first.session.acpSessionId!;
+    await first.session.terminate(true);
+
+    const resumed = await startSession({
+      cliType: 'builtin',
+      agentType: 'antigravity',
+      workdir: first.workdir,
+      configOptionValues: { mode: 'yolo' },
+      launchArgs: [ANTIGRAVITY_SKIP_PERMISSIONS_ARG],
+      resumeSessionId: acpSessionId,
+    });
+    expect(resumed.session.acpSessionId).toBe(acpSessionId);
+    expect(resumed.currentMode()).toBe('yolo');
+    await expect(resumed.prompt('report-open-method')).resolves.toBe('open=session/resume');
+    await expect(resumed.prompt('report-mode')).resolves.toBe('mode=default');
+  });
+
   it.each([
     ['builtin', 'antigravity', true],
     ['registry', 'antigravity-acp', true],

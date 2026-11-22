@@ -321,7 +321,12 @@ A custom Provider whose `initialize` reports `Antigravity ACP Server` gets the s
 compatibility as builtin Antigravity; legacy `antigravity-acp` does not. AgentClient
 negotiates the `realpath` of the workdir as the ACP `cwd`, because agy compares edit
 targets by realpath and would otherwise ask permission for in-workspace edits under a
-symlinked path such as macOS `/tmp`.
+symlinked path such as macOS `/tmp`. When resuming an existing conversation, AgentClient
+prefers `session/resume` over `session/load` for `isAntigravityServer()` whenever
+`sessionCapabilities.resume` is advertised: under `--process-per-session`, `agy` 1.5.10's
+`session/load` streams historical replay notifications asynchronously past its JSON-RPC
+response (bleeding prior-turn thoughts/text into the new turn), whereas `session/resume`
+restores the session, MCP servers and live update stream without replaying history.
 
 agy ends `session/prompt` with `end_turn` while background work (commands, timers,
 subagents, swarms) is still running, then stops writing to stdout. Lody ends the turn

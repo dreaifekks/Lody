@@ -63,14 +63,16 @@ const checkMode = (mode) => {
   if (!MODES.some((entry) => entry.id === mode)) throw new Error(`Unsupported mode: ${mode}`);
 };
 
-const openSession = (sessionId, params) => {
+const openSession = (sessionId, params, method) => {
   const startMode = params?._meta?.lody?.sessionConfig?.configOptionValues?.mode;
   if (startMode !== undefined) checkMode(startMode);
   const session = sessions.get(sessionId) ?? {
     mode: 'default',
     model: 'gemini-4-argon',
     thoughtLevel: 'medium',
+    lastOpenMethod: method,
   };
+  session.lastOpenMethod = method;
   if (startMode) session.mode = startMode;
   sessions.set(sessionId, session);
   return session;
@@ -86,11 +88,11 @@ const handle = (message) => {
       };
     case 'session/new': {
       const sessionId = `fake-session-${process.pid}-${nextSession++}`;
-      return { sessionId, ...sessionState(openSession(sessionId, message.params)) };
+      return { sessionId, ...sessionState(openSession(sessionId, message.params, message.method)) };
     }
     case 'session/load':
     case 'session/resume':
-      return sessionState(openSession(message.params.sessionId, message.params));
+      return sessionState(openSession(message.params.sessionId, message.params, message.method));
     case 'session/set_mode':
     case 'session/set_config_option': {
       const session = sessions.get(message.params.sessionId);
@@ -118,7 +120,11 @@ const handle = (message) => {
             sessionUpdate: 'agent_message_chunk',
             content: {
               type: 'text',
-              text: text.startsWith('report-mode') ? `mode=${sessions.get(sessionId).mode}` : text,
+              text: text.startsWith('report-mode')
+                ? `mode=${sessions.get(sessionId).mode}`
+                : text.startsWith('report-open-method')
+                  ? `open=${sessions.get(sessionId).lastOpenMethod}`
+                  : text,
             },
           },
         },

@@ -151,6 +151,21 @@ session, reading each conversation's last model request from
   MCP tools, about the room the 48 compact commands would need there. The Nowledge Mem
   plugin's MCP server stayed lazy in both and took none of it.
 
+Measured on 2026-11-22 on Linux x86_64 with agy CLI 1.5.10 (`--process-per-session`),
+both in a live multi-step Lody session restore and an isolated ACP client:
+
+- `session/load` opens an internal trajectory replay stream whose `session/update`
+  notifications are not serialized ahead of the `session/load` JSON-RPC response across
+  `acp-front`/`acp-worker`. On a 64-item Turn 1, replay notifications kept arriving for
+  ~130ms after `session/load` resolved (past `endACPReplaySuppression` and
+  `applyAcpSessionRunConfig`), bleeding the tail thoughts and final text of Turn 1 into
+  Turn 2's assistant entry right after `session/prompt`.
+- `session/resume` runs the same `session_handlers.go` restore path with history replay
+  disabled, preloads and serves ACP-passed MCP servers, preserves conversation context,
+  returns the same `{ sessionId, models, modes, configOptions, _meta }` response, supports
+  `session/set_config_option` and `session/list`, starts the live conversation update
+  stream, and emits zero historical transcript replay.
+
 ## Decision
 
 The runtime, quota and session permission boundaries are recorded in the
@@ -208,6 +223,13 @@ the shared capability snapshot and each model's option row. The live Session kee
 its selected display value and all choices. Otherwise an unrelated new Session,
 Role or schedule can inherit another Session's bypass policy from the shared cache.
 Native modes are left as the agent reports them.
+
+For `isAntigravityServer()` (builtin, persisted registry running agy, and custom
+`Antigravity ACP Server`), `AgentClient.startSession` prefers `session/resume` over
+`session/load` whenever `sessionCapabilities.resume` is advertised, falling back to
+`session/load` only when `resume` is absent. This eliminates async `session/load`
+replay bleed while preserving MCP preloading, mode/model state, and live background
+wakeup streaming.
 
 ## Alternatives
 
