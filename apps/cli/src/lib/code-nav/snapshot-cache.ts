@@ -216,7 +216,7 @@ export async function computeWorkspaceSnapshotKey(
     runCommandTextLegacy(
       {
         command: 'git',
-        args: ['status', '--porcelain=v1', '-z'],
+        args: ['status', '--porcelain=v1', '-z', '-uall'],
         cwd: canonicalRoot,
         check: 'none',
       },
@@ -267,8 +267,8 @@ export async function computeWorkspaceSnapshotKey(
     }
     statCount += 1;
     try {
-      const info = await lstat(path.join(canonicalRoot, relPath));
-      hash.update(`\0${relPath}:${info.size}:${Math.trunc(info.mtimeMs)}`);
+      const info = await lstat(path.join(canonicalRoot, relPath), { bigint: true });
+      hash.update(`\0${relPath}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`);
     } catch {
       hash.update(`\0${relPath}:missing`);
     }

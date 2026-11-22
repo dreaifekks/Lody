@@ -7108,6 +7108,8 @@ const SessionDetail = ({
           {
             ...activeFileOpenContext,
             session: activeSession,
+            ownerSessionId: activeSession.parentSessionId ?? activeSession.id,
+            ownerProjectRun: activeSession.projectRun,
             fileProviderPending: activeSessionFileProviderPending,
             fileProviderMessage: activeSessionFileProviderMessage,
             role: activeSessionCodeCollabFiles.role,

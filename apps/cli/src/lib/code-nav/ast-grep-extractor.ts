@@ -704,6 +704,17 @@ export function findEnclosingSymbolChain(
   return matched.slice(0, CODE_NAV_LIMITS.maxEnclosingDepth).map(toPublicCodeNavSymbol);
 }
 
+export type LocalLexicalBinding = {
+  readonly name: string;
+  readonly kind: CodeNavSymbolKind;
+  readonly line: number;
+  readonly character: number;
+  readonly endLine: number;
+  readonly endCharacter: number;
+  readonly previewLine: string;
+  readonly containerName?: string;
+};
+
 export type SymbolCursorContext = {
   readonly symbol: string;
   readonly isMemberAccess: boolean;
@@ -713,7 +724,318 @@ export type SymbolCursorContext = {
   readonly isCallCallee: boolean;
   readonly importSpecifier?: string;
   readonly importedOriginalName?: string;
+  /** True when the cursor resolved to an AST identifier node and enclosing lexical scopes were checked. */
+  readonly scopeVerified: boolean;
+  /** Nearest enclosing non-module lexical binding shadowing `symbol` at the cursor, if any. */
+  readonly localBinding?: LocalLexicalBinding;
+  /** True when `receiver` (for `Ns.foo`) is shadowed by an enclosing local binding. */
+  readonly receiverShadowedLocally?: boolean;
 };
+
+const FUNCTION_LIKE_SCOPE_KINDS = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'generator_function',
+  'arrow_function',
+  'method_definition',
+]);
+
+const BLOCK_SCOPE_KINDS = new Set(['statement_block', 'switch_case', 'switch_default']);
+
+function collectPatternBindingIdentifiers(node: AstGrepNode | null, out: AstGrepNode[]): void {
+  if (!node) return;
+  const kind = String(node.kind());
+  if (
+    kind === 'identifier' ||
+    kind === 'shorthand_property_identifier_pattern' ||
+    kind === 'type_identifier'
+  ) {
+    out.push(node);
+    return;
+  }
+  if (kind === 'required_parameter' || kind === 'optional_parameter') {
+    collectPatternBindingIdentifiers(node.field('pattern'), out);
+    return;
+  }
+  if (kind === 'assignment_pattern' || kind === 'object_assignment_pattern') {
+    collectPatternBindingIdentifiers(node.field('left'), out);
+    return;
+  }
+  if (kind === 'pair_pattern') {
+    collectPatternBindingIdentifiers(node.field('value'), out);
+    return;
+  }
+  if (
+    kind === 'rest_pattern' ||
+    kind === 'rest_parameter' ||
+    kind === 'object_pattern' ||
+    kind === 'array_pattern'
+  ) {
+    for (const child of node.namedChildren()) {
+      collectPatternBindingIdentifiers(child, out);
+    }
+  }
+}
+
+function collectVarBindingsInFunctionBody(
+  node: AstGrepNode | null,
+  out: AstGrepNode[],
+  depth = 0
+): void {
+  if (!node || depth > 24) return;
+  for (const child of node.namedChildren()) {
+    const kind = String(child.kind());
+    if (FUNCTION_LIKE_SCOPE_KINDS.has(kind)) continue;
+    if (kind === 'variable_declaration') {
+      for (const decl of child.namedChildren()) {
+        if (String(decl.kind()) === 'variable_declarator') {
+          collectPatternBindingIdentifiers(decl.field('name'), out);
+        }
+      }
+      continue;
+    }
+    collectVarBindingsInFunctionBody(child, out, depth + 1);
+  }
+}
+
+function toLocalLexicalBinding(
+  nameNode: AstGrepNode,
+  kind: CodeNavSymbolKind,
+  lines: readonly string[]
+): LocalLexicalBinding {
+  const r = nameNode.range();
+  const containerName = findEnclosingContainerName(nameNode);
+  return {
+    name: nameNode.text(),
+    kind,
+    line: r.start.line + 1,
+    character: r.start.column,
+    endLine: r.end.line + 1,
+    endCharacter: r.end.column,
+    previewLine: trimPreviewLine(lines[r.start.line]),
+    ...(containerName ? { containerName } : {}),
+  };
+}
+
+/**
+ * Walks enclosing non-module lexical scopes from `targetNode` up to `program`
+ * (exclusive) and returns the nearest local binding (parameter, local
+ * `variable_declarator`, `catch` binding, `for` binding, nested function/class,
+ * or type parameter in type positions) that shadows `symbolName`.
+ */
+function findLocalLexicalBinding(
+  targetNode: AstGrepNode,
+  symbolName: string,
+  isTypePosition: boolean,
+  lines: readonly string[]
+): LocalLexicalBinding | undefined {
+  let prev: AstGrepNode = targetNode;
+  let current = targetNode.parent();
+
+  while (current) {
+    const scopeKind = String(current.kind());
+    if (scopeKind === 'program') break;
+
+    if (isTypePosition) {
+      // Type parameters on functions, classes, interfaces, type aliases, or methods.
+      const typeParams = current.field('type_parameters');
+      if (typeParams) {
+        for (const tp of typeParams.namedChildren()) {
+          const nameNode = tp.field('name');
+          if (nameNode && nameNode.text() === symbolName) {
+            return toLocalLexicalBinding(nameNode, 'type', lines);
+          }
+        }
+      }
+      if (BLOCK_SCOPE_KINDS.has(scopeKind)) {
+        const parentKind = String(current.parent()?.kind() ?? '');
+        if (parentKind !== 'internal_module') {
+          for (const stmt of current.namedChildren()) {
+            const stmtKind = String(stmt.kind());
+            if (
+              stmtKind === 'type_alias_declaration' ||
+              stmtKind === 'interface_declaration' ||
+              stmtKind === 'class_declaration' ||
+              stmtKind === 'abstract_class_declaration' ||
+              stmtKind === 'enum_declaration'
+            ) {
+              const nameNode = stmt.field('name');
+              if (nameNode && nameNode.text() === symbolName) {
+                const symKind: CodeNavSymbolKind =
+                  stmtKind === 'interface_declaration'
+                    ? 'interface'
+                    : stmtKind === 'enum_declaration'
+                      ? 'enum'
+                      : stmtKind === 'type_alias_declaration'
+                        ? 'type'
+                        : 'class';
+                return toLocalLexicalBinding(nameNode, symKind, lines);
+              }
+            }
+          }
+        }
+      }
+      prev = current;
+      current = current.parent();
+      continue;
+    }
+
+    // (1) Function-like scope: parameters, function-expression self-name, and hoisted `var`.
+    if (FUNCTION_LIKE_SCOPE_KINDS.has(scopeKind)) {
+      const ownName = current.field('name');
+      const clickedOwnName = ownName !== null && ownName.id() === targetNode.id();
+      if (!clickedOwnName) {
+        const paramNodes: AstGrepNode[] = [];
+        const formalParams = current.field('parameters');
+        if (formalParams) {
+          for (const param of formalParams.namedChildren()) {
+            collectPatternBindingIdentifiers(param, paramNodes);
+          }
+        }
+        const singleParam = current.field('parameter');
+        if (singleParam) {
+          collectPatternBindingIdentifiers(singleParam, paramNodes);
+        }
+        for (const idNode of paramNodes) {
+          if (idNode.text() === symbolName) {
+            return toLocalLexicalBinding(idNode, 'variable', lines);
+          }
+        }
+
+        // Named function expression self-binding (`const f = function self() { self(); }`).
+        if (
+          (scopeKind === 'function_expression' || scopeKind === 'generator_function') &&
+          ownName &&
+          ownName.text() === symbolName
+        ) {
+          return toLocalLexicalBinding(ownName, 'function', lines);
+        }
+
+        // Function-scoped hoisted `var` bindings inside the body.
+        const bodyNode = current.field('body');
+        if (bodyNode && prev.id() === bodyNode.id()) {
+          const varNodes: AstGrepNode[] = [];
+          collectVarBindingsInFunctionBody(bodyNode, varNodes);
+          for (const idNode of varNodes) {
+            if (idNode.text() === symbolName) {
+              return toLocalLexicalBinding(idNode, 'variable', lines);
+            }
+          }
+        }
+      }
+    }
+
+    // (2) Catch clause binding: `catch (err)` / `catch ({ code })`.
+    if (scopeKind === 'catch_clause') {
+      const catchBindings: AstGrepNode[] = [];
+      collectPatternBindingIdentifiers(current.field('parameter'), catchBindings);
+      for (const idNode of catchBindings) {
+        if (idNode.text() === symbolName) {
+          return toLocalLexicalBinding(idNode, 'variable', lines);
+        }
+      }
+    }
+
+    // (3) Loop bindings: `for (let i = ...)` and `for (const x of ...)`.
+    if (scopeKind === 'for_statement') {
+      const init = current.field('initializer');
+      if (init) {
+        const initKind = String(init.kind());
+        if (initKind === 'lexical_declaration' || initKind === 'variable_declaration') {
+          const loopBindings: AstGrepNode[] = [];
+          for (const decl of init.namedChildren()) {
+            if (String(decl.kind()) === 'variable_declarator') {
+              collectPatternBindingIdentifiers(decl.field('name'), loopBindings);
+            }
+          }
+          for (const idNode of loopBindings) {
+            if (idNode.text() === symbolName) {
+              return toLocalLexicalBinding(idNode, 'variable', lines);
+            }
+          }
+        }
+      }
+    }
+
+    if (scopeKind === 'for_in_statement') {
+      const kindText = current.field('kind')?.text();
+      const hasDeclKind =
+        kindText === 'const' ||
+        kindText === 'let' ||
+        kindText === 'var' ||
+        current
+          .children()
+          .some(
+            (child) =>
+              !child.isNamed() &&
+              (child.text() === 'const' || child.text() === 'let' || child.text() === 'var')
+          );
+      if (hasDeclKind) {
+        const loopBindings: AstGrepNode[] = [];
+        collectPatternBindingIdentifiers(current.field('left'), loopBindings);
+        for (const idNode of loopBindings) {
+          if (idNode.text() === symbolName) {
+            return toLocalLexicalBinding(idNode, 'variable', lines);
+          }
+        }
+      }
+    }
+
+    // (4) Block scope: local `const`/`let`/`var`, nested `function_declaration`, nested `class_declaration`.
+    if (BLOCK_SCOPE_KINDS.has(scopeKind)) {
+      const parentKind = String(current.parent()?.kind() ?? '');
+      // Skip namespace (`internal_module`) body because its declarations are module-level.
+      if (parentKind !== 'internal_module') {
+        for (const stmt of current.namedChildren()) {
+          const stmtKind = String(stmt.kind());
+          if (stmtKind === 'lexical_declaration' || stmtKind === 'variable_declaration') {
+            const varBindings: AstGrepNode[] = [];
+            for (const decl of stmt.namedChildren()) {
+              if (String(decl.kind()) === 'variable_declarator') {
+                collectPatternBindingIdentifiers(decl.field('name'), varBindings);
+              }
+            }
+            for (const idNode of varBindings) {
+              if (idNode.text() === symbolName) {
+                return toLocalLexicalBinding(idNode, 'variable', lines);
+              }
+            }
+          } else if (
+            stmtKind === 'function_declaration' ||
+            stmtKind === 'generator_function_declaration'
+          ) {
+            const nameNode = stmt.field('name');
+            if (nameNode && nameNode.text() === symbolName) {
+              return toLocalLexicalBinding(nameNode, 'function', lines);
+            }
+          } else if (
+            stmtKind === 'class_declaration' ||
+            stmtKind === 'abstract_class_declaration'
+          ) {
+            const nameNode = stmt.field('name');
+            if (nameNode && nameNode.text() === symbolName) {
+              return toLocalLexicalBinding(nameNode, 'class', lines);
+            }
+          }
+        }
+      }
+    }
+
+    // (5) Named class expression self-binding (`const C = class Self { ... }`).
+    if (scopeKind === 'class') {
+      const ownName = current.field('name');
+      if (ownName && ownName.id() !== targetNode.id() && ownName.text() === symbolName) {
+        return toLocalLexicalBinding(ownName, 'class', lines);
+      }
+    }
+
+    prev = current;
+    current = current.parent();
+  }
+
+  return undefined;
+}
 
 const IDENTIFIER_KINDS_RULE: NapiConfig = {
   rule: {
@@ -799,6 +1121,7 @@ export function resolveSymbolContextAtPosition(
       isTypePosition: false,
       isJsxTag: false,
       isCallCallee: false,
+      scopeVerified: false,
     };
   }
 
@@ -868,6 +1191,18 @@ export function resolveSymbolContextAtPosition(
     isTypePosition = true;
   }
 
+  const localBinding =
+    !isMemberAccess && !importSpecifier
+      ? findLocalLexicalBinding(targetNode, symbol, isTypePosition, lines)
+      : undefined;
+  const receiverShadowedLocally =
+    isMemberAccess &&
+    receiver &&
+    receiver !== 'this' &&
+    /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(receiver)
+      ? findLocalLexicalBinding(targetNode, receiver, false, lines) !== undefined
+      : false;
+
   return {
     symbol,
     isMemberAccess,
@@ -877,6 +1212,9 @@ export function resolveSymbolContextAtPosition(
     isCallCallee,
     ...(importSpecifier ? { importSpecifier } : {}),
     ...(importedOriginalName ? { importedOriginalName } : {}),
+    scopeVerified: true,
+    ...(localBinding ? { localBinding } : {}),
+    ...(receiverShadowedLocally ? { receiverShadowedLocally: true } : {}),
   };
 }
 

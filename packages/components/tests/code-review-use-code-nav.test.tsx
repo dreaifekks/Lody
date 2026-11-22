@@ -77,15 +77,29 @@ describe('useCodeNav capability gating & caching', () => {
     vi.restoreAllMocks();
   });
 
-  function mountHook(store: ReturnType<typeof createStore>, sessionId = SESSION_ID) {
+  function mountHook(
+    store: ReturnType<typeof createStore>,
+    initialProps?: Partial<Parameters<typeof useCodeNav>[0]>
+  ) {
     let latest!: UseCodeNavResult;
-    function Probe({ id }: { id: SessionId }) {
-      latest = useCodeNav({ sessionId: id, machineId: MACHINE_ID });
+    function Probe({ props }: { props: Parameters<typeof useCodeNav>[0] }) {
+      latest = useCodeNav(props);
       return null;
     }
-    const render = async (id = sessionId) => {
+    const baseProps: Parameters<typeof useCodeNav>[0] = {
+      sessionId: SESSION_ID,
+      machineId: MACHINE_ID,
+      ...initialProps,
+    };
+    const render = async (override?: Partial<Parameters<typeof useCodeNav>[0]>) => {
       await act(async () => {
-        root.render(createElement(Provider, { store }, createElement(Probe, { id })));
+        root.render(
+          createElement(
+            Provider,
+            { store },
+            createElement(Probe, { props: { ...baseProps, ...override } })
+          )
+        );
       });
     };
     return { render, get: () => latest };
@@ -94,7 +108,8 @@ describe('useCodeNav capability gating & caching', () => {
   function createRuntimeStore(
     queryCodeNav: (
       machineId: MachineId,
-      request: CodeNavQueryRequest
+      request: CodeNavQueryRequest,
+      options?: { readonly ownerSessionId?: SessionId }
     ) => Promise<CodeNavQueryResponse>
   ) {
     const store = createStore();
@@ -195,6 +210,215 @@ describe('useCodeNav capability gating & caching', () => {
     expect(def?.action).toBe('definition');
     expect(queryCodeNav).toHaveBeenCalledTimes(3);
   });
+
+  it('passes parent ownerSessionId for child sessions while preserving child sessionId in the request payload', async () => {
+    const queryCodeNav = vi.fn(async () => SAMPLE_OUTLINE);
+    const store = createRuntimeStore(queryCodeNav);
+    mockResolvedMachine.machine = { protocolCapabilities: { codeNav: 1 } };
+
+    const childSessionId = 'sess-child-1' as SessionId;
+    const parentSessionId = 'sess-parent-1' as SessionId;
+    const harness = mountHook(store, {
+      sessionId: childSessionId,
+      ownerSessionId: parentSessionId,
+    });
+    await harness.render();
+
+    await harness.get().queryDiffOutline('branch');
+    expect(queryCodeNav).toHaveBeenCalledWith(
+      MACHINE_ID,
+      expect.objectContaining({
+        action: 'diff-outline',
+        sessionId: childSessionId,
+        scope: 'branch',
+      }),
+      { ownerSessionId: parentSessionId }
+    );
+  });
+
+  it('maps Project Group member paths to rootId and remaps returned locations back to display paths', async () => {
+    const queryCodeNav = vi.fn(
+      async (
+        _machineId: MachineId,
+        request: CodeNavQueryRequest
+      ): Promise<CodeNavQueryResponse> => {
+        if (request.action === 'diff-outline') {
+          if (request.rootId === 'member:sdk') {
+            return {
+              type: 'code-nav/query',
+              status: 'ok',
+              action: 'diff-outline',
+              files: [
+                {
+                  path: 'src/api.ts',
+                  symbols: [
+                    { name: 'fetchUser', kind: 'function', startLine: 1, endLine: 5, hunkCount: 1 },
+                  ],
+                  hunks: [],
+                },
+              ],
+              truncated: false,
+              provider: 'ast-grep',
+            };
+          }
+          return SAMPLE_OUTLINE;
+        }
+        if (request.action === 'definition') {
+          return {
+            type: 'code-nav/query',
+            status: 'ok',
+            action: 'definition',
+            symbol: 'fetchUser',
+            items: [
+              {
+                path: 'src/client.ts',
+                line: 12,
+                character: 16,
+                name: 'fetchUser',
+                kind: 'function',
+                previewLine: 'export function fetchUser() {',
+              },
+            ],
+            confidence: 'exact',
+            totalCandidates: 1,
+            truncated: false,
+            provider: 'ast-grep',
+          };
+        }
+        if (request.action === 'callers') {
+          return {
+            type: 'code-nav/query',
+            status: 'ok',
+            action: 'callers',
+            symbol: 'fetchUser',
+            items: [
+              {
+                path: 'src/api.ts',
+                line: 4,
+                character: 10,
+                previewLine: 'return fetchUser();',
+                depth: 1,
+              },
+            ],
+            totalCandidates: 1,
+            truncated: false,
+            provider: 'ast-grep',
+          };
+        }
+        return {
+          type: 'code-nav/query',
+          status: 'ok',
+          action: 'enclosing',
+          path: request.path,
+          chain: [{ name: 'fetchUser', kind: 'function', startLine: 1, endLine: 5 }],
+          provider: 'ast-grep',
+        };
+      }
+    );
+    const store = createRuntimeStore(queryCodeNav);
+    mockResolvedMachine.machine = { protocolCapabilities: { codeNav: 1 } };
+
+    const projectRun = {
+      members: {
+        sdk: {
+          access: 'additional',
+          path: 'sdk',
+          placement: { kind: 'root', dir: 'sdk' },
+        },
+      },
+    } as unknown as NonNullable<Parameters<typeof useCodeNav>[0]['projectRun']>;
+
+    const harness = mountHook(store, { projectRun });
+    await harness.render();
+
+    const outline = await harness.get().queryDiffOutline('branch', 'origin/main');
+    expect(outline?.files.map((f) => f.path)).toEqual([
+      'apps/cli/src/agent/session-mcp-resolver.ts',
+      'sdk/src/api.ts',
+    ]);
+    // Member outline call must receive rootId and NOT inherit main repo's baseRef.
+    expect(queryCodeNav).toHaveBeenCalledWith(
+      MACHINE_ID,
+      {
+        action: 'diff-outline',
+        sessionId: SESSION_ID,
+        scope: 'branch',
+        rootId: 'member:sdk',
+      },
+      { ownerSessionId: SESSION_ID }
+    );
+
+    const def = await harness.get().queryDefinition({
+      path: 'sdk/src/api.ts',
+      line: 4,
+      character: 10,
+      symbolHint: 'fetchUser',
+    });
+    expect(queryCodeNav).toHaveBeenCalledWith(
+      MACHINE_ID,
+      expect.objectContaining({
+        action: 'definition',
+        path: 'src/api.ts',
+        rootId: 'member:sdk',
+      }),
+      { ownerSessionId: SESSION_ID }
+    );
+    expect(def?.items[0]?.path).toBe('sdk/src/client.ts');
+
+    const callers = await harness.get().queryCallers({
+      path: 'sdk/src/client.ts',
+      line: 12,
+      character: 16,
+      symbolHint: 'fetchUser',
+    });
+    expect(callers?.items[0]?.path).toBe('sdk/src/api.ts');
+
+    const enc = await harness.get().queryEnclosing('sdk/src/api.ts', 2, 3);
+    expect(enc?.path).toBe('sdk/src/api.ts');
+  });
+
+  it('invalidates cache and discards stale in-flight replies when revision changes', async () => {
+    let resolveFirst!: (value: CodeNavQueryResponse) => void;
+    const queryCodeNav = vi
+      .fn<
+        (
+          machineId: MachineId,
+          request: CodeNavQueryRequest,
+          options?: { readonly ownerSessionId?: SessionId }
+        ) => Promise<CodeNavQueryResponse>
+      >()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
+      .mockResolvedValueOnce({
+        ...SAMPLE_OUTLINE,
+        headSha: 'rev-2-sha',
+      });
+
+    const store = createRuntimeStore(queryCodeNav);
+    mockResolvedMachine.machine = { protocolCapabilities: { codeNav: 1 } };
+
+    const harness = mountHook(store, { revision: 'rev-1' });
+    await harness.render();
+
+    const firstPromise = harness.get().queryDiffOutline('branch');
+    expect(queryCodeNav).toHaveBeenCalledTimes(1);
+
+    // Diff refreshes to rev-2 while rev-1 outline is still in-flight.
+    await harness.render({ revision: 'rev-2' });
+    const secondResult = await harness.get().queryDiffOutline('branch');
+    expect(secondResult?.headSha).toBe('rev-2-sha');
+    expect(queryCodeNav).toHaveBeenCalledTimes(2);
+
+    // Late rev-1 reply must be discarded as null rather than overwriting rev-2 cache.
+    resolveFirst(SAMPLE_OUTLINE);
+    expect(await firstPromise).toBeNull();
+    expect((await harness.get().queryDiffOutline('branch'))?.headSha).toBe('rev-2-sha');
+    expect(queryCodeNav).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('WorkspaceMachineRpcFacade.queryCodeNav', () => {
@@ -257,5 +481,33 @@ describe('WorkspaceMachineRpcFacade.queryCodeNav', () => {
         scope: 'branch',
       })
     );
+  });
+
+  it('refuses E2EE Guest code-nav/query on protected workspaces without calling machine RPC', async () => {
+    const getMachineRpcClient = vi.fn();
+    const facade = createWorkspaceMachineRpcFacade({
+      workspaceId: WORKSPACE_ID,
+      protectedContent: true,
+      protectedCodeCollabRole: () => 'read',
+      getMachineProtocolCapabilities: async () => ({ codeNav: 1 }),
+      targetRouter: {
+        getPlaneForMachine: () => 'cloud',
+        resolvePlaneForMachine: async () => 'cloud',
+      },
+      getMachineRpcClient,
+    });
+
+    const response = await facade.queryCodeNav(MACHINE_ID, {
+      action: 'diff-outline',
+      sessionId: SESSION_ID,
+      scope: 'branch',
+    });
+    expect(response).toMatchObject({
+      type: 'code-nav/query',
+      status: 'error',
+      code: 'permission_denied',
+      retryable: false,
+    });
+    expect(getMachineRpcClient).not.toHaveBeenCalled();
   });
 });

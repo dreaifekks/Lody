@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Meta, StoryObj } from '@storybook/react';
 import { fn } from 'storybook/test';
@@ -217,10 +217,233 @@ const THOUGHT_PREVIEW_NEW = `export function inspectLatestThoughtParagraph(raw: 
 }
 `;
 
+const CODEX_CREDENTIAL_BROKER_FILE = [
+  'export interface CredentialLease {',
+  '  readonly token: string;',
+  '  readonly expiresAt: number;',
+  '  readonly profileId: string;',
+  '}',
+  '',
+  'export interface CredentialBroker {',
+  '  readonly isActive: boolean;',
+  '  acquire(profileId: string): Promise<CredentialLease>;',
+  '  close(): Promise<void>;',
+  '}',
+  '',
+  'export interface BrokerOptions {',
+  '  readonly refreshMarginMs?: number;',
+  '  readonly maxCachedLeases?: number;',
+  '  readonly now?: () => number;',
+  '}',
+  '',
+  'interface CachedEntry {',
+  '  readonly lease: CredentialLease;',
+  '  readonly refreshedAt: number;',
+  '}',
+  '',
+  'const DEFAULT_REFRESH_MARGIN_MS = 60_000;',
+  'const DEFAULT_MAX_CACHED_LEASES = 16;',
+  '',
+  'export class CodexCredentialBroker implements CredentialBroker {',
+  '  private readonly entries = new Map<string, CachedEntry>();',
+  '  private readonly inflight = new Map<string, Promise<CredentialLease>>();',
+  '  private readonly refreshMarginMs: number;',
+  '  private readonly maxCachedLeases: number;',
+  '  private readonly now: () => number;',
+  '  private closed = false;',
+  '',
+  '  constructor(options: BrokerOptions = {}) {',
+  '    this.refreshMarginMs = options.refreshMarginMs ?? DEFAULT_REFRESH_MARGIN_MS;',
+  '    this.maxCachedLeases = options.maxCachedLeases ?? DEFAULT_MAX_CACHED_LEASES;',
+  '    this.now = options.now ?? (() => Date.now());',
+  '  }',
+  '',
+  '  get isActive(): boolean {',
+  '    return !this.closed;',
+  '  }',
+  '',
+  '  async acquire(profileId: string): Promise<CredentialLease> {',
+  '    if (this.closed) {',
+  '      throw new Error("Credential broker has been closed");',
+  '    }',
+  '    const cached = this.entries.get(profileId);',
+  '    if (cached && !this.isExpiring(cached.lease)) {',
+  '      return cached.lease;',
+  '    }',
+  '    const pending = this.inflight.get(profileId);',
+  '    if (pending) {',
+  '      return pending;',
+  '    }',
+  '    const next = this.refreshLease(profileId).finally(() => {',
+  '      this.inflight.delete(profileId);',
+  '    });',
+  '    this.inflight.set(profileId, next);',
+  '    return next;',
+  '  }',
+  '',
+  '  revoke(profileId: string): boolean {',
+  '    return this.entries.delete(profileId);',
+  '  }',
+  '',
+  '  listActiveProfiles(): string[] {',
+  '    const active: string[] = [];',
+  '    for (const [profileId, entry] of this.entries) {',
+  '      if (!this.isExpiring(entry.lease)) {',
+  '        active.push(profileId);',
+  '      }',
+  '    }',
+  '    return active;',
+  '  }',
+  '',
+  '  private isExpiring(lease: CredentialLease): boolean {',
+  '    return lease.expiresAt - this.now() <= this.refreshMarginMs;',
+  '  }',
+  '',
+  '  private async refreshLease(profileId: string): Promise<CredentialLease> {',
+  '    const issuedAt = this.now();',
+  '    const lease: CredentialLease = {',
+  '      token: `lease_${profileId}_${issuedAt}`,',
+  '      expiresAt: issuedAt + 30 * 60_000,',
+  '      profileId,',
+  '    };',
+  '    this.evictIfFull();',
+  '    this.entries.set(profileId, { lease, refreshedAt: issuedAt });',
+  '    return lease;',
+  '  }',
+  '',
+  '  private evictIfFull(): void {',
+  '    if (this.entries.size < this.maxCachedLeases) {',
+  '      return;',
+  '    }',
+  '    const oldestKey = this.entries.keys().next().value;',
+  '    if (oldestKey !== undefined) {',
+  '      this.entries.delete(oldestKey);',
+  '    }',
+  '  }',
+  '',
+  '  // Drains in-flight refreshes and drops cached credential leases.',
+  '  // Safe to invoke multiple times during session teardown.',
+  '  async close(): Promise<void> {',
+  '    if (this.closed) {',
+  '      return;',
+  '    }',
+  '    this.closed = true;',
+  '    await Promise.allSettled(this.inflight.values());',
+  '    this.inflight.clear();',
+  '    this.entries.clear();',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const CODEX_PROFILE_RUNTIME_FILE = [
+  'export interface CodexProfileConfig {',
+  '  readonly id: string;',
+  '  readonly label: string;',
+  '  readonly workspaceDir: string;',
+  '  readonly env?: Readonly<Record<string, string>>;',
+  '}',
+  '',
+  'export interface RuntimeDiagnostic {',
+  '  readonly profileId: string;',
+  '  readonly ready: boolean;',
+  '  readonly activeSessions: number;',
+  '}',
+  '',
+  'export class CodexProfileRuntime {',
+  '  private readonly sessions = new Set<string>();',
+  '  private readonly envOverrides: Record<string, string>;',
+  '  private disposed = false;',
+  '  private lastActivatedAt = 0;',
+  '',
+  '  constructor(private readonly config: CodexProfileConfig) {',
+  '    this.envOverrides = { ...(config.env ?? {}) };',
+  '  }',
+  '',
+  '  get id(): string {',
+  '    return this.config.id;',
+  '  }',
+  '',
+  '  get label(): string {',
+  '    return this.config.label;',
+  '  }',
+  '',
+  '  get isDisposed(): boolean {',
+  '    return this.disposed;',
+  '  }',
+  '',
+  '  attachSession(sessionId: string): void {',
+  '    if (this.disposed) {',
+  '      throw new Error(`Profile runtime ${this.config.id} is already closed`);',
+  '    }',
+  '    this.sessions.add(sessionId);',
+  '    this.lastActivatedAt = Date.now();',
+  '  }',
+  '',
+  '  detachSession(sessionId: string): boolean {',
+  '    return this.sessions.delete(sessionId);',
+  '  }',
+  '',
+  '  hasSession(sessionId: string): boolean {',
+  '    return this.sessions.has(sessionId);',
+  '  }',
+  '',
+  '  setEnv(key: string, value: string): void {',
+  '    if (this.disposed) {',
+  '      return;',
+  '    }',
+  '    this.envOverrides[key] = value;',
+  '  }',
+  '',
+  '  clearEnv(key: string): void {',
+  '    delete this.envOverrides[key];',
+  '  }',
+  '',
+  '  getResolvedEnv(): Readonly<Record<string, string>> {',
+  '    return {',
+  '      CODEX_PROFILE_ID: this.config.id,',
+  '      CODEX_WORKSPACE_DIR: this.config.workspaceDir,',
+  '      ...this.envOverrides,',
+  '    };',
+  '  }',
+  '',
+  '  inspect(): RuntimeDiagnostic {',
+  '    return {',
+  '      profileId: this.config.id,',
+  '      ready: !this.disposed,',
+  '      activeSessions: this.sessions.size,',
+  '    };',
+  '  }',
+  '',
+  '  getLastActivatedAt(): number {',
+  '    return this.lastActivatedAt;',
+  '  }',
+  '',
+  '  // Detaches tracked sessions and marks the profile runtime disposed.',
+  '  // Subsequent attach calls throw until a fresh runtime is created.',
+  '  // Idempotent so cleanup hooks can call close() unconditionally.',
+  '  // Clears per-profile environment overrides before returning.',
+  '  // Preserves config metadata for post-close diagnostics.',
+  '  close(): void {',
+  '    if (this.disposed) {',
+  '      return;',
+  '    }',
+  '    this.disposed = true;',
+  '    this.sessions.clear();',
+  '    for (const key of Object.keys(this.envOverrides)) {',
+  '      delete this.envOverrides[key];',
+  '    }',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
 const SYNTHETIC_FILES: Record<string, string> = {
   'apps/cli/src/agent/session-mcp-resolver.ts': MCP_RESOLVER_NEW,
   'apps/cli/src/agent/acp-capabilities.ts': CAPABILITIES_NEW,
   'apps/cli/src/agent/agent-client.ts': AGENT_CLIENT_NEW,
+  'apps/cli/src/agent/codex-credential-broker.ts': CODEX_CREDENTIAL_BROKER_FILE,
+  'apps/cli/src/agent/codex-profile-runtime.ts': CODEX_PROFILE_RUNTIME_FILE,
   'packages/shared/src/workspace-mcp.ts': WORKSPACE_MCP_FILE,
   'packages/components/src/components/ai-gui/compact-native-directory-row.tsx': COMPACT_ROW_NEW,
   'packages/components/src/components/ai-gui/streaming-thought-preview.ts': THOUGHT_PREVIEW_NEW,
@@ -600,6 +823,50 @@ function SyntheticThreadChatPane() {
   );
 }
 
+function findRenderedTokenAnchor(
+  panel: HTMLElement,
+  filePath: string,
+  line: number,
+  symbol: string,
+  allowLineFallback: boolean
+): { left: number; top: number; bottom: number } | null {
+  const sections = panel.querySelectorAll<HTMLElement>('[data-diff-path]');
+  let targetSection: HTMLElement | null = null;
+  for (const section of sections) {
+    if (section.getAttribute('data-diff-path') === filePath) {
+      targetSection = section;
+      break;
+    }
+  }
+  if (!targetSection) return null;
+
+  const hosts = targetSection.querySelectorAll<HTMLElement>('diffs-container');
+  for (const host of hosts) {
+    const root = host.shadowRoot;
+    if (!root) continue;
+    const lines = root.querySelectorAll<HTMLElement>(`[data-line="${line}"]`);
+    for (const lineEl of lines) {
+      if (lineEl.getAttribute('data-line-type') === 'change-deletion') continue;
+      const spans = lineEl.querySelectorAll<HTMLElement>('span');
+      for (const span of spans) {
+        if (span.children.length === 0 && span.textContent?.trim() === symbol) {
+          const rect = span.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            return { left: rect.left, top: rect.top, bottom: rect.bottom };
+          }
+        }
+      }
+      if (allowLineFallback) {
+        const lineRect = lineEl.getBoundingClientRect();
+        if (lineRect.width > 0 && lineRect.height > 0) {
+          return { left: lineRect.left + 120, top: lineRect.top, bottom: lineRect.bottom };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function StoryFrame({
   initialNavStack,
   initialPopover = null,
@@ -609,8 +876,51 @@ function StoryFrame({
 }) {
   const threadHost = useMemo(() => createRelocatableHost(), []);
   const [panel, setPanel] = useState<HTMLElement | null>(null);
+  const [resolvedPopover, setResolvedPopover] = useState<WorktreeReviewTokenPopoverState | null>(
+    initialPopover
+  );
   const onOpenIde = useMemo(() => fn(), []);
   const onClose = useMemo(() => fn(), []);
+
+  // Align preset story popovers onto the actual rendered Shadow DOM token so
+  // the popover tracks the real `close` identifier across viewport sizes.
+  useEffect(() => {
+    if (!initialPopover || !panel) {
+      setResolvedPopover(initialPopover);
+      return undefined;
+    }
+    let cancelled = false;
+    let rafId = 0;
+    let attempts = 0;
+    const syncAnchor = () => {
+      if (cancelled) return;
+      const measured = findRenderedTokenAnchor(
+        panel,
+        initialPopover.filePath,
+        initialPopover.line,
+        initialPopover.symbol,
+        attempts >= 59
+      );
+      if (measured) {
+        setResolvedPopover({
+          ...initialPopover,
+          anchor: measured,
+        });
+        return;
+      }
+      attempts += 1;
+      if (attempts < 60 && typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(syncAnchor);
+      }
+    };
+    syncAnchor();
+    return () => {
+      cancelled = true;
+      if (rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [initialPopover, panel]);
 
   return (
     <div className="h-screen w-screen bg-[hsl(var(--sidebar-background))]">
@@ -638,7 +948,7 @@ function StoryFrame({
                 openWorktreeInIde: onOpenIde,
               }}
               initialNavStack={initialNavStack}
-              initialPopover={initialPopover}
+              initialPopover={resolvedPopover}
               onClose={onClose}
             />
           </PopupContainerProvider>

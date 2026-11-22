@@ -16,10 +16,16 @@ import { DEFAULT_VSCODE_DIFF_THEME_FALLBACK } from '@/lib/vscode-theme';
 import { useActiveVSCodeDiffThemeName, useResolvedTheme } from '@/theme-provider';
 import { Skeleton } from '@lody/ui/skeleton';
 import type { SessionFileProvider } from '@/lib/session-file-provider';
-import { REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS } from './worktree-review-diff-view';
+import {
+  REVIEW_GUTTER_IDE_UNSAFE_CSS,
+  REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS,
+} from './worktree-review-diff-view';
 import { formatCodeNavSymbolDisplayName } from './worktree-review-tree-model';
 
-const MAX_PAGED_READ_BYTES = 512 * 1024;
+/** Matches the AST single-file ceiling (`1 MiB`) so every navigable definition line loads completely. */
+const AST_PAGED_READ_BYTES = 1024 * 1024;
+/** Hard safety ceiling when paging past 1 MiB to cover a specific target line. */
+const HARD_MAX_PAGED_READ_BYTES = 2 * 1024 * 1024;
 
 export type WorktreeReviewReadFileFn = (
   filePath: string
@@ -62,9 +68,20 @@ function getExtension(filePath: string): SupportedLanguages | undefined {
   return filePath.slice(dot + 1).toLowerCase() as SupportedLanguages;
 }
 
+function countNewlines(text: string): number {
+  let count = 0;
+  let idx = text.indexOf('\n');
+  while (idx !== -1) {
+    count += 1;
+    idx = text.indexOf('\n', idx + 1);
+  }
+  return count;
+}
+
 async function readFileFromProvider(
   provider: SessionFileProvider,
   filePath: string,
+  targetLine: number,
   signal: AbortSignal
 ): Promise<
   { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string }
@@ -78,16 +95,28 @@ async function readFileFromProvider(
     return { ok: true, text: snapshot.text };
   }
   if (snapshot.kind === 'paged-text') {
-    const pagesToRead = Math.max(
+    const totalPages = Math.max(
       1,
-      Math.ceil(
-        Math.min(snapshot.source.sizeBytes, MAX_PAGED_READ_BYTES) / snapshot.source.pageBytes
-      )
+      Math.ceil(snapshot.source.sizeBytes / Math.max(1, snapshot.source.pageBytes))
     );
+    const desiredLine = Math.max(1, targetLine) + 40;
     const chunks: string[] = [];
-    for (let page = 0; page < pagesToRead; page += 1) {
+    let bytesRead = 0;
+    let linesRead = 1;
+    for (let page = 0; page < totalPages; page += 1) {
       if (signal.aborted) return { ok: false, message: 'Cancelled' };
-      chunks.push(await snapshot.source.readPage(page, signal));
+      const chunk = await snapshot.source.readPage(page, signal);
+      chunks.push(chunk);
+      bytesRead += snapshot.source.pageBytes;
+      linesRead += countNewlines(chunk);
+      // Read the entire AST-supported file (<= 1 MiB); for files larger than 1 MiB,
+      // continue paging until `desiredLine` is covered (bounded by hard ceiling).
+      if (bytesRead >= AST_PAGED_READ_BYTES && linesRead >= desiredLine) {
+        break;
+      }
+      if (bytesRead >= HARD_MAX_PAGED_READ_BYTES) {
+        break;
+      }
     }
     return { ok: true, text: chunks.join('') };
   }
@@ -116,13 +145,37 @@ export function WorktreeReviewFileView({
   const resolvedTheme = useResolvedTheme();
   const activeDiffThemeName = useActiveVSCodeDiffThemeName();
 
+  const targetEndLine = Math.max(1, line, endLine ?? line);
   const [fileState, setFileState] = useState<
     | { readonly status: 'loading' }
-    | { readonly status: 'ready'; readonly text: string }
+    | {
+        readonly status: 'ready';
+        readonly filePath: string;
+        readonly text: string;
+        readonly lineCount: number;
+      }
     | { readonly status: 'error'; readonly message: string }
   >({ status: 'loading' });
 
+  const loadedCoverageRef = useRef<{
+    filePath: string;
+    fileProvider: SessionFileProvider | null;
+    readFileOverride: WorktreeReviewReadFileFn | undefined;
+    lineCount: number;
+  } | null>(null);
+
   useEffect(() => {
+    const covered = loadedCoverageRef.current;
+    if (
+      covered &&
+      covered.filePath === filePath &&
+      covered.fileProvider === fileProvider &&
+      covered.readFileOverride === readFileOverride &&
+      covered.lineCount >= targetEndLine
+    ) {
+      return undefined;
+    }
+
     let cancelled = false;
     const controller = new AbortController();
     setFileState({ status: 'loading' });
@@ -132,16 +185,25 @@ export function WorktreeReviewFileView({
         const result = readFileOverride
           ? await readFileOverride(filePath)
           : fileProvider
-            ? await readFileFromProvider(fileProvider, filePath, controller.signal)
+            ? await readFileFromProvider(fileProvider, filePath, targetEndLine, controller.signal)
             : { ok: false as const, message: 'File provider unavailable' };
         if (cancelled) return;
         if (result.ok) {
-          setFileState({ status: 'ready', text: result.text });
+          const lineCount = countNewlines(result.text) + 1;
+          loadedCoverageRef.current = {
+            filePath,
+            fileProvider,
+            readFileOverride,
+            lineCount,
+          };
+          setFileState({ status: 'ready', filePath, text: result.text, lineCount });
         } else {
+          loadedCoverageRef.current = null;
           setFileState({ status: 'error', message: result.message });
         }
       } catch (error) {
         if (!cancelled) {
+          loadedCoverageRef.current = null;
           setFileState({
             status: 'error',
             message: error instanceof Error ? error.message : String(error),
@@ -155,7 +217,7 @@ export function WorktreeReviewFileView({
       cancelled = true;
       controller.abort();
     };
-  }, [filePath, fileProvider, readFileOverride]);
+  }, [filePath, fileProvider, readFileOverride, targetEndLine]);
 
   const scrolledTargetRef = useRef<string | null>(null);
   const targetKey = `${filePath}:${line}`;
@@ -224,6 +286,13 @@ export function WorktreeReviewFileView({
     };
   }, [filePath, fileState]);
 
+  const combinedUnsafeCSS = useMemo(() => {
+    const parts: string[] = [];
+    if (codeNavSupported) parts.push(REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS);
+    if (canOpenInIde) parts.push(REVIEW_GUTTER_IDE_UNSAFE_CSS);
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }, [canOpenInIde, codeNavSupported]);
+
   const fileOptions = useMemo<FileOptions<undefined, undefined>>(
     () => ({
       preferredHighlighter: canUseWASM() ? 'highlights' : 'shiki-js',
@@ -236,15 +305,16 @@ export function WorktreeReviewFileView({
         ? {
             useTokenTransformer: true,
             onTokenClick: handleTokenClick,
-            unsafeCSS: REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS,
           }
         : {}),
+      ...(combinedUnsafeCSS !== undefined ? { unsafeCSS: combinedUnsafeCSS } : {}),
       onPostRender: handlePostRender,
     }),
     [
       activeDiffThemeName,
       canOpenInIde,
       codeNavSupported,
+      combinedUnsafeCSS,
       handlePostRender,
       handleTokenClick,
       resolvedTheme,

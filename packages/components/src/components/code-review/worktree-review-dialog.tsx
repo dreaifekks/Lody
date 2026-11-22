@@ -55,11 +55,14 @@ export function WorktreeReviewDialog({
             {(scope) => (
               <WorktreeReviewWorkspace
                 sessionId={scope.session.id}
+                ownerSessionId={scope.ownerSessionId}
+                ownerProjectRun={scope.ownerProjectRun}
                 machineId={scope.session.machineId}
                 session={scope.session}
                 branchName={scope.session.branchName}
                 fileProvider={scope.fileProvider}
                 fileProviderPending={scope.fileProviderPending}
+                fileProviderMessage={scope.fileProviderMessage}
                 focusFilePath={focusFilePath}
                 onClose={onClose}
               />

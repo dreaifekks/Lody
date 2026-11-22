@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseDiffFromFile } from '@pierre/diffs';
 import type { CodeNavDefinitionOk, CodeNavDiffOutlineFile, CodeNavLocation } from '@lody/shared';
 import {
   buildWorktreeReviewFileTree,
@@ -15,6 +16,7 @@ import {
   updateDiffFrameTarget,
   updateTopReviewFileFrame,
 } from '../src/components/code-review/worktree-review-nav-model';
+import { computePopoverCoords } from '../src/components/code-review/worktree-review-token-popover';
 
 describe('WorktreeReview compressed file tree model', () => {
   const outlineByPath = new Map<string, CodeNavDiffOutlineFile>([
@@ -305,7 +307,7 @@ describe('WorktreeReview navigation stack & resolution', () => {
     expect(extractTokenIdentifier('   () => { ', 0)).toBeNull();
   });
 
-  it('computes exact enclosing function expand deltas and matches outline hunks', () => {
+  it('computes exact enclosing function expand steps across single and multi-hunk functions and matches outline hunks', () => {
     const fileDiff = {
       hunks: [
         { additionStart: 92, additionCount: 7 },
@@ -314,14 +316,53 @@ describe('WorktreeReview navigation stack & resolution', () => {
     } as Parameters<typeof computeEnclosingExpandPlan>[0];
 
     expect(computeEnclosingExpandPlan(fileDiff, 0, { startLine: 88, endLine: 102 })).toEqual({
-      beforeGapIndex: 0,
-      beforeLines: 4, // lines 88..91
-      afterGapIndex: 1,
-      afterLines: 4, // lines 99..102 (hunk covers 92..98)
+      steps: [
+        { gapIndex: 0, direction: 'down', lines: 4 }, // lines 88..91 before hunk 0
+        { gapIndex: 1, direction: 'up', lines: 4 }, // lines 99..102 after hunk 0
+      ],
     });
 
     // Already fully covered by the hunk -> null.
     expect(computeEnclosingExpandPlan(fileDiff, 0, { startLine: 92, endLine: 98 })).toBeNull();
+
+    // Multi-hunk function: 100-line function edited at lines 20 and 70 -> produces 2 hunks with
+    // 3 uncovered regions (before hunk 0, between hunk 0 & hunk 1, and trailing after hunk 1).
+    const makeLines = (edits: Record<number, string>) => {
+      const lines = ['export function longWorkflow(input: number) {'];
+      for (let i = 2; i <= 99; i += 1) {
+        lines.push(edits[i] ?? `  const step${i} = input + ${i};`);
+      }
+      lines.push('  return step99;');
+      lines.push('}');
+      return `${lines.join('\n')}\n`;
+    };
+    const oldContents = makeLines({});
+    const newContents = makeLines({
+      20: '  const step20 = input * 20; // edit 1',
+      70: '  const step70 = input * 70; // edit 2',
+    });
+    const parsed = parseDiffFromFile(
+      { name: 'src/long.ts', contents: oldContents },
+      { name: 'src/long.ts', contents: newContents }
+    );
+    expect(parsed.hunks).toHaveLength(2);
+    const plan = computeEnclosingExpandPlan(parsed, 0, { startLine: 1, endLine: 101 });
+    expect(plan).not.toBeNull();
+    // Covers gap 0 (top of function), gap 1 (middle between hunk 0 and hunk 1), and gap 2 (trailing).
+    expect(plan!.steps.map((s) => s.gapIndex)).toEqual([0, 1, 2]);
+    expect(plan!.steps[0]!.direction).toBe('down');
+    expect(plan!.steps[1]!.direction).toBe('up');
+    expect(plan!.steps[2]!.direction).toBe('up');
+    // Verify total uncovered lines + hunk lines cover every line of [1..101].
+    const h0 = parsed.hunks[0]!;
+    const h1 = parsed.hunks[1]!;
+    const h0Start = h0.additionStart;
+    const h0End = h0.additionStart + h0.additionCount - 1;
+    const h1Start = h1.additionStart;
+    const h1End = h1.additionStart + h1.additionCount - 1;
+    expect(plan!.steps[0]!.lines).toBe(h0Start - 1);
+    expect(plan!.steps[1]!.lines).toBe(h1Start - h0End - 1);
+    expect(plan!.steps[2]!.lines).toBe(101 - h1End);
 
     const outlineFile: CodeNavDiffOutlineFile = {
       path: 'a.ts',
@@ -342,5 +383,43 @@ describe('WorktreeReview navigation stack & resolution', () => {
     expect(matchOutlineHunk(fileDiff, 1, outlineFile)?.enclosing?.name).toBe(
       'cleanupSessionCapabilities'
     );
+  });
+
+  it('positions token popover relative to contained dialog bounds and flips above when bottom would clip', () => {
+    // Contained dialog offset at (44, 44) with size 1192x712 (like BoardArticleDialog on 1280x800).
+    const dialogBounds = { left: 44, top: 44, width: 1192, height: 712 };
+
+    // Anchor with plenty of room below: subtracts dialog origin (no +44px double offset).
+    const below = computePopoverCoords({
+      anchor: { left: 460, top: 200, bottom: 220 },
+      bounds: dialogBounds,
+      popoverWidth: 304,
+      popoverHeight: 240,
+    });
+    expect(below).toEqual({
+      left: 460 - 44,
+      top: 220 - 44 + 6,
+    });
+
+    // Anchor near bottom of dialog (y=680..700 in viewport -> relBottom=656 inside 712px dialog):
+    // 240px popover would overflow bottom (656 + 6 + 240 > 712), so it flips cleanly above anchor.
+    const flipped = computePopoverCoords({
+      anchor: { left: 460, top: 680, bottom: 700 },
+      bounds: dialogBounds,
+      popoverWidth: 304,
+      popoverHeight: 240,
+    });
+    expect(flipped.top).toBe(680 - 44 - 240 - 6);
+    expect(flipped.top).toBeGreaterThanOrEqual(12);
+    expect(flipped.top + 240).toBeLessThanOrEqual(dialogBounds.height - 12);
+
+    // Anchor near right edge clamps strictly within container width.
+    const clampedRight = computePopoverCoords({
+      anchor: { left: 1180, top: 200, bottom: 220 },
+      bounds: dialogBounds,
+      popoverWidth: 304,
+      popoverHeight: 160,
+    });
+    expect(clampedRight.left + 304).toBeLessThanOrEqual(dialogBounds.width - 12);
   });
 });

@@ -1,5 +1,5 @@
 import { Clock, Deferred, Effect } from 'effect';
-import { isE2eeReadQuery } from '@lody/shared/e2ee-rpc';
+import { isE2eeOwnerOnlyReadQuery, isE2eeReadQuery } from '@lody/shared/e2ee-rpc';
 import type { makeE2eeRpcNative } from '@lody/loro-streams-rpc/e2ee-native';
 import { e2eeRpcEnvelope } from '@lody/loro-streams-rpc/e2ee-streams';
 import type { LoroStreamsJsonStreamClient } from '@lody/loro-streams-rpc';
@@ -182,6 +182,7 @@ export const makeEncryptedFeatureReceiver = Effect.fnUntraced(function* (options
     if (opened.requestId !== envelope.id)
       return yield* Effect.fail(new Error('e2ee_rpc_request_binding'));
     const read = isE2eeReadQuery(opened.input.request.method, opened.input.request.params);
+    const ownerOnlyRead = isE2eeOwnerOnlyReadQuery(opened.input.request.method);
     const active = read ? reads : writes;
     if (active.has(envelope.id) || active.size >= 32) return true;
     active.add(envelope.id);
@@ -203,7 +204,7 @@ export const makeEncryptedFeatureReceiver = Effect.fnUntraced(function* (options
               requesterDevice,
               forkRequest.params.sourceSessionId
             ) ?? Effect.succeed({ _tag: 'Denied' as const, reason: 'not-authorized' as const })
-        : read
+        : read && !ownerOnlyRead
           ? options.authorizeRead
           : options.authorize;
     let requester: EncryptedFeatureRequester | undefined;

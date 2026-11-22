@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { estimateCodeNavResponseBytes, type SessionId } from '@lody/shared';
 import { runCommandTextLegacy } from '@lody/shared/node/process';
@@ -8,9 +10,13 @@ import {
   AstGrepCodeNavProvider,
   BoundedAstLruCache,
   BoundedSymbolIndexCache,
+  CODE_NAV_CACHE_LIMITS,
   CodeNavService,
+  CodeNavWorkerClient,
+  computeWorkspaceSnapshotKey,
   trimResponseToBudget,
   type CodeNavProvider,
+  type CodeNavWorkerProcess,
 } from './index';
 
 async function runGit(cwd: string, args: string[]): Promise<void> {
@@ -674,5 +680,261 @@ describe('Bounded L1/L2 caches, response budget trimming, and CodeNavService lim
     expect(peak).toBe(2);
 
     await service.dispose();
+  });
+
+  it('downgrades locally shadowed parameters, variables, catch bindings, and nested functions from exact to heuristic', async () => {
+    const repo = await createTempGitRepo({
+      'src/shadow.ts': [
+        'export function targetFn() {',
+        '  return 1;',
+        '}',
+        '',
+        'export function withParam(targetFn: () => number) {',
+        '  return targetFn();',
+        '}',
+        '',
+        'export function withLocalVar() {',
+        '  const targetFn = () => 2;',
+        '  return targetFn();',
+        '}',
+        '',
+        'export function withCatch() {',
+        '  try {',
+        '    return 0;',
+        '  } catch (targetFn) {',
+        '    return targetFn;',
+        '  }',
+        '}',
+        '',
+        'export function withNestedFn() {',
+        '  function targetFn() { return 3; }',
+        '  return targetFn();',
+        '}',
+        '',
+        'export function unshadowedCall() {',
+        '  return targetFn();',
+        '}',
+        '',
+      ].join('\n'),
+    });
+    tempDirs.push(repo);
+
+    const provider = new AstGrepCodeNavProvider();
+
+    // Unshadowed module-level call still resolves exact to line 1.
+    const unshadowed = await provider.definitions({
+      workspaceRoot: repo,
+      path: 'src/shadow.ts',
+      line: 28,
+      character: 10,
+      symbolHint: 'targetFn',
+    });
+    expect(unshadowed.status).toBe('ok');
+    if (unshadowed.status !== 'ok') throw new Error('expected ok');
+    expect(unshadowed.confidence).toBe('exact');
+    expect(unshadowed.items[0]?.line).toBe(1);
+
+    // Parameter, local const, catch binding, and nested function MUST NOT blind-jump as `exact` to line 1.
+    const shadowedCases = [
+      { label: 'parameter', line: 6, character: 10, localLine: 5 },
+      { label: 'local const', line: 11, character: 10, localLine: 10 },
+      { label: 'catch binding', line: 18, character: 12, localLine: 17 },
+      { label: 'nested function', line: 24, character: 10, localLine: 23 },
+    ];
+    for (const tc of shadowedCases) {
+      const res = await provider.definitions({
+        workspaceRoot: repo,
+        path: 'src/shadow.ts',
+        line: tc.line,
+        character: tc.character,
+        symbolHint: 'targetFn',
+      });
+      expect(res.status, tc.label).toBe('ok');
+      if (res.status !== 'ok') throw new Error(`expected ok for ${tc.label}`);
+      expect(res.confidence, tc.label).toBe('heuristic');
+      expect(res.items[0]?.line, `${tc.label} local binding ranked first`).toBe(tc.localLine);
+    }
+  });
+
+  it('invalidates snapshot cache immediately when a file inside an untracked subdirectory is edited', async () => {
+    const repo = await createTempGitRepo({
+      'src/base.ts': 'export const base = 1;\n',
+    });
+    tempDirs.push(repo);
+
+    const untrackedDir = path.join(repo, 'untracked-dir');
+    const untrackedFile = path.join(untrackedDir, 'nested.ts');
+    await mkdir(untrackedDir, { recursive: true });
+    await writeFile(untrackedFile, 'export function first() {\n  return 1;\n}\n', 'utf8');
+    await utimes(untrackedFile, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+
+    const provider = new AstGrepCodeNavProvider();
+    const snap1 = await computeWorkspaceSnapshotKey(repo);
+    const enc1 = await provider.enclosing({
+      workspaceRoot: repo,
+      path: 'untracked-dir/nested.ts',
+      startLine: 2,
+      endLine: 2,
+    });
+    expect(enc1.status).toBe('ok');
+    if (enc1.status !== 'ok') throw new Error('expected ok');
+    expect(enc1.chain[0]?.name).toBe('first');
+
+    // Overwrite with identical byte length (`first` -> `other`) and distinct mtime inside untracked subdir.
+    await writeFile(untrackedFile, 'export function other() {\n  return 1;\n}\n', 'utf8');
+    await utimes(untrackedFile, new Date(1_700_000_005_000), new Date(1_700_000_005_000));
+
+    const snap2 = await computeWorkspaceSnapshotKey(repo);
+    expect(snap2.snapshotKey).not.toBe(snap1.snapshotKey);
+
+    const enc2 = await provider.enclosing({
+      workspaceRoot: repo,
+      path: 'untracked-dir/nested.ts',
+      startLine: 2,
+      endLine: 2,
+    });
+    expect(enc2.status).toBe('ok');
+    if (enc2.status !== 'ok') throw new Error('expected ok');
+    expect(enc2.chain[0]?.name).toBe('other');
+  });
+
+  it('keeps stale worker exit events from rejecting in-flight requests on a replacement worker', async () => {
+    type FakeChild = EventEmitter & {
+      connected: boolean;
+      exitCode: number | null;
+      pid: number;
+      sent: unknown[];
+      send: (message: unknown, cb?: (err: Error | null) => void) => boolean;
+    };
+
+    const createFakeChild = (pid: number): FakeChild => {
+      const emitter = new EventEmitter() as FakeChild;
+      emitter.connected = true;
+      emitter.exitCode = null;
+      emitter.pid = pid;
+      emitter.sent = [];
+      emitter.send = (message: unknown, cb?: (err: Error | null) => void) => {
+        emitter.sent.push(message);
+        cb?.(null);
+        return true;
+      };
+      return emitter;
+    };
+
+    const children: FakeChild[] = [];
+    const client = new CodeNavWorkerClient({
+      workerEntryPath: fileURLToPath(import.meta.url),
+      childLauncher: (): CodeNavWorkerProcess => {
+        const child = createFakeChild(1000 + children.length);
+        children.push(child);
+        return {
+          child: child as unknown as CodeNavWorkerProcess['child'],
+          terminate: async () => {
+            child.connected = false;
+            child.exitCode = 0;
+          },
+        };
+      },
+    });
+
+    const p1 = client.enclosing({
+      workspaceRoot: '/tmp/ws',
+      path: 'src/a.ts',
+      startLine: 1,
+      endLine: 1,
+    });
+    expect(children).toHaveLength(1);
+    const child1 = children[0]!;
+    expect(child1.sent).toHaveLength(1);
+
+    // Worker 1 disconnects before emitting `exit`; next query spawns worker 2.
+    child1.connected = false;
+    const p2 = client.enclosing({
+      workspaceRoot: '/tmp/ws',
+      path: 'src/b.ts',
+      startLine: 1,
+      endLine: 1,
+    });
+    expect(children).toHaveLength(2);
+    const child2 = children[1]!;
+    expect(child2.sent).toHaveLength(1);
+
+    // Now stale worker 1 finally emits `exit` while query 2 is still in-flight on worker 2.
+    child1.exitCode = 1;
+    child1.emit('exit', 1, null);
+
+    // Query 1 fails with transient_io, while worker 2's query 2 stays pending and succeeds cleanly.
+    const r1 = await p1;
+    expect(r1).toMatchObject({ status: 'error', code: 'transient_io' });
+
+    const msg2 = child2.sent[0] as { id: number };
+    child2.emit('message', {
+      type: 'code-nav/result',
+      id: msg2.id,
+      response: {
+        type: 'code-nav/query',
+        status: 'ok',
+        action: 'enclosing',
+        path: 'src/b.ts',
+        chain: [{ name: 'freshFn', kind: 'function', startLine: 1, endLine: 2 }],
+        provider: 'ast-grep',
+      },
+    });
+    const r2 = await p2;
+    expect(r2).toMatchObject({
+      status: 'ok',
+      action: 'enclosing',
+      path: 'src/b.ts',
+    });
+
+    await client.dispose();
+  });
+
+  it('enforces the 1 MiB and regular-file (no symlink) budget before batch findInFiles scanning', async () => {
+    const files: Record<string, string> = {
+      'src/target.ts': 'export function budgetedBulkTarget() { return 1; }\n',
+    };
+    for (let i = 0; i < 52; i += 1) {
+      files[`src/callers/caller-${String(i).padStart(2, '0')}.ts`] = [
+        "import { budgetedBulkTarget } from '../target';",
+        `export function runCaller${i}() { return budgetedBulkTarget(); }`,
+        '',
+      ].join('\n');
+    }
+    // Oversized (> 1 MiB) file calling the same symbol must be skipped before Rust findInFiles.
+    const oversizedPadding = `// ${'a'.repeat(100)}\n`.repeat(
+      Math.ceil((CODE_NAV_CACHE_LIMITS.maxSingleFileBytes + 8_192) / 104)
+    );
+    files['src/callers/oversized.ts'] = [
+      "import { budgetedBulkTarget } from '../target';",
+      oversizedPadding,
+      'export function runOversized() { return budgetedBulkTarget(); }',
+      '',
+    ].join('\n');
+
+    const repo = await createTempGitRepo(files);
+    tempDirs.push(repo);
+
+    // Symlinked caller file inside the repo must also be excluded before batch findInFiles.
+    await symlink(
+      path.join(repo, 'src/callers/caller-00.ts'),
+      path.join(repo, 'src/callers/symlinked-caller.ts')
+    );
+
+    const provider = new AstGrepCodeNavProvider();
+    const res = await provider.callers({
+      workspaceRoot: repo,
+      path: 'src/target.ts',
+      line: 1,
+      character: 17,
+      maxDepth: 1,
+      limit: 60,
+    });
+
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') throw new Error('expected ok');
+    expect(res.items).toHaveLength(52);
+    expect(res.items.some((item) => item.path.includes('oversized.ts'))).toBe(false);
+    expect(res.items.some((item) => item.path.includes('symlinked-caller.ts'))).toBe(false);
   });
 });

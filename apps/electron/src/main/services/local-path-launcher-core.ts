@@ -58,11 +58,15 @@ export function selectSafePathLauncherInput(
 ): LaunchLocalPathInput | null {
   if (platform !== 'win32' || input.kind === 'url') return input
   const unsafe = /[&|<>^%!"\r\n]/u
-  const candidates = [input.command, ...(input.fallbackCommands ?? [])].filter(
-    (candidate) =>
-      !usesShell(candidate.command) ||
-      (!unsafe.test(input.targetPath) && !(candidate.args ?? []).some((arg) => unsafe.test(arg)))
-  )
+  const whitespace = /\s/u
+  const candidates = [input.command, ...(input.fallbackCommands ?? [])].filter((candidate) => {
+    if (!usesShell(candidate.command)) return true
+    // Node joins argv with spaces without quoting when `shell: true` on Windows,
+    // so cmd.exe both interprets metacharacters and splits whitespace-containing
+    // arguments (e.g. `src/My File.ts`) across multiple argv tokens.
+    const values = [input.targetPath, ...(candidate.args ?? [])]
+    return !values.some((value) => unsafe.test(value) || whitespace.test(value))
+  })
   if (candidates.length)
     return { ...input, command: candidates[0]!, fallbackCommands: candidates.slice(1) }
   if (input.fallbackUrl)

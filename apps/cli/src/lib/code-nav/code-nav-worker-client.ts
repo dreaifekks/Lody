@@ -85,6 +85,11 @@ type PendingRequest = {
   readonly cleanup: () => void;
 };
 
+type ManagedWorker = {
+  readonly process: CodeNavWorkerProcess;
+  readonly pending: Map<number, PendingRequest>;
+};
+
 /**
  * Manages a single lazy, idle-recyclable `code-nav-worker` child process.
  * Falls back cleanly to in-process `AstGrepCodeNavProvider` when running
@@ -92,9 +97,9 @@ type PendingRequest = {
  */
 export class CodeNavWorkerClient implements CodeNavProvider {
   readonly id = 'ast-grep' as const;
-  private worker: CodeNavWorkerProcess | null = null;
+  private worker: ManagedWorker | null = null;
+  private readonly activeWorkers = new Set<ManagedWorker>();
   private nextRequestId = 1;
-  private readonly pending = new Map<number, PendingRequest>();
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private fallbackProvider: CodeNavProvider | null;
@@ -148,7 +153,9 @@ export class CodeNavWorkerClient implements CodeNavProvider {
 
   isWorkerAlive(): boolean {
     return (
-      this.worker !== null && this.worker.child.connected && this.worker.child.exitCode === null
+      this.worker !== null &&
+      this.worker.process.child.connected &&
+      this.worker.process.child.exitCode === null
     );
   }
 
@@ -196,8 +203,8 @@ export class CodeNavWorkerClient implements CodeNavProvider {
       }
     }
 
-    const worker = this.ensureWorker();
-    if (!worker || !worker.child.connected) {
+    const managed = this.ensureWorker();
+    if (!managed || !managed.process.child.connected) {
       return codeNavError('unavailable', {
         message: 'Code navigation worker could not be started.',
         retryable: true,
@@ -212,16 +219,16 @@ export class CodeNavWorkerClient implements CodeNavProvider {
       const finish = (response: CodeNavQueryResponse) => {
         if (settled) return;
         settled = true;
-        const entry = this.pending.get(id);
-        this.pending.delete(id);
+        const entry = managed.pending.get(id);
+        managed.pending.delete(id);
         entry?.cleanup();
         this.scheduleIdleShutdownIfQuiet();
         resolve(response);
       };
 
       const onAbort = () => {
-        if (this.worker?.child.connected) {
-          this.worker.child.send?.({
+        if (managed.process.child.connected) {
+          managed.process.child.send?.({
             type: 'code-nav/cancel',
             id,
           } satisfies CodeNavWorkerParentMessage);
@@ -235,7 +242,7 @@ export class CodeNavWorkerClient implements CodeNavProvider {
       };
 
       signal?.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, {
+      managed.pending.set(id, {
         resolve: finish,
         cleanup: () => {
           signal?.removeEventListener('abort', onAbort);
@@ -249,7 +256,7 @@ export class CodeNavWorkerClient implements CodeNavProvider {
       } as CodeNavWorkerParentMessage;
 
       try {
-        worker.child.send(message, (err) => {
+        managed.process.child.send(message, (err) => {
           if (err) {
             finish(
               codeNavError('transient_io', {
@@ -277,27 +284,39 @@ export class CodeNavWorkerClient implements CodeNavProvider {
     return this.fallbackProvider;
   }
 
-  private ensureWorker(): CodeNavWorkerProcess | null {
-    if (this.worker && this.worker.child.connected && this.worker.child.exitCode === null) {
+  private ensureWorker(): ManagedWorker | null {
+    if (
+      this.worker &&
+      this.worker.process.child.connected &&
+      this.worker.process.child.exitCode === null
+    ) {
       return this.worker;
     }
     const launched = this.childLauncher(this.workerEntryPath);
-    this.worker = launched;
+    const managed: ManagedWorker = {
+      process: launched,
+      pending: new Map(),
+    };
+    this.worker = managed;
+    this.activeWorkers.add(managed);
 
     launched.child.on('message', (raw: unknown) => {
       if (!isCodeNavWorkerChildMessage(raw)) return;
-      const pending = this.pending.get(raw.id);
+      const pending = managed.pending.get(raw.id);
       if (pending) {
         pending.resolve(raw.response);
       }
     });
 
     const handleExit = () => {
-      if (this.worker === launched) {
+      this.activeWorkers.delete(managed);
+      const isCurrentWorker = this.worker === managed;
+      if (isCurrentWorker) {
         this.worker = null;
+        this.cancelIdleTimer();
       }
-      this.cancelIdleTimer();
-      this.rejectAllPending(
+      this.rejectWorkerPending(
+        managed,
         codeNavError('transient_io', {
           message: 'Code navigation worker exited unexpectedly.',
           retryable: true,
@@ -307,26 +326,33 @@ export class CodeNavWorkerClient implements CodeNavProvider {
 
     launched.child.on('exit', handleExit);
     launched.child.on('error', handleExit);
-    return launched;
+    return managed;
   }
 
-  private rejectAllPending(error: CodeNavQueryError): void {
-    const entries = [...this.pending.values()];
-    this.pending.clear();
+  private rejectWorkerPending(managed: ManagedWorker, error: CodeNavQueryError): void {
+    const entries = [...managed.pending.values()];
+    managed.pending.clear();
     for (const entry of entries) {
       entry.resolve(error);
     }
   }
 
+  private rejectAllPending(error: CodeNavQueryError): void {
+    for (const managed of [...this.activeWorkers]) {
+      this.rejectWorkerPending(managed, error);
+    }
+  }
+
   private scheduleIdleShutdownIfQuiet(): void {
-    if (this.disposed || this.pending.size > 0 || !this.worker || this.idleShutdownMs <= 0) {
+    const current = this.worker;
+    if (this.disposed || !current || current.pending.size > 0 || this.idleShutdownMs <= 0) {
       return;
     }
     this.cancelIdleTimer();
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (this.pending.size === 0) {
-        void this.stopWorker();
+      if (this.worker === current && current.pending.size === 0) {
+        void this.stopWorker(current);
       }
     }, this.idleShutdownMs);
     this.idleTimer.unref?.();
@@ -339,11 +365,12 @@ export class CodeNavWorkerClient implements CodeNavProvider {
     }
   }
 
-  private async stopWorker(): Promise<void> {
-    const current = this.worker;
-    if (!current) return;
-    this.worker = null;
-    const { child } = current;
+  private async stopWorker(target: ManagedWorker | null = this.worker): Promise<void> {
+    if (!target) return;
+    if (this.worker === target) {
+      this.worker = null;
+    }
+    const { child } = target.process;
     if (child.exitCode !== null) return;
     const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()));
     if (child.connected) {
@@ -363,7 +390,7 @@ export class CodeNavWorkerClient implements CodeNavProvider {
     ]);
     if (timer) clearTimeout(timer);
     if (!closedCleanly) {
-      await current.terminate({ graceMs: 1_500, killWaitMs: 3_000 }).catch(() => undefined);
+      await target.process.terminate({ graceMs: 1_500, killWaitMs: 3_000 }).catch(() => undefined);
     }
   }
 }

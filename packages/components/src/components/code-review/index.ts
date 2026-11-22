@@ -11,6 +11,7 @@ export {
 } from './worktree-review-file-tree';
 export {
   WorktreeReviewDiffView,
+  REVIEW_GUTTER_IDE_UNSAFE_CSS,
   REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS,
   type WorktreeReviewDiffTokenClick,
   type WorktreeReviewDiffViewProps,
@@ -62,6 +63,7 @@ export {
   updateTopReviewFileFrame,
   type DefinitionResolutionDecision,
   type EnclosingExpandPlan,
+  type EnclosingExpandStep,
   type ExtractedTokenIdentifier,
   type WorktreeReviewNavFrame,
   type WorktreeReviewNavStack,

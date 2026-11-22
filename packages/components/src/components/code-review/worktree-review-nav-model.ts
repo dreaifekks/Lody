@@ -236,41 +236,112 @@ export function extractTokenIdentifier(
   return null;
 }
 
+export interface EnclosingExpandStep {
+  /** `@pierre/diffs` gap index (`0..hunks.length - 1` before each hunk, `hunks.length` after last hunk). */
+  readonly gapIndex: number;
+  /** `'down'` increases `fromEnd` (reveals upward from hunk top); `'up'` increases `fromStart` (reveals downward). */
+  readonly direction: 'up' | 'down';
+  /** Positive line delta applied on expand and negated (`-lines`) on collapse. */
+  readonly lines: number;
+}
+
 export interface EnclosingExpandPlan {
-  /** Gap index right before the hunk (`direction: 'down'` reveals upward into the function start). */
-  readonly beforeGapIndex: number;
-  readonly beforeLines: number;
-  /** Gap index right after the hunk (`direction: 'up'` reveals downward to the function end). */
-  readonly afterGapIndex: number;
-  readonly afterLines: number;
+  /** Ordered gap deltas covering every collapsed gap intersecting `[enclosing.startLine, enclosing.endLine]`. */
+  readonly steps: readonly EnclosingExpandStep[];
+}
+
+function getHunkAdditionBounds(hunk: FileDiffMetadata['hunks'][number]): {
+  readonly start: number;
+  readonly endExclusive: number;
+} {
+  // Matches `@pierre/diffs` `getHunkAdditionLineRange` (`getHunkSideStartBoundary + 1`).
+  const start = hunk.additionCount === 0 ? hunk.additionStart + 1 : hunk.additionStart;
+  return { start, endExclusive: start + hunk.additionCount };
 }
 
 /**
- * Computes exact `@pierre/diffs` `FileDiff.expandHunk` deltas needed to reveal
- * an enclosing function `[enclosing.startLine, enclosing.endLine]` around hunk `hunkIndex`.
+ * Computes exact `@pierre/diffs` `FileDiff.expandHunk` deltas across ALL gaps
+ * (before first hunk, between hunks, and trailing after last hunk) that intersect
+ * an enclosing function `[enclosing.startLine, enclosing.endLine]`.
  */
 export function computeEnclosingExpandPlan(
-  fileDiff: Pick<FileDiffMetadata, 'hunks'>,
+  fileDiff: Pick<FileDiffMetadata, 'hunks'> & Partial<Pick<FileDiffMetadata, 'additionLines'>>,
   hunkIndex: number,
   enclosing: Pick<CodeNavSymbol, 'startLine' | 'endLine'>
 ): EnclosingExpandPlan | null {
-  const hunk = fileDiff.hunks[hunkIndex];
-  if (!hunk) return null;
-  const hunkStart = hunk.additionStart;
-  const hunkEndExclusive = hunk.additionStart + hunk.additionCount;
-  const beforeLines =
-    enclosing.startLine < hunkStart ? Math.max(0, hunkStart - enclosing.startLine) : 0;
-  const afterLines =
-    enclosing.endLine >= hunkEndExclusive
-      ? Math.max(0, enclosing.endLine - hunkEndExclusive + 1)
-      : 0;
-  if (beforeLines === 0 && afterLines === 0) return null;
-  return {
-    beforeGapIndex: hunkIndex,
-    beforeLines,
-    afterGapIndex: hunkIndex + 1,
-    afterLines,
-  };
+  if (!fileDiff.hunks[hunkIndex]) return null;
+  const targetStart = Math.max(1, enclosing.startLine);
+  const targetEnd = Math.max(targetStart, enclosing.endLine);
+
+  const steps: EnclosingExpandStep[] = [];
+  let prevHunkEndExclusive = 1;
+
+  for (let gapIndex = 0; gapIndex < fileDiff.hunks.length; gapIndex += 1) {
+    const hunk = fileDiff.hunks[gapIndex]!;
+    const { start: hunkStart, endExclusive: hunkEndExclusive } = getHunkAdditionBounds(hunk);
+    const gapEnd = hunkStart - 1;
+    const gapStart =
+      gapIndex === 0
+        ? Math.max(
+            1,
+            typeof hunk.collapsedBefore === 'number' ? hunkStart - hunk.collapsedBefore : 1
+          )
+        : prevHunkEndExclusive;
+    const gapSize = gapEnd - gapStart + 1;
+
+    if (gapSize > 0) {
+      const overlapStart = Math.max(targetStart, gapStart);
+      const overlapEnd = Math.min(targetEnd, gapEnd);
+      if (overlapStart <= overlapEnd) {
+        if (overlapEnd === gapEnd && (gapIndex === 0 || overlapStart > gapStart)) {
+          // Reveal upward from `hunk[gapIndex]`'s top (`fromEnd`).
+          steps.push({
+            gapIndex,
+            direction: 'down',
+            lines: gapEnd - overlapStart + 1,
+          });
+        } else if (overlapStart === gapStart) {
+          // Reveal downward from previous hunk's bottom (`fromStart`); covers full
+          // inter-hunk gaps (`overlapEnd === gapEnd`) as well as function tails.
+          steps.push({
+            gapIndex,
+            direction: 'up',
+            lines: overlapEnd - gapStart + 1,
+          });
+        } else {
+          // Interior range inside a gap: reveal from whichever boundary is closer.
+          const fromStartLines = overlapEnd - gapStart + 1;
+          const fromEndLines = gapEnd - overlapStart + 1;
+          steps.push(
+            fromStartLines <= fromEndLines
+              ? { gapIndex, direction: 'up', lines: fromStartLines }
+              : { gapIndex, direction: 'down', lines: fromEndLines }
+          );
+        }
+      }
+    }
+
+    prevHunkEndExclusive = hunkEndExclusive;
+  }
+
+  // Trailing gap after the last hunk (`gapIndex === fileDiff.hunks.length`),
+  // which `@pierre/diffs` expands exclusively via `direction: 'up'` (`fromStart`).
+  const trailingStart = prevHunkEndExclusive;
+  const totalAdditionLines = fileDiff.additionLines?.length ?? 0;
+  const trailingEnd = totalAdditionLines > 0 ? totalAdditionLines : targetEnd;
+  if (trailingStart <= trailingEnd && targetEnd >= trailingStart) {
+    const clampedEnd = Math.min(targetEnd, trailingEnd);
+    const trailingLines = clampedEnd - trailingStart + 1;
+    if (trailingLines > 0) {
+      steps.push({
+        gapIndex: fileDiff.hunks.length,
+        direction: 'up',
+        lines: trailingLines,
+      });
+    }
+  }
+
+  return steps.length > 0 ? { steps } : null;
 }
 
 /**

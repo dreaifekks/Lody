@@ -114,6 +114,54 @@ describe('path-launchers file:line support', () => {
     ).toBe('vscode://file/C:/work/wt/src/a.ts:5?windowId=_blank');
   });
 
+  it('prefers native Windows .exe candidates over bare .cmd shims when file arguments contain spaces', () => {
+    const vscodeWin = buildPathLauncherLaunchInput(
+      builtin('vscode', 'VS Code'),
+      'C:\\repo',
+      'win32',
+      'directory',
+      { filePath: 'src/My File.ts', line: 42, column: 3 }
+    );
+    expect(vscodeWin.kind).toBe('command');
+    if (vscodeWin.kind !== 'command') throw new Error('expected command');
+    expect(vscodeWin.command.command.endsWith('Code.exe')).toBe(true);
+    expect(vscodeWin.command.args).toEqual([
+      '-n',
+      'C:\\repo',
+      '-g',
+      'C:\\repo\\src\\My File.ts:42:3',
+    ]);
+    expect(
+      [vscodeWin.command, ...(vscodeWin.fallbackCommands ?? [])].map((c) => c.command)
+    ).not.toContain('code');
+    expect(vscodeWin.fallbackUrl).toBe(
+      'vscode://file/C:/repo/src/My%20File.ts:42:3?windowId=_blank'
+    );
+
+    const cursorWin = buildPathLauncherLaunchInput(
+      builtin('cursor', 'Cursor'),
+      'C:\\repo',
+      'win32',
+      'directory',
+      { filePath: 'src/My File.ts', line: 10 }
+    );
+    expect(cursorWin.kind).toBe('command');
+    if (cursorWin.kind !== 'command') throw new Error('expected command');
+    expect(cursorWin.command.command.endsWith('Cursor.exe')).toBe(true);
+    expect(cursorWin.fallbackUrl).toBe('cursor://file/C:/repo/src/My%20File.ts:10?windowId=_blank');
+
+    const sublimeWin = buildPathLauncherLaunchInput(
+      builtin('sublime', 'Sublime Text'),
+      'C:\\repo',
+      'win32',
+      'directory',
+      { filePath: 'src/My File.ts', line: 12 }
+    );
+    expect(sublimeWin.kind).toBe('command');
+    if (sublimeWin.kind !== 'command') throw new Error('expected command');
+    expect(sublimeWin.command.command.endsWith('subl.exe')).toBe(true);
+  });
+
   it('opens a remote SSH worktree folder directly at file:line across VS Code, Cursor, Windsurf, Antigravity, and Zed', () => {
     const dest = { host: 'ts:home-devNuc', user: 'dreaife' };
     const expectedHexAuthority =

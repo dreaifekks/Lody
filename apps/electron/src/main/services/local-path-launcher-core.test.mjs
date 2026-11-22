@@ -571,3 +571,68 @@ void test('filters percent-encoded shell arguments even when the raw path has no
     null
   )
 })
+
+void test('Windows whitespace file arguments bypass .cmd shell shims and use native .exe or protocol fallback', async () => {
+  const { buildPathLauncherLaunchInput } = await import('@lody/shared/path-launchers')
+  const usesShell = (command) =>
+    /\.(cmd|bat)$/iu.test(command) || (!/[\\/]/u.test(command) && !/\.(exe|com)$/iu.test(command))
+
+  const built = buildPathLauncherLaunchInput(
+    { kind: 'builtin', id: 'vscode', label: 'VS Code' },
+    'C:\\repo',
+    'win32',
+    'directory',
+    { filePath: 'src/My File.ts', line: 42 }
+  )
+  assert.equal(built.kind, 'command')
+  const withShimInjected = {
+    ...built,
+    command: { command: 'code', args: built.command.args },
+    fallbackCommands: [
+      built.command,
+      ...(built.fallbackCommands ?? []),
+      { command: 'code.cmd', args: built.command.args }
+    ]
+  }
+
+  const safe = selectSafePathLauncherInput(withShimInjected, 'win32', usesShell)
+  assert.equal(safe.kind, 'command')
+  assert.equal(safe.command.command.endsWith('Code.exe'), true)
+  assert.deepEqual(safe.command.args, ['-n', 'C:\\repo', '-g', 'C:\\repo\\src\\My File.ts:42'])
+  assert.equal(
+    [safe.command, ...safe.fallbackCommands].some((item) => usesShell(item.command)),
+    false
+  )
+
+  // When only shell shims remain but a protocol fallbackUrl exists, fall back to the encoded URL.
+  const urlOnly = selectSafePathLauncherInput(
+    {
+      kind: 'command',
+      command: {
+        command: 'code.cmd',
+        args: ['-n', 'C:\\repo', '-g', 'C:\\repo\\src\\My File.ts:42']
+      },
+      fallbackUrl: built.fallbackUrl,
+      targetPath: 'C:\\repo'
+    },
+    'win32',
+    usesShell
+  )
+  assert.equal(urlOnly.kind, 'url')
+  assert.equal(urlOnly.url, 'vscode://file/C:/repo/src/My%20File.ts:42?windowId=_blank')
+  assert.equal(urlOnly.targetPath, 'C:\\repo')
+
+  // Without a native .exe or fallbackUrl, refuse shell-splitting a spaced filename.
+  assert.equal(
+    selectSafePathLauncherInput(
+      {
+        kind: 'command',
+        command: { command: 'custom.cmd', args: ['C:\\repo\\src\\My File.ts:42'] },
+        targetPath: 'C:\\repo'
+      },
+      'win32',
+      usesShell
+    ),
+    null
+  )
+})

@@ -14,15 +14,48 @@ import {
 import { formatCodeNavSymbolDisplayName } from './worktree-review-tree-model';
 
 export const REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS = `
-[data-line] span[data-char] {
+[data-line]:not([data-line-type="change-deletion"]) span[data-char] {
   cursor: pointer;
   border-radius: 2px;
 }
-[data-line] span[data-char]:hover {
+[data-line]:not([data-line-type="change-deletion"]) span[data-char]:hover {
   background: color-mix(in oklab, hsl(var(--primary)) 16%, transparent);
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
+}
+`;
+
+/**
+ * Reserves a dedicated 20px left utility lane inside `@pierre/diffs`'s
+ * `[data-column-number]` cell (between the 4px change bar and right-aligned
+ * line number text) and raises `[data-gutter-utility-slot]` above
+ * `[data-line-number-content]` (`z-index: 1`) so line-level `↗ IDE` buttons
+ * never overlap line numbers and always win pointer hit-testing.
+ */
+export const REVIEW_GUTTER_IDE_UNSAFE_CSS = `
+[data-column-number] {
+  padding-left: 28px !important;
+}
+[data-gutter-utility-slot] {
+  left: 6px !important;
+  right: auto !important;
+  width: 20px !important;
+  z-index: 5 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  pointer-events: auto !important;
+}
+[data-gutter-utility-slot] ::slotted(*) {
+  position: static !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  pointer-events: auto !important;
+}
+[data-column-number][data-line-type="change-deletion"] [data-gutter-utility-slot] {
+  display: none !important;
 }
 `;
 
@@ -84,6 +117,12 @@ interface ReviewDiffFileCardProps {
   ) => void;
 }
 
+function getEnclosingFunctionKey(
+  enclosing: Pick<CodeNavSymbol, 'name' | 'startLine' | 'endLine'>
+): string {
+  return `${enclosing.startLine}:${enclosing.endLine}:${enclosing.name}`;
+}
+
 const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
   filePath,
   data,
@@ -104,13 +143,14 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
   const [renderedMeta, setRenderedMeta] = useState<FileDiffMetadata | null>(
     data?.status === 'ready-parsed' ? data.fileDiff : null
   );
-  // Maps hunkIndex -> exact expand deltas applied so collapsing restores cleanly.
-  const [expandedHunks, setExpandedHunks] = useState<ReadonlyMap<number, EnclosingExpandPlan>>(
-    () => new Map()
-  );
+  // Maps enclosing function key -> exact expand deltas applied across all intersecting gaps
+  // so multi-hunk functions stay synchronized and collapse restores every gap cleanly.
+  const [expandedFunctions, setExpandedFunctions] = useState<
+    ReadonlyMap<string, EnclosingExpandPlan>
+  >(() => new Map());
 
   useEffect(() => {
-    setExpandedHunks(new Map());
+    setExpandedFunctions(new Map());
     if (data?.status === 'ready-parsed') {
       setRenderedMeta(data.fileDiff);
     } else {
@@ -166,17 +206,17 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
       const meta = instance?.fileDiff ?? renderedMeta;
       if (!instance || !meta) return;
 
-      const applied = expandedHunks.get(hunkIndex);
+      const fnKey = getEnclosingFunctionKey(enclosing);
+      const applied = expandedFunctions.get(fnKey);
       if (applied) {
-        if (applied.beforeLines > 0) {
-          instance.expandHunk(applied.beforeGapIndex, 'down', -applied.beforeLines);
+        for (const step of applied.steps) {
+          if (step.lines > 0) {
+            instance.expandHunk(step.gapIndex, step.direction, -step.lines);
+          }
         }
-        if (applied.afterLines > 0) {
-          instance.expandHunk(applied.afterGapIndex, 'up', -applied.afterLines);
-        }
-        setExpandedHunks((prev) => {
+        setExpandedFunctions((prev) => {
           const next = new Map(prev);
-          next.delete(hunkIndex);
+          next.delete(fnKey);
           return next;
         });
         return;
@@ -194,19 +234,18 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
       const activeMeta = instance.fileDiff ?? meta;
       const plan = computeEnclosingExpandPlan(activeMeta, hunkIndex, enclosing);
       if (!plan) return;
-      if (plan.beforeLines > 0) {
-        instance.expandHunk(plan.beforeGapIndex, 'down', plan.beforeLines);
+      for (const step of plan.steps) {
+        if (step.lines > 0) {
+          instance.expandHunk(step.gapIndex, step.direction, step.lines);
+        }
       }
-      if (plan.afterLines > 0) {
-        instance.expandHunk(plan.afterGapIndex, 'up', plan.afterLines);
-      }
-      setExpandedHunks((prev) => {
+      setExpandedFunctions((prev) => {
         const next = new Map(prev);
-        next.set(hunkIndex, plan);
+        next.set(fnKey, plan);
         return next;
       });
     },
-    [diffOptions?.loadDiffFiles, expandedHunks, renderedMeta]
+    [diffOptions?.loadDiffFiles, expandedFunctions, renderedMeta]
   );
 
   // Hunk 0 enclosing bar renders right beneath the file header (matching visual design);
@@ -244,7 +283,7 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
     (annotation: DiffLineAnnotation<unknown>) => {
       const meta = annotation.metadata as HunkAnnotationMeta | undefined;
       if (!meta) return null;
-      const isExpanded = expandedHunks.has(meta.hunkIndex);
+      const isExpanded = expandedFunctions.has(getEnclosingFunctionKey(meta.enclosing));
       const canExpand =
         renderedMeta !== null &&
         (isExpanded ||
@@ -283,11 +322,18 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
         </div>
       );
     },
-    [canOpenInIde, expandedHunks, filePath, handleToggleExpandFunction, onOpenInIde, renderedMeta]
+    [
+      canOpenInIde,
+      expandedFunctions,
+      filePath,
+      handleToggleExpandFunction,
+      onOpenInIde,
+      renderedMeta,
+    ]
   );
 
   const renderLineIdeUtility = useCallback(
-    (getHoveredLine: () => { lineNumber: number } | undefined) => {
+    (getHoveredLine: () => { lineNumber: number; side?: string } | undefined) => {
       if (!canOpenInIde) return null;
       return (
         <button
@@ -297,7 +343,8 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
           onClick={(event) => {
             event.stopPropagation();
             const hovered = getHoveredLine();
-            if (hovered) onOpenInIde(filePath, hovered.lineNumber);
+            if (!hovered || hovered.side === 'deletions') return;
+            onOpenInIde(filePath, hovered.lineNumber);
           }}
           className="flex h-5 w-5 items-center justify-center rounded text-[11px] text-muted-foreground transition-colors hover:bg-[hsl(var(--hover))] hover:text-[hsl(var(--primary))] cursor-pointer"
         >
@@ -342,15 +389,25 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
   const { dir, name } = splitPathParts(filePath);
 
   const primaryEnclosing = primaryOutlineHunk?.enclosing;
-  const primaryExpanded = expandedHunks.has(0);
+  const primaryExpanded = primaryEnclosing
+    ? expandedFunctions.has(getEnclosingFunctionKey(primaryEnclosing))
+    : false;
   const canExpandPrimary =
     Boolean(primaryEnclosing) &&
     renderedMeta !== null &&
     (primaryExpanded || computeEnclosingExpandPlan(renderedMeta, 0, primaryEnclosing!) !== null);
 
+  const combinedUnsafeCSS = useMemo(() => {
+    const parts: string[] = [];
+    if (codeNavSupported) parts.push(REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS);
+    if (canOpenInIde) parts.push(REVIEW_GUTTER_IDE_UNSAFE_CSS);
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }, [canOpenInIde, codeNavSupported]);
+
   return (
     <section
       ref={(node) => onCardRef(filePath, node)}
+      data-diff-path={filePath}
       data-review-file-card={filePath}
       className="mb-3.5 overflow-hidden rounded-[10px] border border-foreground/[0.12] bg-background dark:border-border"
     >
@@ -486,7 +543,7 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
               lineAnnotations={secondaryAnnotations}
               renderAnnotation={secondaryAnnotations ? renderSecondaryAnnotation : undefined}
               renderGutterUtility={canOpenInIde ? renderLineIdeUtility : undefined}
-              unsafeCSS={codeNavSupported ? REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS : undefined}
+              unsafeCSS={combinedUnsafeCSS}
             />
           )}
         </>

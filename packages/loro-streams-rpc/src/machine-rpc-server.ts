@@ -587,6 +587,8 @@ type RpcServerDeps = {
   ) => Promise<SessionId>;
   openCodeCollabText?: (args: CodeCollabV2OpenTextRequest) => Promise<CodeCollabV2OpenTextOk>;
   resolveCodeCollabOwnerSessionId?: (sessionId: SessionId) => Promise<SessionId>;
+  /** Read-only owner resolver for `code-nav/query`; never repairs links or mutates disk. */
+  resolveCodeNavOwnerSessionId?: (sessionId: SessionId) => Promise<SessionId>;
   /** File Preview v3 — a plain read; must not activate Code Collab. */
   previewFile?: (args: FilePreviewV3Request) => Promise<FilePreviewV3Response>;
   downloadFileChunk?: (args: FileDownloadRequest) => Promise<FileDownloadResponse>;
@@ -1258,7 +1260,13 @@ export class LoroStreamsMachineRpcServer {
               input.params.sessionId as SessionId,
               { signal: context.signal }
             )
-          : await this.deps.resolveCodeCollabOwnerSessionId?.(input.params.sessionId as SessionId));
+          : input.method === 'code-nav/query'
+            ? await (
+                this.deps.resolveCodeNavOwnerSessionId ?? this.deps.resolveCodeCollabOwnerSessionId
+              )?.(input.params.sessionId as SessionId)
+            : await this.deps.resolveCodeCollabOwnerSessionId?.(
+                input.params.sessionId as SessionId
+              ));
       if (!owner) throw new Error('e2ee_query_owner');
       params = await encryptCodeCollabV2RpcPayload(owner, params);
     }
@@ -2463,7 +2471,7 @@ export class LoroStreamsMachineRpcServer {
           const decoded = await this.decryptCodeCollabV2RequestParams(request.params);
           codeCollabOwnerSessionId = decoded.ownerSessionId;
           const params = CodeNavQueryRequestSchema.parse(decoded.payload);
-          await this.verifyCodeCollabV2OwnerSession(decoded.ownerSessionId, params.sessionId);
+          await this.verifyCodeNavOwnerSession(decoded.ownerSessionId, params.sessionId);
           const response: CodeNavQueryResponse = this.deps.queryCodeNav
             ? await this.deps.queryCodeNav(params)
             : codeNavError('unavailable', {
@@ -2751,6 +2759,21 @@ export class LoroStreamsMachineRpcServer {
     businessSessionId: string
   ): Promise<void> {
     const resolveOwnerSessionId = this.deps.resolveCodeCollabOwnerSessionId;
+    if (!resolveOwnerSessionId) {
+      return;
+    }
+    const expectedOwnerSessionId = await resolveOwnerSessionId(businessSessionId as SessionId);
+    if (expectedOwnerSessionId !== envelopeOwnerSessionId) {
+      throw codeCollabOwnerMismatchError();
+    }
+  }
+
+  private async verifyCodeNavOwnerSession(
+    envelopeOwnerSessionId: string,
+    businessSessionId: string
+  ): Promise<void> {
+    const resolveOwnerSessionId =
+      this.deps.resolveCodeNavOwnerSessionId ?? this.deps.resolveCodeCollabOwnerSessionId;
     if (!resolveOwnerSessionId) {
       return;
     }

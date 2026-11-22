@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { PanelLeft, X } from 'lucide-react';
 import type {
   CodeCollabAllChangesScope,
   CodeNavCallerItem,
@@ -8,6 +8,7 @@ import type {
   MachineId,
   SessionId,
   SessionMeta,
+  SessionProjectRun,
 } from '@lody/shared';
 import type { DiffTokenEventBaseProps, TokenEventBase } from '@pierre/diffs';
 import { cn } from '@/lib/utils';
@@ -67,11 +68,16 @@ export interface WorktreeReviewIdeOverride {
 
 export interface WorktreeReviewWorkspaceProps {
   readonly sessionId: SessionId;
+  /** Workspace-owning session ID (parent session ID for child sessions sharing a worktree). */
+  readonly ownerSessionId?: SessionId;
+  /** Owner session's Project Group run metadata for multi-root `rootId` mapping. */
+  readonly ownerProjectRun?: SessionProjectRun | null;
   readonly machineId: MachineId | null | undefined;
   readonly session?: SessionMeta | null;
   readonly branchName?: string | null;
   readonly fileProvider: SessionFileProvider | null;
   readonly fileProviderPending?: boolean;
+  readonly fileProviderMessage?: string | null;
   readonly focusFilePath?: string | null;
   readonly onClose: () => void;
   readonly className?: string;
@@ -98,13 +104,20 @@ function formatShortRef(ref: string | null | undefined): string | null {
   return trimmed;
 }
 
+const NARROW_WORKSPACE_BREAKPOINT = 680;
+const COMPACT_HEADER_BREAKPOINT = 500;
+const AUTO_FOLD_THREAD_VIEWPORT_WIDTH = 640;
+
 export function WorktreeReviewWorkspace({
   sessionId,
+  ownerSessionId,
+  ownerProjectRun,
   machineId,
   session,
   branchName,
   fileProvider,
   fileProviderPending = false,
+  fileProviderMessage = null,
   focusFilePath = null,
   onClose,
   className,
@@ -121,16 +134,70 @@ export function WorktreeReviewWorkspace({
   // by the global `allChangesDiffScopeAtom`.
   const [scope] = useState<CodeCollabAllChangesScope>('branch');
   const [diffScrollNode, setDiffScrollNode] = useState<HTMLDivElement | null>(null);
+  const [priorityFilePath, setPriorityFilePath] = useState<string | null>(focusFilePath);
+
+  useEffect(() => {
+    if (focusFilePath) {
+      setPriorityFilePath(focusFilePath);
+    }
+  }, [focusFilePath]);
+
+  // Responsive container width tracking so narrow panes auto-collapse the file
+  // tree into an overlay drawer and keep the top bar overlap-free.
+  const [workspaceNode, setWorkspaceNode] = useState<HTMLDivElement | null>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState<number | null>(null);
+  const [treeOpen, setTreeOpen] = useState(true);
+  const prevNarrowRef = useRef<boolean | null>(null);
+  const autoFoldedThreadRef = useRef(false);
+
+  useEffect(() => {
+    if (!workspaceNode || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const width = workspaceNode.getBoundingClientRect().width;
+      if (width > 0) setWorkspaceWidth(width);
+    };
+    measure();
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === 'number' && width > 0) {
+        setWorkspaceWidth(width);
+      }
+    });
+    observer.observe(workspaceNode);
+    return () => observer.disconnect();
+  }, [workspaceNode]);
+
+  const isNarrowLayout = workspaceWidth !== null && workspaceWidth < NARROW_WORKSPACE_BREAKPOINT;
+  const isCompactHeader = workspaceWidth !== null && workspaceWidth < COMPACT_HEADER_BREAKPOINT;
+
+  useEffect(() => {
+    if (workspaceWidth === null) return;
+    const prev = prevNarrowRef.current;
+    if (prev === null) {
+      if (isNarrowLayout) setTreeOpen(false);
+    } else if (prev !== isNarrowLayout) {
+      setTreeOpen(!isNarrowLayout);
+    }
+    prevNarrowRef.current = isNarrowLayout;
+  }, [isNarrowLayout, workspaceWidth]);
+
+  useEffect(() => {
+    if (!threadControl || autoFoldedThreadRef.current || typeof window === 'undefined') return;
+    if (window.innerWidth < AUTO_FOLD_THREAD_VIEWPORT_WIDTH && !threadControl.hidden) {
+      autoFoldedThreadRef.current = true;
+      threadControl.setHidden(true);
+    }
+  }, [threadControl, workspaceWidth]);
 
   const liveDiffData = useSessionAllChangesDiffData({
     sessionId,
     filePaths: EMPTY_FILE_PATHS,
-    focusPath: focusFilePath,
+    focusPath: priorityFilePath,
     fileProvider,
     fileProviderPending,
     enabled: diffDataOverride === undefined,
     scope,
-    viewport: { scrollContainer: diffScrollNode, priorityPath: focusFilePath },
+    viewport: { scrollContainer: diffScrollNode, priorityPath: priorityFilePath },
   });
 
   const filePaths = diffDataOverride ? diffDataOverride.filePaths : liveDiffData.normalizedPaths;
@@ -146,9 +213,46 @@ export function WorktreeReviewWorkspace({
   );
   const diffBase = diffDataOverride ? (diffDataOverride.base ?? null) : liveDiffData.base;
 
+  // Monotonic diff revision fingerprint so AST query caches and in-flight
+  // outlines invalidate immediately whenever the diff batch refreshes.
+  const overrideRevisionRef = useRef<{
+    override: WorktreeReviewDiffDataOverride | undefined;
+    seq: number;
+  }>({ override: diffDataOverride, seq: 0 });
+  if (overrideRevisionRef.current.override !== diffDataOverride) {
+    overrideRevisionRef.current = {
+      override: diffDataOverride,
+      seq: overrideRevisionRef.current.seq + 1,
+    };
+  }
+  const diffRevision = useMemo(() => {
+    if (diffDataOverride) {
+      return `override:${overrideRevisionRef.current.seq}:${diffDataOverride.base ?? ''}:${diffDataOverride.filePaths.join('|')}`;
+    }
+    const contentKeys = filePaths
+      .map((path) => {
+        const entry = resolvedByPath[path];
+        const key =
+          entry && 'contentKey' in entry && typeof entry.contentKey === 'string'
+            ? entry.contentKey
+            : '';
+        return `${path}@${entry?.status ?? ''}:${key}`;
+      })
+      .join('|');
+    return `live:${liveDiffData.batchRevision}:${diffBase ?? ''}:${contentKeys}`;
+  }, [diffBase, diffDataOverride, filePaths, liveDiffData.batchRevision, resolvedByPath]);
+
+  const effectiveOwnerSessionId = (ownerSessionId ??
+    session?.parentSessionId ??
+    sessionId) as SessionId;
+  const effectiveProjectRun = ownerProjectRun ?? session?.projectRun ?? null;
+
   const codeNav = useCodeNav({
     sessionId,
+    ownerSessionId: effectiveOwnerSessionId,
+    projectRun: effectiveProjectRun,
     machineId,
+    revision: diffRevision,
     enabled: true,
     queryOverride: codeNavOverride,
   });
@@ -174,7 +278,8 @@ export function WorktreeReviewWorkspace({
     [ideOverride, liveIde]
   );
 
-  // Fetch diff outline via `code-nav/query` when supported.
+  // Fetch diff outline via `code-nav/query` when supported; re-runs and drops
+  // stale in-flight replies whenever the diff revision changes.
   const [outlineFiles, setOutlineFiles] = useState<readonly CodeNavDiffOutlineFile[]>([]);
   useEffect(() => {
     if (!codeNav.supported) {
@@ -190,7 +295,7 @@ export function WorktreeReviewWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [codeNav, diffBase, scope]);
+  }, [codeNav, diffBase, diffRevision, scope]);
 
   const outlineByPath = useMemo(() => {
     const map = new Map<string, CodeNavDiffOutlineFile>();
@@ -340,6 +445,13 @@ export function WorktreeReviewWorkspace({
   }, []);
 
   const [popover, setPopover] = useState<WorktreeReviewTokenPopoverState | null>(initialPopover);
+  const prevInitialPopoverRef = useRef(initialPopover);
+  useEffect(() => {
+    if (prevInitialPopoverRef.current !== initialPopover) {
+      prevInitialPopoverRef.current = initialPopover;
+      setPopover(initialPopover);
+    }
+  }, [initialPopover]);
   const popoverSeqRef = useRef(0);
 
   const handleClosePopover = useCallback(() => {
@@ -351,26 +463,30 @@ export function WorktreeReviewWorkspace({
     (filePath: string) => {
       handleClosePopover();
       setActiveFilePath(filePath);
+      setPriorityFilePath(filePath);
       setActiveSymbolId(null);
       setOpenByPath((prev) => (prev[filePath] === false ? { ...prev, [filePath]: true } : prev));
       setNavStack((prev) => popReviewStackTo(prev, 0));
+      if (isNarrowLayout) setTreeOpen(false);
       scrollToFileCard(filePath);
     },
-    [handleClosePopover, scrollToFileCard]
+    [handleClosePopover, isNarrowLayout, scrollToFileCard]
   );
 
   const handleSelectTreeSymbol = useCallback(
     (filePath: string, symbol: WorktreeReviewTreeSymbol) => {
       handleClosePopover();
       setActiveFilePath(filePath);
+      setPriorityFilePath(filePath);
       setActiveSymbolId(symbol.id);
       setOpenByPath((prev) => (prev[filePath] === false ? { ...prev, [filePath]: true } : prev));
       setNavStack((prev) =>
         updateDiffFrameTarget(popReviewStackTo(prev, 0), filePath, symbol.startLine)
       );
+      if (isNarrowLayout) setTreeOpen(false);
       scrollToFileCard(filePath);
     },
-    [handleClosePopover, scrollToFileCard]
+    [handleClosePopover, isNarrowLayout, scrollToFileCard]
   );
 
   const handleCardOpenChange = useCallback((filePath: string, nextOpen: boolean) => {
@@ -421,6 +537,13 @@ export function WorktreeReviewWorkspace({
     (filePath: string, token: TokenEventBase | DiffTokenEventBaseProps, event: MouseEvent) => {
       // Never intercept drag-selection.
       if (typeof window !== 'undefined' && window.getSelection()?.toString().trim()) {
+        return;
+      }
+      // Deletion-side rows carry pre-change coordinates that do not match the
+      // current worktree AST; disable current-worktree definition/callers lookups
+      // and Cmd/Ctrl+Click jumps to prevent jumping to an unrelated new-side symbol.
+      const isDeletionSide = 'side' in token && token.side === 'deletions';
+      if (isDeletionSide) {
         return;
       }
       const extracted = extractTokenIdentifier(token.tokenText, token.lineCharStart);
@@ -542,7 +665,7 @@ export function WorktreeReviewWorkspace({
   );
 
   const handlePopoverGoToDefinition = useCallback(() => {
-    if (!popover || popover.mode !== 'actions') return;
+    if (!popover || popover.mode !== 'actions' || popover.codeNavDisabled) return;
     if (popover.definitionPreview) {
       openLocationInFileView(popover.definitionPreview.location, { loadCallers: true });
       return;
@@ -586,7 +709,7 @@ export function WorktreeReviewWorkspace({
   }, [codeNav, openLocationInFileView, popover]);
 
   const handlePopoverFindCallers = useCallback(() => {
-    if (!popover || popover.mode !== 'actions') return;
+    if (!popover || popover.mode !== 'actions' || popover.codeNavDisabled) return;
     const reqId = ++popoverSeqRef.current;
     const { filePath, line, character, symbol } = popover;
     setPopover((current) =>
@@ -692,12 +815,22 @@ export function WorktreeReviewWorkspace({
 
   const topIdeFilePath = topFrame.filePath ?? activeFilePath;
   const topIdeLine = topFrame.line;
-  const topIdeLabel = topIdeLine ? `${ideLauncherLabel} :${topIdeLine}` : ideLauncherLabel;
+  const topIdeLabel = isCompactHeader
+    ? 'IDE'
+    : topIdeLine
+      ? `${ideLauncherLabel} :${topIdeLine}`
+      : ideLauncherLabel;
+
+  const providerUnavailableMessage =
+    !diffDataOverride && !fileProviderPending && (!fileProvider || !fileProvider.getAllChangesDiff)
+      ? fileProviderMessage?.trim() || 'Diff unavailable'
+      : null;
 
   const emptyMessage = useMemo(() => {
     if (diffDataOverride) {
       return diffDataOverride.filePaths.length === 0 ? 'No changes.' : null;
     }
+    if (providerUnavailableMessage) return providerUnavailableMessage;
     if (liveDiffData.unavailableMessage) return liveDiffData.unavailableMessage;
     if (liveDiffData.isDiffUnavailable) return 'Diff unavailable';
     if (liveDiffData.batchReady && filePaths.length === 0) return 'No changes.';
@@ -708,10 +841,12 @@ export function WorktreeReviewWorkspace({
     liveDiffData.batchReady,
     liveDiffData.isDiffUnavailable,
     liveDiffData.unavailableMessage,
+    providerUnavailableMessage,
   ]);
 
   return (
     <div
+      ref={setWorkspaceNode}
       data-worktree-review-workspace=""
       className={cn(
         'flex h-full min-h-0 min-w-0 flex-col bg-background text-foreground',
@@ -719,24 +854,48 @@ export function WorktreeReviewWorkspace({
       )}
     >
       {/* Top Bar */}
-      <header className="flex h-11 shrink-0 items-center justify-between gap-2.5 border-b border-border px-3.5">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span
-            data-review-branch-pill=""
-            className="inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-[6px] bg-foreground/[0.06] px-2 py-0.5 font-mono text-[11.5px] text-foreground/85"
-            title={branchBadgeLabel}
+      <header
+        className={cn(
+          'flex h-11 shrink-0 items-center justify-between border-b border-border overflow-hidden',
+          isCompactHeader ? 'gap-1.5 px-2.5' : 'gap-2.5 px-3.5'
+        )}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+          <button
+            type="button"
+            data-review-toggle-tree=""
+            aria-label="Toggle file tree"
+            aria-expanded={treeOpen}
+            title={treeOpen ? '收起文件树' : '展开文件树'}
+            onClick={() => setTreeOpen((prev) => !prev)}
+            className={cn(
+              'inline-flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-[7px] border transition-colors cursor-pointer',
+              treeOpen
+                ? 'border-border bg-foreground/[0.06] text-foreground hover:bg-[hsl(var(--hover))]'
+                : 'border-border bg-background text-muted-foreground hover:bg-[hsl(var(--hover))] hover:text-foreground'
+            )}
           >
+            <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+
+          {!isCompactHeader ? (
             <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--status-success))]"
-              aria-hidden="true"
-            />
-            <span className="truncate">{branchBadgeLabel}</span>
-          </span>
+              data-review-branch-pill=""
+              className="inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-[6px] bg-foreground/[0.06] px-2 py-0.5 font-mono text-[11.5px] text-foreground/85"
+              title={branchBadgeLabel}
+            >
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--status-success))]"
+                aria-hidden="true"
+              />
+              <span className="truncate">{branchBadgeLabel}</span>
+            </span>
+          ) : null}
 
           <nav
             aria-label="Review navigation"
             data-review-breadcrumbs=""
-            className="flex min-w-0 items-center gap-0.5 overflow-hidden text-[12.5px]"
+            className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-[12.5px]"
           >
             {navStack.map((frame, index) => {
               const isCurrent = index === navStack.length - 1;
@@ -784,6 +943,7 @@ export function WorktreeReviewWorkspace({
               type="button"
               data-review-open-ide-top=""
               onClick={() => openWorktreeInIde(topIdeFilePath, topIdeLine)}
+              title={topIdeLine ? `${ideLauncherLabel} :${topIdeLine}` : ideLauncherLabel}
               className="inline-flex h-[27px] items-center gap-1 rounded-[7px] bg-[color-mix(in_oklab,hsl(var(--primary))_13%,transparent)] px-2.5 text-[12px] font-medium text-[hsl(var(--primary))] transition-colors hover:bg-[color-mix(in_oklab,hsl(var(--primary))_20%,transparent)] cursor-pointer whitespace-nowrap"
             >
               <span aria-hidden="true">↗</span>
@@ -814,18 +974,54 @@ export function WorktreeReviewWorkspace({
         </div>
       </header>
 
-      {/* Body: Left File Tree + Main Diff / Traced File Canvas */}
-      <div className="grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)]">
-        <WorktreeReviewFileTree
-          tree={treeModel}
-          activeFilePath={activeFilePath}
-          activeSymbolId={activeSymbolId}
-          symbolsAvailable={codeNav.supported}
-          showSymbols={showTreeSymbols}
-          onToggleShowSymbols={() => setShowTreeSymbols((prev) => !prev)}
-          onSelectFile={handleSelectTreeFile}
-          onSelectSymbol={handleSelectTreeSymbol}
-        />
+      {/* Body: Left File Tree (collapsible / overlay on narrow viewports) + Main Diff / Traced File Canvas */}
+      <div
+        className={cn(
+          'relative grid min-h-0 flex-1',
+          !isNarrowLayout && treeOpen
+            ? 'grid-cols-[248px_minmax(0,1fr)]'
+            : 'grid-cols-[minmax(0,1fr)]'
+        )}
+      >
+        {!isNarrowLayout && treeOpen ? (
+          <WorktreeReviewFileTree
+            tree={treeModel}
+            activeFilePath={activeFilePath}
+            activeSymbolId={activeSymbolId}
+            symbolsAvailable={codeNav.supported}
+            showSymbols={showTreeSymbols}
+            onToggleShowSymbols={() => setShowTreeSymbols((prev) => !prev)}
+            onSelectFile={handleSelectTreeFile}
+            onSelectSymbol={handleSelectTreeSymbol}
+          />
+        ) : null}
+
+        {isNarrowLayout && treeOpen ? (
+          <>
+            <div
+              aria-hidden="true"
+              data-review-tree-backdrop=""
+              onClick={() => setTreeOpen(false)}
+              className="absolute inset-0 z-20 bg-black/25"
+            />
+            <div
+              data-review-tree-overlay=""
+              className="absolute inset-y-0 left-0 z-30 flex w-[248px] max-w-[85%] shadow-xl"
+            >
+              <WorktreeReviewFileTree
+                tree={treeModel}
+                activeFilePath={activeFilePath}
+                activeSymbolId={activeSymbolId}
+                symbolsAvailable={codeNav.supported}
+                showSymbols={showTreeSymbols}
+                onToggleShowSymbols={() => setShowTreeSymbols((prev) => !prev)}
+                onSelectFile={handleSelectTreeFile}
+                onSelectSymbol={handleSelectTreeSymbol}
+                className="w-full"
+              />
+            </div>
+          </>
+        ) : null}
 
         <div className="relative min-h-0 min-w-0 flex flex-col">
           {/* Diff scroll container stays mounted and keeps its scroll offset & expanded functions alive */}
@@ -845,7 +1041,7 @@ export function WorktreeReviewWorkspace({
               statsByPath={statsByPath}
               openByPath={openByPath}
               onOpenChange={handleCardOpenChange}
-              loading={!diffDataOverride && !liveDiffData.batchReady}
+              loading={!diffDataOverride && !providerUnavailableMessage && !liveDiffData.batchReady}
               emptyMessage={emptyMessage}
               codeNavSupported={codeNav.supported}
               canOpenInIde={canOpenInIde}

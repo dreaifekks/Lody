@@ -532,6 +532,86 @@ describe('MessageHandler file preview workspace lifecycle', () => {
     }
   );
 
+  it.each(['absent', 'stale'] as const)(
+    'never creates or unlinks a %s project member link during code-nav/query and denies code-nav/query on the Guest encrypted query channel',
+    async (link) => {
+      await encryptedHandler();
+      const { root } = writeArtifact();
+      fs.writeFileSync(path.join(root, 'sample.ts'), 'export function sample() { return 1; }\n');
+      const member = path.join(dataDir, 'member-code-nav');
+      fs.mkdirSync(member);
+      const wrong = path.join(dataDir, 'wrong-member-code-nav');
+      fs.mkdirSync(wrong);
+      if (link === 'stale') fs.symlinkSync(wrong, path.join(root, 'linked'));
+      resident = new Session({ sessionId } as never, logger, root);
+      records.set(getSessionRoomId(sessionId), {
+        meta: {
+          machineId,
+          projectRun: {
+            members: {
+              linked: {
+                access: 'link',
+                src: { kind: 'local', machineId, localProjectId: 'local-member' },
+                placement: { kind: 'root', dir: 'linked' },
+              },
+            },
+          } as never,
+        },
+      });
+      writeMachineFlockRowToFlock(
+        localProjects,
+        {
+          key: machineFlockKeys.localProject('local-member' as never),
+          value: {
+            id: 'local-member',
+            name: 'Synthetic member',
+            rootPath: member,
+            createdAtMs: 1,
+          },
+        },
+        1
+      );
+      const before = diskSnapshot();
+
+      // Local RPC code-nav/query observes existing links only — never creates or unlinks them.
+      const localRes = await handler.handleLocalMachineRpc({
+        workspaceId,
+        machineId,
+        method: 'code-nav/query',
+        ownerSessionId: sessionId,
+        params: {
+          action: 'enclosing',
+          sessionId,
+          path: 'sample.ts',
+          startLine: 1,
+          endLine: 1,
+        },
+      });
+      expect(localRes.ok).toBe(true);
+      expect(diskSnapshot()).toEqual(before);
+
+      // Guest encrypted query channel must refuse owner-only code-nav/query.
+      await expect(
+        handler.readEncryptedQuery(
+          {
+            queryId: 'guest-code-nav',
+            method: 'code-nav/query' as never,
+            params: {
+              action: 'enclosing',
+              sessionId,
+              path: 'sample.ts',
+              startLine: 1,
+              endLine: 1,
+            },
+          },
+          Number.MAX_SAFE_INTEGER,
+          new AbortController().signal
+        )
+      ).rejects.toThrow();
+      expect(diskSnapshot()).toEqual(before);
+    }
+  );
+
   it.each(['loaded', 'unloaded'] as const)(
     'uses only a %s machine project snapshot for encrypted file paths',
     async (state) => {

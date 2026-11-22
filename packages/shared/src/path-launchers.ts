@@ -213,16 +213,25 @@ function buildSublimePathLauncherInput(
         },
         fallbackCommands: [subl('subl'), subl('/usr/local/bin/subl')],
       };
-    case 'win32':
+    case 'win32': {
+      const exeFallbacks = [
+        subl('C:\\Program Files\\Sublime Text\\subl.exe'),
+        subl('C:\\Program Files\\Sublime Text\\sublime_text.exe'),
+        subl('C:\\Program Files\\Sublime Text 3\\sublime_text.exe'),
+      ];
+      if (sublArgs.some((arg) => /\s/u.test(arg))) {
+        return {
+          ...base,
+          command: exeFallbacks[0]!,
+          fallbackCommands: exeFallbacks.slice(1),
+        };
+      }
       return {
         ...base,
         command: subl('subl'),
-        fallbackCommands: [
-          subl('C:\\Program Files\\Sublime Text\\subl.exe'),
-          subl('C:\\Program Files\\Sublime Text\\sublime_text.exe'),
-          subl('C:\\Program Files\\Sublime Text 3\\sublime_text.exe'),
-        ],
+        fallbackCommands: exeFallbacks,
       };
+    }
     case 'linux':
       return {
         ...base,
@@ -393,6 +402,15 @@ function buildEditorCliCommands(
   }
 
   const fallbackCommands = absoluteFallbacks.slice(0, 3).map(make);
+  // On Windows, bare CLI names (e.g. `code`) resolve to `.cmd` shims spawned
+  // via `cmd.exe`, where unquoted whitespace in arguments splits the path.
+  // Prefer native `.exe` candidates that preserve exact argv without shell parsing.
+  if (platform === 'win32' && fallbackCommands.length > 0 && args.some((arg) => /\s/u.test(arg))) {
+    return {
+      command: fallbackCommands[0]!,
+      ...(fallbackCommands.length > 1 ? { fallbackCommands: fallbackCommands.slice(1) } : {}),
+    };
+  }
   return {
     command: make(spec.cli),
     ...(fallbackCommands.length > 0 ? { fallbackCommands } : {}),

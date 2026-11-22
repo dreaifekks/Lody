@@ -15,7 +15,12 @@ import {
   LocalMachineRpcRequestSchema,
   LocalMachineRpcResponseSchema,
 } from '../src/local-machine-rpc';
-import { E2EE_READ_QUERY_METHODS, isE2eeFeatureMethod, isE2eeReadQuery } from '../src/e2ee-rpc';
+import {
+  E2EE_READ_QUERY_METHODS,
+  isE2eeFeatureMethod,
+  isE2eeOwnerOnlyReadQuery,
+  isE2eeReadQuery,
+} from '../src/e2ee-rpc';
 
 describe('code-nav shared protocol', () => {
   it('advertises and checks the codeNav v1 capability', () => {
@@ -178,9 +183,11 @@ describe('code-nav shared protocol', () => {
     });
   });
 
-  it('registers code-nav/query as an owner-gated E2EE feature (not Guest read-query)', () => {
+  it('registers code-nav/query on the E2EE read lane with owner-only authorization (never write journal or Guest)', () => {
     expect(isE2eeFeatureMethod('code-nav/query')).toBe(true);
-    expect(E2EE_READ_QUERY_METHODS).not.toContain('code-nav/query');
-    expect(isE2eeReadQuery('code-nav/query', {})).toBe(false);
+    expect(E2EE_READ_QUERY_METHODS).toContain('code-nav/query');
+    expect(isE2eeReadQuery('code-nav/query', {})).toBe(true);
+    expect(isE2eeOwnerOnlyReadQuery('code-nav/query')).toBe(true);
+    expect(isE2eeOwnerOnlyReadQuery('file/preview')).toBe(false);
   });
 });

@@ -2371,6 +2371,12 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
             retryable: false,
           });
         }
+        if (deps.protectedContent && deps.protectedCodeCollabRole?.() !== 'write') {
+          return codeNavError('permission_denied', {
+            message: protectedFileWriteDeniedMessage(),
+            retryable: false,
+          });
+        }
         if (deps.requestEncryptedFeature) {
           const response = await deps.requestEncryptedFeature(localRequest);
           if (!response.ok) {

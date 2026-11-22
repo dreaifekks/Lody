@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   CODE_NAV_LIMITS,
@@ -638,6 +638,7 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
         | 'this-member'
         | 'direct-import'
         | 'namespace-import'
+        | 'local-binding'
         | 'repo-scan';
     };
 
@@ -808,7 +809,10 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
             pushCandidate({
               location: toLocation(hit.relPath, hit.sym),
               score: 110 + kindBonus(hit.sym),
-              provenance: 'namespace-import',
+              provenance:
+                cursor.scopeVerified && !cursor.receiverShadowedLocally
+                  ? 'namespace-import'
+                  : 'repo-scan',
             });
           }
         }
@@ -838,15 +842,39 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
         }
       }
     } else if (!cursor.isMemberAccess) {
-      // Check same-file declaration first.
+      const shadowedOrUnverified = !cursor.scopeVerified || cursor.localBinding !== undefined;
+      if (cursor.localBinding) {
+        const local = cursor.localBinding;
+        pushCandidate({
+          location: {
+            path: resolved.relPath,
+            line: local.line,
+            character: local.character,
+            endLine: local.endLine,
+            endCharacter: local.endCharacter,
+            name: local.name,
+            kind: local.kind,
+            ...(local.containerName ? { containerName: local.containerName } : {}),
+            previewLine: local.previewLine,
+          },
+          score: 120,
+          provenance: 'local-binding',
+        });
+      }
+
+      // Check same-file module-level declarations (`!sym.containerName`) first.
+      // When shadowed by an enclosing local binding or when lexical scope could
+      // not be confirmed, downgrade outer declarations to heuristic candidates
+      // instead of returning a false `exact` jump.
       for (const sym of origin.index.symbols) {
         if (sym.name !== cursor.symbol) continue;
+        if (sym.containerName) continue;
         // Skip class methods when resolving a bare identifier outside `this.`.
         if (sym.kind === 'method' || sym.kind === 'property') continue;
         pushCandidate({
           location: toLocation(resolved.relPath, sym),
-          score: 115 + kindBonus(sym),
-          provenance: 'same-file',
+          score: (shadowedOrUnverified ? 95 : 115) + kindBonus(sym),
+          provenance: shadowedOrUnverified ? 'repo-scan' : 'same-file',
         });
       }
 
@@ -878,8 +906,8 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
         for (const hit of hits) {
           pushCandidate({
             location: toLocation(hit.relPath, hit.sym),
-            score: 105 + kindBonus(hit.sym),
-            provenance: 'direct-import',
+            score: (shadowedOrUnverified ? 90 : 105) + kindBonus(hit.sym),
+            provenance: shadowedOrUnverified ? 'repo-scan' : 'direct-import',
           });
         }
       }
@@ -887,8 +915,10 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
 
     // Fast path: if we already have an exact high-confidence binding (same-file, `this.member`,
     // `direct-import`, or `namespace-import`), return without scanning the whole repository.
-    const exactProvenanceHits = candidates.filter((c) => c.provenance !== 'repo-scan');
-    if (exactProvenanceHits.length === 1) {
+    const exactProvenanceHits = candidates.filter(
+      (c) => c.provenance !== 'repo-scan' && c.provenance !== 'local-binding'
+    );
+    if (exactProvenanceHits.length === 1 && cursor.localBinding === undefined) {
       return {
         type: 'code-nav/query',
         status: 'ok',
@@ -906,7 +936,7 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
     let truncated = false;
     let totalFilesMatched = 0;
 
-    if (exactProvenanceHits.length === 0) {
+    if (exactProvenanceHits.length === 0 && candidates.length === 0) {
       const candidateFiles = await findCandidateCodeFilesByWord(
         canonicalRoot,
         cursor.symbol,
@@ -987,7 +1017,10 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
     // NEVER report `'exact'` for arbitrary member methods (`foo.close()`) or
     // repo-scan heuristic guesses without same-file / `this` / explicit import proof.
     const isExact =
-      candidates.length === 1 && !truncated && candidates[0]!.provenance !== 'repo-scan';
+      candidates.length === 1 &&
+      !truncated &&
+      candidates[0]!.provenance !== 'repo-scan' &&
+      candidates[0]!.provenance !== 'local-binding';
     const confidence: CodeNavConfidence = isExact ? 'exact' : 'heuristic';
 
     const response: CodeNavDefinitionOk = {
@@ -1286,11 +1319,15 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
         );
       }
     } else {
-      // `>= 50` candidate files: use Rust multithreaded `findInFiles` grouped by language.
+      // `>= 50` candidate files: use Rust multithreaded `findInFiles` grouped by language,
+      // enforcing the same regular-file (no symlink) and `<= maxSingleFileBytes` (1 MiB)
+      // budget as the single-file path before handing paths to native parsing.
       const byLang = new Map<CodeNavLanguage, Array<{ absolutePath: string; relPath: string }>>();
       for (const file of filesToScan) {
+        args.signal?.throwIfAborted();
         const lang = getCodeNavLanguage(file.relPath);
         if (!lang) continue;
+        if (!(await isBoundedRegularFile(file.absolutePath))) continue;
         const bucket = byLang.get(lang) ?? [];
         bucket.push(file);
         byLang.set(lang, bucket);
@@ -1298,6 +1335,7 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
 
       const matcher = buildSymbolUsageMatcher(args.symbolName);
       for (const [lang, bucket] of byLang) {
+        if (bucket.length === 0) continue;
         args.signal?.throwIfAborted();
         const globs =
           lang === 'typescript'
@@ -1363,12 +1401,29 @@ export class AstGrepCodeNavProvider implements CodeNavProvider {
 
 /* ── Shared helpers ───────────────────────────────────────────────────────── */
 
+async function isBoundedRegularFile(absolutePath: string): Promise<boolean> {
+  try {
+    const info = await lstat(absolutePath);
+    return (
+      !info.isSymbolicLink() &&
+      info.isFile() &&
+      info.size <= CODE_NAV_CACHE_LIMITS.maxSingleFileBytes
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function readBoundedSourceFile(
   absolutePath: string
 ): Promise<{ readonly source: string; readonly byteLength: number } | null> {
   try {
-    const info = await stat(absolutePath);
-    if (!info.isFile() || info.size > CODE_NAV_CACHE_LIMITS.maxSingleFileBytes) {
+    const info = await lstat(absolutePath);
+    if (
+      info.isSymbolicLink() ||
+      !info.isFile() ||
+      info.size > CODE_NAV_CACHE_LIMITS.maxSingleFileBytes
+    ) {
       return null;
     }
     const buf = await readFile(absolutePath);
