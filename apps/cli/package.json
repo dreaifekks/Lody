@@ -141,6 +141,7 @@
     "LICENSE"
   ],
   "dependencies": {
+    "@ast-grep/napi": "0.51.2",
     "@effect/platform-node-shared": "catalog:",
     "@loro-dev/roost-node": "0.3.1",
     "@lydell/node-pty": "1.2.0-beta.14",

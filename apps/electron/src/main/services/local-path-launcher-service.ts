@@ -11,7 +11,8 @@ import {
   canLaunchRemotePath,
   remotePathLauncherTakesUrlHost,
   validateCustomPathLauncherCommandTemplate,
-  type BuiltinPathLauncherId
+  type BuiltinPathLauncherId,
+  type PathLauncherFileTarget
 } from '@lody/shared/path-launchers'
 import {
   CustomPathLauncherApprovalSchema,
@@ -35,9 +36,10 @@ import { getUserShellEnvCachedLegacy, shouldUseWindowsShell } from './shell-env'
 const PROBE_CACHE_MS = 5 * 60 * 1000
 const probeCache = new Map<string, { available: boolean; checkedAt: number }>()
 
-// Editors launch via their CLI first. VS Code falls back to its protocol handler
-// when no CLI candidate is available; Warp always launches through its protocol.
-const ALLOWED_LOCAL_LAUNCH_PROTOCOLS = new Set(['vscode:', 'warp:'])
+// Editors launch via their CLI first. VS Code (and Cursor for file:line links)
+// falls back to its protocol handler when no CLI candidate is available; Warp
+// always launches through its protocol.
+const ALLOWED_LOCAL_LAUNCH_PROTOCOLS = new Set(['vscode:', 'cursor:', 'warp:'])
 
 function normalizeAllowedLocalLaunchUrl(value: string): string | null {
   try {
@@ -323,50 +325,68 @@ const builtinIds = new Set([
 export function resolvePathLauncher(request: PathLauncherRequest): LaunchLocalPathInput | null {
   if (!path.isAbsolute(request.targetPath)) return null
   const targetPath = path.normalize(request.targetPath)
-  if (builtinIds.has(request.launcherId)) {
-    if (request.launcherId === 'xcode' && process.platform !== 'darwin') return null
-    if (request.sshDestination) {
-      const launcher = {
-        kind: 'builtin' as const,
-        id: request.launcherId as BuiltinPathLauncherId,
-        label: request.launcherId
+  const fileTarget: PathLauncherFileTarget | undefined =
+    request.filePath !== undefined || request.line !== undefined || request.column !== undefined
+      ? {
+          ...(request.filePath !== undefined ? { filePath: request.filePath } : {}),
+          ...(request.line !== undefined ? { line: request.line } : {}),
+          ...(request.column !== undefined ? { column: request.column } : {})
+        }
+      : undefined
+  try {
+    if (builtinIds.has(request.launcherId)) {
+      if (request.launcherId === 'xcode' && process.platform !== 'darwin') return null
+      if (request.sshDestination) {
+        const launcher = {
+          kind: 'builtin' as const,
+          id: request.launcherId as BuiltinPathLauncherId,
+          label: request.launcherId
+        }
+        if (
+          !canLaunchRemotePath(launcher) ||
+          !request.targetPath.startsWith('/') ||
+          (remotePathLauncherTakesUrlHost(launcher) && !isSshUrlHost(request.sshDestination.host))
+        )
+          return null
+        return buildRemotePathLauncherLaunchInput(
+          launcher,
+          request.targetPath,
+          request.sshDestination,
+          process.platform,
+          fileTarget
+        )
       }
-      if (
-        !canLaunchRemotePath(launcher) ||
-        !request.targetPath.startsWith('/') ||
-        (remotePathLauncherTakesUrlHost(launcher) && !isSshUrlHost(request.sshDestination.host))
-      )
-        return null
-      return buildRemotePathLauncherLaunchInput(
-        launcher,
-        request.targetPath,
-        request.sshDestination,
-        process.platform
+      return buildPathLauncherLaunchInput(
+        {
+          kind: 'builtin',
+          id: request.launcherId as BuiltinPathLauncherId,
+          label: request.launcherId
+        },
+        targetPath,
+        process.platform,
+        request.targetKind,
+        fileTarget
       )
     }
+    if (request.sshDestination) return null
+    const id = request.launcherId.startsWith('custom:') ? request.launcherId.slice(7) : null
+    const stored = launcherStore.get('launchers').find((item) => item.id === id)
+    const parsed = CustomPathLauncherApprovalSchema.safeParse(stored)
+    if (
+      !parsed.success ||
+      !validateCustomPathLauncherCommandTemplate(parsed.data.commandTemplate).ok
+    )
+      return null
     return buildPathLauncherLaunchInput(
-      {
-        kind: 'builtin',
-        id: request.launcherId as BuiltinPathLauncherId,
-        label: request.launcherId
-      },
+      { ...parsed.data, kind: 'custom', launcherId: request.launcherId },
       targetPath,
       process.platform,
-      request.targetKind
+      request.targetKind,
+      fileTarget
     )
-  }
-  if (request.sshDestination) return null
-  const id = request.launcherId.startsWith('custom:') ? request.launcherId.slice(7) : null
-  const stored = launcherStore.get('launchers').find((item) => item.id === id)
-  const parsed = CustomPathLauncherApprovalSchema.safeParse(stored)
-  if (!parsed.success || !validateCustomPathLauncherCommandTemplate(parsed.data.commandTemplate).ok)
+  } catch {
     return null
-  return buildPathLauncherLaunchInput(
-    { ...parsed.data, kind: 'custom', launcherId: request.launcherId },
-    targetPath,
-    process.platform,
-    request.targetKind
-  )
+  }
 }
 
 export async function approvePathLauncher(

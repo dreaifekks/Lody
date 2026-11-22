@@ -63,6 +63,7 @@ const entryPoints = {
     sourceDirectory,
     'lib/code-collab/workspace-watch-worker.ts'
   ),
+  'code-nav-worker': path.join(sourceDirectory, 'lib/code-nav/code-nav-worker.ts'),
 };
 
 const isBareSpecifier = (specifier) =>

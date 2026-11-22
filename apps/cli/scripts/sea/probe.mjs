@@ -18,6 +18,14 @@ try {
   }
   const keyring = require('@napi-rs/keyring');
   if (typeof keyring.AsyncEntry !== 'function') throw new Error('Keyring binding unavailable');
+  const astGrep = require('@ast-grep/napi');
+  if (
+    !astGrep
+      .parse(astGrep.Lang.TypeScript, 'export function ok() {}')
+      .root()
+      .find({ rule: { kind: 'function_declaration' } })
+  )
+    throw new Error('ast-grep binding unavailable');
   if (typeof require('@lydell/node-pty').spawn !== 'function')
     throw new Error('PTY binding unavailable');
   require('@loro-dev/roost-node/native');

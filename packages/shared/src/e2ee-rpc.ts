@@ -41,6 +41,7 @@ export const isE2eeFeatureMethod = (method: string): boolean =>
   method === 'sorbet/providers-create' ||
   method === 'sorbet/providers-delete' ||
   method === 'file/preview' ||
+  method === 'code-nav/query' ||
   method === 'session/fork' ||
   method === 'session/edit-and-resend' ||
   method === 'session/preview-create' ||
@@ -66,6 +67,7 @@ export const E2EE_READ_QUERY_METHODS = [
   'session/live-status',
   'file/preview',
   'file/download-chunk',
+  'code-nav/query',
   'code-collab/open-text',
   'code-collab/refresh-text',
   'code-collab/lsp-definition',
@@ -81,6 +83,14 @@ export type E2eeQueryResult =
 
 export function isE2eeReadQuery(method: string, _params: unknown): method is E2eeReadQueryMethod {
   return (E2EE_READ_QUERY_METHODS as readonly string[]).includes(method);
+}
+
+/**
+ * Read queries that stay off the write journal (`E2EE_READ_QUERY_METHODS`)
+ * while still requiring machine-owner write authority (rejecting E2EE Guests).
+ */
+export function isE2eeOwnerOnlyReadQuery(method: string): boolean {
+  return method === 'code-nav/query';
 }
 /** Associated data for the separately encrypted, one-shot authentication input. */
 export function e2eeAcpInteractionInputContext(input: {

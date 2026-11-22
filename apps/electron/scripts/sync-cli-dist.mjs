@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  installEmbeddedAstGrepBinding,
   installEmbeddedNodePtyBinding,
   installEmbeddedKeyringBinding,
   installEmbeddedRoostBinding,
@@ -66,6 +67,7 @@ stageCliRuntimePackages()
 installEmbeddedSqliteBinding({ platform: process.platform, arch: process.arch })
 installEmbeddedNodePtyBinding({ platform: process.platform, arch: process.arch })
 installEmbeddedKeyringBinding({ platform: process.platform, arch: process.arch })
+installEmbeddedAstGrepBinding({ platform: process.platform, arch: process.arch })
 installEmbeddedRoostBinding({ platform: process.platform, arch: process.arch })
 
 console.log(`Synced CLI dist to ${destDir}`)

@@ -18,8 +18,11 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { Worker } from 'node:worker_threads'
 import {
+  astGrepBinaryPackageName,
+  astGrepPrebuildFileName,
   fetchNativeBinaryPackage,
   roostPrebuildFileName,
+  stageAstGrepBinding,
   stageRoostBinding,
   stageLoroRuntimePackage
 } from './cli-native-deps.mjs'
@@ -368,4 +371,90 @@ void test('a self-signed application keeps its entitlements and may load what ca
   const nested = read('entitlements.mac.inherit.plist')
   assert.equal(withoutLibraryValidation(nested), nested)
   assert.throws(() => withoutLibraryValidation('<plist version="1.0"></plist>'), /no dictionary/u)
+})
+
+test('stages @ast-grep/napi target packages, loads host native binding, and preserves working runtime on drift', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'lody-ast-grep-stage-'))
+  try {
+    const installedWrapper = await realpath(
+      path.resolve(import.meta.dirname, '../../cli/node_modules/@ast-grep/napi')
+    )
+    const stagedNodeModules = path.join(directory, 'node_modules')
+    const stagedWrapper = path.join(stagedNodeModules, '@ast-grep', 'napi')
+    await cp(installedWrapper, stagedWrapper, { recursive: true })
+
+    assert.equal(
+      astGrepBinaryPackageName({ platform: 'darwin', arch: 'arm64' }),
+      '@ast-grep/napi-darwin-arm64'
+    )
+    assert.equal(
+      astGrepBinaryPackageName({ platform: 'linux', arch: 'x64' }),
+      '@ast-grep/napi-linux-x64-gnu'
+    )
+    assert.equal(
+      astGrepBinaryPackageName({ platform: 'win32', arch: 'x64' }),
+      '@ast-grep/napi-win32-x64-msvc'
+    )
+    assert.throws(
+      () => astGrepBinaryPackageName({ platform: 'linux', arch: 'armv7l' }),
+      /No @ast-grep\/napi native binding/
+    )
+
+    const hostTarget = { platform: process.platform, arch: process.arch }
+    const hostBindingPath = stageAstGrepBinding(installedWrapper, stagedNodeModules, hostTarget)
+    assert.equal(fs.existsSync(hostBindingPath), true)
+    assert.equal(path.basename(hostBindingPath), astGrepPrebuildFileName(hostTarget))
+
+    const req = createRequire(path.join(directory, 'probe.cjs'))
+    const astGrep = req('@ast-grep/napi')
+    const parsed = astGrep.parse(
+      astGrep.Lang.TypeScript,
+      'export function stagedOk() { return 1; }'
+    )
+    assert.ok(parsed.root().find({ rule: { kind: 'function_declaration' } }))
+
+    // Foreign target downloaded via injected fetcher replaces the staged sibling package cleanly.
+    const foreignTarget =
+      process.platform === 'darwin'
+        ? { platform: 'linux', arch: 'x64' }
+        : { platform: 'darwin', arch: 'arm64' }
+    const foreignName = astGrepBinaryPackageName(foreignTarget)
+    const foreignBinary = astGrepPrebuildFileName(foreignTarget)
+    const wrapperMeta = JSON.parse(
+      await readFile(path.join(installedWrapper, 'package.json'), 'utf8')
+    )
+    const downloadedDir = path.join(directory, 'downloaded-foreign')
+    await mkdir(downloadedDir, { recursive: true })
+    await writeFile(
+      path.join(downloadedDir, 'package.json'),
+      JSON.stringify({ name: foreignName, version: wrapperMeta.version, main: foreignBinary })
+    )
+    await writeFile(path.join(downloadedDir, foreignBinary), Buffer.from('synthetic-binding'))
+
+    const stagedForeign = stageAstGrepBinding(installedWrapper, stagedNodeModules, foreignTarget, {
+      fetchBinaryPackage: (pkg, ver) => {
+        assert.equal(pkg, foreignName)
+        assert.equal(ver, wrapperMeta.version)
+        return { packageDir: downloadedDir, cleanup: () => {} }
+      }
+    })
+    assert.equal(fs.existsSync(stagedForeign), true)
+    assert.equal(fs.existsSync(hostBindingPath), false)
+
+    // Version mismatch fails before touching the staged runtime.
+    await writeFile(
+      path.join(downloadedDir, 'package.json'),
+      JSON.stringify({ name: foreignName, version: '0.0.0', main: foreignBinary })
+    )
+    assert.throws(
+      () =>
+        stageAstGrepBinding(installedWrapper, stagedNodeModules, foreignTarget, {
+          fetchBinaryPackage: () => ({ packageDir: downloadedDir, cleanup: () => {} })
+        }),
+      /version mismatch/
+    )
+    assert.equal(fs.existsSync(stagedForeign), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

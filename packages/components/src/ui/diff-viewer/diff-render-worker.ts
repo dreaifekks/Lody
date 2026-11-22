@@ -1,6 +1,6 @@
 import type { WorkerInitializationRenderOptions, WorkerPoolOptions } from '@pierre/diffs/react';
 import { WorkerPoolManager } from '@pierre/diffs/worker';
-import PierreDiffsRenderWorker from '@pierre/diffs/worker/worker.js?worker';
+import PierreDiffsRenderWorker from './diff-render-worker-entry?worker';
 
 // Isolated so the render worker (a Vite `?worker` import) is the ONLY thing a
 // non-Vite bundle needs to stub out. When this factory returns `undefined`,
@@ -23,7 +23,7 @@ const diffRenderWorkerPools = new Map<string, DiffRenderWorkerPoolEntry>();
 const diffRenderWorkerPoolEntries = new WeakMap<WorkerPoolManager, DiffRenderWorkerPoolEntry>();
 
 function getRenderProfileKey(options: WorkerInitializationRenderOptions): string {
-  return `${options.lineDiffType ?? 'word-alt'}:${options.tokenizeMaxLineLength ?? 1_000}`;
+  return `${options.lineDiffType ?? 'word-alt'}:${options.tokenizeMaxLineLength ?? 1_000}:${options.useTokenTransformer ? 'tokens' : 'plain'}`;
 }
 
 function getRenderOptionsKey(options: WorkerInitializationRenderOptions): string {

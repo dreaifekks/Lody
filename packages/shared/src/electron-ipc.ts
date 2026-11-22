@@ -185,7 +185,15 @@ export const PathLauncherRequestSchema = z
     launcherId: z.string().trim().min(1).max(200),
     targetPath: LocalPathLauncherStringSchema,
     targetKind: z.enum(['file', 'directory']).default('directory'),
-    sshDestination: z.custom<SshDestination>((value) => parseSshDestination(value) !== null).optional(),
+    sshDestination: z
+      .custom<SshDestination>((value) => parseSshDestination(value) !== null)
+      .optional(),
+    /** Optional file inside `targetPath` (relative or absolute) to open alongside the folder. */
+    filePath: LocalPathLauncherStringSchema.optional(),
+    /** Optional 1-based line number to jump to inside the target file. */
+    line: z.number().int().positive().max(10_000_000).optional(),
+    /** Optional 1-based column number (only used together with `line`). */
+    column: z.number().int().positive().max(100_000).optional(),
   })
   .strict();
 export type PathLauncherRequest = z.infer<typeof PathLauncherRequestSchema>;

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import {
+  stagedAstGrepBindingPath,
   stagedRoostBindingPath,
   stagedRoostDir,
   stagedNodePtyBindingPath,
@@ -144,6 +145,12 @@ export default async function afterPack(context) {
   const packedRoostBinding = packedFromStaged(stagedRoostBindingPath(nativeTarget))
   if (!fs.existsSync(packedRoostBinding)) {
     throw new Error(`[roost] packaged binding missing: ${packedRoostBinding}`)
+  }
+  const packedAstGrepBinding = packedFromStaged(stagedAstGrepBindingPath(nativeTarget))
+  if (!fs.existsSync(packedAstGrepBinding)) {
+    throw new Error(
+      `[embedded-cli] @ast-grep/napi binding missing after copy: ${packedAstGrepBinding}`
+    )
   }
   // This is the main process's installed package, separate from CLI staging.
   // Keep a cross-host structural gate even when the runtime probe cannot run.
@@ -330,6 +337,39 @@ export default async function afterPack(context) {
     throw new Error(
       `[embedded-cli-smoke] better-sqlite3 binding failed to load in the packed app ` +
         `(exit ${String(probeResult.status)}).\n${detail}`
+    )
+  }
+
+  const astGrepProbe = [
+    `const { createRequire } = require('node:module');`,
+    `const req = createRequire(${JSON.stringify(path.resolve(cliEntry))});`,
+    `const sg = req('@ast-grep/napi');`,
+    `const root = sg.parse(sg.Lang.TypeScript, 'export function ok() { return 1; }').root();`,
+    `if (!root.find({ rule: { kind: 'function_declaration' } })) throw new Error('ast-grep probe query failed');`,
+    `console.log('ast-grep-binding-ok');`
+  ].join('')
+  const astGrepProbeResult = spawnSync(cliRuntimePath, ['-e', astGrepProbe], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8',
+    timeout: SMOKE_TIMEOUT_MS,
+    windowsHide: true
+  })
+  if (
+    astGrepProbeResult.error ||
+    astGrepProbeResult.status !== 0 ||
+    !astGrepProbeResult.stdout.includes('ast-grep-binding-ok')
+  ) {
+    const detail = [
+      astGrepProbeResult.error?.message,
+      astGrepProbeResult.stderr,
+      astGrepProbeResult.stdout
+    ]
+      .filter(Boolean)
+      .join('\n')
+      .slice(-4000)
+    throw new Error(
+      `[embedded-cli-smoke] @ast-grep/napi binding failed to load in the packed app ` +
+        `(exit ${String(astGrepProbeResult.status)}).\n${detail}`
     )
   }
 

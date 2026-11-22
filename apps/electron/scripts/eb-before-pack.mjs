@@ -1,4 +1,5 @@
 import {
+  installEmbeddedAstGrepBinding,
   installEmbeddedKeyringBinding,
   installEmbeddedRoostBinding,
   installEmbeddedNodePtyBinding,
@@ -31,5 +32,6 @@ export default async function beforePack(context) {
   installEmbeddedSqliteBinding({ platform, arch: archName })
   installEmbeddedNodePtyBinding({ platform, arch: archName })
   installEmbeddedKeyringBinding({ platform, arch: archName })
+  installEmbeddedAstGrepBinding({ platform, arch: archName })
   installEmbeddedRoostBinding({ platform, arch: archName })
 }

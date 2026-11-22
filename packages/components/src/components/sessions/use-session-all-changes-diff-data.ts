@@ -62,6 +62,7 @@ export function useSessionAllChangesDiffData({
   isDiffUnavailable: boolean;
   isPanelLoading: boolean;
   batchReady: boolean;
+  batchRevision: number;
   base: string | null;
   unavailableScopeReason: 'not_a_git_worktree' | 'no_commits' | null;
   unavailableMessage: string | null;
@@ -80,7 +81,9 @@ export function useSessionAllChangesDiffData({
 
   const [reloadSeq, setReloadSeq] = useState(0);
   const reload = useCallback(() => setReloadSeq((value) => value + 1), []);
+  const nextBatchRevisionRef = useRef(0);
   const [batch, setBatch] = useState<{
+    revision: number;
     reloadSeq: number;
     provider: SessionFileProvider;
     pathsKey: string;
@@ -163,8 +166,10 @@ export function useSessionAllChangesDiffData({
         unavailableMessage?: string | null;
       } = {}
     ): void => {
-      if (!cancelled)
+      if (!cancelled) {
+        nextBatchRevisionRef.current += 1;
         setBatch({
+          revision: nextBatchRevisionRef.current,
           provider: fileProvider,
           reloadSeq,
           pathsKey: normalizedPathsKey,
@@ -176,6 +181,7 @@ export function useSessionAllChangesDiffData({
           unavailableScopeReason: extra.unavailableScopeReason ?? null,
           unavailableMessage: extra.unavailableMessage ?? null,
         });
+      }
     };
 
     const run = async (): Promise<void> => {
@@ -289,6 +295,7 @@ export function useSessionAllChangesDiffData({
     isDiffUnavailable,
     isPanelLoading,
     batchReady,
+    batchRevision: currentBatch?.revision ?? 0,
     base: currentBatch?.base ?? null,
     unavailableScopeReason: currentBatch?.unavailableScopeReason ?? null,
     unavailableMessage,

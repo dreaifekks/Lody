@@ -84,6 +84,8 @@ import type {
   CodeCollabV2RefreshTextResponse,
   CodeCollabV2SaveTextRequest,
   CodeCollabV2SaveTextResponse,
+  CodeNavQueryRequest,
+  CodeNavQueryResponse,
   FilePreviewV3Request,
   FilePreviewV3Response,
 } from '@lody/shared';
@@ -504,6 +506,16 @@ export type WorkspaceRuntime = {
       workspaceRoot?: string | null;
     }
   ) => Promise<FilePreviewV3Response | LocalFilePreviewResource>;
+  /**
+   * Code Navigation v1 (`code-nav/query`): read-only AST symbol outline,
+   * enclosing range, go-to-definition, and upward caller lookup. Independent of
+   * Code Collab; always resolves (errors return typed `CodeNavQueryError`).
+   */
+  queryCodeNav?: (
+    machineId: MachineId,
+    request: CodeNavQueryRequest,
+    options?: { timeoutMs?: number; ownerSessionId?: SessionId | string }
+  ) => Promise<CodeNavQueryResponse>;
   /**
    * Electron-only initial Code Collab tree/current-All-Changes snapshot. This
    * never falls back to the cloud Machine RPC transport.

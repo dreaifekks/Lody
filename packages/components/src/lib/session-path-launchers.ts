@@ -6,9 +6,21 @@ export {
 } from '@lody/shared/path-launchers';
 import { validateCustomPathLauncherCommandTemplate } from '@lody/shared/path-launchers';
 import { getIpcServices } from './electron-ipc-client';
-import { toSshDestination, type LanSshDestination, type SshDestination } from '@lody/shared/lan-ssh';
+import {
+  toSshDestination,
+  type LanSshDestination,
+  type SshDestination,
+} from '@lody/shared/lan-ssh';
 import { canLaunchRemotePath } from '@lody/shared/path-launchers';
-export { canLaunchRemotePath, remotePathLauncherTakesUrlHost, resolveRemotePathEntry, resolveRemotePathDestination, buildRemotePathLauncherLaunchInput } from '@lody/shared/path-launchers';
+export {
+  canLaunchRemotePath,
+  remotePathLauncherTakesUrlHost,
+  resolveRemotePathEntry,
+  resolveRemotePathDestination,
+  buildRemotePathLauncherLaunchInput,
+  type PathLauncherFileTarget,
+} from '@lody/shared/path-launchers';
+import type { PathLauncherFileTarget } from '@lody/shared/path-launchers';
 import {
   DEFAULT_PATH_LAUNCHER_PREFERENCE,
   PATH_LAUNCHER_PREFERENCE_STORAGE_KEY,
@@ -205,7 +217,8 @@ export async function executePathLauncher(
   launcher: PathLauncherOption,
   targetPath: string,
   targetKind: 'file' | 'directory' = 'directory',
-  sshDestination?: SshDestination
+  sshDestination?: SshDestination,
+  fileTarget?: PathLauncherFileTarget
 ) {
   const app = getIpcServices()!.app;
   if (launcher.kind === 'custom') {
@@ -216,5 +229,13 @@ export async function executePathLauncher(
     });
     if (!approved.approved) return { launched: false as const, error: 'launcher_not_approved' };
   }
-  return app.launchLocalPath({ launcherId: getPathLauncherId(launcher), targetPath, targetKind, ...(sshDestination ? { sshDestination } : {}) });
+  return app.launchLocalPath({
+    launcherId: getPathLauncherId(launcher),
+    targetPath,
+    targetKind,
+    ...(sshDestination ? { sshDestination } : {}),
+    ...(fileTarget?.filePath ? { filePath: fileTarget.filePath } : {}),
+    ...(fileTarget?.line !== undefined ? { line: fileTarget.line } : {}),
+    ...(fileTarget?.column !== undefined ? { column: fileTarget.column } : {}),
+  });
 }

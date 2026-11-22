@@ -1,6 +1,11 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useAtomValue } from 'jotai';
-import { getSessionRoomId, type SessionId, type SessionMeta } from '@lody/shared';
+import {
+  getSessionRoomId,
+  type SessionId,
+  type SessionMeta,
+  type SessionProjectRun,
+} from '@lody/shared';
 import { userAtom } from '@/atoms';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { currentWorkspaceIdAtom } from '@/atoms/workspace-context';
@@ -33,6 +38,10 @@ import { SessionFileActionsMenu } from './session-file-actions-menu';
 
 export type SessionFileScopeValue = SessionFileOpenContext & {
   session: SessionMeta;
+  /** Workspace-owning session ID (parent session ID for child sessions sharing a worktree). */
+  ownerSessionId: SessionId;
+  /** Owner session's project-group run metadata (for multi-root path mapping). */
+  ownerProjectRun?: SessionProjectRun;
   fileProviderPending: boolean;
   fileProviderMessage: string | undefined;
   role: UseCodeCollabSessionFileProviderResult['role'];
@@ -51,6 +60,8 @@ export function SessionFileScope({
   children: (scope: SessionFileScopeValue) => ReactNode;
 }) {
   const session = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(sessionId)));
+  const ownerSessionId = (session?.parentSessionId ?? sessionId) as SessionId;
+  const ownerMeta = useAtomValue(sessionMetaAtomFamily(getSessionRoomId(ownerSessionId)));
   const runtime = useAtomValue(activeWorkspaceRuntimeAtom);
   const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom);
   const user = useAtomValue(userAtom);
@@ -83,8 +94,11 @@ export function SessionFileScope({
     repoFullName: resolveSessionRepoFullName(session),
     legacyWorkspacePath: machine?.workspacePaths?.[sessionId],
   });
+  const ownerProjectRun = (ownerMeta ?? session).projectRun;
   return children({
     session,
+    ownerSessionId,
+    ...(ownerProjectRun ? { ownerProjectRun } : {}),
     workspacePath,
     preserveWorktreePath: window.__LODY_ELECTRON__ === true && isLocalMachine,
     fileProvider: files.provider,

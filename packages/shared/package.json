@@ -119,6 +119,10 @@
       "types": "./src/file-preview.ts",
       "import": "./src/file-preview.ts"
     },
+    "./code-nav": {
+      "types": "./src/code-nav.ts",
+      "import": "./src/code-nav.ts"
+    },
     "./local-file-preview": {
       "types": "./src/local-file-preview.ts",
       "import": "./src/local-file-preview.ts"

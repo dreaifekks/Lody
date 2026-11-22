@@ -63,6 +63,7 @@ import {
   FileText,
   Folder,
   GitBranch,
+  GitCompareArrows,
   GitFork,
   Github,
   Image,
@@ -305,6 +306,12 @@ import { BoardSidePanel, useThreadLocation } from '../boards/board-side-panel';
 import { BoardSettings } from '../boards/board-settings-panel';
 import { useBoardActions, useBoardMaintenanceRequest } from '../boards/board-lifecycle';
 import { BoardRenameDialog } from '../boards/board-rename-dialog';
+import {
+  WorktreeReviewDialog,
+  WorktreeReviewOpenContext,
+  sessionSupportsWorktreeReview,
+  type WorktreeReviewOpenRequest,
+} from '../code-review';
 import { cn, getBasename } from '@/lib';
 
 import { isSessionMarkdownPath } from '@/lib/session-file-language';
@@ -1336,6 +1343,13 @@ const SessionDetail = ({
   } | null>(null);
   const articlePage = articleDialog?.pages.at(-1);
   const [articlePanel, setArticlePanel] = useState<HTMLElement | null>(null);
+  const [reviewDialog, setReviewDialog] = useState<{
+    readonly sessionId: SessionId;
+    readonly beside: ArticleBeside;
+    readonly focusFilePath?: string | null;
+    readonly closing?: true;
+  } | null>(null);
+  const [reviewPanel, setReviewPanel] = useState<HTMLElement | null>(null);
   // One host per conversation the dialog can borrow: a Board panel thread, or
   // one of the page's tabs (the same session can be both at once).
   const threadChatHostsRef = useRef(new Map<SessionId, RelocatableHost>());
@@ -1712,6 +1726,7 @@ const SessionDetail = ({
     setMobileBoardOpen(false);
     setBoardSettingsOpen(false);
     setArticleDialog(null);
+    setReviewDialog(null);
   }
 
   const setDraftTabs = useCallback(
@@ -4779,6 +4794,37 @@ const SessionDetail = ({
         ? null
         : relocatableHostFor(tabChatHostsRef.current, articleBeside.sessionId);
 
+  const reviewRoom = !isMobile && !isCompactDesktop;
+  const reviewBeside = reviewDialog?.beside ?? null;
+  const reviewShown =
+    reviewDialog !== null &&
+    !reviewDialog.closing &&
+    reviewRoom &&
+    (reviewBeside === null ||
+      (reviewBeside === 'thread'
+        ? boardThreadId === reviewDialog.sessionId
+        : reviewBeside.sessionId === activeSessionTabId));
+  const reviewThreadId = reviewShown && reviewBeside === 'thread' ? boardThreadId : null;
+  const reviewTabId =
+    reviewShown && reviewBeside !== null && reviewBeside !== 'thread'
+      ? reviewBeside.sessionId
+      : null;
+  const closeReviewDialog = useCallback(
+    () => setReviewDialog((current) => (current ? { ...current, closing: true } : null)),
+    []
+  );
+  useLayoutEffect(() => {
+    if (reviewDialog && !reviewShown) setReviewDialog(null);
+  }, [reviewDialog, reviewShown]);
+  const reviewHost =
+    reviewBeside === 'thread'
+      ? boardThreadId === null
+        ? null
+        : relocatableHostFor(threadChatHostsRef.current, boardThreadId)
+      : reviewBeside === null
+        ? null
+        : relocatableHostFor(tabChatHostsRef.current, reviewBeside.sessionId);
+
   const activeFileOpenContext: SessionFileOpenContext = {
     session: activeSession,
     workspacePath: activeSessionWorkspacePath,
@@ -5118,6 +5164,7 @@ const SessionDetail = ({
     // thread follows it; every other destination leaves the panel and closes it.
     showInCoordinatorPage: (target) => {
       closeArticleDialog();
+      closeReviewDialog();
       setMobileBoardOpen(false);
       const exactId = target.tabSessionId ?? target.sessionId;
       if (sideSessions.some((side) => side.id === exactId)) {
@@ -5127,6 +5174,7 @@ const SessionDetail = ({
     },
     openPage: (target) => {
       closeArticleDialog();
+      closeReviewDialog();
       setMobileBoardOpen(false);
       navigateSessionPage(target);
     },
@@ -5337,6 +5385,28 @@ const SessionDetail = ({
     const availableTabIds = new Set(sidePanelFixedOptions.map((option) => option.id));
     return openedSidebarTabs.filter((tabId) => availableTabIds.has(tabId));
   }, [openedSidebarTabs, sidePanelFixedOptions]);
+
+  const openWorktreeReview = useStableCallback((request: WorktreeReviewOpenRequest) => {
+    if (!reviewRoom) return;
+    setArticleDialog(null);
+    let beside: ArticleBeside = null;
+    if (request.beside !== undefined) {
+      beside = request.beside;
+    } else if (activeBoard && request.sessionId !== activeBoard.coordinatorSessionId) {
+      const targetMeta = linkStore.get(sessionMetaAtomFamily(getSessionRoomId(request.sessionId)));
+      if (targetMeta?.boardId === activeBoard.id && visibleOpenedSidebarTabs.includes('board')) {
+        setBoardThreadId(request.sessionId);
+        beside = 'thread';
+      }
+    } else if (boardArticleEnabled && activeSessionTabId === request.sessionId) {
+      beside = { sessionId: activeSessionTabId };
+    }
+    setReviewDialog({
+      sessionId: request.sessionId,
+      beside,
+      ...(request.focusFilePath !== undefined ? { focusFilePath: request.focusFilePath } : {}),
+    });
+  });
 
   // Shared viewer metadata powers the mobile switcher and desktop side-panel tabs.
   const viewerTabItems: ViewerTabItem[] = useMemo(
@@ -7059,6 +7129,8 @@ const SessionDetail = ({
           {
             ...activeFileOpenContext,
             session: activeSession,
+            ownerSessionId: activeSession.parentSessionId ?? activeSession.id,
+            ownerProjectRun: activeSession.projectRun,
             fileProviderPending: activeSessionFileProviderPending,
             fileProviderMessage: activeSessionFileProviderMessage,
             role: activeSessionCodeCollabFiles.role,
@@ -7102,6 +7174,15 @@ const SessionDetail = ({
             : false
         }
         onOpenFile={handleOpenFileFromDiff}
+        onOpenReviewDialog={
+          reviewRoom && sessionSupportsWorktreeReview(activeSession)
+            ? () =>
+                openWorktreeReview({
+                  sessionId: activeSession.id,
+                  focusFilePath: tab.focusFilePath,
+                })
+            : undefined
+        }
         className={className}
       />
     );
@@ -7140,7 +7221,9 @@ const SessionDetail = ({
       onThreadRequestDone={finishBoardThreadRequest}
       renderThread={(thread, controls) => {
         const inArticle = articleThreadId === thread.id;
-        const threadOnScreen = boardPanelOnScreen || inArticle;
+        const inReview = reviewThreadId === thread.id;
+        const inDialog = inArticle || inReview;
+        const threadOnScreen = boardPanelOnScreen || inDialog;
         const scopeHost = (
           <SessionFileScopeHost
             sessionId={thread.id}
@@ -7169,7 +7252,7 @@ const SessionDetail = ({
               headerLocation={controls.location}
               headerParentThread={controls.parentThread}
               headerStartSlot={
-                inArticle ? undefined : <BoardThreadBackButton onBack={controls.onBack} />
+                inDialog ? undefined : <BoardThreadBackButton onBack={controls.onBack} />
               }
               headerEndSlot={
                 inArticle ? (
@@ -7183,8 +7266,37 @@ const SessionDetail = ({
                   >
                     <X {...stylex.props(detailStyles.icon16)} />
                   </Button>
+                ) : inReview ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="small"
+                    icon
+                    aria-label={t('common.close', 'Close')}
+                    onClick={closeReviewDialog}
+                  >
+                    <X {...stylex.props(detailStyles.icon16)} />
+                  </Button>
                 ) : (
-                  <BoardThreadOpenButton onOpen={controls.onOpenFull} />
+                  <>
+                    {reviewRoom && sessionSupportsWorktreeReview(thread) ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="small"
+                        icon
+                        data-board-thread-header-review={thread.id}
+                        aria-label={t('sessions.review.openDialog', 'Open review window')}
+                        title={t('sessions.review.openDialog', 'Open review window')}
+                        onClick={() =>
+                          openWorktreeReview({ sessionId: thread.id, beside: 'thread' })
+                        }
+                      >
+                        <GitCompareArrows size={14} aria-hidden="true" />
+                      </Button>
+                    ) : null}
+                    <BoardThreadOpenButton onOpen={controls.onOpenFull} />
+                  </>
                 )
               }
               onArchiveSession={async () => {
@@ -7198,14 +7310,16 @@ const SessionDetail = ({
             />
           </AgentFileLinkOpenContext.Provider>
         );
-        // One conversation, two places: the panel's slot, or the article
+        // One conversation, two places: the panel's slot, or the article/review
         // dialog's while it is open. Its popups follow it into the dialog.
         return (
           <Fragment key={thread.id}>
             {scopeHost}
             <RelocatableConversation
               host={relocatableHostFor(threadChatHostsRef.current, thread.id)}
-              popupContainer={inArticle ? articlePanel : outerPopupContainer}
+              popupContainer={
+                inArticle ? articlePanel : inReview ? reviewPanel : outerPopupContainer
+              }
               className={stylex.props(detailStyles.rootFill).className}
             >
               <SessionFileLinkOpenContext.Provider value={handleOpenThreadFile}>
@@ -8531,7 +8645,13 @@ const SessionDetail = ({
             <RelocatableConversation
               key={tabSession.id}
               host={pageChatHost(tabSession.id)}
-              popupContainer={articleTabId === tabSession.id ? articlePanel : outerPopupContainer}
+              popupContainer={
+                articleTabId === tabSession.id
+                  ? articlePanel
+                  : reviewTabId === tabSession.id
+                    ? reviewPanel
+                    : outerPopupContainer
+              }
               className={
                 stylex.props(
                   detailStyles.absoluteFill,
@@ -8815,101 +8935,113 @@ const SessionDetail = ({
   };
 
   return (
-    <div
-      ref={desktopActionRootRef}
-      className={stylex.props(detailStyles.rootFill).className}
-      onPointerDownCapture={(event) =>
-        handleDesktopTabRegionInteraction(event.target, event.currentTarget)
-      }
-      onFocusCapture={(event) =>
-        handleDesktopTabRegionInteraction(event.target, event.currentTarget)
-      }
-    >
-      {boardSettings}
-      {articleDialog && articlePage && (articleBeside === null || articleHost) ? (
-        <BoardArticleDialog
-          title={getBasename(articlePage.target.path)}
-          {...(articleHost ? { threadHost: articleHost } : {})}
-          holdsThread={articleShown}
-          onPanelChange={setArticlePanel}
-          onClose={closeArticleDialog}
-          wide={isCompareManifestPath(articlePage.target.path)}
-          article={
-            <ArticlePageView
-              page={articlePage}
-              // Comments ride with the next message of the conversation beside
-              // the article, a thread the reader may have moved to another
-              // member; on its own, with the page's session.
-              annotationThreadId={articleThreadId ?? articleTabId ?? activeSession.id}
-              onOpenLink={openArticleLink}
-              onOpenInTab={(scope) => {
-                closeArticleDialog();
-                openFileTargetInTab(scope, articlePage.target);
-              }}
-              {...(articleDialog.pages.length > 1 ? { onBack: backArticlePage } : {})}
-              className={stylex.props(detailStyles.rootFill).className}
+    <WorktreeReviewOpenContext.Provider value={reviewRoom ? openWorktreeReview : null}>
+      <div
+        ref={desktopActionRootRef}
+        className={stylex.props(detailStyles.rootFill).className}
+        onPointerDownCapture={(event) =>
+          handleDesktopTabRegionInteraction(event.target, event.currentTarget)
+        }
+        onFocusCapture={(event) =>
+          handleDesktopTabRegionInteraction(event.target, event.currentTarget)
+        }
+      >
+        {boardSettings}
+        {articleDialog && articlePage && (articleBeside === null || articleHost) ? (
+          <BoardArticleDialog
+            title={getBasename(articlePage.target.path)}
+            {...(articleHost ? { threadHost: articleHost } : {})}
+            holdsThread={articleShown}
+            onPanelChange={setArticlePanel}
+            onClose={closeArticleDialog}
+            wide={isCompareManifestPath(articlePage.target.path)}
+            article={
+              <ArticlePageView
+                page={articlePage}
+                // Comments ride with the next message of the conversation beside
+                // the article, a thread the reader may have moved to another
+                // member; on its own, with the page's session.
+                annotationThreadId={articleThreadId ?? articleTabId ?? activeSession.id}
+                onOpenLink={openArticleLink}
+                onOpenInTab={(scope) => {
+                  closeArticleDialog();
+                  openFileTargetInTab(scope, articlePage.target);
+                }}
+                {...(articleDialog.pages.length > 1 ? { onBack: backArticlePage } : {})}
+                className={stylex.props(detailStyles.rootFill).className}
+              />
+            }
+          />
+        ) : null}
+        {reviewDialog && (reviewBeside === null || reviewHost) ? (
+          <WorktreeReviewDialog
+            sessionId={reviewDialog.sessionId}
+            focusFilePath={reviewDialog.focusFilePath}
+            {...(reviewHost ? { threadHost: reviewHost } : {})}
+            holdsThread={reviewShown}
+            onPanelChange={setReviewPanel}
+            onClose={closeReviewDialog}
+          />
+        ) : null}
+        <DesktopSessionDetailLayout
+          defaultSizes={defaultSizes}
+          // A Board opens half and half on every entry, refresh included: Boards
+          // remember no split, and another Board or entry resets it.
+          layoutStorageId={activeBoard ? null : 'session-detail-panels'}
+          {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
+          topBar={tabBar}
+          chatSurfaces={desktopChatSurfaces}
+          terminalDock={
+            <TerminalDockHost
+              onOpenUrlInSidePanel={handleOpenTerminalUrl}
+              onOpenFileInSidePanel={handleOpenFile}
             />
           }
+          secondaryPanel={desktopSecondaryPanel}
+          sidebarOpen={isSidebarVisible}
+          onSidebarCollapse={handleToggleSidebar}
+          deleteConfirmDialog={deleteConfirmDialog}
+          sidebarMinWidthRequest={sidebarWidthRequest}
+          sidebarRestoreSeq={sidebarRestoreSeq}
         />
-      ) : null}
-      <DesktopSessionDetailLayout
-        defaultSizes={defaultSizes}
-        // A Board opens half and half on every entry, refresh included: Boards
-        // remember no split, and another Board or entry resets it.
-        layoutStorageId={activeBoard ? null : 'session-detail-panels'}
-        {...(activeBoard ? { layoutResetKey: `${activeBoard.id}:${boardEntrySeq}` } : {})}
-        topBar={tabBar}
-        chatSurfaces={desktopChatSurfaces}
-        terminalDock={
-          <TerminalDockHost
-            onOpenUrlInSidePanel={handleOpenTerminalUrl}
-            onOpenFileInSidePanel={handleOpenFile}
-          />
-        }
-        secondaryPanel={desktopSecondaryPanel}
-        sidebarOpen={isSidebarVisible}
-        onSidebarCollapse={handleToggleSidebar}
-        deleteConfirmDialog={deleteConfirmDialog}
-        sidebarMinWidthRequest={sidebarWidthRequest}
-        sidebarRestoreSeq={sidebarRestoreSeq}
-      />
-      {/* These dialogs live at the desktop root too (the mobile branch renders its own
+        {/* These dialogs live at the desktop root too (the mobile branch renders its own
           copies) so keyboard shortcuts such as `session.renameCurrent` have a mounted
           target on desktop. They portal out, so tree position
           doesn't matter. */}
-      {dirtyForkDialog}
-      {worktreeForkObservers}
-      <SessionShareDialog
-        open={showSessionSharing && pendingSessionShare != null}
-        sessionTitle={
-          pendingSessionShare?.session.title?.trim() || t('sessions.untitled', 'Untitled session')
-        }
-        state={showSessionSharing ? (pendingSessionShare?.sharing ?? null) : null}
-        isSharing={isSharingSession}
-        onOpenChange={(open) => {
-          if (!open && !isSharingSession) setPendingSessionShare(null);
-        }}
-        onConfirm={() => {
-          void handleConfirmSessionShare();
-        }}
-      />
-      <RenameSessionDialog
-        target={renameDialogTarget}
-        onClose={() => setRenameDialogTarget(null)}
-      />
-      <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
-      <ChatShareImageDialog
-        open={shareImageTarget != null}
-        onOpenChange={(open) => {
-          if (!open) setShareImageTarget(null);
-        }}
-        onCompleted={handleShareImageCompleted}
-        session={shareImageTarget?.session ?? null}
-        sourceRuntime={shareImageTarget?.runtime ?? null}
-        messages={shareImageTarget?.messages ?? []}
-        agentName={shareImageTarget?.agentName}
-      />
-    </div>
+        {dirtyForkDialog}
+        {worktreeForkObservers}
+        <SessionShareDialog
+          open={showSessionSharing && pendingSessionShare != null}
+          sessionTitle={
+            pendingSessionShare?.session.title?.trim() || t('sessions.untitled', 'Untitled session')
+          }
+          state={showSessionSharing ? (pendingSessionShare?.sharing ?? null) : null}
+          isSharing={isSharingSession}
+          onOpenChange={(open) => {
+            if (!open && !isSharingSession) setPendingSessionShare(null);
+          }}
+          onConfirm={() => {
+            void handleConfirmSessionShare();
+          }}
+        />
+        <RenameSessionDialog
+          target={renameDialogTarget}
+          onClose={() => setRenameDialogTarget(null)}
+        />
+        <BoardRenameDialog board={renamingBoard} onClose={() => setRenamingBoard(null)} />
+        <ChatShareImageDialog
+          open={shareImageTarget != null}
+          onOpenChange={(open) => {
+            if (!open) setShareImageTarget(null);
+          }}
+          onCompleted={handleShareImageCompleted}
+          session={shareImageTarget?.session ?? null}
+          sourceRuntime={shareImageTarget?.runtime ?? null}
+          messages={shareImageTarget?.messages ?? []}
+          agentName={shareImageTarget?.agentName}
+        />
+      </div>
+    </WorktreeReviewOpenContext.Provider>
   );
 };
 

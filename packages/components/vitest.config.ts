@@ -73,6 +73,10 @@ export default defineConfig({
         ),
       },
       {
+        find: /diff-render-worker-entry\?worker$/,
+        replacement: fileURLToPath(new URL('./tests/stubs/browser-worker.ts', import.meta.url)),
+      },
+      {
         find: '@pierre/diffs/worker/worker.js?worker',
         replacement: fileURLToPath(new URL('./tests/stubs/browser-worker.ts', import.meta.url)),
       },

@@ -35,6 +35,7 @@ import {
   type EncryptedAttachment,
 } from '@lody/shared';
 import type { EncryptedAgentExecution } from './e2ee/agent-execution';
+import { isE2eeOwnerOnlyReadQuery } from '@lody/shared/e2ee-rpc';
 import { decideEncryptedDerivation } from './e2ee/derivation-limits';
 import { isScheduledMessageFile } from './schedules/scheduled-message-files';
 import {
@@ -452,6 +453,7 @@ import {
   type FilePreviewWorkspaceResolver,
 } from '@/lib/file-preview/file-preview-service';
 import { listSessionDirectory } from '@/lib/file-preview/session-directory-listing';
+import { CodeNavService, type CodeNavWorkspaceResolver } from '@/lib/code-nav';
 import {
   CodeCollabV2DiffStore,
   type CodeCollabV2DiffStoreEvent,
@@ -1071,8 +1073,9 @@ export class MessageHandler {
     expiresAt: number,
     signal: AbortSignal
   ) {
-    // Scoped history uses the feature receiver's exact-session authorization.
-    if (input.method === 'session/history-read') throw new Error('e2ee_query_method');
+    // Scoped history and owner-only read queries require feature-receiver authorization.
+    if (input.method === 'session/history-read' || isE2eeOwnerOnlyReadQuery(input.method))
+      throw new Error('e2ee_query_method');
     if (!this.encryptedQueryServer) throw new Error('e2ee_rpc_unavailable');
     return this.encryptedQueryServer.readQuery(input, expiresAt, signal);
   }
@@ -1110,6 +1113,8 @@ export class MessageHandler {
   // File Preview v3. Separate from Code Collab on purpose: previewing a file must
   // not start a workspace watcher or publish a file index.
   private filePreviewService: FilePreviewService;
+  // Read-only AST code navigation (`code-nav/query`). Independent of Code Collab.
+  private codeNavService: CodeNavService;
   private encryptedFileReader?: FilePreviewService;
   private encryptedCodeCollabReader?: CodeCollabV2Service;
   private diffBlobReader!: CodeCollabV2Service;
@@ -3545,6 +3550,32 @@ export class MessageHandler {
       resolveWorkspace: this.resolveFilePreviewWorkspace,
       ...(this.cloudPort.kind === 'local' ? { pathPolicy: { allowArbitraryPaths: true } } : {}),
     });
+    // Read-only AST navigation must observe existing paths only (never mkdir,
+    // subscribe Flocks, or repair/unlink Project Group member links).
+    const resolveCodeNavWorkspace: CodeNavWorkspaceResolver = async (sessionId, rootId) => {
+      const resolved = await this.resolveEncryptedCodeCollabV2Workspace(sessionId, { rootId });
+      if (resolved.ok) {
+        return {
+          ok: true,
+          ownerSessionId: resolved.ownerSessionId,
+          workspaceRoot: resolved.workspaceRoot,
+          ...(resolved.allChangesBaseBranch
+            ? { preferredBaseBranch: resolved.allChangesBaseBranch }
+            : {}),
+        };
+      }
+      return {
+        ok: false,
+        code:
+          resolved.code === 'workspace_root_unavailable'
+            ? 'workspace_unavailable'
+            : resolved.code === 'machine_offline'
+              ? 'unavailable'
+              : resolved.code,
+        message: resolved.message,
+      };
+    };
+    this.codeNavService = new CodeNavService({ resolveWorkspace: resolveCodeNavWorkspace });
     this.diffBlobStoreReader = new CodeCollabV2DiffStore(this.workspaceId, { readOnly: true });
     this.diffBlobReader = new CodeCollabV2Service({
       diffStore: this.diffBlobStoreReader,
@@ -4220,7 +4251,9 @@ export class MessageHandler {
         resolveCodeCollabOwnerSessionId: config.encryptedWorkspace
           ? this.resolveEncryptedCodeCollabOwnerSessionId
           : this.resolveCodeCollabV2OwnerSessionId,
+        resolveCodeNavOwnerSessionId: this.resolveEncryptedCodeCollabOwnerSessionId,
         previewFile: async (request) => await fileReader.previewFile(request),
+        queryCodeNav: async (request) => await this.codeNavService.query(request),
         // Ordinary workspaces only; an encrypted reader has no folder listing yet, so the
         // server answers `unsupported_protocol` there.
         ...(this.encryptedFileReader
@@ -8444,11 +8477,16 @@ export class MessageHandler {
     request: LocalMachineRpcRequestValidated,
     signal?: AbortSignal
   ): Promise<LocalMachineRpcResult> {
-    const assertOwner = async (sessionId: SessionId): Promise<void> => {
+    const assertOwner = async (
+      sessionId: SessionId,
+      options?: { readonly readOnly?: boolean }
+    ): Promise<void> => {
       if (!request.ownerSessionId) {
         return;
       }
-      const ownerSessionId = await this.resolveCodeCollabV2OwnerSessionId(sessionId);
+      const ownerSessionId = options?.readOnly
+        ? await this.resolveEncryptedCodeCollabOwnerSessionId(sessionId)
+        : await this.resolveCodeCollabV2OwnerSessionId(sessionId);
       if (ownerSessionId !== request.ownerSessionId) {
         throw new CodeCollabV2ServiceError(
           'permission_denied',
@@ -8689,6 +8727,9 @@ export class MessageHandler {
       case 'file/preview':
         await assertOwner(request.params.sessionId as SessionId);
         return await this.filePreviewService.previewFile(request.params);
+      case 'code-nav/query':
+        await assertOwner(request.params.sessionId as SessionId, { readOnly: true });
+        return await this.codeNavService.query(request.params);
       case 'file/resolve-local':
         return await this.filePreviewService.resolveLocalFile(
           request.params,
@@ -12784,6 +12825,7 @@ export class MessageHandler {
     this.sessionDispatchWatcher.stop();
     this.diffBlobReader?.dispose();
     this.codeCollabV2Service.dispose();
+    await this.codeNavService.dispose();
     for (const handle of this.sessionLifecycleWatchHandles) handle.unsubscribe();
     this.sessionLifecycleWatchHandles = [];
     if (this.worktreeGcTimer) {

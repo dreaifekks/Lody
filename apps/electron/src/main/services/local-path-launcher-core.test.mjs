@@ -270,9 +270,15 @@ void test('launcher commands come from main configuration and custom changes req
   let launchers = []
   let answer = 0
   const dialogs = []
+  const openedUrls = []
   const owner = { isDestroyed: () => false }
   const deps = {
     electron: {
+      shell: {
+        openExternal: async (url) => {
+          openedUrls.push(url)
+        }
+      },
       dialog: {
         showMessageBox: async (window, options) => {
           assert.equal(window, owner)
@@ -337,6 +343,7 @@ void test('launcher commands come from main configuration and custom changes req
     ).outputText,
     {
       exports,
+      URL,
       process: runtimeProcess,
       require: (id) => (Object.hasOwn(deps, id) ? deps[id] : require(id))
     }
@@ -442,6 +449,57 @@ void test('launcher commands come from main configuration and custom changes req
   })
   assert.equal(refused.launched, false)
   assert.equal(refused.error, 'unsafe_shell_path')
+
+  runtimeProcess.platform = 'darwin'
+  const remoteFileLine = exports.resolvePathLauncher({
+    launcherId: 'cursor',
+    targetPath: '/srv/wt',
+    targetKind: 'directory',
+    sshDestination: { host: 'nuc', user: 'me' },
+    filePath: 'src/app.ts',
+    line: 42,
+    column: 3
+  })
+  assert.notEqual(remoteFileLine, null)
+  assert.deepEqual(remoteFileLine.command.args, [
+    '-n',
+    '--folder-uri',
+    'vscode-remote://ssh-remote+me@nuc/srv/wt',
+    '-g',
+    '--file-uri',
+    'vscode-remote://ssh-remote+me@nuc/srv/wt/src/app.ts:42:3'
+  ])
+  assert.equal(
+    remoteFileLine.fallbackUrl,
+    'cursor://vscode-remote/ssh-remote+me@nuc/srv/wt/src/app.ts:42:3?windowId=_blank'
+  )
+  // Relative filePath traversal is rejected cleanly as null.
+  assert.equal(
+    exports.resolvePathLauncher({
+      launcherId: 'vscode',
+      targetPath: '/srv/wt',
+      targetKind: 'directory',
+      sshDestination: { host: 'nuc' },
+      filePath: '../../etc/passwd',
+      line: 1
+    }),
+    null
+  )
+  // `cursor:` fallback protocol URLs are allowed when launching file:line links.
+  const cursorUrlResult = await exports.launchLocalPath({
+    kind: 'url',
+    url: remoteFileLine.fallbackUrl,
+    targetPath: '/srv/wt'
+  })
+  assert.equal(cursorUrlResult.launched, true)
+  assert.deepEqual(openedUrls, [remoteFileLine.fallbackUrl])
+  const disallowedUrlResult = await exports.launchLocalPath({
+    kind: 'url',
+    url: 'file:///etc/passwd',
+    targetPath: '/srv/wt'
+  })
+  assert.equal(disallowedUrlResult.launched, false)
+  assert.equal(disallowedUrlResult.error, 'invalid_url')
 })
 
 void test('Windows metacharacter paths preserve native executables and URLs while excluding shell candidates', async () => {
@@ -510,6 +568,71 @@ void test('filters percent-encoded shell arguments even when the raw path has no
   }
   assert.equal(
     selectSafePathLauncherInput(input, 'win32', (cmd) => cmd.endsWith('.cmd')),
+    null
+  )
+})
+
+void test('Windows whitespace file arguments bypass .cmd shell shims and use native .exe or protocol fallback', async () => {
+  const { buildPathLauncherLaunchInput } = await import('@lody/shared/path-launchers')
+  const usesShell = (command) =>
+    /\.(cmd|bat)$/iu.test(command) || (!/[\\/]/u.test(command) && !/\.(exe|com)$/iu.test(command))
+
+  const built = buildPathLauncherLaunchInput(
+    { kind: 'builtin', id: 'vscode', label: 'VS Code' },
+    'C:\\repo',
+    'win32',
+    'directory',
+    { filePath: 'src/My File.ts', line: 42 }
+  )
+  assert.equal(built.kind, 'command')
+  const withShimInjected = {
+    ...built,
+    command: { command: 'code', args: built.command.args },
+    fallbackCommands: [
+      built.command,
+      ...(built.fallbackCommands ?? []),
+      { command: 'code.cmd', args: built.command.args }
+    ]
+  }
+
+  const safe = selectSafePathLauncherInput(withShimInjected, 'win32', usesShell)
+  assert.equal(safe.kind, 'command')
+  assert.equal(safe.command.command.endsWith('Code.exe'), true)
+  assert.deepEqual(safe.command.args, ['-n', 'C:\\repo', '-g', 'C:\\repo\\src\\My File.ts:42'])
+  assert.equal(
+    [safe.command, ...safe.fallbackCommands].some((item) => usesShell(item.command)),
+    false
+  )
+
+  // When only shell shims remain but a protocol fallbackUrl exists, fall back to the encoded URL.
+  const urlOnly = selectSafePathLauncherInput(
+    {
+      kind: 'command',
+      command: {
+        command: 'code.cmd',
+        args: ['-n', 'C:\\repo', '-g', 'C:\\repo\\src\\My File.ts:42']
+      },
+      fallbackUrl: built.fallbackUrl,
+      targetPath: 'C:\\repo'
+    },
+    'win32',
+    usesShell
+  )
+  assert.equal(urlOnly.kind, 'url')
+  assert.equal(urlOnly.url, 'vscode://file/C:/repo/src/My%20File.ts:42?windowId=_blank')
+  assert.equal(urlOnly.targetPath, 'C:\\repo')
+
+  // Without a native .exe or fallbackUrl, refuse shell-splitting a spaced filename.
+  assert.equal(
+    selectSafePathLauncherInput(
+      {
+        kind: 'command',
+        command: { command: 'custom.cmd', args: ['C:\\repo\\src\\My File.ts:42'] },
+        targetPath: 'C:\\repo'
+      },
+      'win32',
+      usesShell
+    ),
     null
   )
 })

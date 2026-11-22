@@ -1118,6 +1118,128 @@ it('shares the feature codec with the ordinary read adapter for a Guest, with co
   }
 });
 
+it('serves code-nav/query on the E2EE read lane without write journal while still enforcing owner-only authorization and rejecting Guests', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(1000);
+  const { makeEncryptedFeatureReceiver } = await import('./feature-rpc');
+  const { createEncryptedDispatchLegacy } =
+    await import('../../../../../packages/components/src/providers/encrypted-dispatch-legacy');
+  const { LoroStreamsMachineRpcServer } = await import('@lody/loro-streams-rpc');
+
+  const ownerFixture = fixture({ guest: false });
+  const guestFixture = fixture({ guest: true });
+  const streams = memoryStreams();
+  const navOutcome = {
+    type: 'code-nav/query' as const,
+    status: 'ok' as const,
+    action: 'enclosing' as const,
+    path: 'src/index.ts',
+    chain: [{ name: 'run', kind: 'function' as const, startLine: 1, endLine: 4 }],
+    provider: 'ast-grep' as const,
+  };
+  const server = new LoroStreamsMachineRpcServer({
+    workspaceId: ownerFixture.workspaceId as never,
+    machineId: ownerFixture.machineId as never,
+    logger: { warn: () => {} },
+    now: () => 0,
+    getMachineStatus: async () => {
+      throw new Error('unused');
+    },
+    refreshMachineAcpCapabilities: async () => {
+      throw new Error('must not launch');
+    },
+    resolveCodeNavOwnerSessionId: async () => ownerFixture.input.sessionId,
+    queryCodeNav: async () => navOutcome,
+  });
+  const ownerRenderer = createEncryptedDispatchLegacy({
+    workspaceId: ownerFixture.workspaceId,
+    prepare: (machine, input) =>
+      Effect.runPromise(ownerFixture.sender.prepareDispatch(machine, input)),
+    accept: (machine, input, frame) =>
+      Effect.runPromise(ownerFixture.sender.acceptResponse(machine, input, frame)),
+    prepareFeature: (input) => Effect.runPromise(ownerFixture.sender.prepareFeature(input)),
+    acceptFeature: (input, frame) =>
+      Effect.runPromise(ownerFixture.sender.acceptFeatureResponse(input, frame)),
+    client: async () => streams.client,
+  });
+  try {
+    // Guest cannot even prepare/sign a code-nav/query feature request client-side.
+    await expect(
+      Effect.runPromise(
+        guestFixture.sender.prepareFeature({
+          requestId: 'cc'.repeat(16),
+          request: {
+            workspaceId: guestFixture.workspaceId,
+            machineId: guestFixture.machineId,
+            method: 'code-nav/query',
+            ownerSessionId: guestFixture.input.sessionId,
+            params: {
+              action: 'enclosing',
+              sessionId: guestFixture.input.sessionId,
+              path: 'src/index.ts',
+              startLine: 1,
+              endLine: 1,
+            },
+          },
+        } as never)
+      )
+    ).rejects.toThrow();
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          let ownerAuthCalls = 0;
+          const receive = yield* makeEncryptedFeatureReceiver({
+            workspaceId: ownerFixture.workspaceId,
+            machineId: ownerFixture.machineId,
+            genesis: Buffer.from(ownerFixture.ledger.context.genesis.toBytes()).toString('hex'),
+            native: ownerFixture.nativeReceiver,
+            journal: () => {
+              throw new Error('code-nav/query must never enter execution journal');
+            },
+            authorize: () => {
+              ownerAuthCalls += 1;
+              return Effect.succeed({ _tag: 'Authorized' as const });
+            },
+            authorizeRead: () => Effect.die('code-nav/query must not use Guest read authority'),
+            isOpen: () => true,
+            client: streams.client,
+            handle: (request, context) => server.readFeatureQuery(request, context),
+          });
+          yield* makeEncryptedRpcListener({
+            workspaceId: ownerFixture.workspaceId,
+            machineId: ownerFixture.machineId,
+            client: streams.client,
+            receive: (envelope) => receive(envelope).pipe(Effect.asVoid),
+          });
+          const res = yield* Effect.promise(() =>
+            ownerRenderer.requestFeature({
+              workspaceId: ownerFixture.workspaceId,
+              machineId: ownerFixture.machineId,
+              method: 'code-nav/query',
+              ownerSessionId: ownerFixture.input.sessionId,
+              params: {
+                action: 'enclosing',
+                sessionId: ownerFixture.input.sessionId,
+                path: 'src/index.ts',
+                startLine: 1,
+                endLine: 1,
+              },
+            })
+          );
+          expect(res).toEqual({ ok: true, result: navOutcome });
+          expect(ownerAuthCalls).toBeGreaterThanOrEqual(1);
+          yield* Effect.promise(() => ownerRenderer.close());
+        })
+      )
+    );
+  } finally {
+    server.stop();
+    await ownerRenderer.close();
+    vi.useRealTimers();
+  }
+});
+
 it('protects interaction progress from another workspace member and binds both directions to the signed identity', async () => {
   const { createRpcSecretRecipient, encryptRpcSecret } = await import('@lody/loro-streams-rpc');
   const { e2eeAcpInteractionInputContext, e2eeAcpInteractionResponseContext } =

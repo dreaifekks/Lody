@@ -6438,6 +6438,8 @@
   "sessions.article.reload": "Reload",
   "sessions.article.openInTab": "Open in side tab",
   "sessions.article.openAsArticle": "Open as article",
+  "sessions.review.openDialog": "Open review window",
+  "sessions.review.openShort": "Review",
   "sessions.article.outline": "Outline",
   "sessions.article.annotation.add": "Add comment",
   "sessions.article.annotation.count": "Comments ({{count}})",

@@ -1,10 +1,15 @@
 import * as stylex from '@stylexjs/stylex';
+import { GitCompareArrows } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { atom, useAtomValue } from 'jotai';
 import { selectAtom } from 'jotai/utils';
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import {
+  sessionSupportsWorktreeReview,
+  WorktreeReviewOpenContext,
+} from '../code-review/worktree-review-open-context';
 import { getMachineFlockLocalProjects, getSessionRoomId, type SessionId } from '@lody/shared';
 import { userAtom } from '@/atoms';
 import {
@@ -29,6 +34,7 @@ import { boardThreadStatus, buildBoardRows } from './board-threads';
 
 const styles = stylex.create({
   root: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0 },
+  rootWithAction: { gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center' },
   title: {
     flexShrink: 1,
     minWidth: 0,
@@ -159,8 +165,13 @@ export function BoardThreadStatusCard({
   const where = session
     ? detail(session, localRows ? getMachineFlockLocalProjects(localRows) : undefined)
     : undefined;
+  const openWorktreeReview = useContext(WorktreeReviewOpenContext);
+  const canReviewDiff = Boolean(openWorktreeReview) && sessionSupportsWorktreeReview(session);
   return (
-    <div data-board-thread-card={sessionId} {...stylex.props(styles.root)}>
+    <div
+      data-board-thread-card={sessionId}
+      {...stylex.props(styles.root, canReviewDiff && styles.rootWithAction)}
+    >
       <Button
         variant="ghost"
         size="small"
@@ -188,6 +199,20 @@ export function BoardThreadStatusCard({
           {where ? <span {...stylex.props(styles.detail)}>· {where}</span> : null}
         </span>
       </Button>
+      {canReviewDiff ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="small"
+          icon
+          data-board-thread-card-review={sessionId}
+          title={t('sessions.review.openDialog', 'Open review window')}
+          aria-label={t('sessions.review.openDialog', 'Open review window')}
+          onClick={() => openWorktreeReview?.({ sessionId })}
+        >
+          <GitCompareArrows size={14} aria-hidden="true" />
+        </Button>
+      ) : null}
     </div>
   );
 }
