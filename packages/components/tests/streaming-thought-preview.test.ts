@@ -456,7 +456,7 @@ describe('extractLatestThoughtParagraphFromText & extractLatestCompactThoughtPar
     ).toBeNull();
   });
 
-  it('stays strictly O(n) and bounded by STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS and MAX_CLEANED_LINES on giant inputs', () => {
+  it('outputs full 33+ line and 8,500+ char valid paragraphs without truncation while bounding discarded-noise floods in O(n)', () => {
     const fillerParagraph = 'Evaluating repository structure and test contracts in detail. '.repeat(
       14
     );
@@ -467,30 +467,52 @@ describe('extractLatestThoughtParagraphFromText & extractLatestCompactThoughtPar
     expect(multiResult.preview).toBe('Final line one.\nFinal line two.');
     expect(multiResult.cleanedLineCount).toBe(2);
 
-    const giantSingleLine = `Leading sentence of giant thought. ${'word '.repeat(30_000)}`;
-    expect(giantSingleLine.length).toBeGreaterThan(138_000);
-    const giantResult = inspectLatestThoughtParagraph(giantSingleLine);
-    expect(giantResult.preview).not.toBeNull();
-    expect(giantResult.preview!.startsWith('Leading sentence of giant thought.')).toBe(true);
-    expect(giantResult.preview!.endsWith('…')).toBe(true);
-    expect(giantResult.cleanedLineCount).toBe(1);
-    expect(giantResult.cleanedCharCount).toBeLessThanOrEqual(
-      STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
-    );
+    // 33+ non-empty valid lines in one paragraph must all be preserved without dropping line 33+.
+    const longMultiLine = Array.from(
+      { length: 40 },
+      (_, i) => `Step ${i + 1}: verifying row ${i + 1}`
+    ).join('\n');
+    const multiLineResult = inspectLatestThoughtParagraph(`Earlier paragraph.\n\n${longMultiLine}`);
+    const renderedLines = multiLineResult.preview!.split('\n');
+    expect(renderedLines).toHaveLength(40);
+    expect(renderedLines[32]).toBe('Step 33: verifying row 33');
+    expect(renderedLines[39]).toBe('Step 40: verifying row 40');
+    expect(multiLineResult.preview!.endsWith('…')).toBe(false);
 
-    const overLineCap = Array.from({ length: 40 }, (_, i) => `Step ${i + 1}`).join('\n');
-    const lineCapResult = inspectLatestThoughtParagraph(overLineCap);
-    expect(lineCapResult.cleanedLineCount).toBe(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES);
-    const renderedLines = lineCapResult.preview!.split('\n');
-    expect(renderedLines).toHaveLength(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES);
-    expect(renderedLines[renderedLines.length - 1]).toBe(
-      `Step ${STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES}…`
+    // 8,500+ char single-line valid paragraph must remain intact through its final sentence.
+    const longSingleLine = `Leading sentence of long reasoning. ${'Checking virtual row measurement boundaries carefully. '.repeat(160)}Final tail sentence must not be truncated.`;
+    expect(longSingleLine.length).toBeGreaterThan(8_500);
+    const longSingleResult = inspectLatestThoughtParagraph(
+      `Earlier paragraph.\n\n${longSingleLine}`
     );
+    expect(longSingleResult.preview).toBe(longSingleLine);
+    expect(longSingleResult.preview!.endsWith('Final tail sentence must not be truncated.')).toBe(
+      true
+    );
+    expect(longSingleResult.cleanedLineCount).toBe(1);
 
+    // Adversarial empty-output noise floods remain bounded by the discarded-noise budget and return null.
+    const nineEmptyOutputLinks = `Valid earlier paragraph.\n\n${`[** **](https://example.com/${'a'.repeat(972)})\n`.repeat(12)}`;
+    const charFloodResult = inspectLatestThoughtParagraph(nineEmptyOutputLinks);
+    expect(charFloodResult.preview).toBeNull();
+    expect(charFloodResult.cleanedLineCount).toBeLessThanOrEqual(
+      STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES
+    );
+    expect(charFloodResult.cleanedLineCount).toBeLessThan(12);
+
+    const manyShortEmptyOutputLinks = `Valid earlier paragraph.\n\n${'[** **](https://example.com/x)\n'.repeat(60)}`;
+    const lineFloodResult = inspectLatestThoughtParagraph(manyShortEmptyOutputLinks);
+    expect(lineFloodResult.preview).toBeNull();
+    expect(lineFloodResult.cleanedLineCount).toBe(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES);
+
+    // Zero-cost pre-filtered noise (unclosed bold, empty links) still falls back cleanly.
     const giantUnclosedBold = `Valid fallback.\nLine two.\n\n**${'a'.repeat(138_000)}`;
     const fallbackResult = inspectLatestThoughtParagraph(giantUnclosedBold);
     expect(fallbackResult.preview).toBe('Valid fallback.\nLine two.');
     expect(fallbackResult.cleanedLineCount).toBe(2);
+
+    const emptyLinkFlood = `Valid fallback.\n\n${`[](https://example.com/${'a'.repeat(1000)})\n`.repeat(136)}`;
+    expect(extractLatestThoughtParagraphFromText(emptyLinkFlood)).toBe('Valid fallback.');
   });
 
   it('scans entries backwards, retains previous valid paragraph across tools, and falls back past invalid newest thoughts', () => {

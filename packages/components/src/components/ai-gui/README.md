@@ -180,13 +180,17 @@ the reasoning behind those rules.
   process display (`streamingThoughtPreviewFeatureEnabledAtom`): while a turn
   is live, the collapsed work header renders a fixed two-tier transparent layout
   on `conversation.railInset` whose rows never swap places (Row 1 single-line
-  `nowrap`: `Thinking` or `Running <target>` + persistent completed/background
-  tool counts + `(<duration>)`, with `flexShrink: 0` on verb/duration and
-  `<target>` shrinking ahead of `<toolCounts>` for narrow 390px viewports; Row 2
-  collapsed-only: full latest valid thought paragraph extracted via
+  `nowrap` with `container-type: inline-size`: `Thinking` or `Running <target>`
+  + persistent completed/background tool counts + `(<duration>)`, with
+  `flexShrink: 0` on verb/duration, `<target>` yielding first via
+  `flex: 0 10000 auto`, and running-state `<toolCounts>` capped at
+  `max(0px, calc(100cqi - 205px))` so 390px viewports preserve both target and
+  duration while letting moderate counts stay untruncated; Row 2
+  collapsed-only: complete latest valid thought paragraph extracted via
   `extractLatestCompactThoughtParagraph` with natural `pre-line` /
-  `overflow-wrap: anywhere` wrapping, retained across tool runs and placeholder
-  or unclosed-heading chunks). Clicking the live header or the finished native
+  `overflow-wrap: anywhere` wrapping and no 32-line/8,192-char truncation on
+  valid prose, retained across tool runs and placeholder or unclosed-heading
+  chunks). Clicking the live header or the finished native
   `Worked for …` header opens flat sibling directory rows directly (collapsing
   each valid thought to its first sentence with placeholder stripping,
   clustering adjacent completed `read` calls by the first tool's stable id,

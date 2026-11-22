@@ -555,11 +555,12 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     );
   });
 
-  it('renders full multi-line long thought paragraphs (>1024 chars) with no clamping, retains across transient placeholders, and hides on expand or finish (including mobile settled header)', async () => {
+  it('renders full multi-line long thought paragraphs (>8,500 chars / 33+ lines) with no clamping, retains across transient placeholders, and hides on expand or finish (including mobile settled header)', async () => {
     const turnId = nextAssistantId();
-    const longLine = `${'Verifying dynamic height and full paragraph display without truncation. '.repeat(17)}Final path /packages/components/src/components/ai-gui/compact-native-directory-row.tsx and https://example.com/very/long/unbroken/path/for/wrap-check.`;
-    expect(longLine.length).toBeGreaterThan(1_100);
-    const multiLineThought = `**Inspecting header layout**\n${longLine}\nThird line confirms natural line breaks remain intact.`;
+    const longLine = `${'Verifying dynamic height and full paragraph display without truncation. '.repeat(122)}Final path /workspace/lody-demo/packages/components/src/components/ai-gui/compact-native-directory-row.tsx and https://example.com/very/long/unbroken/path/for/wrap-check.`;
+    expect(longLine.length).toBeGreaterThan(8_500);
+    const extraLines = Array.from({ length: 33 }, (_, i) => `Detail line ${i + 1}.`).join('\n');
+    const multiLineThought = `**Inspecting header layout**\n${longLine}\n${extraLines}\nFinal line confirms natural line breaks remain intact.`;
 
     const { rerenderHistory } = await renderStream(
       buildTurnHistory([{ type: 'thought', text: multiLineThought }], { id: turnId })
@@ -569,7 +570,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     expect(secondary).not.toBeNull();
     expect(secondary!.className).not.toContain('line-clamp');
     expect(secondary!.textContent).toBe(
-      `Inspecting header layout\n${longLine}\nThird line confirms natural line breaks remain intact.`
+      `Inspecting header layout\n${longLine}\n${extraLines}\nFinal line confirms natural line breaks remain intact.`
     );
 
     // Transient placeholder or unclosed bold heading keeps Row 2 stable without flashing blank.
@@ -584,7 +585,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
       )
     );
     expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
-      `Inspecting header layout\n${longLine}\nThird line confirms natural line breaks remain intact.`
+      `Inspecting header layout\n${longLine}\n${extraLines}\nFinal line confirms natural line breaks remain intact.`
     );
 
     // Expanding the live header hides Row 2; collapsing restores it.
@@ -595,7 +596,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     expect(container.querySelector('[data-compact-secondary-line]')).toBeNull();
     await act(async () => liveHeader.click());
     expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toContain(
-      'Third line confirms natural line breaks remain intact.'
+      'Final line confirms natural line breaks remain intact.'
     );
 
     // Finishing the turn collapses Row 2 automatically and shows clean desktop settled label.

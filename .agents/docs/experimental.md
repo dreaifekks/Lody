@@ -141,25 +141,29 @@ retains the upstream two-layer disclosure and legacy behavior verbatim
 - **Collapsed live header (fixed two-tier layout on `conversation.railInset`).**
   Transparent typography with no card fill or border whose two tiers never swap
   positions:
-  - Row 1 (`13px`, single-line `nowrap`, outer `.agent-shimmer` wrapper while
-    live, disabled in Low-stimulus mode) always owns status, completed/background
-    tool counts, and elapsed duration—never thought text:
-    `Thinking (<duration>)` or `Thinking · <toolCounts> (<duration>)` while
-    thinking (including placeholder-only starts, without jumping between
-    `Thinking…` and `Thinking`), and `Running <target> (<duration>)` or
+  - Row 1 (`13px`, single-line `nowrap`, `container-type: inline-size`, outer
+    `.agent-shimmer` wrapper while live, disabled in Low-stimulus mode) always
+    owns status, completed/background tool counts, and elapsed duration—never
+    thought text: `Thinking (<duration>)` or
+    `Thinking · <toolCounts> (<duration>)` while thinking (including
+    placeholder-only starts, without jumping between `Thinking…` and
+    `Thinking`), and `Running <target> (<duration>)` or
     `Running <target> · <toolCounts> (<duration>)` while a non-background tool
-    is `in_progress`. Status verbs and `(<duration>)` keep `flexShrink: 0`;
-    `<target>` shrinks (`flex: 0 2 auto`) ahead of `<toolCounts>`
-    (`flex: 0 1 auto`) with single-line ellipsis so narrow 390px viewports never
-    squeeze `(<duration>)` out.
+    is `in_progress`. Status verbs and `(<duration>)` keep `flexShrink: 0`.
+    While a tool runs, `<target>` (`flex: 0 10000 auto`) yields first so
+    moderate tool counts fit untruncated, while running-state `<toolCounts>`
+    adds `maxWidth: max(0px, calc(100cqi - 205px))` (`flex: 0 1 auto`) so heavy
+    multi-category counts never crush `<target>` to `0px` or squeeze
+    `(<duration>)` out on 390px viewports (thinking-state `<toolCounts>` keeps
+    the full row width).
   - Row 2 (`12px` muted `secondaryLabel`, natural multi-line `pre-line` wrapping
     with `overflow-wrap: anywhere` and no `line-clamp`) appears only when
     `isLive && !expanded` and a valid thought exists (after stripping
-    Antigravity's placeholder). It renders the full latest valid thought
-    paragraph—preserving multiple sentences and natural line breaks without
-    140-char, 260-char, or 1024-char per-line truncation—and retains the
-    previous valid paragraph while tools execute or placeholder/unclosed `**`
-    chunks stream. Expanding the directory or finishing the turn collapses Row 2
+    Antigravity's placeholder). It renders the complete latest valid thought
+    paragraph—preserving all valid lines, multiple sentences, and natural line
+    breaks without 32-line or 8,192-char truncation—and retains the previous
+    valid paragraph while tools execute or placeholder/unclosed `**` chunks
+    stream. Expanding the directory or finishing the turn collapses Row 2
     automatically.
 - **Single-level expanded directory.** One click on the live header or the
   finished native `Worked for <duration>` header (omitting header duration on
@@ -182,11 +186,12 @@ retains the upstream two-layer disclosure and legacy behavior verbatim
   forward pass in `streaming-thought-preview.ts` (continuous cross-paragraph
   HTML comments, unclosed leading `**` heading checks, placeholder stripping,
   and 1500 ms / 4000 ms Low-stimulus hold throttling). Collapsed Row 2 uses
-  `extractLatestThoughtParagraphFromText` / `extractLatestCompactThoughtParagraph`
-  bounded by `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS` (8,192 chars) and
-  `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES` (32 lines), while expanded
-  directory rows retain dot-safe first-sentence extraction (`view.tsx`, `v2.1`
-  preserved). `EngineConversationScroller`'s row `ResizeObserver` updates
+  `extractLatestThoughtParagraphFromText` / `extractLatestCompactThoughtParagraph`,
+  which cleans every valid line of the latest valid paragraph in full O(n) time
+  without 32-line or 8,192-char truncation while keeping the 32-line / 8,192-char
+  guardrail (`STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES` / `MAX_CLEANED_CHARS`)
+  for discarded empty-output noise floods; expanded directory rows retain
+  dot-safe first-sentence extraction (`view.tsx`, `v2.1` preserved). `EngineConversationScroller`'s row `ResizeObserver` updates
   subsequent row offsets and preserves `follow` mode as Row 2 grows/shrinks,
   and `ScrollController.preserveDisclosure` marks the toggled header row dirty
   so shrinking a live multi-line header on expand re-measures in the click

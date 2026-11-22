@@ -53,6 +53,7 @@ const styles = stylex.create({
     minWidth: 0,
     minHeight: conversation.activityPitch,
     alignItems: 'center',
+    containerType: 'inline-size',
     fontSize: text.subheadlineSize,
     lineHeight: text.subheadlineLeading,
     color: colors.secondaryLabel,
@@ -81,7 +82,7 @@ const styles = stylex.create({
   },
   activeTargetEllipsis: {
     minWidth: 0,
-    flex: '0 2 auto',
+    flex: '0 10000 auto',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -89,6 +90,14 @@ const styles = stylex.create({
   toolCountsEllipsis: {
     minWidth: 0,
     flex: '0 1 auto',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  toolCountsWithActiveTool: {
+    minWidth: 0,
+    flex: '0 1 auto',
+    maxWidth: 'max(0px, calc(100cqi - 205px))',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -468,7 +477,7 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
                         ·
                       </span>
                       <span
-                        {...stylex.props(styles.toolCountsEllipsis)}
+                        {...stylex.props(styles.toolCountsWithActiveTool)}
                         data-compact-tool-counts=""
                       >
                         {toolSummaryLine}

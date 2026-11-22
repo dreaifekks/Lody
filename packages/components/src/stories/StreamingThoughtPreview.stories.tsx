@@ -186,7 +186,7 @@ const AGY_PLACEHOLDER = "I'm thinking through how to approach this.";
 const thought1Text = [
   AGY_PLACEHOLDER,
   'Checking how adjacent thoughts and tool calls merge into one collapsed activity group in `assistant-turn-render-blocks.ts`.',
-  'Verifying whether the fixed two-tier live header keeps status + tool counts on Row 1 while rendering the full latest thought paragraph on Row 2 without line clamping.\nAlso checking wrap behavior for long workspace paths like `/home/dreaife/.lody-oss/repos/local---fdfcc3e22d93/worktrees/c0f4e12c-9340-46b5-a7c1-251d8b1c83fc/packages/components/src/components/ai-gui/compact-native-directory-row.tsx` and links like https://example.com/lody/scroll-engine/verification/multi-line-live-thought-wrapping.',
+  'Verifying whether the fixed two-tier live header keeps status + tool counts on Row 1 while rendering the full latest thought paragraph on Row 2 without line clamping.\nAlso checking wrap behavior for long workspace paths like `/workspace/lody-demo/worktrees/feature-option-c-header-01/packages/components/src/components/ai-gui/compact-native-directory-row.tsx` and links like https://example.com/lody/scroll-engine/verification/multi-line-live-thought-wrapping.',
 ].join('\n\n\n');
 
 const thought2Text = [
@@ -323,6 +323,49 @@ const finalAnswerItem: MessageContent = {
   ].join('\n'),
 };
 
+const narrowModerateRunningItems: MessageContent[] = [
+  {
+    type: 'thought',
+    text: thought3Text,
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'read-blocks',
+    kind: 'read',
+    title: 'Read packages/components/src/components/ai-gui/assistant-turn-render-blocks.ts',
+    locations: [
+      { path: 'packages/components/src/components/ai-gui/assistant-turn-render-blocks.ts' },
+    ],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'read-preview',
+    kind: 'read',
+    title: 'Read packages/components/src/components/ai-gui/streaming-thought-preview.ts',
+    locations: [{ path: 'packages/components/src/components/ai-gui/streaming-thought-preview.ts' }],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'edit-row',
+    kind: 'edit',
+    title: 'Edit packages/components/src/components/ai-gui/compact-native-directory-row.tsx',
+    locations: [
+      { path: 'packages/components/src/components/ai-gui/compact-native-directory-row.tsx' },
+    ],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'run-long-check',
+    kind: 'execute',
+    title:
+      'Run pnpm --filter @lody/components test tests/streaming-thought-preview.test.ts tests/streaming-thought-preview-ui.test.tsx tests/session-chat-search.test.ts',
+    status: 'in_progress',
+  },
+];
+
 const narrowHeavyRunningItems: MessageContent[] = [
   ...fullProcessItems.slice(0, -1),
   {
@@ -389,6 +432,17 @@ export const LiveThinkingWithToolCounts: Story = {
     experimentalEnabled: true,
     thoughtPreviewEnabled: true,
     items: fullProcessItems,
+  },
+};
+
+export const LiveNarrowMobileModerateCounts: Story = {
+  args: {
+    turnId: 'preview-narrow-mobile-moderate',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    containerWidth: 390,
+    forceMobile: true,
+    items: narrowModerateRunningItems,
   },
 };
 
