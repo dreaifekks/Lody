@@ -126,3 +126,69 @@ export const reportedClaudeCapabilities = {
     },
   },
 } as unknown as AcpCapabilityCacheEntry;
+
+/**
+ * A registry Antigravity (`antigravity-acp`) capability row in the shape a
+ * machine reports: mode and model live in `configOptions`, with YOLO injected
+ * into both `modes` and the `mode` config option.
+ */
+export const reportedAntigravityCapabilities = {
+  cacheVersion: 11,
+  cliType: 'registry',
+  agentType: 'antigravity-acp',
+  provenance: 'runtime',
+  fetchedAt: 1,
+  modes: [
+    { id: 'default', name: 'Default' },
+    { id: 'accept-edits', name: 'Accept edits' },
+    { id: 'auto', name: 'Auto' },
+    { id: 'plan', name: 'Plan' },
+    { id: 'yolo', name: 'YOLO' },
+  ],
+  models: [
+    { modelId: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+    { modelId: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
+    { modelId: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+  ],
+  configOptions: [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'gemini-4-argon',
+      options: [
+        { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+        { value: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
+        { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+      ],
+    },
+    {
+      id: 'thought_level',
+      name: 'Thinking Level',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'high',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'xhigh', name: 'Extra' },
+      ],
+    },
+    {
+      id: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      type: 'select',
+      currentValue: 'default',
+      options: [
+        { value: 'default', name: 'Default' },
+        { value: 'accept-edits', name: 'Accept edits' },
+        { value: 'auto', name: 'Auto' },
+        { value: 'plan', name: 'Plan' },
+        { value: 'yolo', name: 'YOLO' },
+      ],
+    },
+  ],
+} as unknown as AcpCapabilityCacheEntry;

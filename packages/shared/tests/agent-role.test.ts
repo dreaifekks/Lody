@@ -513,6 +513,217 @@ describe('agent role run config availability', () => {
       )
     ).toEqual({ kind: 'unavailable', reason: 'machine_offline' });
   });
+
+  it('checks registry configOption model and mode pins and ignores interaction_mode', () => {
+    const agyCapability = capability({
+      cliType: 'registry',
+      agentType: 'antigravity-acp',
+      modes: [
+        { id: 'default', name: 'Default' },
+        { id: 'yolo', name: 'YOLO' },
+      ],
+      models: [{ modelId: 'gemini-4-neon', name: 'Gemini 4 Neon' }],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'gemini-4-neon',
+          options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }],
+        },
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'yolo', name: 'YOLO' },
+          ],
+        },
+      ],
+    });
+    const agyConfig = { cliType: 'registry', agentType: 'antigravity-acp' } as const;
+    const judgeAgy = (runConfig: AgentRole['runConfig']) =>
+      resolveAgentRoleAvailability(
+        role({ runConfig }),
+        context({ runConfigCapability: () => selectAgentRoleCapability(agyCapability, agyConfig) })
+      );
+
+    expect(
+      judgeAgy({
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+      })
+    ).toEqual({ kind: 'available' });
+    expect(judgeAgy({ configOptionValues: { mode: 'retired', model: 'gemini-4-neon' } })).toEqual({
+      kind: 'unavailable',
+      reason: 'mode_unavailable',
+    });
+    expect(judgeAgy({ configOptionValues: { mode: 'yolo', model: 'retired-model' } })).toEqual({
+      kind: 'unavailable',
+      reason: 'model_unavailable',
+    });
+
+    // `interaction_mode` carries category `mode` on Grok; legacy modes still judge `modeId`.
+    const grokLike = capability({
+      modes: [{ id: 'default', name: 'Agent' }],
+      configOptions: [
+        {
+          id: 'interaction_mode',
+          name: 'Interaction',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'agent',
+          options: [{ value: 'agent', name: 'Agent' }],
+        },
+      ],
+    });
+    expect(judged(grokLike, { modeId: 'default' })).toEqual({ kind: 'available' });
+  });
+
+  it('does not treat a degraded empty model catalog as model_unavailable and honors observedModelConfigOptions', () => {
+    const degradedModelProbe = capability({
+      cliType: 'registry',
+      agentType: 'antigravity-acp',
+      modes: [
+        { id: 'default', name: 'Default' },
+        { id: 'yolo', name: 'YOLO' },
+      ],
+      models: [],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: '',
+          options: [],
+        },
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'yolo', name: 'YOLO' },
+          ],
+        },
+      ],
+    });
+    const agyConfig = { cliType: 'registry', agentType: 'antigravity-acp' } as const;
+    expect(
+      resolveAgentRoleAvailability(
+        role({ runConfig: { configOptionValues: { model: 'gemini-4-neon', mode: 'yolo' } } }),
+        context({
+          runConfigCapability: () => selectAgentRoleCapability(degradedModelProbe, agyConfig),
+        })
+      )
+    ).toEqual({ kind: 'available' });
+
+    // Target model's observed options may offer a mode absent from probe-time defaults.
+    const perModelCustomProbe = capability({
+      cliType: 'custom',
+      agentType: 'custom-acp',
+      modes: [{ id: 'default', name: 'Default' }],
+      models: [
+        { modelId: 'model-a', name: 'Model A' },
+        { modelId: 'model-b', name: 'Model B' },
+      ],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'model-a',
+          options: [
+            { value: 'model-a', name: 'Model A' },
+            { value: 'model-b', name: 'Model B' },
+          ],
+        },
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [{ value: 'default', name: 'Default' }],
+        },
+      ],
+      observedModelConfigOptions: {
+        'model-b': [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'model-b',
+            options: [
+              { value: 'model-a', name: 'Model A' },
+              { value: 'model-b', name: 'Model B' },
+            ],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'model-b-mode', name: 'Model B Mode' },
+            ],
+          },
+        ],
+      },
+    });
+    const customConfig = { cliType: 'custom', agentType: 'custom-acp' } as const;
+    expect(
+      resolveAgentRoleAvailability(
+        role({
+          runConfig: {
+            configOptionValues: { model: 'model-b', mode: 'model-b-mode' },
+          },
+        }),
+        context({
+          runConfigCapability: () => selectAgentRoleCapability(perModelCustomProbe, customConfig),
+        })
+      )
+    ).toEqual({ kind: 'available' });
+    // Conflicting dual-field pin on custom/registry follows canonical configOptionValues.
+    expect(
+      resolveAgentRoleAvailability(
+        role({
+          runConfig: {
+            modeId: 'retired-top-level',
+            configOptionValues: { model: 'model-b', mode: 'model-b-mode' },
+          },
+        }),
+        context({
+          runConfigCapability: () => selectAgentRoleCapability(perModelCustomProbe, customConfig),
+        })
+      )
+    ).toEqual({ kind: 'available' });
+    expect(
+      resolveAgentRoleAvailability(
+        role({
+          runConfig: {
+            modeId: 'default',
+            configOptionValues: { model: 'model-b', mode: 'retired-config-mode' },
+          },
+        }),
+        context({
+          runConfigCapability: () => selectAgentRoleCapability(perModelCustomProbe, customConfig),
+        })
+      )
+    ).toEqual({ kind: 'unavailable', reason: 'mode_unavailable' });
+  });
 });
 
 describe('agent role machine targets', () => {

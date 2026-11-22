@@ -9,12 +9,14 @@ import {
   AGENT_ROLE_VERSION,
   withAgentRoleTargets,
   getAgentConfigRoomId,
+  type AcpCapabilityCacheEntry,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleId,
   type AgentRoleInstanceId,
   type MachineId,
+  type MachineViewMeta,
 } from '@lody/shared';
 
 import { agentConfigMetaCacheAtom } from '@/atoms/doc-meta';
@@ -25,12 +27,14 @@ import {
   DesktopRunConfigMenu,
 } from '@/components/sessions/desktop-run-config-menu';
 import { resolvePermissionModeFace } from '@/lib/permission-mode-face';
-import type {
-  AcpConfigOptionSelector,
-  AcpConfigOptionValue,
+import {
+  buildAcpSelectorOptions,
+  type AcpConfigOptionSelector,
+  type AcpConfigOptionValue,
 } from '@/components/shared/acp-selector-options';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import {
+  buildAgentRoleConfigPreferences,
   doesAgentRolePinPermissionMode,
   buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
@@ -38,6 +42,11 @@ import {
   pinComposerAgentRoleItemsToMachine,
   type ComposerAgentRoleItem,
 } from '@/lib/composer-agent-roles';
+import {
+  buildAcpSessionConfigCandidates,
+  resolveAcpSessionConfigSelection,
+  type AcpSessionUserConfigEdits,
+} from '@/lib/acp-session-config-selection';
 
 /**
  * The desktop composer's run-config dropdown. A Role row sits above the
@@ -665,4 +674,250 @@ export const NoRolesYet: Story = {
   play: async ({ canvasElement }) => {
     await openMenu(canvasElement);
   },
+};
+
+const antigravityId = 'agent-antigravity' as AgentConfigId;
+const antigravity: AgentConfigMeta = {
+  id: antigravityId,
+  machineId,
+  name: 'Google Antigravity',
+  description: 'Registry Antigravity ACP',
+  cliType: 'registry',
+  agentType: 'antigravity-acp',
+  env: {},
+};
+
+const antigravityCapabilities = {
+  cacheVersion: 11,
+  cliType: 'registry',
+  agentType: 'antigravity-acp',
+  provenance: 'runtime',
+  fetchedAt: 1,
+  modes: [
+    { id: 'default', name: 'Default' },
+    { id: 'accept-edits', name: 'Accept edits' },
+    { id: 'auto', name: 'Auto' },
+    { id: 'plan', name: 'Plan' },
+    { id: 'yolo', name: 'YOLO' },
+  ],
+  models: [
+    { modelId: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+    { modelId: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+  ],
+  configOptions: [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'gemini-4-argon',
+      options: [
+        { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+        { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+      ],
+    },
+    {
+      id: 'thought_level',
+      name: 'Thinking Level',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'high',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'xhigh', name: 'Extra' },
+      ],
+    },
+    {
+      id: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      type: 'select',
+      currentValue: 'default',
+      options: [
+        { value: 'default', name: 'Default' },
+        { value: 'accept-edits', name: 'Accept edits' },
+        { value: 'auto', name: 'Auto' },
+        { value: 'plan', name: 'Plan' },
+        { value: 'yolo', name: 'YOLO' },
+      ],
+    },
+  ],
+} as unknown as AcpCapabilityCacheEntry;
+
+const antigravityMachine = {
+  id: machineId,
+  name: 'devnuc',
+  acpCapabilities: { [antigravityId]: antigravityCapabilities },
+} as unknown as MachineViewMeta;
+
+const antigravityYoloRole = makeRole({
+  id: 'role-antigravity-yolo' as AgentRoleId,
+  name: 'Global Review',
+  emoji: '🔍',
+  agentConfigId: antigravityId,
+  promptPrefix:
+    'Review the full repository diff for architectural regressions, security boundaries, and missing tests.',
+  runConfig: {
+    modeId: 'yolo',
+    modelId: 'gemini-4-neon',
+    configOptionValues: {
+      mode: 'yolo',
+      model: 'gemini-4-neon',
+      thought_level: 'xhigh',
+    },
+  },
+});
+
+const antigravityRoleItems: ComposerAgentRoleItem[] = buildComposerAgentRoleItems({
+  roles: [antigravityYoloRole],
+  machineId,
+  agentConfigs: [antigravity],
+  resolveAvailability: () => ({ kind: 'available' }),
+  names: { machine: () => 'devnuc', unknownAgent: 'Unknown agent' },
+});
+
+function RegistryYoloStoryShell({
+  initialInstanceId = null,
+}: {
+  initialInstanceId?: AgentRoleInstanceId | null;
+}) {
+  const store = useMemo(() => {
+    const s = createStore();
+    s.set(agentConfigMetaCacheAtom, {
+      [getAgentConfigRoomId(antigravity.id)]: antigravity,
+    });
+    return s;
+  }, []);
+
+  const [pickedInstanceId, setPickedInstanceId] = useState<AgentRoleInstanceId | null>(
+    initialInstanceId
+  );
+  const [edits, setEdits] = useState<AcpSessionUserConfigEdits>({ configOptions: {} });
+  const pickedItem = findComposerAgentRoleItem(antigravityRoleItems, pickedInstanceId);
+  const preferences = useMemo(
+    () =>
+      pickedItem
+        ? buildAgentRoleConfigPreferences(pickedItem.instance.runConfig, {
+            cliType: antigravity.cliType,
+            capability: antigravityCapabilities,
+          })
+        : {},
+    [pickedItem]
+  );
+  const inputs = { edits, preferences };
+  const candidates = buildAcpSessionConfigCandidates(inputs);
+  const selectorOptions = buildAcpSelectorOptions({
+    configId: antigravity.id,
+    cliType: antigravity.cliType,
+    agentType: antigravity.agentType,
+    selectedModeId: candidates.modeId,
+    selectedModelId: candidates.modelId,
+    configOptionValues: candidates.configOptionValues,
+    machine: antigravityMachine,
+  });
+  const resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, {
+    cliType: antigravity.cliType,
+    agentType: antigravity.agentType,
+  });
+  const selected =
+    pickedItem &&
+    isComposerAgentRoleApplied(pickedItem.instance, {
+      agentSelection: { agentId: antigravity.id, machineId },
+      modeId: resolved.selectedModeId,
+      modelId: resolved.selectedModelId,
+      configOptionValues: resolved.configOptionValues,
+      configOptionSelectors: resolved.configOptionSelectors,
+    })
+      ? pickedItem.instance
+      : null;
+  const permissionPinnedByRole =
+    selected != null &&
+    doesAgentRolePinPermissionMode(
+      selected.runConfig,
+      resolvePermissionModeFace({
+        modeOptions: selectorOptions.modeOptions,
+        selectedModeId: resolved.selectedModeId,
+        configOptionSelectors: resolved.configOptionSelectors,
+        configOptionValues: resolved.configOptionValues,
+      }).source
+    );
+
+  return (
+    <PlatformContext.Provider value={storyPlatform}>
+      <Provider store={store}>
+        <div className="flex min-h-dvh items-end bg-background p-8">
+          <div className="mb-6 flex w-full max-w-3xl items-center gap-2 rounded-xl bg-input/90 px-4 py-3">
+            <DesktopRunConfigMenu
+              agentSelection={{ agentId: antigravity.id, machineId }}
+              availableAgentConfigs={[antigravity]}
+              showAgentNameInTrigger={false}
+              onAgentConfigChange={fn()}
+              modelOptions={selectorOptions.modelOptions}
+              selectedModelId={resolved.selectedModelId}
+              onModelChange={(value) => setEdits((prev) => ({ ...prev, model: { value } }))}
+              configOptionSelectors={resolved.configOptionSelectors}
+              configOptionValues={resolved.configOptionValues}
+              onConfigOptionChange={(configId, value) =>
+                setEdits((prev) => ({
+                  ...prev,
+                  configOptions: { ...prev.configOptions, [configId]: value },
+                }))
+              }
+              modeOptions={selectorOptions.modeOptions}
+              selectedModeId={resolved.selectedModeId}
+              agentRoles={{
+                items: antigravityRoleItems,
+                machine: antigravityMachine,
+                selectedInstanceId: selected?.id ?? null,
+                onSelect: (instanceId) => {
+                  setPickedInstanceId(instanceId);
+                  setEdits({ configOptions: {} });
+                },
+                onCreate: fn(),
+                onEdit: fn(),
+              }}
+            />
+            {permissionPinnedByRole ? null : (
+              <DesktopPermissionModeButton
+                modeOptions={selectorOptions.modeOptions}
+                selectedModeId={resolved.selectedModeId}
+                onModeChange={(value) => setEdits((prev) => ({ ...prev, mode: { value } }))}
+                configOptionSelectors={resolved.configOptionSelectors}
+                configOptionValues={resolved.configOptionValues}
+                onConfigOptionChange={(configId, value) =>
+                  setEdits((prev) => ({
+                    ...prev,
+                    configOptions: { ...prev.configOptions, [configId]: value },
+                  }))
+                }
+              />
+            )}
+          </div>
+        </div>
+      </Provider>
+    </PlatformContext.Provider>
+  );
+}
+
+/**
+ * Registry Antigravity YOLO Role previewed in the Role submenu: resolves
+ * config-option Model / Reasoning / Mode labels cleanly with no false
+ * incompatible-settings banner and no duplicate Model row.
+ */
+export const RegistryYoloRoleSubmenu: Story = {
+  render: () => <RegistryYoloStoryShell />,
+  play: async ({ canvasElement }) => {
+    await openRoleSubmenu(canvasElement);
+  },
+};
+
+/**
+ * Registry Antigravity YOLO Role selected on the composer footer: keeps the
+ * Role name on the trigger, states `Gemini 4 Neon · Extra · ⚠ YOLO` beside it,
+ * and drops the standalone permission button.
+ */
+export const RegistryYoloRoleSelected: Story = {
+  render: () => <RegistryYoloStoryShell initialInstanceId={antigravityRoleItems[0]!.instance.id} />,
 };

@@ -38,7 +38,10 @@ export type PermissionModeFace = {
    * Agent Role — already pins it. `null` when this agent exposes no permission
    * control at all.
    */
-  source: { kind: 'configOption'; configId: string } | { kind: 'modeId' } | null;
+  source:
+    | { kind: 'configOption'; configId: string; category?: 'mode' | '_permission' }
+    | { kind: 'modeId' }
+    | null;
 };
 
 /**
@@ -81,7 +84,11 @@ export function resolvePermissionModeFace({
     : selectedModeId;
   const source: PermissionModeFace['source'] = usesConfigOption
     ? modeConfigSelector
-      ? { kind: 'configOption', configId: modeConfigSelector.configId }
+      ? {
+          kind: 'configOption',
+          configId: modeConfigSelector.configId,
+          category: explicitPermissionSelector ? '_permission' : 'mode',
+        }
       : null
     : { kind: 'modeId' };
   return {

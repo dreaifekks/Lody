@@ -3,7 +3,7 @@
 import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
+import { buildSessionTurnInputConfig, DEFAULT_AGENT_ROLE_EMOJI } from '@lody/shared';
 import type {
   AcpCapabilityCacheEntry,
   AgentConfigId,
@@ -53,7 +53,11 @@ import {
   type AcpSessionUserConfigEdits,
   type ResolvedAcpSessionConfigSelection,
 } from '../src/lib/acp-session-config-selection';
-import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
+import {
+  reportedAntigravityCapabilities,
+  reportedClaudeCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -353,6 +357,376 @@ describe('useSessionAgentRole', () => {
       expect(control?.selectedInstanceId).toBeNull();
       expect(control?.turnSelection).toBeNull();
       expect(resolveProgrammaticTurnAgentRole({ composer: control?.turnSelection })).toBeNull();
+    });
+  });
+
+  describe('in a live registry Antigravity session, resolved as the composer resolves it', () => {
+    const antigravity = { cliType: 'registry', agentType: 'antigravity-acp' } as const;
+    let resolved: ResolvedAcpSessionConfigSelection | null = null;
+    let setConfigOption: ((configId: string, value: string | boolean) => void) | null = null;
+    let live: {
+      capabilities?: AcpCapabilityCacheEntry;
+      runtimePreferences?: AcpSessionConfigPreferences;
+      provenanceRoleId?: AgentRoleId;
+    } = {};
+
+    function LiveAntigravitySession() {
+      const [edits, setEdits] = useState<AcpSessionUserConfigEdits>({ configOptions: {} });
+      setConfigOption = (configId, value) =>
+        setEdits((prev) => ({
+          ...prev,
+          configOptions: { ...prev.configOptions, [configId]: value },
+        }));
+      const inputs = { edits, preferences: {}, runtimePreferences: live.runtimePreferences };
+      const candidates = buildAcpSessionConfigCandidates(inputs);
+      const machine = {
+        acpCapabilities: { 'agent-1': live.capabilities ?? reportedAntigravityCapabilities },
+      };
+      const selectorOptions = buildAcpSelectorOptions({
+        ...antigravity,
+        configId: 'agent-1' as AgentConfigId,
+        selectedModeId: candidates.modeId,
+        selectedModelId: candidates.modelId,
+        configOptionValues: candidates.configOptionValues,
+        machine,
+      });
+      resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, antigravity);
+      control = useSessionAgentRole({
+        sessionId: 'session-1' as SessionId,
+        provenanceRoleId: live.provenanceRoleId,
+        machineId: 'machine-1' as MachineId,
+        machine,
+        agentConfigId: 'agent-1' as AgentConfigId,
+        modelOptions: selectorOptions.modelOptions,
+        selectedModelId: resolved.selectedModelId,
+        onModelChange: (value) => setEdits((prev) => ({ ...prev, model: { value } })),
+        modeOptions: selectorOptions.modeOptions,
+        selectedModeId: resolved.selectedModeId,
+        onModeChange: (value) => setEdits((prev) => ({ ...prev, mode: { value } })),
+        configOptionSelectors: selectorOptions.configOptionSelectors,
+        resolvedConfigOptionSelectors: resolved.configOptionSelectors,
+        configOptionValues: resolved.configOptionValues,
+        onConfigOptionChange: (configId, value) =>
+          setEdits((prev) => ({
+            ...prev,
+            configOptions: { ...prev.configOptions, [configId]: value },
+          })),
+      });
+      return null;
+    }
+
+    const antigravityRole = (id: string, runConfig: AgentRole['runConfig']) =>
+      singleMachineRole({ ...role(id, 'unused'), instances: undefined, runConfig });
+
+    beforeEach(() => {
+      live = {};
+      resolved = null;
+      setConfigOption = null;
+      catalog.agentConfigs = [
+        { ...agentConfig, ...antigravity, name: 'Google Antigravity' } as AgentConfigMeta,
+      ];
+    });
+
+    it('applies and keeps a picked YOLO Role in the dual-field stored shape, then clears on manual edit', async () => {
+      catalog.roles = [
+        antigravityRole('global-review', {
+          modeId: 'yolo',
+          modelId: 'gemini-4-neon',
+          configOptionValues: {
+            mode: 'yolo',
+            model: 'gemini-4-neon',
+            thought_level: 'xhigh',
+          },
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      expect(resolved).toMatchObject({
+        selectedModeId: null,
+        selectedModelId: null,
+        configOptionValues: {
+          mode: 'default',
+          model: 'gemini-4-argon',
+          thought_level: 'high',
+        },
+      });
+
+      await act(async () => control?.onSelect(iid('global-review')));
+      expect(resolved).toMatchObject({
+        selectedModeId: null,
+        selectedModelId: null,
+        configOptionValues: {
+          mode: 'yolo',
+          model: 'gemini-4-neon',
+          thought_level: 'xhigh',
+        },
+      });
+      expect(control?.selectedInstanceId).toBe(iid('global-review'));
+      expect(control?.turnSelection).toMatchObject({ agentRoleId: 'global-review' });
+
+      // Changing the permission mode config option manually detaches the Role.
+      await act(async () => setConfigOption?.('mode', 'default'));
+      expect(control?.selectedInstanceId).toBeNull();
+      expect(control?.turnSelection).toBeNull();
+    });
+
+    it('applies a top-level modeId/modelId-only Role onto registry configOptionSelectors', async () => {
+      catalog.roles = [
+        antigravityRole('quick-yolo', {
+          modeId: 'yolo',
+          modelId: 'gemini-4-neon',
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      await act(async () => control?.onSelect(iid('quick-yolo')));
+      expect(resolved?.configOptionValues).toMatchObject({
+        mode: 'yolo',
+        model: 'gemini-4-neon',
+      });
+      expect(control?.selectedInstanceId).toBe(iid('quick-yolo'));
+    });
+
+    it('restores a provenance YOLO Role when runtimePreferences match its config options', async () => {
+      catalog.roles = [
+        antigravityRole('global-review', {
+          modeId: 'yolo',
+          modelId: 'gemini-4-neon',
+          configOptionValues: {
+            mode: 'yolo',
+            model: 'gemini-4-neon',
+            thought_level: 'xhigh',
+          },
+        }),
+      ];
+      live = {
+        provenanceRoleId: 'global-review' as AgentRoleId,
+        runtimePreferences: {
+          modeId: null,
+          modelId: null,
+          configOptionValues: {
+            mode: 'yolo',
+            model: 'gemini-4-neon',
+            thought_level: 'xhigh',
+          },
+        },
+      };
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      expect(control?.selectedInstanceId).toBe(iid('global-review'));
+      expect(control?.turnSelection).toMatchObject({ agentRoleId: 'global-review' });
+    });
+
+    it('applies a target-model-exclusive thought_level config option when switching models in an existing session', async () => {
+      const capabilitiesWithTargetEffort = {
+        ...reportedAntigravityCapabilities,
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'gemini-4-argon',
+            options: [
+              { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+              { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+            ],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'yolo', name: 'YOLO' },
+            ],
+          },
+        ],
+        observedModelConfigOptions: {
+          'gemini-4-neon': [
+            {
+              id: 'model',
+              name: 'Model',
+              category: 'model',
+              type: 'select',
+              currentValue: 'gemini-4-neon',
+              options: [
+                { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+                { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+              ],
+            },
+            {
+              id: 'thinking-tier',
+              name: 'Thinking Tier',
+              category: 'thought_level',
+              type: 'select',
+              currentValue: 'high',
+              options: [
+                { value: 'high', name: 'High' },
+                { value: 'xhigh', name: 'Extra' },
+              ],
+            },
+            {
+              id: 'mode',
+              name: 'Mode',
+              category: 'mode',
+              type: 'select',
+              currentValue: 'default',
+              options: [
+                { value: 'default', name: 'Default' },
+                { value: 'yolo', name: 'YOLO' },
+              ],
+            },
+          ],
+        },
+      } as unknown as AcpCapabilityCacheEntry;
+      live = { capabilities: capabilitiesWithTargetEffort };
+      catalog.roles = [
+        antigravityRole('deep-review', {
+          configOptionValues: {
+            model: 'gemini-4-neon',
+            mode: 'yolo',
+            'thinking-tier': 'xhigh',
+          },
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      await act(async () => control?.onSelect(iid('deep-review')));
+      expect(resolved?.configOptionValues).toMatchObject({
+        model: 'gemini-4-neon',
+        mode: 'yolo',
+        'thinking-tier': 'xhigh',
+      });
+      expect(control?.selectedInstanceId).toBe(iid('deep-review'));
+      expect(control?.turnSelection).toMatchObject({ agentRoleId: 'deep-review' });
+    });
+
+    it('clears stale runtime modeId under a degraded probe so picking an Auto Role never dispatches YOLO', async () => {
+      const degradedProbe = {
+        ...reportedAntigravityCapabilities,
+        models: [],
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: '',
+            options: [],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'auto', name: 'Auto' },
+              { value: 'yolo', name: 'YOLO' },
+            ],
+          },
+        ],
+      } as unknown as AcpCapabilityCacheEntry;
+      live = {
+        capabilities: degradedProbe,
+        runtimePreferences: {
+          modeId: 'yolo',
+          configOptionValues: { mode: 'yolo' },
+        },
+      };
+      catalog.roles = [
+        antigravityRole('auto-review', {
+          configOptionValues: { mode: 'auto' },
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      await act(async () => control?.onSelect(iid('auto-review')));
+      expect(resolved?.selectedModeId).toBeNull();
+      expect(resolved?.configOptionValues.mode).toBe('auto');
+      expect(control?.selectedInstanceId).toBe(iid('auto-review'));
+
+      const inputConfig = buildSessionTurnInputConfig({
+        prompt: 'Check diff',
+        cliType: antigravity.cliType,
+        agentType: antigravity.agentType,
+        modeId: resolved?.selectedModeId,
+        modelId: resolved?.selectedModelId,
+        configOptionValues: resolved?.configOptionValues,
+        ...(control?.turnSelection ?? {}),
+      });
+      expect(inputConfig.modeId).toBeUndefined();
+      expect(inputConfig.configOptionValues).toMatchObject({ mode: 'auto' });
+      expect(inputConfig.agentRoleId).toBe('auto-review');
+    });
+
+    it('binds a top-level modeId onto the target model renamed permission option id when switching models', async () => {
+      const renamedModeCapabilities = {
+        ...reportedAntigravityCapabilities,
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'gemini-4-argon',
+            options: [
+              { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+              { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+            ],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'yolo', name: 'YOLO' },
+            ],
+          },
+        ],
+        observedModelConfigOptions: {
+          'gemini-4-neon': [
+            {
+              id: 'model',
+              name: 'Model',
+              category: 'model',
+              type: 'select',
+              currentValue: 'gemini-4-neon',
+              options: [
+                { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+                { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+              ],
+            },
+            {
+              id: 'access-policy',
+              name: 'Access Policy',
+              category: 'mode',
+              type: 'select',
+              currentValue: 'default',
+              options: [
+                { value: 'default', name: 'Default' },
+                { value: 'yolo', name: 'YOLO' },
+              ],
+            },
+          ],
+        },
+      } as unknown as AcpCapabilityCacheEntry;
+      live = { capabilities: renamedModeCapabilities };
+      catalog.roles = [
+        antigravityRole('renamed-mode-role', {
+          modelId: 'gemini-4-neon',
+          modeId: 'yolo',
+        }),
+      ];
+      await act(async () => root?.render(createElement(LiveAntigravitySession)));
+      await act(async () => control?.onSelect(iid('renamed-mode-role')));
+      expect(resolved?.configOptionValues).toMatchObject({
+        model: 'gemini-4-neon',
+        'access-policy': 'yolo',
+      });
+      expect(control?.selectedInstanceId).toBe(iid('renamed-mode-role'));
     });
   });
 

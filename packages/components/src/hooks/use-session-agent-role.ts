@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { usePostHog } from '@posthog/react';
-import type {
-  AgentConfigId,
-  AgentRoleId,
-  AgentRoleInstanceId,
-  MachineId,
-  SessionId,
+import {
+  getAcpCapabilityCacheKey,
+  getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
+  type AgentConfigId,
+  type AgentRoleId,
+  type AgentRoleInstanceId,
+  type MachineId,
+  type MachineViewMeta,
+  type SessionId,
 } from '@lody/shared';
 
 import { getAllAgentConfigAtom } from '@/atoms/agents';
@@ -14,14 +17,16 @@ import {
   sessionAgentRoleDurableSnapshotAtomFamily,
   sessionAgentRoleSelectionAtomFamily,
 } from '@/atoms/session-agent-roles';
-import type {
-  AcpConfigOptionSelector,
-  AcpConfigOptionValue,
+import {
+  buildAcpSelectorOptions,
+  type AcpConfigOptionSelector,
+  type AcpConfigOptionValue,
 } from '@/components/shared/acp-selector-options';
 import type { AcpSessionSelectOption } from '@/components/shared/acp-session-select';
 import { filterAcpSessionConfigOptionValues } from '@/lib/acp-session-config-selection';
 import { captureAgentRoleApplied } from '@/lib/agent-role-analytics';
 import {
+  buildAgentRoleConfigPreferences,
   buildAgentRoleTurnSelection,
   canFixedComposerUseAgentRoleEntry,
   findComposerAgentRoleItem,
@@ -75,6 +80,7 @@ export function useSessionAgentRole({
   durableKnownSourceTurnKeys = [],
   durableRoleReady = true,
   machineId,
+  machine,
   agentConfigId,
   modelOptions,
   selectedModelId,
@@ -105,6 +111,8 @@ export function useSessionAgentRole({
   /** False while the Session document is hydrating after a remount. */
   durableRoleReady?: boolean;
   machineId: MachineId | null | undefined;
+  /** Optional machine capabilities for validating target-model-only options on model switch. */
+  machine?: Pick<MachineViewMeta, 'acpCapabilities'> | null;
   agentConfigId: AgentConfigId | null | undefined;
   modelOptions: ReadonlyArray<AcpSessionSelectOption>;
   selectedModelId: string | null;
@@ -316,22 +324,98 @@ export function useSessionAgentRole({
       });
 
       const { modelId, modeId, configOptionValues: pinned } = instance.runConfig;
+      const modelConfigSelector = configOptionSelectors.find(
+        (selector) => selector.category === 'model' && selector.type === 'select'
+      );
+      const targetModelId =
+        modelId ??
+        (!modelConfigSelector && typeof pinned?.model === 'string' ? pinned.model : undefined);
       const appliedModelId =
-        modelId && modelOptions.some((option) => option.value === modelId) ? modelId : undefined;
+        targetModelId && modelOptions.some((option) => option.value === targetModelId)
+          ? targetModelId
+          : undefined;
       if (appliedModelId) {
         onModelChange?.(appliedModelId);
       }
-      if (modeId && modeOptions.some((option) => option.value === modeId)) {
-        onModeChange?.(modeId);
+      const targetConfigModel =
+        modelOptions.length === 0 && modelConfigSelector
+          ? (pinned?.[modelConfigSelector.configId] ?? modelId)
+          : undefined;
+      const currentConfigModel = modelConfigSelector
+        ? configOptionValues?.[modelConfigSelector.configId]
+        : undefined;
+      const switchesConfigModel =
+        typeof targetConfigModel === 'string' &&
+        modelConfigSelector?.options.some((option) => option.value === targetConfigModel) ===
+          true &&
+        targetConfigModel !== currentConfigModel;
+      const switchesModel =
+        (appliedModelId !== undefined && appliedModelId !== selectedModelId) || switchesConfigModel;
+      // Resolve the incoming model's selectors before binding mode/permission pins
+      // so a model that renames its mode option id (e.g. `mode` -> `access-policy`)
+      // receives a top-level `modeId` under the target model's own control id.
+      const targetConfigOptionSelectors = (() => {
+        if (!switchesModel || !machine || !item.agentConfig) return configOptionSelectors;
+        const capability = getReadableAcpCapabilityCacheEntryForRuntimeOverrides(
+          machine.acpCapabilities?.[getAcpCapabilityCacheKey(instance.agentConfigId)],
+          item.agentConfig.runtimeOverrides
+        );
+        const targetPreferences = buildAgentRoleConfigPreferences(instance.runConfig, {
+          cliType: item.agentConfig.cliType,
+          capability,
+        });
+        return buildAcpSelectorOptions({
+          configId: instance.agentConfigId,
+          cliType: item.agentConfig.cliType,
+          agentType: item.agentConfig.agentType,
+          runtimeOverrides: item.agentConfig.runtimeOverrides,
+          machine,
+          selectedModeId: targetPreferences.modeId,
+          selectedModelId: targetPreferences.modelId,
+          configOptionValues: targetPreferences.configOptionValues,
+        }).configOptionSelectors;
+      })();
+      const targetModeConfigSelector = targetConfigOptionSelectors.find(
+        (selector) =>
+          selector.category === 'mode' &&
+          selector.type === 'select' &&
+          selector.configId !== 'interaction_mode'
+      );
+      const targetModeId =
+        modeId ??
+        (!targetModeConfigSelector && typeof pinned?.mode === 'string' ? pinned.mode : undefined);
+      if (targetModeId && modeOptions.some((option) => option.value === targetModeId)) {
+        onModeChange?.(targetModeId);
       }
+      const effectivePinned: Record<string, AcpConfigOptionValue> | undefined =
+        pinned ||
+        (modelOptions.length === 0 && modelConfigSelector && modelId) ||
+        (modeOptions.length === 0 && targetModeConfigSelector && modeId)
+          ? {
+              ...(pinned ?? {}),
+              ...(modelOptions.length === 0 &&
+              modelConfigSelector &&
+              modelId &&
+              pinned?.[modelConfigSelector.configId] === undefined
+                ? { [modelConfigSelector.configId]: modelId }
+                : {}),
+              ...(modeOptions.length === 0 &&
+              targetModeConfigSelector &&
+              modeId &&
+              pinned?.[targetModeConfigSelector.configId] === undefined
+                ? { [targetModeConfigSelector.configId]: modeId }
+                : {}),
+            }
+          : undefined;
       // An option this agent dropped, or whose value it no longer offers, is
       // skipped rather than forced back in — through the same filter every
       // other surface applies to remembered values. A Role that also pins a
-      // different model is the exception: the selectors describe the outgoing
-      // model, whose ladder must not decide the pinned effort.
+      // different model is validated against the incoming model's observed
+      // selectors when available, with `switchesModel` preserving unmodeled
+      // per-model controls whose ladder belongs to the incoming model.
       for (const [configId, value] of Object.entries(
-        filterAcpSessionConfigOptionValues(pinned, configOptionSelectors, {
-          switchesModel: appliedModelId !== undefined && appliedModelId !== selectedModelId,
+        filterAcpSessionConfigOptionValues(effectivePinned, targetConfigOptionSelectors, {
+          switchesModel,
         })
       )) {
         onConfigOptionChange?.(configId, value);
@@ -341,9 +425,11 @@ export function useSessionAgentRole({
     },
     [
       configOptionSelectors,
+      configOptionValues,
       durableRoleReady,
       effectiveKnownTurnKeys,
       items,
+      machine,
       modeOptions,
       modelOptions,
       onConfigOptionChange,

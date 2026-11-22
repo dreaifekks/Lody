@@ -27,7 +27,9 @@ import type {
 import {
   buildSessionTurnInputConfig,
   extractPromptPreviewFromInputBlocks,
+  getAcpCapabilityCacheKey,
   getMachineFlockLocalProjects,
+  getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
   resolveSessionConversationConfig,
 } from '@lody/shared';
 
@@ -47,6 +49,7 @@ import {
   type SessionSendMessageOptions,
 } from './session-chat-input-area';
 import { useSessionAcpSelectorContext } from '@/hooks/use-session-acp-selector-context';
+import { useResolvedMachineMeta } from '@/hooks/use-resolved-machine-meta';
 import {
   resolveSessionLocalProjectRootPath,
   resolveSessionRepoFullName,
@@ -70,6 +73,7 @@ import { useSessionDoc } from '@/hooks/use-session-doc';
 import { useConversationTail, useConversationVersion } from '@/hooks/use-conversation-view';
 import { collectConversationConfigSources } from '@/lib/conversation-view';
 import {
+  buildAgentRoleConfigPreferences,
   buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   findComposerAgentRoleItem,
@@ -257,9 +261,23 @@ export const DraftSessionChatInterface = memo(
             : null,
         [draft.agentConfigId, preferAgentDefaults]
       );
+      const { machine: parentMachine } = useResolvedMachineMeta(parentSession.machineId);
+      const draftAgentCapability = useMemo(() => {
+        if (!draft.agentConfigId) return undefined;
+        const config = agentConfigs.find(
+          (entry) => entry.id === draft.agentConfigId && entry.machineId === parentSession.machineId
+        );
+        return getReadableAcpCapabilityCacheEntryForRuntimeOverrides(
+          parentMachine?.acpCapabilities?.[getAcpCapabilityCacheKey(draft.agentConfigId)],
+          config?.runtimeOverrides
+        );
+      }, [agentConfigs, draft.agentConfigId, parentMachine, parentSession.machineId]);
       const preferredSessionConfig = useMemo(() => {
         if (agentRolePreference) {
-          return agentRolePreference.instance.runConfig;
+          return buildAgentRoleConfigPreferences(agentRolePreference.instance.runConfig, {
+            cliType: draft.cliType,
+            capability: draftAgentCapability,
+          });
         }
         const inheritedConfigOptionValues = preferAgentDefaults
           ? draftAgentDefaults?.configOptionValues
@@ -278,9 +296,11 @@ export const DraftSessionChatInterface = memo(
         };
       }, [
         agentRolePreference,
+        draft.cliType,
         draft.configOptionValues,
         draft.modeId,
         draft.modelId,
+        draftAgentCapability,
         draftAgentDefaults?.configOptionValues,
         draftAgentDefaults?.modeId,
         draftAgentDefaults?.modelId,

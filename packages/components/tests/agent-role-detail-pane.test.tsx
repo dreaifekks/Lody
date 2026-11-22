@@ -14,7 +14,11 @@ import {
 
 import { AgentRoleDetailPane } from '../src/components/sessions/agent-role-detail-pane';
 import { initI18n } from '../src/i18n';
-import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
+import {
+  reportedAntigravityCapabilities,
+  reportedClaudeCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -138,5 +142,37 @@ describe('AgentRoleDetailPane', () => {
     expect(retired.querySelector('dd')?.className).toContain('text-status-warning');
     const fine = await render({ availability: { kind: 'available' } });
     expect(fine.querySelector('dd')?.className).not.toContain('text-status-warning');
+  });
+
+  it('shows registry Antigravity YOLO Roles cleanly with resolved labels and no false warning', async () => {
+    const antigravity = {
+      cliType: 'registry' as const,
+      agentType: 'antigravity-acp',
+      env: {},
+      name: 'Google Antigravity',
+    };
+    const machine = { acpCapabilities: { 'config-1': reportedAntigravityCapabilities } };
+    const agyRole = role({
+      name: 'Global Review',
+      runConfig: {
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+      },
+    });
+    const view = await render({
+      role: agyRole,
+      agentConfig: antigravity,
+      machine,
+      availability: { kind: 'available' },
+    });
+    expect(view.textContent).not.toContain('no longer supports');
+    const modelTerms = Array.from(view.querySelectorAll('dt')).filter(
+      (element) => element.textContent === 'Model'
+    );
+    expect(modelTerms).toHaveLength(1);
+    expect(rowValue(view, 'Model')).toBe('Gemini 4 Neon');
+    expect(rowValue(view, 'Reasoning')).toBe('Extra');
+    expect(rowValue(view, 'Mode')).toBe('YOLO');
   });
 });

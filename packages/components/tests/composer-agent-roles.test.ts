@@ -3,6 +3,7 @@ import { getAgentRoleTargets } from '@lody/shared';
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_ROLE_VERSION,
+  buildSessionTurnInputConfig,
   type AgentConfigId,
   type AgentConfigMeta,
   type AgentRole,
@@ -14,6 +15,7 @@ import {
 } from '@lody/shared';
 
 import {
+  buildAgentRoleConfigPreferences,
   buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   doesAgentRolePinPermissionMode,
@@ -25,13 +27,20 @@ import {
   resolveTurnAgentRoleForRunConfig,
 } from '../src/lib/composer-agent-roles';
 import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import { buildAgentPrompt } from '../src/lib';
+import { resolvePermissionModeFace } from '../src/lib/permission-mode-face';
 import {
   buildAcpSessionConfigCandidates,
+  filterAcpSessionConfigOptionValues,
   resolveAcpSessionConfigSelection,
   type AcpSessionConfigPreferences,
   type AcpSessionUserConfigEdits,
 } from '../src/lib/acp-session-config-selection';
-import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
+import {
+  reportedAntigravityCapabilities,
+  reportedClaudeCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
 
 const makeRole = (overrides: Partial<AgentRole> & Pick<AgentRole, 'id' | 'name'>): AgentRole =>
   singleMachineRole({
@@ -480,6 +489,397 @@ describe('a stored Role resolved against what its agent reports', () => {
   });
 });
 
+describe('a stored registry ACP Role (Antigravity YOLO) resolved against reported capabilities', () => {
+  const agentConfigId = 'agy-here' as AgentConfigId;
+  const machine = { acpCapabilities: { [agentConfigId]: reportedAntigravityCapabilities } };
+  const target = { cliType: 'registry', agentType: 'antigravity-acp' } as const;
+
+  const seededAgy = (
+    runConfig: AgentRoleTarget['runConfig'],
+    edits: AcpSessionUserConfigEdits = { configOptions: {} },
+    runtimePreferences?: AcpSessionConfigPreferences
+  ) => {
+    const [instance] = getAgentRoleTargets(
+      makeRole({ id: 'r-agy' as AgentRoleId, name: 'Global Review', agentConfigId, runConfig })
+    );
+    const inputs = {
+      edits,
+      preferences: buildAgentRoleConfigPreferences(runConfig, {
+        cliType: target.cliType,
+        capability: reportedAntigravityCapabilities,
+      }),
+      runtimePreferences,
+    };
+    const candidates = buildAcpSessionConfigCandidates(inputs);
+    const selectorOptions = buildAcpSelectorOptions({
+      ...target,
+      configId: agentConfigId,
+      selectedModeId: candidates.modeId,
+      selectedModelId: candidates.modelId,
+      configOptionValues: candidates.configOptionValues,
+      machine,
+    });
+    const resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, target);
+    const permissionFace = resolvePermissionModeFace({
+      modeOptions: selectorOptions.modeOptions,
+      selectedModeId: resolved.selectedModeId,
+      configOptionSelectors: resolved.configOptionSelectors,
+      configOptionValues: resolved.configOptionValues,
+    });
+    return {
+      resolved,
+      permissionFace,
+      pinsPermission: doesAgentRolePinPermissionMode(instance!.runConfig, permissionFace.source),
+      applied: isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: agentConfigId, machineId: 'machine-1' as MachineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      }),
+    };
+  };
+
+  it('stays applied when modeId/modelId and configOptionValues both pin YOLO and the model', () => {
+    const { resolved, applied, pinsPermission, permissionFace } = seededAgy({
+      modeId: 'yolo',
+      modelId: 'gemini-4-neon',
+      configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+    });
+    expect(resolved.selectedModeId).toBeNull();
+    expect(resolved.selectedModelId).toBeNull();
+    expect(resolved.configOptionValues).toEqual({
+      mode: 'yolo',
+      model: 'gemini-4-neon',
+      thought_level: 'xhigh',
+    });
+    expect(applied).toBe(true);
+    expect(pinsPermission).toBe(true);
+    expect(permissionFace.value).toBe('yolo');
+
+    // End-to-end first-turn submission freezes promptPrefix, memory, configOptionValues,
+    // and Role provenance intact.
+    const roleWithPrompt = makeRole({
+      id: 'r-agy-send' as AgentRoleId,
+      name: 'Global Review',
+      agentConfigId,
+      promptPrefix: 'Inspect security and regression boundaries first.',
+      runConfig: {
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        memory: { providerId: 'nowledge-mem', memoryId: 'mem-review' },
+        configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+      },
+    });
+    const [sendInstance] = getAgentRoleTargets(roleWithPrompt);
+    const dispatchValues = filterAcpSessionConfigOptionValues(
+      resolved.configOptionValues,
+      resolved.configOptionSelectors
+    );
+    const inputConfig = buildSessionTurnInputConfig({
+      prompt: buildAgentPrompt('Review this diff', roleWithPrompt.promptPrefix ?? ''),
+      cliType: target.cliType,
+      agentType: target.agentType,
+      modeId: resolved.selectedModeId,
+      modelId: resolved.selectedModelId,
+      configOptionValues: dispatchValues,
+      ...buildAgentRoleTurnSelection({
+        role: roleWithPrompt,
+        instance: sendInstance!,
+        groupName: 'Google Antigravity',
+      }),
+    });
+    expect(inputConfig.modeId).toBeUndefined();
+    expect(inputConfig.modelId).toBeUndefined();
+    expect(inputConfig).toMatchObject({
+      configOptionValues: {
+        mode: 'yolo',
+        model: 'gemini-4-neon',
+        thought_level: 'xhigh',
+      },
+      agentRoleId: 'r-agy-send',
+      memory: { providerId: 'nowledge-mem', memoryId: 'mem-review' },
+      agentRoleSnapshot: {
+        id: 'r-agy-send',
+        instanceId: sendInstance!.id,
+      },
+    });
+    expect(inputConfig.prompt).toContain('Inspect security and regression boundaries first.');
+    expect(inputConfig.prompt).toContain('Review this diff');
+  });
+
+  it('bridges modeId/modelId-only Roles onto registry configOption selectors', () => {
+    const { resolved, applied, pinsPermission } = seededAgy({
+      modeId: 'yolo',
+      modelId: 'gemini-4-neon',
+      configOptionValues: { thought_level: 'xhigh' },
+    });
+    expect(resolved.configOptionValues).toEqual({
+      mode: 'yolo',
+      model: 'gemini-4-neon',
+      thought_level: 'xhigh',
+    });
+    expect(applied).toBe(true);
+    expect(pinsPermission).toBe(true);
+  });
+
+  it('keeps configOption-only registry Roles applied and unnames them on any manual knob edit', () => {
+    const runConfig = {
+      configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+    };
+    expect(seededAgy(runConfig).applied).toBe(true);
+    expect(seededAgy(runConfig, { configOptions: { mode: 'auto' } }).applied).toBe(false);
+    expect(seededAgy(runConfig, { configOptions: { model: 'gemini-4-carbon' } }).applied).toBe(
+      false
+    );
+    expect(seededAgy(runConfig, { configOptions: { thought_level: 'high' } }).applied).toBe(false);
+  });
+
+  it('uses canonical configOption precedence when a registry Role has stale top-level modeId', () => {
+    // A Role whose configOption mode is YOLO and stale top-level modeId is auto
+    // must agree across projection, application, and manual detachment instead
+    // of applying YOLO while immediately dropping Role identity.
+    const conflicting = {
+      modeId: 'auto',
+      modelId: 'gemini-4-neon',
+      configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+    };
+    const picked = seededAgy(conflicting);
+    expect(picked.resolved.configOptionValues.mode).toBe('yolo');
+    expect(picked.applied).toBe(true);
+    expect(seededAgy(conflicting, { configOptions: { mode: 'auto' } }).applied).toBe(false);
+  });
+
+  it('bridges legacy modes/models-only registry probes onto synthesized configOption selectors', () => {
+    const legacyProbe = {
+      ...reportedAntigravityCapabilities,
+      configOptions: undefined,
+    };
+    const runConfig = { modeId: 'yolo', modelId: 'gemini-4-carbon' };
+    const [instance] = getAgentRoleTargets(
+      makeRole({ id: 'r-legacy-agy' as AgentRoleId, name: 'Legacy Agy', agentConfigId, runConfig })
+    );
+    const inputs = {
+      edits: { configOptions: {} },
+      preferences: buildAgentRoleConfigPreferences(runConfig, {
+        cliType: 'registry',
+        capability: legacyProbe,
+      }),
+    };
+    const candidates = buildAcpSessionConfigCandidates(inputs);
+    const selectorOptions = buildAcpSelectorOptions({
+      ...target,
+      configId: agentConfigId,
+      selectedModeId: candidates.modeId,
+      selectedModelId: candidates.modelId,
+      configOptionValues: candidates.configOptionValues,
+      machine: { acpCapabilities: { [agentConfigId]: legacyProbe } },
+    });
+    const resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, target);
+    expect(resolved.configOptionValues).toEqual({ mode: 'yolo', model: 'gemini-4-carbon' });
+    expect(
+      isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: agentConfigId, machineId: 'machine-1' as MachineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      })
+    ).toBe(true);
+  });
+
+  it('resolves target model before binding top-level modeId when the target model renames the mode option id', () => {
+    const customConfigId = 'custom-renamed-mode' as AgentConfigId;
+    const customTarget = { cliType: 'custom', agentType: 'custom-acp' } as const;
+    const customCapability = {
+      ...reportedAntigravityCapabilities,
+      cliType: 'custom',
+      agentType: 'custom-acp',
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'gemini-4-argon',
+          options: [
+            { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+            { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+          ],
+        },
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'yolo', name: 'YOLO' },
+          ],
+        },
+      ],
+      observedModelConfigOptions: {
+        'gemini-4-neon': [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'gemini-4-neon',
+            options: [
+              { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+              { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+            ],
+          },
+          {
+            id: 'access-policy',
+            name: 'Access Policy',
+            category: 'mode',
+            type: 'select',
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'yolo', name: 'YOLO' },
+            ],
+          },
+        ],
+      },
+    } as unknown as import('@lody/shared').AcpCapabilityCacheEntry;
+    const runConfig = { modelId: 'gemini-4-neon', modeId: 'yolo' };
+    const [instance] = getAgentRoleTargets(
+      makeRole({
+        id: 'r-renamed-mode' as AgentRoleId,
+        name: 'Renamed Mode',
+        agentConfigId: customConfigId,
+        runConfig,
+      })
+    );
+    const inputs = {
+      edits: { configOptions: {} },
+      preferences: buildAgentRoleConfigPreferences(runConfig, {
+        cliType: customTarget.cliType,
+        capability: customCapability,
+      }),
+    };
+    const candidates = buildAcpSessionConfigCandidates(inputs);
+    const selectorOptions = buildAcpSelectorOptions({
+      ...customTarget,
+      configId: customConfigId,
+      selectedModeId: candidates.modeId,
+      selectedModelId: candidates.modelId,
+      configOptionValues: candidates.configOptionValues,
+      machine: { acpCapabilities: { [customConfigId]: customCapability } },
+    });
+    const resolved = resolveAcpSessionConfigSelection(inputs, selectorOptions, customTarget);
+    expect(resolved.configOptionValues).toEqual({
+      model: 'gemini-4-neon',
+      'access-policy': 'yolo',
+    });
+    expect(
+      isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: customConfigId, machineId: 'machine-1' as MachineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      })
+    ).toBe(true);
+  });
+
+  it('bridges configOption-only mode/model on a static builtin Claude catalog and never trusts stale provisional copies', () => {
+    const claudeConfigId = 'claude-static' as AgentConfigId;
+    const claudeTarget = { cliType: 'builtin', agentType: 'claude' } as const;
+    const runConfig = { configOptionValues: { mode: 'default', model: 'opus' } };
+    const [instance] = getAgentRoleTargets(
+      makeRole({
+        id: 'r-claude-static' as AgentRoleId,
+        name: 'Claude Static',
+        agentConfigId: claudeConfigId,
+        runConfig,
+      })
+    );
+    const preferences = buildAgentRoleConfigPreferences(runConfig, {
+      cliType: 'builtin',
+      capability: undefined,
+    });
+    expect(preferences).toMatchObject({ modeId: 'default', modelId: 'opus' });
+    const selectorOptions = buildAcpSelectorOptions({
+      ...claudeTarget,
+      configId: claudeConfigId,
+      selectedModeId: preferences.modeId,
+      selectedModelId: preferences.modelId,
+      configOptionValues: preferences.configOptionValues,
+      machine: null,
+    });
+    const resolved = resolveAcpSessionConfigSelection(
+      { edits: { configOptions: {} }, preferences },
+      selectorOptions,
+      claudeTarget
+    );
+    expect(resolved.selectedModeId).toBe('default');
+    expect(resolved.selectedModelId).toBe('opus');
+    expect(
+      isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: claudeConfigId, machineId: 'machine-1' as MachineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      })
+    ).toBe(true);
+    // Even if a provisional selection retains stale configOptionValues.mode/model,
+    // mismatched dedicated modeId/modelId must never claim the Role is applied.
+    expect(
+      isComposerAgentRoleApplied(instance!, {
+        agentSelection: { agentId: claudeConfigId, machineId: 'machine-1' as MachineId },
+        modeId: 'auto',
+        modelId: 'default',
+        configOptionValues: { mode: 'default', model: 'opus' },
+        configOptionSelectors: resolved.configOptionSelectors,
+      })
+    ).toBe(false);
+  });
+
+  it('keeps permission pinning distinct for _permission options like Grok permission_mode', () => {
+    expect(
+      doesAgentRolePinPermissionMode(
+        { modeId: 'plan' },
+        { kind: 'configOption', configId: 'permission_mode', category: '_permission' }
+      )
+    ).toBe(false);
+    expect(
+      doesAgentRolePinPermissionMode(
+        { configOptionValues: { permission_mode: 'always-approve' } },
+        { kind: 'configOption', configId: 'permission_mode', category: '_permission' }
+      )
+    ).toBe(true);
+  });
+
+  it('matches duplicated mode/model configOptionValues on a builtin agent and drops on edit', () => {
+    const [instance] = getAgentRoleTargets(
+      makeRole({
+        id: 'r-builtin-dup' as AgentRoleId,
+        name: 'Migrated',
+        runConfig: {
+          modeId: 'yolo',
+          modelId: 'gemini-4-neon',
+          configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+        },
+      })
+    );
+    const baseSelection = {
+      agentSelection: { agentId: 'config-1' as AgentConfigId, machineId: 'machine-1' as MachineId },
+      modeId: 'yolo',
+      modelId: 'gemini-4-neon',
+      configOptionValues: { thought_level: 'xhigh' },
+      configOptionSelectors: [{ configId: 'thought_level', category: 'thought_level' }],
+    };
+    expect(isComposerAgentRoleApplied(instance!, baseSelection)).toBe(true);
+    expect(isComposerAgentRoleApplied(instance!, { ...baseSelection, modeId: 'auto' })).toBe(false);
+  });
+});
+
 describe('resolveTurnAgentRoleForRunConfig', () => {
   const role = makeRole({
     id: 'r-1' as AgentRoleId,
@@ -541,6 +941,65 @@ describe('resolveTurnAgentRoleForRunConfig', () => {
         },
       })
     ).toBeNull();
+  });
+
+  it('preserves structural mode/model bindings when a programmatic override changes an unpinned model', () => {
+    const builtinMigratedRole = makeRole({
+      id: 'r-migrated-mode' as AgentRoleId,
+      name: 'Mode Only',
+      runConfig: { configOptionValues: { mode: 'auto' } },
+    });
+    const migratedSelection = {
+      agentRoleId: builtinMigratedRole.id,
+      agentRoleRevision: builtinMigratedRole.revision,
+    };
+    expect(
+      resolveTurnAgentRoleForRunConfig({
+        turnSelection: migratedSelection,
+        item: {
+          role: builtinMigratedRole,
+          instance: getAgentRoleTargets(builtinMigratedRole)[0]!,
+        },
+        current: {
+          modeId: 'auto',
+          modelId: 'opus',
+          configOptionValues: {},
+          configOptionSelectors: [{ configId: 'effort', category: 'thought_level' }],
+        },
+        overrides: { modelIdOverride: 'claude-fable-5-1' },
+      })
+    ).toEqual(migratedSelection);
+
+    const registryModeOnlyRole = makeRole({
+      id: 'r-reg-mode' as AgentRoleId,
+      name: 'YOLO Mode Only',
+      runConfig: { modeId: 'yolo' },
+    });
+    const registrySelection = {
+      agentRoleId: registryModeOnlyRole.id,
+      agentRoleRevision: registryModeOnlyRole.revision,
+    };
+    expect(
+      resolveTurnAgentRoleForRunConfig({
+        turnSelection: registrySelection,
+        item: {
+          role: registryModeOnlyRole,
+          instance: getAgentRoleTargets(registryModeOnlyRole)[0]!,
+        },
+        current: {
+          modeId: null,
+          modelId: null,
+          configOptionValues: { mode: 'yolo', model: 'gemini-4-argon' },
+          configOptionSelectors: [
+            { configId: 'mode', category: 'mode' },
+            { configId: 'model', category: 'model' },
+          ],
+        },
+        overrides: {
+          configOptionValuesOverride: { mode: 'yolo', model: 'gemini-4-neon' },
+        },
+      })
+    ).toEqual(registrySelection);
   });
 });
 

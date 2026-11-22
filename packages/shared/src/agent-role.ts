@@ -1,12 +1,17 @@
 import { MemoryBindingSchema, type MemoryBinding } from './memory-provider';
 import type { AgentConfigId, AgentRoleId, AgentRoleInstanceId, MachineId } from './ids';
 import { isSensitiveAcpConfigOptionId } from './acp-config-option-sensitivity';
-import { summarizeAgentRunConfigCapabilities } from './acp-run-config';
+import {
+  summarizeAgentRunConfigCapabilities,
+  withAcpConfigOptionsForModel,
+} from './acp-run-config';
 import {
   getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
   migrateLegacyAntigravityModeId,
   migrateLegacyAntigravityModeOption,
   type AcpCapabilityCacheEntry,
+  type AcpConfigOptionSummary,
+  type AcpConfigOptionValue,
 } from './ai';
 import type { AgentConfigMeta } from './schema';
 
@@ -650,7 +655,9 @@ export type AgentRoleAvailabilityContext = {
    * What the Role's bound agent provably offers. Undefined means the pins cannot
    * be judged, which leaves the Role available: `selectAgentRoleCapability`.
    */
-  runConfigCapability?: (role: Pick<AgentRoleTarget, 'machineId' | 'agentConfigId' | 'runConfig'>) => AcpCapabilityCacheEntry | undefined;
+  runConfigCapability?: (
+    role: Pick<AgentRoleTarget, 'machineId' | 'agentConfigId' | 'runConfig'>
+  ) => AcpCapabilityCacheEntry | undefined;
 };
 
 /**
@@ -678,24 +685,175 @@ export const selectAgentRoleCapability = (
   return models.length > 0 || modes.length > 0 ? readable : undefined;
 };
 
+export type CanonicalAgentRoleRunConfig = {
+  /** Projected top-level modeId for dispatch/preferences (omitted when configOption-driven). */
+  modeId: string | undefined;
+  /** Projected top-level modelId for dispatch/preferences (omitted when configOption-driven). */
+  modelId: string | undefined;
+  /** Projected configOptionValues with canonical mode/model bridged or aligned. */
+  configOptionValues: Record<string, AcpConfigOptionValue> | undefined;
+  /** Canonical pinned mode regardless of representation. */
+  canonicalModeId: string | undefined;
+  /** Canonical pinned model regardless of representation. */
+  canonicalModelId: string | undefined;
+  /** Active mode configOption id (resolved for the target model), when any. */
+  modeOptionId: string | undefined;
+  /** Active model configOption id, when any. */
+  modelOptionId: string | undefined;
+};
+
+/**
+ * Single canonical resolution of a Role's dual-field (`modeId`/`modelId` vs
+ * `configOptionValues`) run config against a target agent and capability.
+ *
+ * Shared across availability checks, Desktop composer preferences/matching,
+ * editor previews, and CLI/MCP session creation so every surface agrees on
+ * which value wins:
+ * - `registry`/`custom` ACP (config-option driven): `configOptionValues[id] ?? top-level`
+ * - `builtin` ACP (dedicated fields): `top-level ?? configOptionValues['mode'/'model']`
+ *
+ * Model resolves first so `observedModelConfigOptions` for the target model
+ * determines the active permission/mode option id before binding `modeId`.
+ */
+export const resolveCanonicalAgentRoleRunConfig = (
+  runConfig: Pick<AgentRoleRunConfig, 'modeId' | 'modelId' | 'configOptionValues'>,
+  target?: {
+    cliType?: AgentConfigMeta['cliType'] | null;
+    capability?: Pick<
+      AcpCapabilityCacheEntry,
+      'configOptions' | 'modes' | 'models' | 'observedModelConfigOptions'
+    >;
+    configOptions?: readonly Pick<AcpConfigOptionSummary, 'id' | 'category' | 'type'>[];
+  }
+): CanonicalAgentRoleRunConfig => {
+  const isConfigOptionDriven = target?.cliType === 'registry' || target?.cliType === 'custom';
+  const rawConfigOptions = target?.capability?.configOptions ?? target?.configOptions;
+  const hasRawConfigOptions = (rawConfigOptions?.length ?? 0) > 0;
+  const modelOptionId = hasRawConfigOptions
+    ? rawConfigOptions?.find((option) => option.category === 'model' && option.type === 'select')
+        ?.id
+    : (target?.capability?.models?.length ?? 0) > 0
+      ? 'model'
+      : isConfigOptionDriven && typeof runConfig.configOptionValues?.model === 'string'
+        ? 'model'
+        : undefined;
+  const modelLookupKey = modelOptionId ?? 'model';
+  const modelFromConfig =
+    typeof runConfig.configOptionValues?.[modelLookupKey] === 'string'
+      ? (runConfig.configOptionValues[modelLookupKey] as string)
+      : undefined;
+  const canonicalModelId = isConfigOptionDriven
+    ? (modelFromConfig ?? runConfig.modelId)
+    : (runConfig.modelId ?? modelFromConfig);
+
+  const modelCapability = target?.capability
+    ? withAcpConfigOptionsForModel(
+        {
+          modes: target.capability.modes ?? [],
+          models: target.capability.models ?? [],
+          configOptions: target.capability.configOptions,
+          observedModelConfigOptions: target.capability.observedModelConfigOptions,
+        },
+        canonicalModelId
+      )
+    : undefined;
+  const modeConfigOptions = modelCapability?.configOptions ?? target?.configOptions;
+  const hasModeConfigOptions = (modeConfigOptions?.length ?? 0) > 0;
+  const modeOptionId = hasModeConfigOptions
+    ? modeConfigOptions?.find(
+        (option) =>
+          option.category === 'mode' && option.type === 'select' && option.id !== 'interaction_mode'
+      )?.id
+    : (modelCapability?.modes?.length ?? 0) > 0
+      ? 'mode'
+      : isConfigOptionDriven && typeof runConfig.configOptionValues?.mode === 'string'
+        ? 'mode'
+        : undefined;
+  const modeLookupKey = modeOptionId ?? 'mode';
+  const modeFromConfig =
+    typeof runConfig.configOptionValues?.[modeLookupKey] === 'string'
+      ? (runConfig.configOptionValues[modeLookupKey] as string)
+      : undefined;
+  const canonicalModeId = isConfigOptionDriven
+    ? (modeFromConfig ?? runConfig.modeId)
+    : (runConfig.modeId ?? modeFromConfig);
+
+  if (isConfigOptionDriven) {
+    const bridged = runConfig.configOptionValues ? { ...runConfig.configOptionValues } : {};
+    if (modelOptionId && canonicalModelId !== undefined && bridged[modelOptionId] === undefined) {
+      bridged[modelOptionId] = canonicalModelId;
+    }
+    if (modeOptionId && canonicalModeId !== undefined && bridged[modeOptionId] === undefined) {
+      bridged[modeOptionId] = canonicalModeId;
+    }
+    return {
+      modeId: modeOptionId ? undefined : canonicalModeId,
+      modelId: modelOptionId ? undefined : canonicalModelId,
+      configOptionValues: Object.keys(bridged).length > 0 ? bridged : undefined,
+      canonicalModeId,
+      canonicalModelId,
+      modeOptionId,
+      modelOptionId,
+    };
+  }
+
+  const nextConfig = runConfig.configOptionValues ? { ...runConfig.configOptionValues } : undefined;
+  if (nextConfig && target?.cliType === 'builtin') {
+    if (typeof nextConfig[modeLookupKey] === 'string' && canonicalModeId !== undefined) {
+      delete nextConfig[modeLookupKey];
+    }
+    if (typeof nextConfig[modelLookupKey] === 'string' && canonicalModelId !== undefined) {
+      delete nextConfig[modelLookupKey];
+    }
+  }
+  return {
+    modeId: canonicalModeId,
+    modelId: canonicalModelId,
+    configOptionValues: nextConfig && Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
+    canonicalModeId,
+    canonicalModelId,
+    modeOptionId,
+    modelOptionId,
+  };
+};
+
 /** Which saved pin the agent no longer offers; dispatch would reject the same one. */
 export const findAgentRoleRunConfigIssue = (
   role: Pick<AgentRole, 'runConfig'>,
   capability: AcpCapabilityCacheEntry
 ): Extract<AgentRoleUnavailableReason, 'model_unavailable' | 'mode_unavailable'> | undefined => {
-  const { modelId, modeId, configOptionValues } = role.runConfig;
+  const { configOptionValues } = role.runConfig;
   const { models } = summarizeAgentRunConfigCapabilities(capability);
-  if (modelId && !models.some((model) => model.id === modelId)) return 'model_unavailable';
+  const { canonicalModelId, canonicalModeId } = resolveCanonicalAgentRoleRunConfig(role.runConfig, {
+    cliType: capability.cliType,
+    capability,
+  });
+  // Only declare a model retired when the capability actually lists models; a
+  // degraded probe with an empty model catalog cannot prove the pin is gone.
+  if (
+    canonicalModelId &&
+    models.length > 0 &&
+    !models.some((model) => model.id === canonicalModelId)
+  ) {
+    return 'model_unavailable';
+  }
   // A Role pins permission as `modeId` (legacy modes or a `mode` option) or as
   // the value of the agent's `_permission` option, e.g. Grok's `permission_mode`.
-  // Check each pin against the knob that carries it.
-  const modeOption = capability.configOptions?.find((option) => option.category === 'mode');
-  const modeOffered = modeOption
-    ? modeOption.options.some((option) => option.value === modeId)
-    : capability.modes.some((mode) => mode.id === modeId);
-  if (modeId && !modeOffered) return 'mode_unavailable';
-  const permissionGone = (capability.configOptions ?? []).some((option) => {
-    if (option.category !== '_permission') return false;
+  // Resolve against the target model's observed option list when available so
+  // per-model modes agree with the editor.
+  const modelCapability = withAcpConfigOptionsForModel(capability, canonicalModelId);
+  const modeOption = modelCapability.configOptions?.find(
+    (option) =>
+      option.category === 'mode' && option.id !== 'interaction_mode' && option.type !== 'boolean'
+  );
+  const offeredModeIds = modeOption
+    ? modeOption.options.map((option) => option.value)
+    : modelCapability.modes.map((mode) => mode.id);
+  if (canonicalModeId && offeredModeIds.length > 0 && !offeredModeIds.includes(canonicalModeId)) {
+    return 'mode_unavailable';
+  }
+  const permissionGone = (modelCapability.configOptions ?? []).some((option) => {
+    if (option.category !== '_permission' || option.options.length === 0) return false;
     const value = configOptionValues?.[option.id];
     return value !== undefined && !option.options.some((candidate) => candidate.value === value);
   });

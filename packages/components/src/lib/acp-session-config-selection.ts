@@ -357,10 +357,37 @@ export const resolveAcpSessionConfigSelection = (
   }
 
   const configOptionValues = resolveConfigOptionValues(inputs, selectors, capabilityAuthority);
+  // Under a degraded/non-authoritative probe, `resolveSelectField` keeps a
+  // legacy runtime `modeId`/`modelId` verbatim even when `modeOptions` or
+  // `modelOptions` is empty. Once a category-bound configOption carries the
+  // active mode/model value, clear the shadowed dedicated field so dispatch
+  // cannot send a stale top-level `modeId` (e.g. `yolo`) beside an edited
+  // config-option mode (e.g. `auto`).
+  const genericMode =
+    modeOptions.length === 0
+      ? selectors.find(
+          (selector) =>
+            selector.category === 'mode' &&
+            selector.type === 'select' &&
+            selector.configId !== 'interaction_mode'
+        )
+      : undefined;
+  const resolvedGenericModel =
+    modelOptions.length === 0
+      ? selectors.find((selector) => selector.category === 'model' && selector.type === 'select')
+      : undefined;
+  const effectiveSelectedModeId =
+    genericMode && typeof configOptionValues[genericMode.configId] === 'string'
+      ? null
+      : selectedModeId;
+  const effectiveSelectedModelId =
+    resolvedGenericModel && typeof configOptionValues[resolvedGenericModel.configId] === 'string'
+      ? null
+      : selectedModelId;
 
   return {
-    selectedModeId,
-    selectedModelId,
+    selectedModeId: effectiveSelectedModeId,
+    selectedModelId: effectiveSelectedModelId,
     configOptionValues,
     configOptionSelectors: selectors,
   };

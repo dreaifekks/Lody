@@ -6,7 +6,10 @@ import {
   ACP_COLLABORATION_MODE_CONFIG_ID,
   ACP_COLLABORATION_MODE_PLAN_VALUE,
   ACP_COLLABORATION_MODE_DEFAULT_VALUE,
+  resolveCanonicalAgentRoleRunConfig,
   snapshotAgentRole,
+  type AcpCapabilityCacheEntry,
+  type AcpConfigOptionSummary,
   type AgentConfigMeta,
   type AgentRoleAvailability,
   type AgentRoleId,
@@ -203,12 +206,29 @@ export function resolveTurnAgentRoleForRunConfig({
 
   const modelId =
     overrides?.modelIdOverride !== undefined ? overrides.modelIdOverride : current.modelId;
+  const currentModeConfigId =
+    current.configOptionSelectors !== undefined
+      ? (findModeConfigSelector(current.configOptionSelectors)?.configId ?? null)
+      : current.modeConfigId;
+  const currentModelConfigId =
+    current.configOptionSelectors !== undefined
+      ? (findModelConfigSelector(current.configOptionSelectors)?.configId ?? null)
+      : current.modelConfigId;
+  const nextConfigOptionValues =
+    overrides?.configOptionValuesOverride ?? current.configOptionValues;
+  const modelChanged =
+    modelId !== current.modelId ||
+    (typeof currentModelConfigId === 'string' &&
+      nextConfigOptionValues[currentModelConfigId] !==
+        current.configOptionValues[currentModelConfigId]);
   const effective: ComposerRunConfigValues = {
     modeId: overrides?.modeIdOverride !== undefined ? overrides.modeIdOverride : current.modeId,
     modelId,
-    configOptionValues: overrides?.configOptionValuesOverride ?? current.configOptionValues,
+    configOptionValues: nextConfigOptionValues,
     // The selectors describe the composer's model; another model's are not known here.
-    configOptionSelectors: modelId === current.modelId ? current.configOptionSelectors : undefined,
+    configOptionSelectors: modelChanged ? undefined : current.configOptionSelectors,
+    modeConfigId: currentModeConfigId,
+    modelConfigId: currentModelConfigId,
   };
   return isAgentRoleRunConfigApplied(item.instance.runConfig, effective) ? turnSelection : null;
 }
@@ -336,12 +356,20 @@ export const mapComposerAgentRoleEntries = (
  */
 export function doesAgentRolePinPermissionMode(
   runConfig: AgentRoleRunConfig,
-  source: { kind: 'configOption'; configId: string } | { kind: 'modeId' } | null
+  source:
+    | { kind: 'configOption'; configId: string; category?: 'mode' | '_permission' }
+    | { kind: 'modeId' }
+    | null
 ): boolean {
   if (!source) return false;
-  return source.kind === 'modeId'
-    ? Boolean(runConfig.modeId)
-    : runConfig.configOptionValues?.[source.configId] !== undefined;
+  if (source.kind === 'modeId') {
+    return Boolean(runConfig.modeId) || typeof runConfig.configOptionValues?.mode === 'string';
+  }
+  if (runConfig.configOptionValues?.[source.configId] !== undefined) return true;
+  if (source.category === 'mode' || (source.category === undefined && source.configId === 'mode')) {
+    return Boolean(runConfig.modeId);
+  }
+  return false;
 }
 
 /**
@@ -413,6 +441,17 @@ export const createAgentRoleCapabilityResolver = (
   };
 };
 
+const findModeConfigSelector = <T extends Pick<AcpConfigOptionSelector, 'configId' | 'category'>>(
+  selectors: readonly T[] | undefined
+): T | undefined =>
+  selectors?.find(
+    (selector) => selector.category === 'mode' && selector.configId !== 'interaction_mode'
+  );
+
+const findModelConfigSelector = <T extends Pick<AcpConfigOptionSelector, 'configId' | 'category'>>(
+  selectors: readonly T[] | undefined
+): T | undefined => selectors?.find((selector) => selector.category === 'model');
+
 export type ComposerRunConfigValues = {
   modeId: string | null;
   modelId: string | null;
@@ -421,12 +460,55 @@ export type ComposerRunConfigValues = {
    * The option selectors resolved for `modelId`: which controls that model
    * has. `undefined` when they are not known for it.
    */
-  configOptionSelectors: readonly Pick<AcpConfigOptionSelector, 'configId'>[] | undefined;
+  configOptionSelectors:
+    | readonly Pick<AcpConfigOptionSelector, 'configId' | 'category'>[]
+    | undefined;
+  /**
+   * Structural mode/model config-option bindings retained across a model
+   * override when per-model `configOptionSelectors` are cleared (`null` means
+   * dedicated `modeId`/`modelId`, string means that config-option id).
+   */
+  modeConfigId?: string | null;
+  modelConfigId?: string | null;
 };
 
 export type ComposerRunConfigSelection = ComposerRunConfigValues & {
   agentSelection: AgentSelection | null;
 };
+
+/**
+ * Project a stored Role run config onto the preference shape the composer's
+ * selection derivation reads.
+ *
+ * Registry and custom ACP agents carry mode and model inside category-bound
+ * `configOptions` (or synthesized `mode`/`model` selectors from legacy
+ * `modes`/`models` probes), while built-in agents use dedicated
+ * `modeId`/`modelId`. Stored Roles may populate either side (or both); bridging
+ * here uses the same canonical precedence as availability, preview, editor,
+ * matching, and save.
+ */
+export function buildAgentRoleConfigPreferences(
+  runConfig: AgentRoleRunConfig,
+  target?: {
+    cliType?: AgentConfigMeta['cliType'] | null;
+    capability?: Pick<
+      AcpCapabilityCacheEntry,
+      'configOptions' | 'modes' | 'models' | 'observedModelConfigOptions'
+    >;
+    configOptions?: readonly Pick<AcpConfigOptionSummary, 'id' | 'category' | 'type'>[];
+  }
+): {
+  modeId: string | null;
+  modelId: string | null;
+  configOptionValues: Record<string, AcpConfigOptionValue> | undefined;
+} {
+  const resolved = resolveCanonicalAgentRoleRunConfig(runConfig, target);
+  return {
+    modeId: resolved.modeId ?? null,
+    modelId: resolved.modelId ?? null,
+    configOptionValues: resolved.configOptionValues,
+  };
+}
 
 /**
  * Whether every value an instance PINS is what the composer is set to.
@@ -444,9 +526,80 @@ export function isAgentRoleRunConfigApplied(
   selection: ComposerRunConfigValues
 ): boolean {
   const { modeId, modelId, configOptionValues } = runConfig;
-  if (modeId && selection.modeId !== modeId) return false;
-  if (modelId && selection.modelId !== modelId) return false;
+  const selectors = selection.configOptionSelectors;
+  const modeConfigId =
+    selectors !== undefined
+      ? (findModeConfigSelector(selectors)?.configId ?? null)
+      : selection.modeConfigId;
+  const modelConfigId =
+    selectors !== undefined
+      ? (findModelConfigSelector(selectors)?.configId ?? null)
+      : selection.modelConfigId;
+
+  const modeFromConfig =
+    typeof modeConfigId === 'string'
+      ? typeof configOptionValues?.[modeConfigId] === 'string'
+        ? (configOptionValues[modeConfigId] as string)
+        : undefined
+      : modeConfigId === null && typeof configOptionValues?.mode === 'string'
+        ? (configOptionValues.mode as string)
+        : undefined;
+  const modelFromConfig =
+    typeof modelConfigId === 'string'
+      ? typeof configOptionValues?.[modelConfigId] === 'string'
+        ? (configOptionValues[modelConfigId] as string)
+        : undefined
+      : modelConfigId === null && typeof configOptionValues?.model === 'string'
+        ? (configOptionValues.model as string)
+        : undefined;
+
+  const pinnedModeId =
+    typeof modeConfigId === 'string'
+      ? (modeFromConfig ?? modeId)
+      : modeConfigId === null
+        ? (modeId ?? modeFromConfig)
+        : modeId;
+  const pinnedModelId =
+    typeof modelConfigId === 'string'
+      ? (modelFromConfig ?? modelId)
+      : modelConfigId === null
+        ? (modelId ?? modelFromConfig)
+        : modelId;
+
+  const effectiveModeId =
+    typeof modeConfigId === 'string'
+      ? typeof selection.configOptionValues[modeConfigId] === 'string'
+        ? (selection.configOptionValues[modeConfigId] as string)
+        : selection.modeId
+      : selection.modeId;
+  const effectiveModelId =
+    typeof modelConfigId === 'string'
+      ? typeof selection.configOptionValues[modelConfigId] === 'string'
+        ? (selection.configOptionValues[modelConfigId] as string)
+        : selection.modelId
+      : selection.modelId;
+
+  if (pinnedModeId && effectiveModeId !== pinnedModeId) return false;
+  if (pinnedModelId && effectiveModelId !== pinnedModelId) return false;
+
+  const checkedModeConfigKey =
+    typeof modeConfigId === 'string' ? modeConfigId : modeConfigId === null ? 'mode' : undefined;
+  const checkedModelConfigKey =
+    typeof modelConfigId === 'string'
+      ? modelConfigId
+      : modelConfigId === null
+        ? 'model'
+        : undefined;
+
   for (const [configId, value] of Object.entries(configOptionValues ?? {})) {
+    if (
+      (configId === checkedModeConfigKey &&
+        (typeof value === 'string' || typeof pinnedModeId === 'string')) ||
+      (configId === checkedModelConfigKey &&
+        (typeof value === 'string' || typeof pinnedModelId === 'string'))
+    ) {
+      continue;
+    }
     const selected = selection.configOptionValues[configId];
     if (
       configId === LODY_PLAN_MODE_CONFIG_ID &&

@@ -20,13 +20,18 @@ import {
 import type { AcpSelectorOptions } from '../src/components/shared/acp-selector-options';
 import {
   applyAgentRoleRunConfigDefaults,
+  buildAgentRoleRunConfigSummary,
   prepareAgentRoleInstanceForSave,
   carryAgentRoleOptionsToModel,
   findAgentRoleRunConfigIssues,
   selectAuthorableAgentRoleConfigOptions,
 } from '../src/lib/agent-role-form';
 import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
-import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
+import {
+  reportedAntigravityCapabilities,
+  reportedClaudeCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
 
 const role = (overrides: Partial<AgentRole> = {}): AgentRole =>
   singleMachineRole({
@@ -643,5 +648,222 @@ describe('run config compatibility', () => {
         { configId: 'openai_api_key' },
       ])
     ).toEqual([{ configId: 'thought_level' }]);
+  });
+
+  it('validates, seeds, saves, and summarizes registry Antigravity YOLO Roles cleanly', () => {
+    const agyOptions = buildAcpSelectorOptions({
+      cliType: 'registry',
+      agentType: 'antigravity-acp',
+      configId: 'config-1' as AgentConfigId,
+      configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+      machine: { acpCapabilities: { 'config-1': reportedAntigravityCapabilities } },
+    });
+    const storedRunConfig = {
+      modeId: 'yolo',
+      modelId: 'gemini-4-neon',
+      configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+    };
+    expect(findAgentRoleRunConfigIssues(storedRunConfig, agyOptions)).toEqual([]);
+    expect(
+      findAgentRoleRunConfigIssues(
+        {
+          modeId: 'yolo',
+          modelId: 'gemini-4-neon',
+          configOptionValues: { thought_level: 'xhigh' },
+        },
+        agyOptions
+      )
+    ).toEqual([]);
+    // Retired pins are reported once rather than duplicated across top-level + configOption.
+    expect(
+      findAgentRoleRunConfigIssues(
+        {
+          modeId: 'retired-mode',
+          modelId: 'retired-model',
+          configOptionValues: { mode: 'retired-mode', model: 'retired-model' },
+        },
+        agyOptions
+      )
+    ).toEqual([
+      { kind: 'mode_unsupported', value: 'retired-mode' },
+      { kind: 'model_unsupported', value: 'retired-model' },
+    ]);
+
+    // Opening an MCP-authored Role (modeId/modelId only) in Settings keeps its pins in the selects.
+    const seeded = applyAgentRoleRunConfigDefaults(
+      formInstance({
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: { thought_level: 'xhigh' },
+      }),
+      agyOptions
+    );
+    expect(seeded.configOptionValues).toEqual({
+      thought_level: 'xhigh',
+      model: 'gemini-4-neon',
+      mode: 'yolo',
+    });
+
+    // Editing mode/model via configOptionValues syncs top-level modeId/modelId on Save.
+    const saved = prepareAgentRoleInstanceForSave(
+      formInstance({
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: { mode: 'auto', model: 'gemini-4-carbon', thought_level: 'high' },
+      }),
+      agyOptions
+    );
+    expect(saved.modeId).toBe('auto');
+    expect(saved.modelId).toBe('gemini-4-carbon');
+    expect(saved.configOptionValues).toEqual({
+      model: 'gemini-4-carbon',
+      thought_level: 'high',
+      mode: 'auto',
+    });
+
+    // Summary resolves capability labels and deduplicates mode/model.
+    expect(buildAgentRoleRunConfigSummary(storedRunConfig, agyOptions)).toEqual([
+      'Gemini 4 Neon',
+      'Extra',
+      'YOLO',
+    ]);
+
+    // Switching models preserves an already-retired config-option mode pin instead
+    // of silently dropping it and letting defaults overwrite it.
+    const nextModelOptions = buildAcpSelectorOptions({
+      cliType: 'registry',
+      agentType: 'antigravity-acp',
+      configId: 'config-1' as AgentConfigId,
+      configOptionValues: { mode: 'retired-mode', model: 'gemini-4-carbon', thought_level: 'high' },
+      machine: { acpCapabilities: { 'config-1': reportedAntigravityCapabilities } },
+    });
+    const carried = carryAgentRoleOptionsToModel(
+      { mode: 'retired-mode', model: 'gemini-4-carbon', thought_level: 'xhigh' },
+      agyOptions.configOptionSelectors,
+      nextModelOptions.configOptionSelectors
+    );
+    expect(carried).toEqual({
+      mode: 'retired-mode',
+      model: 'gemini-4-carbon',
+      thought_level: 'xhigh',
+    });
+    const reseeded = applyAgentRoleRunConfigDefaults(
+      formInstance({ modeId: null, modelId: null, configOptionValues: carried }),
+      nextModelOptions
+    );
+    expect(reseeded.configOptionValues.mode).toBe('retired-mode');
+    expect(
+      findAgentRoleRunConfigIssues(
+        { configOptionValues: reseeded.configOptionValues },
+        nextModelOptions
+      )
+    ).toEqual([{ kind: 'mode_unsupported', value: 'retired-mode' }]);
+
+    // Switching to a model that drops a previously valid permission value OR
+    // renames the permission option id must preserve the pinned permission and
+    // surface any incompatibility rather than silently resetting to `default`.
+    const outgoingWithModelOnlyMode = [
+      ...agyOptions.configOptionSelectors.filter((s) => s.configId !== 'mode'),
+      {
+        type: 'select' as const,
+        configId: 'mode',
+        category: 'mode',
+        label: 'Mode',
+        currentValue: 'default',
+        options: [
+          { value: 'default', label: 'Default' },
+          { value: 'model-a-only', label: 'Model A Only' },
+          { value: 'yolo', label: 'YOLO' },
+        ],
+      },
+    ];
+    const droppedValueCarried = carryAgentRoleOptionsToModel(
+      { mode: 'model-a-only', model: 'gemini-4-carbon' },
+      outgoingWithModelOnlyMode,
+      nextModelOptions.configOptionSelectors
+    );
+    expect(droppedValueCarried.mode).toBe('model-a-only');
+    expect(
+      applyAgentRoleRunConfigDefaults(
+        formInstance({ modeId: null, modelId: null, configOptionValues: droppedValueCarried }),
+        nextModelOptions
+      ).configOptionValues.mode
+    ).toBe('model-a-only');
+
+    const renamedIncomingSelectors = [
+      ...nextModelOptions.configOptionSelectors.filter((s) => s.configId !== 'mode'),
+      {
+        type: 'select' as const,
+        configId: 'access-policy',
+        category: 'mode',
+        label: 'Access Policy',
+        currentValue: 'default',
+        options: [
+          { value: 'default', label: 'Default' },
+          { value: 'yolo', label: 'YOLO' },
+        ],
+      },
+    ];
+    const renamedValidCarried = carryAgentRoleOptionsToModel(
+      { mode: 'yolo', model: 'gemini-4-carbon' },
+      outgoingWithModelOnlyMode,
+      renamedIncomingSelectors
+    );
+    expect(renamedValidCarried).toEqual({
+      'access-policy': 'yolo',
+      model: 'gemini-4-carbon',
+    });
+    const renamedUnsupportedCarried = carryAgentRoleOptionsToModel(
+      { mode: 'model-a-only', model: 'gemini-4-carbon' },
+      outgoingWithModelOnlyMode,
+      renamedIncomingSelectors
+    );
+    expect(renamedUnsupportedCarried).toEqual({
+      'access-policy': 'model-a-only',
+      model: 'gemini-4-carbon',
+    });
+    const renamedIncomingOptions = {
+      ...nextModelOptions,
+      configOptionSelectors: renamedIncomingSelectors,
+    };
+    expect(
+      applyAgentRoleRunConfigDefaults(
+        formInstance({
+          modeId: null,
+          modelId: null,
+          configOptionValues: renamedUnsupportedCarried,
+        }),
+        renamedIncomingOptions
+      ).configOptionValues['access-policy']
+    ).toBe('model-a-only');
+    expect(
+      findAgentRoleRunConfigIssues(
+        { configOptionValues: renamedUnsupportedCarried },
+        renamedIncomingOptions
+      )
+    ).toEqual([{ kind: 'mode_unsupported', value: 'model-a-only' }]);
+
+    // Dual-field conflict on registry follows canonical configOptionValues across
+    // issues and summary (no split-brain with composer application).
+    expect(
+      findAgentRoleRunConfigIssues(
+        {
+          modeId: 'auto',
+          modelId: 'gemini-4-neon',
+          configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+        },
+        agyOptions
+      )
+    ).toEqual([]);
+    expect(
+      buildAgentRoleRunConfigSummary(
+        {
+          modeId: 'auto',
+          modelId: 'gemini-4-neon',
+          configOptionValues: { mode: 'yolo', model: 'gemini-4-neon', thought_level: 'xhigh' },
+        },
+        agyOptions
+      )
+    ).toEqual(['Gemini 4 Neon', 'Extra', 'YOLO']);
   });
 });

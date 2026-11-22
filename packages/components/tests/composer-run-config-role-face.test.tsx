@@ -24,7 +24,19 @@ import { MobileSessionRunConfig } from '../src/components/mobile/mobile-session-
 import type { ComposerAgentRoleItem } from '../src/lib/composer-agent-roles';
 import { initI18n } from '../src/i18n';
 import { Tooltip } from '@lody/ui/tooltip';
-import { composerItemsOf, singleMachineRole } from './agent-role-fixture';
+import {
+  composerItemsOf,
+  reportedAntigravityCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
+import { buildAcpSelectorOptions } from '../src/components/shared/acp-selector-options';
+import {
+  buildAgentRoleConfigPreferences,
+  doesAgentRolePinPermissionMode,
+  isComposerAgentRoleApplied,
+} from '../src/lib/composer-agent-roles';
+import { resolveAcpSessionConfigSelection } from '../src/lib/acp-session-config-selection';
+import { resolvePermissionModeFace } from '../src/lib/permission-mode-face';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -242,6 +254,107 @@ describe('DesktopRunConfigMenu role face', () => {
       },
     });
     expect(view.textContent).not.toContain('Read-only');
+  });
+
+  it('keeps a registry Antigravity YOLO Role on the button and states its config-option model, effort, and YOLO beside it', async () => {
+    const antigravityConfig: AgentConfigMeta = {
+      id: 'config-antigravity' as AgentConfigId,
+      machineId,
+      name: 'Google Antigravity',
+      description: undefined,
+      cliType: 'registry',
+      agentType: 'antigravity-acp',
+      env: {},
+    };
+    const yoloRole = singleMachineRole({
+      v: AGENT_ROLE_VERSION,
+      id: 'role-yolo' as AgentRoleId,
+      ownerUserId: 'user-1',
+      visibility: 'private',
+      name: 'Global Review',
+      emoji: '🔍',
+      machineId,
+      agentConfigId: antigravityConfig.id,
+      runConfig: {
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: {
+          mode: 'yolo',
+          model: 'gemini-4-neon',
+          thought_level: 'xhigh',
+        },
+      },
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const yoloItem = composerItemsOf(yoloRole, {
+      machineId,
+      agentConfigs: [antigravityConfig],
+    })[0]!;
+    const preferences = buildAgentRoleConfigPreferences(yoloItem.instance.runConfig, {
+      cliType: antigravityConfig.cliType,
+      capability: reportedAntigravityCapabilities,
+    });
+    const selectorOptions = buildAcpSelectorOptions({
+      configId: antigravityConfig.id,
+      cliType: antigravityConfig.cliType,
+      agentType: antigravityConfig.agentType,
+      selectedModeId: preferences.modeId,
+      selectedModelId: preferences.modelId,
+      configOptionValues: preferences.configOptionValues,
+      machine: { acpCapabilities: { [antigravityConfig.id]: reportedAntigravityCapabilities } },
+    });
+    const resolved = resolveAcpSessionConfigSelection(
+      { edits: { configOptions: {} }, preferences },
+      selectorOptions,
+      { cliType: antigravityConfig.cliType, agentType: antigravityConfig.agentType }
+    );
+    expect(
+      isComposerAgentRoleApplied(yoloItem.instance, {
+        agentSelection: { agentId: antigravityConfig.id, machineId },
+        modeId: resolved.selectedModeId,
+        modelId: resolved.selectedModelId,
+        configOptionValues: resolved.configOptionValues,
+        configOptionSelectors: resolved.configOptionSelectors,
+      })
+    ).toBe(true);
+    const permissionFace = resolvePermissionModeFace({
+      modeOptions: selectorOptions.modeOptions,
+      selectedModeId: resolved.selectedModeId,
+      configOptionSelectors: resolved.configOptionSelectors,
+      configOptionValues: resolved.configOptionValues,
+    });
+    expect(doesAgentRolePinPermissionMode(yoloItem.instance.runConfig, permissionFace.source)).toBe(
+      true
+    );
+
+    const view = await render({
+      agentSelection: { agentId: antigravityConfig.id, machineId },
+      availableAgentConfigs: [antigravityConfig],
+      modelOptions: selectorOptions.modelOptions,
+      selectedModelId: resolved.selectedModelId,
+      modeOptions: selectorOptions.modeOptions,
+      selectedModeId: resolved.selectedModeId,
+      configOptionSelectors: resolved.configOptionSelectors,
+      configOptionValues: resolved.configOptionValues,
+      agentRoles: {
+        items: [yoloItem],
+        machine: {
+          id: machineId,
+          name: 'devnuc',
+          acpCapabilities: { [antigravityConfig.id]: reportedAntigravityCapabilities },
+        } as import('@lody/shared').MachineViewMeta,
+        selectedInstanceId: yoloItem.instance.id,
+        onSelect: () => undefined,
+      },
+    });
+    const trigger = view.querySelector('button[aria-label="Run configuration"]');
+    expect(trigger?.textContent).toContain('Global Review');
+    expect(trigger?.textContent).not.toContain('Gemini 4 Neon');
+    expect(view.textContent).toContain('Gemini 4 Neon');
+    expect(view.textContent).toContain('Extra');
+    expect(view.textContent).toContain('YOLO');
   });
 
   const openMenu = async (view: HTMLElement) => {

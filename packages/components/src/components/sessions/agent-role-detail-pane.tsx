@@ -11,7 +11,9 @@ import {
 } from 'lucide-react';
 import {
   classifyPermissionModeFace,
+  getAcpCapabilityCacheKey,
   getAgentRoleEmoji,
+  getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
   type AgentConfigMeta,
   type AgentRole,
   type AgentRoleTarget,
@@ -27,6 +29,7 @@ import {
   describeAgentRoleRunConfigIssue,
   findAgentRoleRunConfigIssues,
 } from '@/lib/agent-role-form';
+import { buildAgentRoleConfigPreferences } from '@/lib/composer-agent-roles';
 import { permissionModeControlLabel, resolvePermissionModeFace } from '@/lib/permission-mode-face';
 import { cn } from '@/lib/utils';
 
@@ -92,6 +95,16 @@ export function AgentRoleDetailPane({
   );
 
   const { modelId, modeId, configOptionValues } = instance.runConfig;
+  const capability = agentConfig
+    ? getReadableAcpCapabilityCacheEntryForRuntimeOverrides(
+        machine?.acpCapabilities?.[getAcpCapabilityCacheKey(instance.agentConfigId)],
+        agentConfig.runtimeOverrides
+      )
+    : undefined;
+  const pinnedPreferences = buildAgentRoleConfigPreferences(instance.runConfig, {
+    cliType: agentConfig?.cliType,
+    capability,
+  });
   /* What the agent cannot run of this Role, so a Role that will not take says
      why here rather than only by its name missing from the composer. Judged
      against the PINNED model's own controls, and only from capabilities the
@@ -104,7 +117,8 @@ export function AgentRoleDetailPane({
           agentType: agentConfig.agentType,
           runtimeOverrides: agentConfig.runtimeOverrides,
           machine: machine ?? null,
-          selectedModelId: modelId,
+          selectedModelId: pinnedPreferences.modelId,
+          configOptionValues: pinnedPreferences.configOptionValues,
         }
       : undefined
   );
@@ -112,7 +126,7 @@ export function AgentRoleDetailPane({
     pinnedSelectorOptions.capabilityAuthority === 'authoritative'
       ? findAgentRoleRunConfigIssues(instance.runConfig, pinnedSelectorOptions)
       : [];
-  const { thoughtLevelSelectors } = orderAcpConfigOptionSelectors(
+  const { modelSelectors, thoughtLevelSelectors } = orderAcpConfigOptionSelectors(
     selectorOptions.configOptionSelectors
   );
   const labelFor = (
@@ -129,6 +143,18 @@ export function AgentRoleDetailPane({
     return typeof value === 'string' ? value : null;
   };
 
+  const modelConfigSelector = modelSelectors[0];
+  const modelConfigId = modelConfigSelector?.configId ?? 'model';
+  const modelConfigValue = pinnedValue(modelConfigId);
+  const effectiveModelId =
+    selectorOptions.modelOptions.length === 0 && modelConfigSelector
+      ? (modelConfigValue ?? modelId)
+      : (modelId ?? modelConfigValue);
+  const effectiveModelOptions =
+    selectorOptions.modelOptions.length > 0
+      ? selectorOptions.modelOptions
+      : (modelConfigSelector?.options ?? []);
+
   /* WHICH knob is permission comes from the one shared rule, so this pane, the
      permission button, and the trigger face cannot disagree about it. Only the
      `source` is taken from it: the face resolves a VALUE, and that resolution
@@ -143,10 +169,9 @@ export function AgentRoleDetailPane({
   const permissionConfigId =
     permissionFace.source?.kind === 'configOption' ? permissionFace.source.configId : undefined;
   const permissionValue = permissionConfigId
-    ? pinnedValue(permissionConfigId)
-    : permissionFace.source
-      ? (modeId ?? null)
-      : null;
+    ? (pinnedValue(permissionConfigId) ??
+      (permissionFace.semantics === 'mode' ? (modeId ?? null) : null))
+    : (modeId ?? pinnedValue('mode') ?? null);
   const permissionOption = permissionValue
     ? labelFor(permissionFace.options, permissionValue)
     : undefined;
@@ -161,9 +186,19 @@ export function AgentRoleDetailPane({
 
   /* Whatever the agent publishes beyond model / reasoning / permission, minus
      the ones already stated above so nothing is said twice. */
+  const statedModeConfigId = permissionConfigId ?? 'mode';
   const statedConfigIds = new Set(
     [
-      permissionValue ? permissionConfigId : undefined,
+      effectiveModelId &&
+      (modelConfigValue === effectiveModelId ||
+        (selectorOptions.modelOptions.length > 0 && !modelConfigSelector))
+        ? modelConfigId
+        : undefined,
+      permissionValue &&
+      (pinnedValue(statedModeConfigId) === permissionValue ||
+        (selectorOptions.modeOptions.length > 0 && !permissionConfigId))
+        ? statedModeConfigId
+        : undefined,
       thinkingValue ? thinkingSelector?.configId : undefined,
     ].filter(Boolean) as string[]
   );
@@ -216,11 +251,11 @@ export function AgentRoleDetailPane({
           </p>
         ) : null}
         <dl className="flex flex-col gap-2 px-4 py-3">
-          {modelId ? (
+          {effectiveModelId ? (
             <DetailRow
               icon={<Cpu className="h-3.5 w-3.5" strokeWidth={1.8} />}
               label={t('chat.runConfig.modelLabel', 'Model')}
-              value={labelFor(selectorOptions.modelOptions, modelId)?.label ?? modelId}
+              value={labelFor(effectiveModelOptions, effectiveModelId)?.label ?? effectiveModelId}
               /* A model id is prefix-heavy and tail-distinctive
                  (`claude-opus-5` vs `claude-sonnet-5`), so the START is what
                  gives way when the line runs out. */
@@ -251,24 +286,27 @@ export function AgentRoleDetailPane({
               tone={permissionIsWarning ? 'warning' : undefined}
             />
           ) : null}
-          {extraOptions.map(([configId, value]) => (
-            <DetailRow
-              key={configId}
-              icon={<Sliders className="h-3.5 w-3.5" strokeWidth={1.8} />}
-              label={
-                selectorOptions.configOptionSelectors.find(
-                  (selector) => selector.configId === configId
-                )?.label ?? configId
-              }
-              value={
-                typeof value === 'boolean'
-                  ? value
-                    ? t('chat.runConfig.roles.optionOn', 'On')
-                    : t('chat.runConfig.roles.optionOff', 'Off')
-                  : value
-              }
-            />
-          ))}
+          {extraOptions.map(([configId, value]) => {
+            const selector = selectorOptions.configOptionSelectors.find(
+              (candidate) => candidate.configId === configId
+            );
+            const displayValue =
+              typeof value === 'boolean'
+                ? value
+                  ? t('chat.runConfig.roles.optionOn', 'On')
+                  : t('chat.runConfig.roles.optionOff', 'Off')
+                : selector?.type === 'select'
+                  ? (labelFor(selector.options, value)?.label ?? value)
+                  : value;
+            return (
+              <DetailRow
+                key={configId}
+                icon={<Sliders className="h-3.5 w-3.5" strokeWidth={1.8} />}
+                label={selector?.label ?? configId}
+                value={displayValue}
+              />
+            );
+          })}
         </dl>
 
         {role.promptPrefix ? (

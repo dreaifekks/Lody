@@ -408,6 +408,8 @@ export type DesktopRunConfigMenuProps = {
     onEdit?: (roleId: AgentRoleId) => void;
     /** The machine those Roles are bound to, for resolving their stored ids. */
     machine?: MachineViewMeta | null;
+    /** Optional per-machine lookup so cross-machine Role previews use their own capabilities. */
+    machineFor?: (machineId: MachineId) => Pick<MachineViewMeta, 'acpCapabilities'> | null;
   };
 };
 
@@ -792,6 +794,7 @@ export function DesktopRunConfigMenu({
                   <ComposerAgentRolePanel
                     items={agentRoles.items}
                     machine={agentRoles.machine}
+                    machineFor={agentRoles.machineFor}
                     selectedInstanceId={agentRoles.selectedInstanceId}
                     onSelect={agentRoles.onSelect}
                     onCreate={agentRoles.onCreate}

@@ -37,6 +37,8 @@ import {
   extractPromptPreviewFromInputBlocks,
   findFreshSessionPresenceState,
   FREE_SESSION_LIMIT_PER_WORKSPACE,
+  getAcpCapabilityCacheKey,
+  getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
   getServerNow,
   isLegacyPiProvider,
   migratePiProvider,
@@ -175,6 +177,7 @@ import {
   type RecentRunConfigRecord,
 } from '@/lib/recent-run-configs';
 import {
+  buildAgentRoleConfigPreferences,
   buildAgentRoleTurnSelection,
   buildComposerAgentRoleItems,
   doesAgentRolePinPermissionMode,
@@ -1857,17 +1860,26 @@ function WorkspaceChatLanding({
     }
     return null;
   }, [agentRolePreference, selectedAgent, workspaceAgentRoles]);
+  const selectedAgentCapability = useMemo(
+    () =>
+      selectedConfig
+        ? getReadableAcpCapabilityCacheEntryForRuntimeOverrides(
+            selectedMachine?.acpCapabilities?.[getAcpCapabilityCacheKey(selectedConfig.id)],
+            selectedConfig.runtimeOverrides
+          )
+        : undefined,
+    [selectedConfig, selectedMachine]
+  );
   const selectedAgentDefaults = useMemo(() => {
     const roleRunConfig = activeAgentRolePreference?.instance.runConfig;
     if (roleRunConfig) {
-      return {
-        modeId: roleRunConfig.modeId ?? null,
-        modelId: roleRunConfig.modelId ?? null,
-        configOptionValues: roleRunConfig.configOptionValues,
-      };
+      return buildAgentRoleConfigPreferences(roleRunConfig, {
+        cliType: selectedConfig?.cliType,
+        capability: selectedAgentCapability,
+      });
     }
     return selectedAgent ? (agentDefaultsCache.get(selectedAgent.agentId) ?? {}) : {};
-  }, [activeAgentRolePreference, selectedAgent]);
+  }, [activeAgentRolePreference, selectedAgent, selectedAgentCapability, selectedConfig?.cliType]);
   /* No effects: user edits are the only stored selection state; the effective
      values derive per render. Candidates feed the capability lookup so the
      catalog can depend on the selection without feeding back into it. */
@@ -4294,6 +4306,7 @@ function WorkspaceChatLanding({
             onCreate: handleAgentRoleCreate,
             onEdit: handleAgentRoleEdit,
             machine: scopedMachineId ? (machines.get(scopedMachineId) ?? null) : null,
+            machineFor: (targetMachineId) => machines.get(targetMachineId) ?? null,
           }}
         />
         {/* Permission is part of what a Role pins, so behind one it stops being
@@ -7234,7 +7247,9 @@ function WorkspaceChatLanding({
             buttonClassName="h-8 w-8"
             iconClassName="h-4 w-4"
             onDictationStart={() => {
-              landingDictationBaseRef.current = promptTextareaRef.current ? getComposerText(promptTextareaRef.current) : prompt;
+              landingDictationBaseRef.current = promptTextareaRef.current
+                ? getComposerText(promptTextareaRef.current)
+                : prompt;
             }}
             onDictationText={(text) => {
               const base = landingDictationBaseRef.current;

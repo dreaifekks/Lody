@@ -52,6 +52,7 @@ import {
   withAcpConfigOptionsForModel,
   machineSupportsPreparedSessionInputProtocol,
   machineSupportsMemoryProviders,
+  resolveCanonicalAgentRoleRunConfig,
   resolveNewSessionHistoryBackend,
 } from '@lody/shared';
 import {
@@ -3814,6 +3815,32 @@ export async function resolveEffectiveSessionCreateDispatchConfig(args: {
         localOnly: args.localOnly,
       })
     : { capability: undefined, freshness: { confirmed: true as const } };
+  // Role creates (CLI `--agent-role`, MCP `agentRoleId`) freeze stored Role
+  // run configs with `inheritSessionDefaults: false` and no semantic `runConfig`.
+  // Resolve dual-field `modeId`/`modelId` vs `configOptionValues` through the
+  // same canonical helper as Desktop and availability so CLI, MCP, and Desktop
+  // never execute a Role with conflicting permissions.
+  if (
+    dispatchConfig.inheritSessionDefaults === false &&
+    !hasAgentRunConfigSelection(dispatchConfig.runConfig) &&
+    (dispatchConfig.modeId !== undefined ||
+      dispatchConfig.modelId !== undefined ||
+      dispatchConfig.configOptionValues !== undefined)
+  ) {
+    const canonical = resolveCanonicalAgentRoleRunConfig(dispatchConfig, {
+      cliType: args.agentConfig.cliType,
+      capability,
+    });
+    if (canonical.modeId !== undefined) dispatchConfig.modeId = canonical.modeId;
+    else delete dispatchConfig.modeId;
+    if (canonical.modelId !== undefined) dispatchConfig.modelId = canonical.modelId;
+    else delete dispatchConfig.modelId;
+    if (canonical.configOptionValues !== undefined) {
+      dispatchConfig.configOptionValues = canonical.configOptionValues;
+    } else {
+      delete dispatchConfig.configOptionValues;
+    }
+  }
   const compatibleDefaults = filterCompatibleInheritedTurnConfig(
     inheritedDispatchConfig,
     capability

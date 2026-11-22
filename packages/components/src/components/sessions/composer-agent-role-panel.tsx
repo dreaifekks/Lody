@@ -7,12 +7,14 @@ import {
   type AgentRoleAvailability,
   type AgentRoleId,
   type AgentRoleInstanceId,
+  type MachineId,
   type MachineViewMeta,
 } from '@lody/shared';
 
 import { composerSurface as surface } from '@/components/shared/composer-surface';
 import { AgentRoleDetailPane } from '@/components/sessions/agent-role-detail-pane';
 import { useAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
+import { orderAcpConfigOptionSelectors } from '@/lib/acp-selector-order';
 import {
   AGENT_ROLE_UNAVAILABLE_REASON_KEYS,
   doesAgentRoleTitleNameAgent,
@@ -108,6 +110,7 @@ function remainingWidthForRolePanel(el: HTMLElement): number {
 export function ComposerAgentRolePanel({
   items,
   machine,
+  machineFor,
   selectedInstanceId,
   onSelect,
   onCreate,
@@ -122,6 +125,8 @@ export function ComposerAgentRolePanel({
    * workspace's machine-visibility context behind it.
    */
   machine?: MachineViewMeta | null;
+  /** Optional per-machine lookup so cross-machine Role previews use their own machine's capabilities. */
+  machineFor?: (machineId: MachineId) => Pick<MachineViewMeta, 'acpCapabilities'> | null;
   selectedInstanceId: AgentRoleInstanceId | null;
   /** `null` clears the Role and leaves the configuration exactly as it stands. */
   onSelect: (instanceId: AgentRoleInstanceId | null) => void;
@@ -131,6 +136,13 @@ export function ComposerAgentRolePanel({
   compact?: boolean;
 }) {
   const { t } = useTranslation();
+  const resolveMachine = (
+    targetMachineId: MachineId
+  ): Pick<MachineViewMeta, 'acpCapabilities'> | null => {
+    if (machineFor) return machineFor(targetMachineId) ?? null;
+    if (!machine) return null;
+    return !machine.id || machine.id === targetMachineId ? machine : null;
+  };
   const rootRef = useRef<HTMLDivElement>(null);
   // Start compact so a two-pane first paint cannot overflow before Radix
   // writes `--radix-popper-available-width`. Expand only once that space fits.
@@ -232,7 +244,12 @@ export function ComposerAgentRolePanel({
                 >
                   <span {...stylex.props(styles.roleText, compact && styles.roleTextStacked)}>
                     <span {...stylex.props(surface.truncate)}>{item.title}</span>
-                    {compact ? <RoleBindingSubtitle item={item} machine={machine} /> : null}
+                    {compact ? (
+                      <RoleBindingSubtitle
+                        item={item}
+                        machine={resolveMachine(item.instance.machineId)}
+                      />
+                    ) : null}
                     <RoleAvailabilityNote availability={availability} />
                   </span>
                 </Menu.Item>
@@ -263,7 +280,7 @@ export function ComposerAgentRolePanel({
           role={previewItem.role}
           instance={previewItem.instance}
           agentConfig={previewItem.agentConfig}
-          machine={machine}
+          machine={resolveMachine(previewItem.instance.machineId)}
           machineName={previewItem.machineName}
           availability={previewItem.availability}
           onEdit={onEdit}
@@ -280,7 +297,7 @@ function RoleBindingSubtitle({
   machine,
 }: {
   item: ComposerAgentRoleItem;
-  machine?: MachineViewMeta | null;
+  machine?: Pick<MachineViewMeta, 'acpCapabilities'> | null;
 }) {
   const { t } = useTranslation();
   const { instance, agentConfig } = item;
@@ -295,9 +312,23 @@ function RoleBindingSubtitle({
         }
       : undefined
   );
-  const modelId = instance.runConfig.modelId;
+  const { modelSelectors } = orderAcpConfigOptionSelectors(selectorOptions.configOptionSelectors);
+  const modelConfigSelector = modelSelectors[0];
+  const effectiveModelOptions =
+    selectorOptions.modelOptions.length > 0
+      ? selectorOptions.modelOptions
+      : (modelConfigSelector?.options ?? []);
+  const modelConfigId = modelConfigSelector?.configId ?? 'model';
+  const modelConfigValue =
+    typeof instance.runConfig.configOptionValues?.[modelConfigId] === 'string'
+      ? (instance.runConfig.configOptionValues[modelConfigId] as string)
+      : undefined;
+  const modelId =
+    selectorOptions.modelOptions.length === 0 && modelConfigSelector
+      ? (modelConfigValue ?? instance.runConfig.modelId)
+      : (instance.runConfig.modelId ?? modelConfigValue);
   const modelLabel = modelId
-    ? (selectorOptions.modelOptions.find((option) => option.value === modelId)?.label ?? modelId)
+    ? (effectiveModelOptions.find((option) => option.value === modelId)?.label ?? modelId)
     : null;
   // The title already names the agent of an unaliased group.
   const agentName = doesAgentRoleTitleNameAgent(item)

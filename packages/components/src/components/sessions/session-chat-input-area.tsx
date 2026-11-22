@@ -2413,6 +2413,7 @@ export const SessionChatInputArea = memo(
       durableKnownSourceTurnKeys: durableAgentRoleKnownTurnKeys,
       durableRoleReady: durableAgentRoleReady,
       machineId: session.machineId,
+      machine: quotaMachine ?? null,
       agentConfigId: session.agentConfigId,
       modelOptions,
       selectedModelId,
@@ -2467,6 +2468,7 @@ export const SessionChatInputArea = memo(
         items: effectiveAgentRoleControl.items,
         selectedInstanceId: effectiveAgentRoleControl.selectedInstanceId,
         onSelect: effectiveAgentRoleControl.onSelect,
+        machine: quotaMachine ?? null,
         onCreate: () =>
           setAgentRoleEditor(
             openAgentRoleEditorForCreate(
@@ -2484,6 +2486,7 @@ export const SessionChatInputArea = memo(
       [
         configOptionValues,
         modelOptions.length,
+        quotaMachine,
         selectedModelId,
         selectedModeId,
         session.agentConfigId,

@@ -14,8 +14,27 @@ import {
   isConfigOptionValueValid,
   isFastModeOffWithoutToggle,
   type AcpConfigOptionSelector,
+  type AcpSelectConfigOptionSelector,
   type AcpSelectorOptions,
 } from '@/components/shared/acp-selector-options';
+
+const findModeConfigSelector = (
+  selectors: readonly AcpConfigOptionSelector[] | undefined
+): AcpSelectConfigOptionSelector | undefined =>
+  selectors?.find(
+    (selector): selector is AcpSelectConfigOptionSelector =>
+      selector.category === 'mode' &&
+      selector.type === 'select' &&
+      selector.configId !== 'interaction_mode'
+  );
+
+const findModelConfigSelector = (
+  selectors: readonly AcpConfigOptionSelector[] | undefined
+): AcpSelectConfigOptionSelector | undefined =>
+  selectors?.find(
+    (selector): selector is AcpSelectConfigOptionSelector =>
+      selector.category === 'model' && selector.type === 'select'
+  );
 
 /**
  * Seed one instance with what its selected agent actually defaults to.
@@ -36,15 +55,21 @@ export const applyAgentRoleRunConfigDefaults = (
 ): AgentRoleFormInstance => {
   if (!selectorOptions || selectorOptions.capabilityAuthority === 'unavailable') return value;
 
+  const modeConfigSelector = findModeConfigSelector(selectorOptions.configOptionSelectors);
+  const modelConfigSelector = findModelConfigSelector(selectorOptions.configOptionSelectors);
   const modelId =
     value.modelId ??
     (selectorOptions.modelOptions.length > 0
-      ? (selectorOptions.defaultModelId ?? selectorOptions.modelOptions[0]?.value ?? null)
+      ? typeof value.configOptionValues.model === 'string'
+        ? value.configOptionValues.model
+        : (selectorOptions.defaultModelId ?? selectorOptions.modelOptions[0]?.value ?? null)
       : null);
   const modeId =
     value.modeId ??
     (selectorOptions.modeOptions.length > 0
-      ? (selectorOptions.defaultModeId ?? selectorOptions.modeOptions[0]?.value ?? null)
+      ? typeof value.configOptionValues.mode === 'string'
+        ? value.configOptionValues.mode
+        : (selectorOptions.defaultModeId ?? selectorOptions.modeOptions[0]?.value ?? null)
       : null);
 
   const configOptionValues = { ...value.configOptionValues };
@@ -52,6 +77,22 @@ export const applyAgentRoleRunConfigDefaults = (
     selectorOptions.configOptionSelectors
   )) {
     if (configOptionValues[selector.configId] !== undefined) continue;
+    if (
+      selector.configId === modelConfigSelector?.configId &&
+      selectorOptions.modelOptions.length === 0 &&
+      value.modelId
+    ) {
+      configOptionValues[selector.configId] = value.modelId;
+      continue;
+    }
+    if (
+      selector.configId === modeConfigSelector?.configId &&
+      selectorOptions.modeOptions.length === 0 &&
+      value.modeId
+    ) {
+      configOptionValues[selector.configId] = value.modeId;
+      continue;
+    }
     configOptionValues[selector.configId] = selector.currentValue;
   }
 
@@ -65,18 +106,50 @@ export const applyAgentRoleRunConfigDefaults = (
   return { ...value, modelId, modeId, configOptionValues };
 };
 
+const isPermissionModeSelector = (selector: AcpConfigOptionSelector): boolean =>
+  (selector.category === 'mode' && selector.configId !== 'interaction_mode') ||
+  selector.category === '_permission';
+
 export const carryAgentRoleOptionsToModel = (
   values: AgentRoleFormInstance['configOptionValues'],
   outgoing: readonly AcpConfigOptionSelector[],
   incoming: readonly AcpConfigOptionSelector[]
-): AgentRoleFormInstance['configOptionValues'] =>
-  Object.fromEntries(
-    Object.entries(values).filter(([configId, value]) => {
-      if (!outgoing.some((selector) => selector.configId === configId)) return true;
-      const next = incoming.find((selector) => selector.configId === configId);
-      return next !== undefined && isConfigOptionValueValid(next, value);
-    })
-  );
+): AgentRoleFormInstance['configOptionValues'] => {
+  const carried: AgentRoleFormInstance['configOptionValues'] = {};
+  for (const [configId, value] of Object.entries(values)) {
+    const prev = outgoing.find((selector) => selector.configId === configId);
+    if (!prev) {
+      carried[configId] = value;
+      continue;
+    }
+    const next = incoming.find((selector) => selector.configId === configId);
+    // Changing the model must never silently drop or rewrite a pinned permission
+    // mode: carry it to the incoming permission control (even under a renamed id
+    // or if unsupported on the new model) so the warning stays visible until the
+    // owner explicitly picks a new permission.
+    if (isPermissionModeSelector(prev)) {
+      if (next) {
+        carried[configId] = value;
+      } else {
+        const renamed = incoming.find(
+          (selector) => isPermissionModeSelector(selector) && selector.category === prev.category
+        );
+        if (renamed) {
+          if (values[renamed.configId] === undefined && carried[renamed.configId] === undefined) {
+            carried[renamed.configId] = value;
+          }
+        } else {
+          carried[configId] = value;
+        }
+      }
+      continue;
+    }
+    if (next !== undefined && isConfigOptionValueValid(next, value)) {
+      carried[configId] = value;
+    }
+  }
+  return carried;
+};
 
 // ---------------------------------------------------------------------------
 // Capability compatibility
@@ -108,21 +181,64 @@ export const findAgentRoleRunConfigIssues = (
     return hasSelection ? [{ kind: 'capabilities_unknown' }] : [];
   }
 
+  const modeConfigSelector = findModeConfigSelector(selectorOptions.configOptionSelectors);
+  const modelConfigSelector = findModelConfigSelector(selectorOptions.configOptionSelectors);
+  const isModeConfigDriven =
+    selectorOptions.modeOptions.length === 0 && modeConfigSelector !== undefined;
+  const isModelConfigDriven =
+    selectorOptions.modelOptions.length === 0 && modelConfigSelector !== undefined;
+  const modeConfigId = modeConfigSelector?.configId ?? 'mode';
+  const modelConfigId = modelConfigSelector?.configId ?? 'model';
+  const effectiveModeOptions =
+    selectorOptions.modeOptions.length > 0
+      ? selectorOptions.modeOptions
+      : (modeConfigSelector?.options ?? []);
+  const effectiveModelOptions =
+    selectorOptions.modelOptions.length > 0
+      ? selectorOptions.modelOptions
+      : (modelConfigSelector?.options ?? []);
+
+  const modeFromConfig =
+    typeof runConfig.configOptionValues?.[modeConfigId] === 'string'
+      ? (runConfig.configOptionValues[modeConfigId] as string)
+      : undefined;
+  const modelFromConfig =
+    typeof runConfig.configOptionValues?.[modelConfigId] === 'string'
+      ? (runConfig.configOptionValues[modelConfigId] as string)
+      : undefined;
+  const canonicalModeId = isModeConfigDriven
+    ? (modeFromConfig ?? runConfig.modeId)
+    : (runConfig.modeId ?? modeFromConfig);
+  const canonicalModelId = isModelConfigDriven
+    ? (modelFromConfig ?? runConfig.modelId)
+    : (runConfig.modelId ?? modelFromConfig);
+
   const issues: AgentRoleRunConfigIssue[] = [];
-  if (
-    runConfig.modeId &&
-    !selectorOptions.modeOptions.some((option) => option.value === runConfig.modeId)
-  ) {
-    issues.push({ kind: 'mode_unsupported', value: runConfig.modeId });
+  if (canonicalModeId && !effectiveModeOptions.some((option) => option.value === canonicalModeId)) {
+    issues.push({ kind: 'mode_unsupported', value: canonicalModeId });
   }
   if (
-    runConfig.modelId &&
-    !selectorOptions.modelOptions.some((option) => option.value === runConfig.modelId)
+    canonicalModelId &&
+    !effectiveModelOptions.some((option) => option.value === canonicalModelId)
   ) {
-    issues.push({ kind: 'model_unsupported', value: runConfig.modelId });
+    issues.push({ kind: 'model_unsupported', value: canonicalModelId });
   }
 
   for (const [configId, value] of Object.entries(runConfig.configOptionValues ?? {})) {
+    if (
+      configId === modeConfigId &&
+      (isModeConfigDriven || selectorOptions.modeOptions.length > 0) &&
+      (typeof value === 'string' || typeof canonicalModeId === 'string')
+    ) {
+      continue;
+    }
+    if (
+      configId === modelConfigId &&
+      (isModelConfigDriven || selectorOptions.modelOptions.length > 0) &&
+      (typeof value === 'string' || typeof canonicalModelId === 'string')
+    ) {
+      continue;
+    }
     const selector = selectorOptions.configOptionSelectors.find(
       (candidate) => candidate.configId === configId
     );
@@ -182,18 +298,49 @@ export const prepareAgentRoleInstanceForSave = (
   selectorOptions: AcpSelectorOptions | null | undefined
 ): AgentRoleFormInstance => {
   if (selectorOptions?.capabilityAuthority !== 'authoritative') return value;
+  const modeConfigSelector = findModeConfigSelector(selectorOptions.configOptionSelectors);
+  const modelConfigSelector = findModelConfigSelector(selectorOptions.configOptionSelectors);
+  const configOptionValues = Object.fromEntries(
+    selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors).map(
+      (selector) => {
+        const current = value.configOptionValues[selector.configId];
+        // Keep retired mode/permission/model pins intact until the owner picks
+        // a new one, matching how top-level modeId/modelId behave for built-in agents.
+        if (
+          (selector.configId === modeConfigSelector?.configId ||
+            selector.configId === modelConfigSelector?.configId ||
+            selector.category === '_permission') &&
+          typeof current === 'string' &&
+          current.length > 0
+        ) {
+          return [selector.configId, current];
+        }
+        return [
+          selector.configId,
+          isConfigOptionValueValid(selector, current) ? current : selector.currentValue,
+        ];
+      }
+    )
+  );
+  // Keep top-level modeId/modelId aligned with config-option mode/model edits on
+  // registry/custom agents so a stale top-level field cannot override an edit.
+  const modeId =
+    selectorOptions.modeOptions.length === 0 &&
+    modeConfigSelector &&
+    typeof configOptionValues[modeConfigSelector.configId] === 'string'
+      ? (configOptionValues[modeConfigSelector.configId] as string)
+      : value.modeId;
+  const modelId =
+    selectorOptions.modelOptions.length === 0 &&
+    modelConfigSelector &&
+    typeof configOptionValues[modelConfigSelector.configId] === 'string'
+      ? (configOptionValues[modelConfigSelector.configId] as string)
+      : value.modelId;
   return {
     ...value,
-    configOptionValues: Object.fromEntries(
-      selectAuthorableAgentRoleConfigOptions(selectorOptions.configOptionSelectors).map(
-        (selector) => [
-          selector.configId,
-          isConfigOptionValueValid(selector, value.configOptionValues[selector.configId])
-            ? value.configOptionValues[selector.configId]
-            : selector.currentValue,
-        ]
-      )
-    ),
+    modeId,
+    modelId,
+    configOptionValues,
   };
 };
 
@@ -217,7 +364,54 @@ export const buildAgentRoleRunConfigSummary = (
   // reasoning option is literally named after the category.
   const isReasoning = (configId: string) =>
     isAcpThoughtLevelConfigOption({ id: configId, category: configId });
-  const options = Object.entries(runConfig.configOptionValues ?? {});
+  const modeConfigSelector = findModeConfigSelector(selectors?.configOptionSelectors);
+  const modelConfigSelector = findModelConfigSelector(selectors?.configOptionSelectors);
+  const effectiveModelOptions =
+    selectors && selectors.modelOptions.length > 0
+      ? selectors.modelOptions
+      : (modelConfigSelector?.options ?? []);
+  const effectiveModeOptions =
+    selectors && selectors.modeOptions.length > 0
+      ? selectors.modeOptions
+      : (modeConfigSelector?.options ?? []);
+  const modelConfigId = modelConfigSelector?.configId ?? 'model';
+  const modeConfigId = modeConfigSelector?.configId ?? 'mode';
+  const modelFromConfig =
+    typeof runConfig.configOptionValues?.[modelConfigId] === 'string'
+      ? (runConfig.configOptionValues[modelConfigId] as string)
+      : undefined;
+  const modeFromConfig =
+    typeof runConfig.configOptionValues?.[modeConfigId] === 'string'
+      ? (runConfig.configOptionValues[modeConfigId] as string)
+      : undefined;
+  const effectiveModelId =
+    selectors && selectors.modelOptions.length === 0 && modelConfigSelector
+      ? (modelFromConfig ?? runConfig.modelId)
+      : (runConfig.modelId ?? modelFromConfig);
+  const effectiveModeId =
+    selectors && selectors.modeOptions.length === 0 && modeConfigSelector
+      ? (modeFromConfig ?? runConfig.modeId)
+      : (runConfig.modeId ?? modeFromConfig);
+
+  const skipConfigIds = new Set<string>();
+  if (
+    effectiveModelId &&
+    (modelFromConfig === effectiveModelId ||
+      (selectors && selectors.modelOptions.length > 0 && !modelConfigSelector))
+  ) {
+    skipConfigIds.add(modelConfigId);
+  }
+  if (
+    effectiveModeId &&
+    (modeFromConfig === effectiveModeId ||
+      (selectors && selectors.modeOptions.length > 0 && !modeConfigSelector))
+  ) {
+    skipConfigIds.add(modeConfigId);
+  }
+
+  const options = Object.entries(runConfig.configOptionValues ?? {}).filter(
+    ([configId]) => !skipConfigIds.has(configId)
+  );
   const reasoning = options.filter(([configId]) => isReasoning(configId));
   const rest = options.filter(([configId]) => !isReasoning(configId));
 
@@ -232,17 +426,17 @@ export const buildAgentRoleRunConfigSummary = (
     });
 
   return [
-    ...(runConfig.modelId
+    ...(effectiveModelId
       ? [
-          selectors?.modelOptions.find((option) => option.value === runConfig.modelId)?.label ??
-            runConfig.modelId,
+          effectiveModelOptions.find((option) => option.value === effectiveModelId)?.label ??
+            effectiveModelId,
         ]
       : []),
     ...describe(reasoning),
-    ...(runConfig.modeId
+    ...(effectiveModeId
       ? [
-          selectors?.modeOptions.find((option) => option.value === runConfig.modeId)?.label ??
-            runConfig.modeId,
+          effectiveModeOptions.find((option) => option.value === effectiveModeId)?.label ??
+            effectiveModeId,
         ]
       : []),
     ...describe(rest),

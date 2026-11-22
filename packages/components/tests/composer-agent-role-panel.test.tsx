@@ -230,4 +230,62 @@ describe('ComposerAgentRolePanel', () => {
       else delete (window as { innerWidth?: number }).innerWidth;
     }
   });
+
+  it('uses machineFor so cross-machine custom ACP previews resolve their own model option id without duplicating rows', async () => {
+    const remoteMachineId = 'machine-remote' as MachineId;
+    const remoteConfigId = 'config-remote-custom' as AgentConfigId;
+    const remoteConfig = {
+      id: remoteConfigId,
+      machineId: remoteMachineId,
+      name: 'Remote Custom ACP',
+      cliType: 'custom',
+      agentType: 'custom-acp',
+      env: {},
+    } as import('@lody/shared').AgentConfigMeta;
+    const remoteRole = makeRole({
+      id: 'r-remote' as AgentRoleId,
+      name: 'Remote Reviewer',
+      machineId: remoteMachineId,
+      agentConfigId: remoteConfigId,
+      runConfig: {
+        modelId: 'engine-v2',
+        configOptionValues: { engine: 'engine-v2' },
+      },
+    });
+    const remoteItem = composerItemsOf(remoteRole, {
+      machineId: 'machine-1' as MachineId,
+      agentConfigs: [remoteConfig],
+    })[0]!;
+    const remoteMachine = {
+      acpCapabilities: {
+        [remoteConfigId]: {
+          cacheVersion: 11,
+          cliType: 'custom',
+          agentType: 'custom-acp',
+          provenance: 'runtime',
+          fetchedAt: 1,
+          modes: [],
+          models: [{ modelId: 'engine-v2', name: 'Engine V2' }],
+          configOptions: [
+            {
+              id: 'engine',
+              name: 'Engine',
+              category: 'model',
+              type: 'select',
+              currentValue: 'engine-v2',
+              options: [{ value: 'engine-v2', name: 'Engine V2' }],
+            },
+          ],
+        },
+      },
+    } as unknown as Pick<import('@lody/shared').MachineViewMeta, 'acpCapabilities'>;
+
+    const view = await render({
+      items: [remoteItem],
+      machineFor: (id) => (id === remoteMachineId ? remoteMachine : null),
+    });
+    expect(view.textContent).toContain('Engine V2');
+    expect(view.textContent?.match(/Engine V2/g)).toHaveLength(1);
+    expect(view.textContent).not.toContain('engine-v2');
+  });
 });

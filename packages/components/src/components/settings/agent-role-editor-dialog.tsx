@@ -8,7 +8,9 @@ import {
   buildAgentRoleFormValue,
   buildAgentRoleFromForm,
   buildAgentRoleRunConfig,
+  getAcpCapabilityCacheKey,
   getAgentRoleAgentFamily,
+  getReadableAcpCapabilityCacheEntryForRuntimeOverrides,
   getServerNow,
   buildEmptyAgentRoleFormInstance,
   validateAgentRoleForm,
@@ -28,11 +30,13 @@ import { resolveAcpSelectorOptions } from '@/hooks/use-acp-selector-options';
 import { useDialogExitSnapshot } from '@/hooks/use-dialog-exit-snapshot';
 import { useVisibleMachineMetas } from '@/hooks/use-visible-machine-metas';
 import { useWorkspaceAgentRoleActions } from '@/hooks/use-workspace-agent-roles';
+import { orderAcpConfigOptionSelectors } from '@/lib/acp-selector-order';
 import {
   applyAgentRoleRunConfigDefaults,
   carryAgentRoleOptionsToModel,
   findAgentRoleRunConfigIssues,
 } from '@/lib/agent-role-form';
+import { buildAgentRoleConfigPreferences } from '@/lib/composer-agent-roles';
 import { capturePostHogEvent } from '@/lib/posthog-analytics';
 import { Dialog } from '@/ui/dialog';
 import { AgentRoleForm } from './agent-role-form';
@@ -154,19 +158,28 @@ export function AgentRoleEditorDialog({
       : undefined;
   const selectorTargetFor = (instance: AgentRoleFormInstance) => {
     const config = configFor(instance);
-    return config && instance.machineId
-      ? {
-          configId: config.id,
-          cliType: config.cliType,
-          agentType: config.agentType,
-          runtimeOverrides: config.runtimeOverrides,
-          machine: machines.get(instance.machineId) ?? null,
-          // A Role pins its model: the effort ladder must follow the model
-          // being edited, not the probe-time current one, so the picker and
-          // the compatibility check agree on the same ladder.
-          selectedModelId: instance.modelId,
-        }
-      : undefined;
+    if (!config || !instance.machineId) return undefined;
+    const machine = machines.get(instance.machineId) ?? null;
+    const capability = getReadableAcpCapabilityCacheEntryForRuntimeOverrides(
+      machine?.acpCapabilities?.[getAcpCapabilityCacheKey(config.id)],
+      config.runtimeOverrides
+    );
+    const preferences = buildAgentRoleConfigPreferences(buildAgentRoleRunConfig(instance), {
+      cliType: config.cliType,
+      capability,
+    });
+    return {
+      configId: config.id,
+      cliType: config.cliType,
+      agentType: config.agentType,
+      runtimeOverrides: config.runtimeOverrides,
+      machine,
+      // A Role pins its model: the effort ladder must follow the model
+      // being edited, not the probe-time current one, so the picker and
+      // the compatibility check agree on the same ladder.
+      selectedModelId: preferences.modelId,
+      configOptionValues: preferences.configOptionValues,
+    };
   };
   const selectorOptionsByInstance = useMemo(
     () =>
@@ -231,9 +244,25 @@ export function AgentRoleEditorDialog({
       new Map(
         (editorValue?.instances ?? []).map((instance) => {
           const selectorOptions = selectorOptionsByInstance.get(instance.id) ?? null;
-          const model = instance.modelId
-            ? (selectorOptions?.modelOptions.find((option) => option.value === instance.modelId)
-                ?.label ?? instance.modelId)
+          const modelConfigSelector = selectorOptions
+            ? orderAcpConfigOptionSelectors(selectorOptions.configOptionSelectors).modelSelectors[0]
+            : undefined;
+          const modelConfigValue =
+            modelConfigSelector &&
+            typeof instance.configOptionValues[modelConfigSelector.configId] === 'string'
+              ? (instance.configOptionValues[modelConfigSelector.configId] as string)
+              : undefined;
+          const effectiveModelId =
+            selectorOptions && selectorOptions.modelOptions.length === 0 && modelConfigValue
+              ? modelConfigValue
+              : (instance.modelId ?? modelConfigValue ?? null);
+          const effectiveModelOptions =
+            selectorOptions && selectorOptions.modelOptions.length > 0
+              ? selectorOptions.modelOptions
+              : (modelConfigSelector?.options ?? []);
+          const model = effectiveModelId
+            ? (effectiveModelOptions.find((option) => option.value === effectiveModelId)?.label ??
+              effectiveModelId)
             : null;
           return [
             instance.id,
@@ -333,17 +362,24 @@ export function AgentRoleEditorDialog({
               if (!openEditor) return;
               const instances = value.instances.map((instance) => {
                 const previous = editorValue.instances.find((entry) => entry.id === instance.id);
+                const outgoingSelectors =
+                  selectorOptionsByInstance.get(instance.id)?.configOptionSelectors ?? [];
+                const modelConfigId =
+                  orderAcpConfigOptionSelectors(outgoingSelectors).modelSelectors[0]?.configId;
                 const modelChanged =
                   previous !== undefined &&
                   instance.agentConfigId === previous.agentConfigId &&
-                  instance.modelId !== previous.modelId;
+                  (instance.modelId !== previous.modelId ||
+                    (modelConfigId !== undefined &&
+                      instance.configOptionValues[modelConfigId] !==
+                        previous.configOptionValues[modelConfigId]));
                 const target = selectorTargetFor(instance);
                 return modelChanged && target
                   ? {
                       ...instance,
                       configOptionValues: carryAgentRoleOptionsToModel(
                         instance.configOptionValues,
-                        selectorOptionsByInstance.get(instance.id)?.configOptionSelectors ?? [],
+                        outgoingSelectors,
                         buildAcpSelectorOptions(target).configOptionSelectors
                       ),
                     }

@@ -2635,6 +2635,128 @@ describe('Machine Flock freshness fallback validation', () => {
     ).rejects.toThrow('conflicts with explicit mode');
   });
 
+  it('canonicalizes dual-field Role dispatch configs on registry/custom agents to match Desktop and availability', async () => {
+    const agyConfig = {
+      ...agentConfig,
+      cliType: 'registry' as const,
+      agentType: 'antigravity-acp',
+    };
+    const agyCapability = {
+      ...createAcpCapability(),
+      cliType: 'registry' as const,
+      agentType: 'antigravity-acp',
+      modes: [
+        { id: 'default', name: 'Default' },
+        { id: 'auto', name: 'Auto' },
+        { id: 'yolo', name: 'YOLO' },
+      ],
+      models: [
+        { modelId: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+        { modelId: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+      ],
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select' as const,
+          currentValue: 'gemini-4-argon',
+          options: [
+            { value: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+            { value: 'gemini-4-neon', name: 'Gemini 4 Neon' },
+          ],
+        },
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select' as const,
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'auto', name: 'Auto' },
+            { value: 'yolo', name: 'YOLO' },
+          ],
+        },
+      ],
+    };
+    const confirmedAgy = readFixture(agyCapability).manager;
+
+    // Dual-field conflict on registry follows canonical configOptionValues (`auto`),
+    // dropping stale top-level `modeId: 'yolo'` so antigravityLaunchArgs does NOT enable YOLO.
+    const resolvedConflict = await resolve(
+      confirmedAgy,
+      {
+        inheritSessionDefaults: false,
+        modeId: 'yolo',
+        modelId: 'gemini-4-neon',
+        configOptionValues: { mode: 'auto', model: 'gemini-4-neon' },
+      },
+      { agentConfig: agyConfig }
+    );
+    expect(resolvedConflict.modeId).toBeUndefined();
+    expect(resolvedConflict.modelId).toBeUndefined();
+    expect(resolvedConflict.configOptionValues).toEqual({
+      mode: 'auto',
+      model: 'gemini-4-neon',
+    });
+
+    // Shadowed retired top-level modeId is ignored when canonical configOptionValues.mode is valid.
+    const resolvedShadowedRetired = await resolve(
+      confirmedAgy,
+      {
+        inheritSessionDefaults: false,
+        modeId: 'retired-mode',
+        configOptionValues: { mode: 'auto', model: 'gemini-4-neon' },
+      },
+      { agentConfig: agyConfig }
+    );
+    expect(resolvedShadowedRetired.modeId).toBeUndefined();
+    expect(resolvedShadowedRetired.configOptionValues).toEqual({
+      mode: 'auto',
+      model: 'gemini-4-neon',
+    });
+
+    // Target model renaming its mode control (`mode` -> `access-policy`) binds top-level modeId there.
+    const renamedCapability = {
+      ...agyCapability,
+      cliType: 'custom' as const,
+      agentType: 'custom-acp',
+      observedModelConfigOptions: {
+        'gemini-4-neon': [
+          agyCapability.configOptions[0]!,
+          {
+            id: 'access-policy',
+            name: 'Access Policy',
+            category: 'mode',
+            type: 'select' as const,
+            currentValue: 'default',
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'yolo', name: 'YOLO' },
+            ],
+          },
+        ],
+      },
+    };
+    const confirmedRenamed = readFixture(renamedCapability).manager;
+    const resolvedRenamed = await resolve(
+      confirmedRenamed,
+      {
+        inheritSessionDefaults: false,
+        modelId: 'gemini-4-neon',
+        modeId: 'yolo',
+      },
+      { agentConfig: { ...agyConfig, cliType: 'custom', agentType: 'custom-acp' } }
+    );
+    expect(resolvedRenamed.modeId).toBeUndefined();
+    expect(resolvedRenamed.modelId).toBeUndefined();
+    expect(resolvedRenamed.configOptionValues).toEqual({
+      model: 'gemini-4-neon',
+      'access-policy': 'yolo',
+    });
+  });
+
   it('does not apply a readable capability entry from a different runtime override', async () => {
     const runtimeOverrides = { codexPath: '/synthetic/selected-codex' };
     const capability = {

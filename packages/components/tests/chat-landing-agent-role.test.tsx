@@ -32,6 +32,9 @@ const world = vi.hoisted(() => ({
   online: new Set<string>(),
   menu: null as null | {
     agentSelection: { agentId: string; machineId: string } | null;
+    selectedModeId?: string | null;
+    selectedModelId?: string | null;
+    configOptionValues?: Record<string, string | boolean>;
     agentRoles: {
       items: { instance: { id: string }; title: string; availability: { kind: string } }[];
       selectedInstanceId: string | null;
@@ -130,7 +133,11 @@ vi.mock('../src/components/chat/chat-landing-view', async (importOriginal) => ({
 import { ChatLanding } from '../src/components/chat/chat-landing';
 import { initI18n } from '../src/i18n';
 import { writeChatLandingDefaults } from '../src/lib/chat-landing-defaults';
-import { reportedClaudeCapabilities, singleMachineRole } from './agent-role-fixture';
+import {
+  reportedAntigravityCapabilities,
+  reportedClaudeCapabilities,
+  singleMachineRole,
+} from './agent-role-fixture';
 import { TestCloudPlatformProvider } from './test-platform';
 
 (
@@ -139,12 +146,21 @@ import { TestCloudPlatformProvider } from './test-platform';
 
 const here = 'machine-here' as MachineId;
 const there = 'machine-there' as MachineId;
-const config = (id: string, machineId: MachineId, agentType: 'claude' | 'codex') =>
+const config = (
+  id: string,
+  machineId: MachineId,
+  agentType: 'claude' | 'codex' | 'antigravity-acp'
+) =>
   ({
     id,
     machineId,
-    name: agentType === 'claude' ? 'Claude Code' : 'Codex',
-    cliType: 'builtin',
+    name:
+      agentType === 'claude'
+        ? 'Claude Code'
+        : agentType === 'codex'
+          ? 'Codex'
+          : 'Google Antigravity',
+    cliType: agentType === 'antigravity-acp' ? 'registry' : 'builtin',
     agentType,
     env: {},
   }) as unknown as AgentConfigMeta;
@@ -224,6 +240,25 @@ const roles = [
       configOptionValues: { effort: 'max', fast: false },
     }),
   ]),
+  // Registry Antigravity Roles with YOLO: one in the live dual-field shape,
+  // and one pinning top-level modeId/modelId only.
+  role('globalReview', [
+    instance('antigravity-yolo-here', here, 'antigravity-here', {
+      modeId: 'yolo',
+      modelId: 'gemini-4-neon',
+      configOptionValues: {
+        mode: 'yolo',
+        model: 'gemini-4-neon',
+        thought_level: 'xhigh',
+      },
+    }),
+  ]),
+  role('quickAntigravity', [
+    instance('antigravity-top-level-here', here, 'antigravity-here', {
+      modeId: 'yolo',
+      modelId: 'gemini-4-argon',
+    }),
+  ]),
 ];
 
 describe('picking a Role on the new-chat page', () => {
@@ -236,22 +271,30 @@ describe('picking a Role on the new-chat page', () => {
     world.configs = [
       config('claude-here', here, 'claude'),
       config('codex-here', here, 'codex'),
+      config('antigravity-here', here, 'antigravity-acp'),
       config('claude-there', there, 'claude'),
       config('codex-there', there, 'codex'),
     ];
     world.machines = new Map(
       (
         [
-          [here, 'devnuc', 'claude-here'],
-          [there, 'n100', 'claude-there'],
+          [
+            here,
+            'devnuc',
+            {
+              'claude-here': reportedClaudeCapabilities,
+              'antigravity-here': reportedAntigravityCapabilities,
+            },
+          ],
+          [there, 'n100', { 'claude-there': reportedClaudeCapabilities }],
         ] as const
-      ).map(([id, name, claudeConfigId]) => [
+      ).map(([id, name, acpCapabilities]) => [
         id,
         {
           id,
           name,
           localProjects: {},
-          acpCapabilities: { [claudeConfigId]: reportedClaudeCapabilities },
+          acpCapabilities,
         },
       ])
     );
@@ -296,7 +339,9 @@ describe('picking a Role on the new-chat page', () => {
   it('offers every target separately, this machine first', () => {
     expect(world.menu?.agentSelection).toEqual({ agentId: 'claude-here', machineId: here });
     expect(world.menu?.agentRoles.items.map((item) => item.instance.id)).toEqual([
+      'antigravity-yolo-here',
       'perf-here',
+      'antigravity-top-level-here',
       'ui-claude-here',
       'ui-codex-here',
       'vision-here',
@@ -313,6 +358,18 @@ describe('picking a Role on the new-chat page', () => {
     // The stored shape that did not take: Fable has no Fast toggle to carry `fast: false`.
     ['a Fable instance that pins Fast off', 'ui-claude-here', 'claude-here', here],
     [
+      'a registry Antigravity YOLO Role storing both top-level and configOption fields',
+      'antigravity-yolo-here',
+      'antigravity-here',
+      here,
+    ],
+    [
+      'a registry Antigravity YOLO Role pinning top-level modeId/modelId only',
+      'antigravity-top-level-here',
+      'antigravity-here',
+      here,
+    ],
+    [
       'an instance on another machine, moving the chat there',
       'remote-there',
       'claude-there',
@@ -326,12 +383,30 @@ describe('picking a Role on the new-chat page', () => {
   });
 
   it('follows one pick after another, and leaves a Role by name only', async () => {
-    for (const instanceId of ['ui-claude-here', 'vision-here', 'remote-there', 'ui-codex-here']) {
+    for (const instanceId of [
+      'ui-claude-here',
+      'antigravity-yolo-here',
+      'vision-here',
+      'remote-there',
+      'ui-codex-here',
+    ]) {
       expect((await pick(instanceId)).selected).toBe(instanceId);
     }
     const left = await pick(null as never);
     expect(left.selected).toBeNull();
     // Clearing the name keeps the agent the Role had put there.
     expect(left.agent).toEqual({ agentId: 'codex-here', machineId: here });
+  });
+
+  it('passes resolved configOptionValues and null dedicated mode/model to the composer when picking a registry Antigravity YOLO Role', async () => {
+    await pick('antigravity-yolo-here');
+    expect(world.menu?.agentRoles.selectedInstanceId).toBe('antigravity-yolo-here');
+    expect(world.menu?.selectedModeId).toBeNull();
+    expect(world.menu?.selectedModelId).toBeNull();
+    expect(world.menu?.configOptionValues).toEqual({
+      mode: 'yolo',
+      model: 'gemini-4-neon',
+      thought_level: 'xhigh',
+    });
   });
 });
