@@ -557,8 +557,6 @@ export interface AgentClientOptions {
     cliType: AgentConfigCliType;
     agentType: string;
   };
-  /** `initialize.clientInfo`, from the resolved launch; absent sends none. */
-  clientInfo?: acp.Implementation;
   /** Config selected before ACP session establishment. */
   modelId?: SessionTurnInputConfig['modelId'];
   configOptionValues?: SessionTurnInputConfig['configOptionValues'];
@@ -2031,7 +2029,6 @@ export class AgentClient implements acp.Client {
         withAbort(
           connection.initialize({
             protocolVersion: acp.PROTOCOL_VERSION,
-            ...(this.options.clientInfo ? { clientInfo: this.options.clientInfo } : {}),
             ...(grokClientIdentifier ? { _meta: { clientIdentifier: grokClientIdentifier } } : {}),
             clientCapabilities: {
               terminal: this.terminalEnabled,

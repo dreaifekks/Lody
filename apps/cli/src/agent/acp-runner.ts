@@ -120,7 +120,6 @@ export type CreateAcpClientOptions = {
     cliType: AgentConfigCliType;
     agentType: string;
   };
-  clientInfo?: AgentClientOptions['clientInfo'];
   modelId?: AgentClientOptions['modelId'];
   configOptionValues?: AgentClientOptions['configOptionValues'];
   /** Launcher family (npx/uvx/local) for ACP startup analytics; non-PII. */
@@ -174,7 +173,6 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     machineId: options.machineId,
     terminalManager: options.terminalManager,
     agentConfig: options.agentConfig,
-    clientInfo: options.clientInfo,
     modelId: options.modelId,
     configOptionValues: options.configOptionValues,
     resolveWorktreeProject: options.resolveWorktreeProject,
@@ -940,7 +938,6 @@ async function startLocalAcpProtocol<T>(
           cliType: options.cliType,
           agentType: options.agentType,
         },
-        clientInfo: launch.clientInfo,
         launcher,
         terminalEnabled: options.terminalEnabled,
         discoverAuthenticationMethods: options.discoverAuthenticationMethods,

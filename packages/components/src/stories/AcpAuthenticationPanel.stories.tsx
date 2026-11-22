@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react';
+import { userEvent, within } from 'storybook/test';
 import type { ReactNode } from 'react';
 import { Provider } from 'jotai';
 import { useHydrateAtoms } from 'jotai/utils';
@@ -17,6 +18,7 @@ import { AcpAuthenticationPanel } from '@/components/settings/acp-authentication
 const workspaceId = 'settings-story-workspace' as WorkspaceId;
 const machineId = 'settings-story-machine' as MachineId;
 const configId = 'settings-story-lody-agent' as AgentConfigId;
+const antigravityConfigId = 'settings-story-antigravity' as AgentConfigId;
 
 const authMethods = [
   {
@@ -39,6 +41,34 @@ const authMethods = [
   },
 ];
 
+const antigravityAuthMethods = [
+  {
+    id: 'oauth-personal',
+    type: 'agent' as const,
+    name: 'Log in with Google',
+    description: 'Log in with your Google account',
+  },
+  {
+    id: 'oauth-business',
+    type: 'agent' as const,
+    name: 'Log in with Gemini Enterprise',
+    description: 'Log in with your Gemini Enterprise account',
+  },
+  {
+    id: 'gemini-api-key',
+    type: 'agent' as const,
+    name: 'Gemini API key',
+    description: 'Use an API key with Gemini Developer API',
+  },
+  {
+    id: 'agent-platform',
+    type: 'agent' as const,
+    name: 'Gemini Enterprise Agent Platform',
+    description:
+      'Use Gemini Enterprise Agent Platform (formerly Vertex AI) with Application Default Credentials',
+  },
+];
+
 const capabilityEntry = {
   cacheVersion: 12,
   cliType: 'builtin',
@@ -47,6 +77,16 @@ const capabilityEntry = {
   modes: [],
   models: [],
   authMethods,
+};
+
+const antigravityCapabilityEntry = {
+  cacheVersion: 12,
+  cliType: 'builtin',
+  agentType: 'antigravity',
+  sourceVersion: 'builtin:antigravity:1.5.14',
+  modes: [],
+  models: [],
+  authMethods: antigravityAuthMethods,
 };
 
 function machineMeta(withAdvertisedMethods: boolean): MachineMeta {
@@ -65,7 +105,9 @@ function machineMeta(withAdvertisedMethods: boolean): MachineMeta {
       acpAuthenticationInteractions: 2,
       acpAuthenticationMethodSelection: 1,
     },
-    acpCapabilities: withAdvertisedMethods ? { [configId]: capabilityEntry } : {},
+    acpCapabilities: withAdvertisedMethods
+      ? { [configId]: capabilityEntry, [antigravityConfigId]: antigravityCapabilityEntry }
+      : {},
   } as unknown as MachineMeta;
 }
 
@@ -171,9 +213,64 @@ export const WaitingOnSignIn: Story = {
     </Fixture>
   ),
   play: async ({ canvasElement }) => {
-    const { within, userEvent } = await import('storybook/test');
     const canvas = within(canvasElement);
     const buttons = await canvas.findAllByRole('button', { name: 'Sign in' });
     await userEvent.click(buttons[0]!);
   },
+};
+
+/** Editing an already-signed-in Antigravity provider collapses advertised methods behind Sign in again. */
+export const AntigravityReauthenticationCollapsed: Story = {
+  args: {
+    configId: antigravityConfigId,
+    cliType: 'builtin',
+    agentType: 'antigravity',
+    providerName: 'Google Antigravity',
+    layout: 'default',
+    reauthentication: true,
+  },
+  render: (args) => (
+    <Fixture>
+      <AcpAuthenticationPanel {...args} />
+    </Fixture>
+  ),
+};
+
+/** Clicking Sign in again expands Antigravity's advertised methods with a Cancel action. */
+export const AntigravityReauthenticationExpanded: Story = {
+  args: {
+    configId: antigravityConfigId,
+    cliType: 'builtin',
+    agentType: 'antigravity',
+    providerName: 'Google Antigravity',
+    layout: 'default',
+    reauthentication: true,
+  },
+  render: (args) => (
+    <Fixture>
+      <AcpAuthenticationPanel {...args} />
+    </Fixture>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = await canvas.findByRole('button', { name: 'Sign in again' });
+    await userEvent.click(button);
+  },
+};
+
+/** When authentication is actually required, Antigravity's advertised methods appear up front. */
+export const AntigravityUnauthenticatedMethods: Story = {
+  args: {
+    configId: antigravityConfigId,
+    cliType: 'builtin',
+    agentType: 'antigravity',
+    providerName: 'Google Antigravity',
+    layout: 'default',
+    reauthentication: false,
+  },
+  render: (args) => (
+    <Fixture>
+      <AcpAuthenticationPanel {...args} />
+    </Fixture>
+  ),
 };

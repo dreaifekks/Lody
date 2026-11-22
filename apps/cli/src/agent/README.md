@@ -426,7 +426,10 @@ connection.
 A protocol agent publishes its sign-in methods in the `initialize` response. The capability
 probe stores that list on the Provider's capability row (`authMethods`), so the account panel
 and the in-conversation auth notice list what the agent supports before anyone starts a
-sign-in. Sorbet's probe advertises URL and credential-form discovery; ordinary sessions do
+sign-in. When editing an already-configured Provider (`reauthentication` mode) or right after
+sign-in completes, the panel keeps the advertised methods behind "Sign in again" (and skips
+mount-time discovery) instead of presenting a "Choose a sign-in method" prompt on open;
+unauthenticated surfaces still display them up front. Sorbet's probe advertises URL and credential-form discovery; ordinary sessions do
 not. Earlier Sorbet probe method lists are ignored and refreshed under the new source version.
 Picking a row sends its `methodId` with the `start` request. The daemon re-reads the
 advertised list on its own connection, ignores a pick the agent no longer advertises (falling
@@ -556,7 +559,9 @@ in `setting.ts`, at the managed runtime’s agy version and hidden from discover
 the legacy transition never returns to `agy_acp_server`.
 The server loads the user's agy plugins, hooks and MCP servers, and offers `default`,
 `accept-edits`, `auto` and `plan` with a `thought_level` option. It lists Claude/GPT
-models to every client, so the Zed client identity no longer matters for it.
+models to every client; the fork's former Zed client-identity spoofing
+(`LODY_ANTIGRAVITY_THIRD_PARTY_MODELS`) and its settings switch have been removed, and any
+leftover env entry in persisted configs is ignored harmlessly.
 
 - Titles: it pushes untagged `session_info_update` titles, so it uses the identity
   fallback in [Session titles](#session-titles). An isolated title session would be

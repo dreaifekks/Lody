@@ -7,7 +7,6 @@ import {
   ANTIGRAVITY_AGENT_TYPE,
   ANTIGRAVITY_ARGON_LIMIT_ID,
   ANTIGRAVITY_THIRD_PARTY_LIMIT_ID,
-  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
   getRateLimitEntryKey,
   type AgentConfigId,
   type AgentConfigMeta,

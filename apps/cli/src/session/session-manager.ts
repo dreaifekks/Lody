@@ -303,7 +303,6 @@ export interface CreateAgentConfig {
   args?: string[];
   env?: Record<string, string>;
   capabilitySourceVersion?: string;
-  clientInfo?: AgentClientOptions['clientInfo'];
   /** A retry must confirm the managed Codex provider still authorizes this process. */
   revalidateManagedCodexProfile?: () => Promise<void>;
   /**
@@ -727,7 +726,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
             }
           : undefined,
       capabilitySourceVersion: launch.capabilitySourceVersion,
-      clientInfo: launch.clientInfo,
       revalidateManagedCodexProfile:
         config.codexProfile?.profile.mode === 'chatgpt'
           ? async () => await this.freezeCodexProfile(config)

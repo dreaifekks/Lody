@@ -18,7 +18,6 @@ import { toast } from '@/lib/toast';
 import { usePostHog } from '@posthog/react';
 import {
   ANTIGRAVITY_AGENT_TYPE,
-  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
   computeTitleGenerationDefaults,
   DEEPSEEK_HARNESS_API_KEY_ENV,
   DEEPSEEK_HARNESS_BASE_URL_ENV,
@@ -100,8 +99,7 @@ import type { AcpModelOptionsRefreshProgress } from '@/hooks/use-refresh-machine
 import { formatModelOptionsProgressText } from './model-options-progress';
 import { activeWorkspaceRuntimeAtom } from '@/atoms/runtime';
 import { Button } from '@lody/ui/button';
-import { AlertDialog, Dialog } from '@/ui/dialog';
-import { Switch } from '@lody/ui/switch';
+import { Dialog } from '@/ui/dialog';
 import { Collapsible } from '@lody/ui/collapsible';
 import { Input } from '@lody/ui/input';
 import { Field as UiField } from '@lody/ui/field';
@@ -1371,12 +1369,6 @@ function resolveDeepSeekEndpointForm(
   return { deepseekEndpointMode: 'custom', deepseekCustomBaseUrl: stored };
 }
 
-function omitEnvKey(env: Record<string, string>, key: string): Record<string, string> {
-  if (!(key in env)) return env;
-  const { [key]: _omitted, ...rest } = env;
-  return rest;
-}
-
 function omitDeepSeekProtectedEnv(env: Record<string, string>): Record<string, string> {
   const additionalEnv = { ...env };
   delete additionalEnv[DEEPSEEK_HARNESS_API_KEY_ENV];
@@ -1615,6 +1607,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
   const [probeError, setProbeError] = useState<string | null>(null);
   const [manuallyTested, setManuallyTested] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
+  const [authRequiredRevision, setAuthRequiredRevision] = useState(0);
   const [probeTick, setProbeTick] = useState(0);
   const [piExtensionsEdited, setPiExtensionsEdited] = useState(false);
   // Built-in creation and Pi extension edits require a live probe for the exact
@@ -1678,6 +1671,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
       setFormData(initialForm);
       setManuallyTested(false);
       setAuthRequired(false);
+      setAuthRequiredRevision(0);
       setProbeError(null);
       setProbeTick(0);
       setPiExtensionsEdited(false);
@@ -2127,6 +2121,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
         if (cancelled) return;
         if (response.authRequired) {
           setAuthRequired(true);
+          setAuthRequiredRevision((revision) => revision + 1);
           setManuallyTested(false);
           setVerifiedBuiltinContext(null);
           return;
@@ -2212,6 +2207,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
       });
       if (response.authRequired) {
         setAuthRequired(true);
+        setAuthRequiredRevision((revision) => revision + 1);
         setManuallyTested(false);
         return;
       }
@@ -2311,15 +2307,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
     });
   }, [isPreset, titleSelectors, formData.titleGeneration?.configOptionValues]);
 
-  const isAntigravityRegistry =
-    formData.cliType === 'registry' && formData.agentType === ANTIGRAVITY_AGENT_TYPE;
-  const antigravityThirdPartyModels = formData.env[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV];
-  // The opt-in is owned by its switch below, so the free-form list neither shows
-  // nor drops it.
-  const additionalEnv = omitEnvKey(
-    isDeepSeekBuiltin ? omitDeepSeekProtectedEnv(formData.env) : formData.env,
-    ANTIGRAVITY_THIRD_PARTY_MODELS_ENV
-  );
+  const additionalEnv = isDeepSeekBuiltin ? omitDeepSeekProtectedEnv(formData.env) : formData.env;
   const envCount = Object.keys(additionalEnv).length;
 
   const invalidateBuiltinVerification = () => {
@@ -3232,6 +3220,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
                 env={formData.env}
                 compact
                 reauthentication={!authRequired}
+                authRequiredRevision={authRequiredRevision}
                 onBeforeStart={persistConfigBeforeMachineLaunch}
                 onAuthenticated={() => {
                   setAuthRequired(false);
@@ -3359,18 +3348,6 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
               naming its setting and folding open in place — so they hold the
               lower half of the form as one object rather than three captions. */}
           <div {...stylex.props(styles.sectionGroup)}>
-            {isAntigravityRegistry ? (
-              <AntigravityThirdPartyModelsSection
-                enabled={antigravityThirdPartyModels === '1'}
-                onChange={(enabled) =>
-                  updateEnvironment(
-                    enabled
-                      ? { ...formData.env, [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' }
-                      : omitEnvKey(formData.env, ANTIGRAVITY_THIRD_PARTY_MODELS_ENV)
-                  )
-                }
-              />
-            ) : null}
             {!isPreset &&
               !acpProvidesSessionTitle &&
               (capabilitiesReady ? titleSelectors.length > 0 : true) && (
@@ -3465,14 +3442,7 @@ function SupportedAgentConfigDialog(props: AgentConfigDialogProps) {
                 value={additionalEnv}
                 onChange={(env) => {
                   if (!isDeepSeekBuiltin) {
-                    updateEnvironment(
-                      antigravityThirdPartyModels === undefined
-                        ? env
-                        : {
-                            ...env,
-                            [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: antigravityThirdPartyModels,
-                          }
-                    );
+                    updateEnvironment(env);
                     return;
                   }
                   const next = omitDeepSeekProtectedEnv(env);
@@ -4275,75 +4245,6 @@ function Section({
         </Collapsible.Panel>
       </Collapsible.Root>
     </div>
-  );
-}
-
-/**
- * Opt-in for Antigravity's Claude/GPT models. Turning it on makes the daemon
- * introduce itself as Zed, so it asks the owner to accept that account risk first.
- */
-function AntigravityThirdPartyModelsSection({
-  enabled,
-  onChange,
-}: {
-  enabled: boolean;
-  onChange: (enabled: boolean) => void;
-}) {
-  const { t } = useTranslation();
-  const [confirming, setConfirming] = useState(false);
-  const label = t(
-    'settings.agent.dialog.antigravityThirdParty.toggle',
-    'Offer Claude and GPT models'
-  );
-  return (
-    <Section
-      title={t('settings.agent.dialog.antigravityThirdParty.title', 'Claude and GPT models')}
-      defaultOpen={enabled}
-    >
-      <div {...stylex.props(styles.optionRow)}>
-        <UiField.Label>{label}</UiField.Label>
-        <div>
-          <Switch
-            aria-label={label}
-            checked={enabled}
-            onCheckedChange={(checked) => {
-              if (checked) setConfirming(true);
-              else onChange(false);
-            }}
-          />
-        </div>
-      </div>
-      <p {...stylex.props(styles.note)}>
-        {t(
-          'settings.agent.dialog.antigravityThirdParty.hint',
-          'When on, Lody identifies as Zed to this agent. Applies to new sessions.'
-        )}
-      </p>
-      <AlertDialog.Root open={confirming} onOpenChange={setConfirming}>
-        <AlertDialog.Content>
-          <AlertDialog.Header>
-            <AlertDialog.Title>
-              {t(
-                'settings.agent.dialog.antigravityThirdParty.confirmTitle',
-                'Identify as Zed to Antigravity?'
-              )}
-            </AlertDialog.Title>
-            <AlertDialog.Description>
-              {t(
-                'settings.agent.dialog.antigravityThirdParty.confirmBody',
-                "Lody will tell Google's Antigravity agent that it is the Zed editor. Google does not offer these models to Lody, and may treat a client misstating its identity as a breach of its terms — up to restricting or suspending your Google account. Google can also stop this from working at any time. Enable only if you accept that risk."
-              )}
-            </AlertDialog.Description>
-          </AlertDialog.Header>
-          <AlertDialog.Footer>
-            <AlertDialog.Cancel>{t('common.cancel', 'Cancel')}</AlertDialog.Cancel>
-            <AlertDialog.Action variant="destructive" onClick={() => onChange(true)}>
-              {t('settings.agent.dialog.antigravityThirdParty.confirmAction', 'I accept the risk')}
-            </AlertDialog.Action>
-          </AlertDialog.Footer>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
-    </Section>
   );
 }
 

@@ -12,6 +12,8 @@ import {
   type MachineId,
 } from '@lody/shared';
 import { machineMetaCacheAtom } from '../src/atoms/doc-meta';
+import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import { currentWorkspaceIdAtom } from '../src/atoms/workspace-context';
 import * as authenticationHook from '../src/hooks/use-machine-acp-authentication';
 import * as machineFlock from '../src/hooks/use-machine-flock-rows';
 
@@ -532,5 +534,363 @@ describe('AcpAuthenticationAuthorizationView', () => {
       action: 'accept',
       content: { email: 'user@example.com', token: 'hidden', account: 'work' },
     });
+  });
+
+  it('hides advertised methods behind Sign in again during reauthentication and after sign-in', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const store = createStore();
+    const machineId = 'local' as MachineId;
+    const configId = 'antigravity-1' as AgentConfigId;
+    const requestMachineAcpCapabilitiesRefresh = vi.fn();
+    store.set(currentWorkspaceIdAtom, 'ws-1' as never);
+    store.set(runtimeAtom, {
+      workspaceId: 'ws-1',
+      requestMachineAcpCapabilitiesRefresh,
+    } as unknown as WorkspaceRuntime);
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(machineId)]: {
+        id: machineId,
+        protocolCapabilities: {
+          acpProtocolAuthentication: 2,
+          acpAuthenticationInteractions: 2,
+          acpAuthenticationMethodSelection: 1,
+        },
+        acpCapabilities: {
+          [configId]: {
+            cliType: 'builtin',
+            agentType: 'antigravity',
+            cacheVersion: 12,
+            modes: [],
+            models: [],
+            fetchedAt: 1,
+            authMethods: [
+              {
+                id: 'oauth-personal',
+                name: 'Log in with Google',
+                description: 'Log in with your Google account',
+                type: 'agent',
+              },
+              {
+                id: 'gemini-api-key',
+                name: 'Gemini API key',
+                description: 'Use an API key with Gemini Developer API',
+                type: 'agent',
+              },
+            ],
+          },
+        },
+      } as never,
+    });
+    const started: (string | undefined)[] = [];
+    let resolveResponse!: (response: MachineAcpAuthenticateResponse) => void;
+    vi.spyOn(authenticationHook, 'useMachineAcpAuthentication').mockReturnValue({
+      startAuthentication: (args) => {
+        started.push(args.methodId);
+        return {
+          requestId: 'auth-agy',
+          promise: new Promise<MachineAcpAuthenticateResponse>((resolve) => {
+            resolveResponse = resolve;
+          }),
+        };
+      },
+      cancelAuthentication: vi.fn(),
+      submitAuthorizationCode: vi.fn(),
+      submitAuthenticationInput: vi.fn(),
+    });
+    vi.spyOn(machineFlock, 'resyncMachineFlockRows').mockResolvedValue(undefined as never);
+
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <AcpAuthenticationPanel
+            machineId={machineId}
+            configId={configId}
+            cliType="builtin"
+            agentType="antigravity"
+            providerName="Google Antigravity"
+            compact
+            reauthentication
+          />
+        </Provider>
+      );
+    });
+
+    // Collapsed behind "Sign in again" — does not look unauthenticated.
+    const signInAgain = () =>
+      Array.from(container.querySelectorAll('button')).find(
+        (button) => button.textContent?.trim() === 'Sign in again'
+      );
+    expect(signInAgain()).toBeDefined();
+    expect(container.textContent).not.toContain('Choose a sign-in method');
+
+    // Expanding shows methods with a Cancel button that collapses back cleanly.
+    await act(async () => signInAgain()?.click());
+    expect(container.textContent).toContain('Choose a sign-in method');
+    expect(container.textContent).toContain('Log in with Google');
+    const cancel = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Cancel'
+    );
+    expect(cancel).toBeDefined();
+    await act(async () => cancel?.click());
+    expect(container.textContent).not.toContain('Choose a sign-in method');
+    expect(signInAgain()).toBeDefined();
+
+    // Expanding and picking a method runs auth, then finishes collapsed with success text.
+    await act(async () => signInAgain()?.click());
+    const google = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Log in with Google')
+    );
+    await act(async () => google?.click());
+    expect(started).toEqual(['oauth-personal']);
+    await act(async () => {
+      resolveResponse({
+        type: 'machine/acp-authenticate_response',
+        machineId,
+        requestId: 'auth-agy',
+        agentType: 'antigravity',
+        success: true,
+        disposition: 'authenticated',
+        capabilitiesRefreshed: true,
+      });
+    });
+    expect(container.textContent).toContain('Google Antigravity sign-in completed');
+    expect(container.textContent).not.toContain('Choose a sign-in method');
+    expect(signInAgain()).toBeDefined();
+    expect(requestMachineAcpCapabilitiesRefresh).not.toHaveBeenCalled();
+  });
+
+  it('skips mount-time discovery in reauthentication mode, handles daemon dynamic methods, and starts lone method directly', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const store = createStore();
+    const machineId = 'local' as MachineId;
+    const uncachedId = 'antigravity-uncached' as AgentConfigId;
+    const singleMethodId = 'custom-single' as AgentConfigId;
+    const requestMachineAcpCapabilitiesRefresh = vi.fn(async () => ({
+      authMethods: [{ id: 'oauth-personal', name: 'Log in with Google', type: 'agent' }],
+    }));
+    store.set(currentWorkspaceIdAtom, 'ws-1' as never);
+    store.set(runtimeAtom, {
+      workspaceId: 'ws-1',
+      requestMachineAcpCapabilitiesRefresh,
+    } as unknown as WorkspaceRuntime);
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(machineId)]: {
+        id: machineId,
+        protocolCapabilities: {
+          acpProtocolAuthentication: 2,
+          acpAuthenticationInteractions: 2,
+          acpAuthenticationMethodSelection: 1,
+        },
+        acpCapabilities: {
+          [singleMethodId]: {
+            cliType: 'custom',
+            agentType: 'custom-one',
+            cacheVersion: 12,
+            modes: [],
+            models: [],
+            fetchedAt: 1,
+            authMethods: [{ id: 'oauth', name: 'Browser OAuth', type: 'agent' }],
+          },
+        },
+      } as never,
+    });
+    const started: (string | undefined)[] = [];
+    let onProgress: authenticationHook.MachineAcpAuthenticationArgs['onProgress'];
+    const submitAuthenticationInput = vi.fn(async () => ({}));
+    vi.spyOn(authenticationHook, 'useMachineAcpAuthentication').mockReturnValue({
+      startAuthentication: (args) => {
+        started.push(args.methodId);
+        onProgress = args.onProgress;
+        return {
+          requestId: 'auth-dynamic',
+          promise: new Promise<MachineAcpAuthenticateResponse>(() => {}),
+        };
+      },
+      cancelAuthentication: vi.fn(),
+      submitAuthorizationCode: vi.fn(),
+      submitAuthenticationInput: submitAuthenticationInput as never,
+    });
+
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <AcpAuthenticationPanel
+            machineId={machineId}
+            configId={uncachedId}
+            cliType="builtin"
+            agentType="antigravity"
+            compact
+            reauthentication
+          />
+        </Provider>
+      );
+    });
+    expect(requestMachineAcpCapabilitiesRefresh).not.toHaveBeenCalled();
+
+    // Clicking "Sign in again" when uncached lets the daemon prompt for methods without duplicating Cancel.
+    const signInUncached = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Sign in again'
+    );
+    await act(async () => signInUncached?.click());
+    expect(started).toEqual([undefined]);
+    await act(async () =>
+      onProgress?.({
+        type: 'machine/acp-authentication-progress',
+        machineId,
+        requestId: 'auth-dynamic',
+        agentType: 'antigravity',
+        status: 'auth-methods',
+        interactionId: 'pick-1',
+        authMethods: [
+          { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+          { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+        ],
+      })
+    );
+    expect(container.textContent).toContain('Choose a sign-in method');
+    expect(
+      Array.from(container.querySelectorAll('button')).filter(
+        (button) => button.textContent?.trim() === 'Cancel'
+      )
+    ).toHaveLength(1);
+    const google = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Log in with Google')
+    );
+    await act(async () => google?.click());
+    expect(submitAuthenticationInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interactionId: 'pick-1',
+        input: { action: 'accept', methodId: 'oauth-personal' },
+      })
+    );
+
+    // Flipping the same uncached target out of reauthentication triggers discovery through the real runtime gate.
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <AcpAuthenticationPanel
+            machineId={machineId}
+            configId={uncachedId}
+            cliType="builtin"
+            agentType="antigravity"
+            compact
+            reauthentication={false}
+          />
+        </Provider>
+      );
+    });
+    expect(requestMachineAcpCapabilitiesRefresh).toHaveBeenCalledTimes(1);
+
+    // A single advertised method starts immediately on "Sign in again" without a 1-item chooser.
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <AcpAuthenticationPanel
+            machineId={machineId}
+            configId={singleMethodId}
+            cliType="custom"
+            agentType="custom-one"
+            customAcp={{ command: 'custom-acp', args: [] }}
+            compact
+            reauthentication
+          />
+        </Provider>
+      );
+    });
+    const signInAgain = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Sign in again'
+    );
+    await act(async () => signInAgain?.click());
+    expect(started).toEqual([undefined, 'oauth']);
+  });
+
+  it('shows advertised methods immediately when authentication is required, then collapses on completion', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const store = createStore();
+    const machineId = 'local' as MachineId;
+    const configId = 'antigravity-unauth' as AgentConfigId;
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(machineId)]: {
+        id: machineId,
+        protocolCapabilities: {
+          acpProtocolAuthentication: 2,
+          acpAuthenticationInteractions: 2,
+          acpAuthenticationMethodSelection: 1,
+        },
+        acpCapabilities: {
+          [configId]: {
+            cliType: 'builtin',
+            agentType: 'antigravity',
+            cacheVersion: 12,
+            modes: [],
+            models: [],
+            fetchedAt: 1,
+            authMethods: [
+              { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+              { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+            ],
+          },
+        },
+      } as never,
+    });
+    const started: (string | undefined)[] = [];
+    let resolveResponse!: (response: MachineAcpAuthenticateResponse) => void;
+    vi.spyOn(authenticationHook, 'useMachineAcpAuthentication').mockReturnValue({
+      startAuthentication: (args) => {
+        started.push(args.methodId);
+        return {
+          requestId: 'auth-unauth',
+          promise: new Promise<MachineAcpAuthenticateResponse>((resolve) => {
+            resolveResponse = resolve;
+          }),
+        };
+      },
+      cancelAuthentication: vi.fn(),
+      submitAuthorizationCode: vi.fn(),
+      submitAuthenticationInput: vi.fn(),
+    });
+    vi.spyOn(machineFlock, 'resyncMachineFlockRows').mockResolvedValue(undefined as never);
+
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <AcpAuthenticationPanel
+            machineId={machineId}
+            configId={configId}
+            cliType="builtin"
+            agentType="antigravity"
+            providerName="Google Antigravity"
+            compact
+          />
+        </Provider>
+      );
+    });
+
+    expect(container.textContent).toContain('Choose a sign-in method');
+    expect(
+      Array.from(container.querySelectorAll('button')).some(
+        (button) => button.textContent?.trim() === 'Cancel'
+      )
+    ).toBe(false);
+
+    const google = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Log in with Google')
+    );
+    await act(async () => google?.click());
+    expect(started).toEqual(['oauth-personal']);
+
+    await act(async () => {
+      resolveResponse({
+        type: 'machine/acp-authenticate_response',
+        machineId,
+        requestId: 'auth-unauth',
+        agentType: 'antigravity',
+        success: true,
+        disposition: 'authenticated',
+        capabilitiesRefreshed: true,
+      });
+    });
+    expect(container.textContent).toContain('Google Antigravity sign-in completed');
+    expect(container.textContent).not.toContain('Choose a sign-in method');
   });
 });

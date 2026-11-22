@@ -9,7 +9,6 @@ import {
   ACP_EXTENSION_DSH_SESSION_ROOT_ENV,
 } from 'acp-extension-dsh/profile';
 import {
-  ANTIGRAVITY_THIRD_PARTY_MODELS_ENV,
   ACP_CAPABILITY_CACHE_VERSION,
   getAcpCapabilityCacheStaleReason,
   REGISTRY_ACP_AGENTS,
@@ -21,7 +20,6 @@ import { spawn } from 'node:child_process';
 import {
   expandHomePath,
   getAcpCapabilitySourceVersion,
-  getAcpClientInfo,
   mergeACPProcessEnv,
   mergeLoginShellEnv,
   normalizeAgentProcessEnv,
@@ -916,15 +914,15 @@ describe('resolveBuiltinACPSetting', () => {
     );
   });
 
-  it('identifies as Zed to Antigravity only when its provider opted in', () => {
+  it('pins persisted registry Antigravity to the agy release and ignores leftover third-party env', () => {
     const plain = { cliType: 'registry' as const, agentType: 'antigravity-acp' };
-    const optedIn = { ...plain, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '1' } };
+    const withLegacyEnv = { ...plain, env: { LODY_ANTIGRAVITY_THIRD_PARTY_MODELS: '1' } };
 
-    expect(getAcpClientInfo(plain)).toBeUndefined();
     // The creation catalog hides this provider; the compatibility resolver still knows it
-    // and runs the managed runtime's agy release.
+    // and runs the managed runtime's agy release without client-identity spoofing.
     const sourceVersion = getAcpCapabilitySourceVersion(plain);
     expect(sourceVersion).toBe(`antigravity-acp@${ANTIGRAVITY_RUNTIME_VERSION}+agy-usage:1`);
+    expect(getAcpCapabilitySourceVersion(withLegacyEnv)).toBe(sourceVersion);
     const oldCache = {
       cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
       ...plain,
@@ -937,16 +935,14 @@ describe('resolveBuiltinACPSetting', () => {
       'source-version-mismatch'
     );
     expect(
+      getAcpCapabilityCacheStaleReason(
+        { ...oldCache, sourceVersion: `${sourceVersion}+client:zed` },
+        sourceVersion
+      )
+    ).toBe('source-version-mismatch');
+    expect(
       getAcpCapabilityCacheStaleReason({ ...oldCache, sourceVersion }, sourceVersion)
     ).toBeUndefined();
-    expect(getAcpClientInfo(optedIn)?.name).toBe('zed');
-    // A different identity lists different models, so it must not share the cache entry.
-    expect(getAcpCapabilitySourceVersion(optedIn)).toBe(`${sourceVersion}+client:zed`);
-    expect(
-      getAcpClientInfo({ ...plain, env: { [ANTIGRAVITY_THIRD_PARTY_MODELS_ENV]: '0' } })
-    ).toBeUndefined();
-    expect(getAcpClientInfo({ ...optedIn, agentType: 'amp-acp' })).toBeUndefined();
-    expect(getAcpClientInfo({ ...optedIn, cliType: 'custom' })).toBeUndefined();
   });
 
   it('keeps removed registry providers launchable without listing duplicates', () => {

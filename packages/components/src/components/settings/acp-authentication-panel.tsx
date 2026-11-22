@@ -63,6 +63,15 @@ const styles = stylex.create({
     justifyContent: 'space-between',
     gap: space[2],
   },
+  methodsHead: {
+    display: 'flex',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space[2],
+  },
+  methodsTitle: { minWidth: 0, flexGrow: 1 },
+  methodsCancel: { flexShrink: 0 },
   text: { minWidth: 0 },
   title: { margin: 0, fontSize: '14px', lineHeight: 1.375, color: colors.label },
   hint: {
@@ -260,6 +269,7 @@ export function AcpAuthenticationPanel({
   onlyMethodId,
   excludedMethodIds,
   reauthentication = false,
+  authRequiredRevision = 0,
   providerName,
   onBeforeStart,
   onAuthenticated,
@@ -281,6 +291,8 @@ export function AcpAuthenticationPanel({
   onlyMethodId?: string;
   excludedMethodIds?: readonly string[];
   reauthentication?: boolean;
+  /** Incremented by a parent whenever a fresh probe reports `authRequired`. */
+  authRequiredRevision?: number;
   /**
    * Fallback label for agents Lody has no pinned account name for. A pinned
    * provider always wins: the user signs into "ChatGPT", whatever they named
@@ -315,6 +327,7 @@ export function AcpAuthenticationPanel({
   } = useMachineAcpAuthentication(runtime, workspaceId);
   const [phase, setPhase] = useState<AuthenticationPhase>('idle');
   const [actionOpen, setActionOpen] = useState(false);
+  const [pickingMethod, setPickingMethod] = useState(false);
   const [runningSince, setRunningSince] = useState<number | null>(null);
   const [runningMethodId, setRunningMethodId] = useState<string | null>(null);
   const waiting = phase === 'running' || phase === 'verifying';
@@ -442,17 +455,45 @@ export function AcpAuthenticationPanel({
     setAuthorizationCodeSubmitted(false);
     setAuthorizationCodeUnknown(false);
     setSubmittingAuthorizationCode(false);
+    setPickingMethod(false);
     discoveryTargetRef.current = null;
     setDiscoveredAuthMethods(undefined);
     setPhase('idle');
   }, [authArgs, runtime, workspaceId]);
 
+  const prevTargetRef = useRef({
+    configId,
+    machineId,
+    reauthentication,
+    authRequiredRevision,
+  });
+  useEffect(() => {
+    const prev = prevTargetRef.current;
+    prevTargetRef.current = { configId, machineId, reauthentication, authRequiredRevision };
+    setPickingMethod(false);
+    const authRequiredChanged = prev.authRequiredRevision !== authRequiredRevision;
+    if (
+      (prev.reauthentication && !reauthentication) ||
+      authRequiredChanged ||
+      prev.configId !== configId ||
+      prev.machineId !== machineId
+    ) {
+      setPhase((current) => (current === 'authenticated' ? 'idle' : current));
+      if (authRequiredChanged) {
+        setError(null);
+      }
+    }
+  }, [authRequiredRevision, configId, machineId, reauthentication]);
+
   // Discovery is what makes the advertised methods visible before anyone
   // starts signing in: the agent publishes them in its `initialize` response,
   // which only a probe can read. A cached capability entry already answers for
   // this Provider, so the probe runs at most once per target per mount.
+  // In reauthentication mode (already configured Provider), wait until the user
+  // asks to sign in again instead of spawning an unsolicited probe on open.
   useEffect(() => {
     if (layout === 'action') return undefined;
+    if (reauthentication && !pickingMethod) return undefined;
     if (!runtime || workspaceId == null || !machineId || !configId) return undefined;
     if (!protocolAuthProvider || !interactiveProtocolSupported) return undefined;
     if (discoveredAuthMethods !== undefined || cachedAuthMethods !== undefined) return undefined;
@@ -487,7 +528,9 @@ export function AcpAuthenticationPanel({
     interactiveProtocolSupported,
     layout,
     machineId,
+    pickingMethod,
     protocolAuthProvider,
+    reauthentication,
     runtime,
     workspaceId,
   ]);
@@ -514,8 +557,28 @@ export function AcpAuthenticationPanel({
     return opened;
   };
 
+  // When the Provider is already configured (`reauthentication`) or just finished
+  // signing in, keep the advertised method picker collapsed behind "Sign in again"
+  // so it does not look like an unauthenticated prompt.
+  const collapseAdvertisedMethods = reauthentication || phase === 'authenticated';
+
   const handleStart = (): void => {
-    void startAuthenticationFromPersistedConfig();
+    if (
+      collapseAdvertisedMethods &&
+      layout === 'default' &&
+      codexAuthMode !== 'api-key' &&
+      canSelectAuthMethod &&
+      advertisedMethods.length > 1
+    ) {
+      setError(null);
+      setPickingMethod(true);
+      return;
+    }
+    void startAuthenticationFromPersistedConfig(
+      advertisedMethods.length === 1 && codexAuthMode !== 'api-key'
+        ? advertisedMethods[0]?.id
+        : undefined
+    );
   };
 
   const startAuthenticationFromPersistedConfig = async (methodId?: string): Promise<void> => {
@@ -537,6 +600,7 @@ export function AcpAuthenticationPanel({
           )
         : null;
     openedAuthorizationUrlRef.current = null;
+    setPickingMethod(false);
     setPhase('running');
     setRunningSince(Date.now());
     setRunningMethodId(methodId ?? null);
@@ -932,14 +996,15 @@ export function AcpAuthenticationPanel({
     }
   }
 
-  // The advertised list replaces the single sign-in button: each row is the
-  // action, so the reader picks the method instead of discovering the choice
-  // only after a sign-in attempt has already started.
+  // The advertised list replaces the single sign-in button when authentication is
+  // needed, or after the user explicitly chooses "Sign in again" on a Provider
+  // with multiple methods.
   const showAdvertisedMethods =
     advertisedMethods.length > 0 &&
     codexAuthMode !== 'api-key' &&
     phase !== 'running' &&
-    phase !== 'verifying';
+    phase !== 'verifying' &&
+    (!collapseAdvertisedMethods || pickingMethod);
   const methodRows =
     layout === 'rows' && advertisedMethods.length > 0 && codexAuthMode !== 'api-key';
 
@@ -972,7 +1037,9 @@ export function AcpAuthenticationPanel({
           {t('agents.authentication.succeeded', '{{provider}} sign-in completed', { provider })}
         </span>
       ) : null}
-      {methodRows || layout === 'action' ? null : (
+      {methodRows ||
+      layout === 'action' ||
+      (!waiting && showAdvertisedMethods && (phase !== 'authenticated' || pickingMethod)) ? null : (
         <div {...stylex.props(styles.actions)}>
           {waiting ? (
             waitingStatus
@@ -998,7 +1065,7 @@ export function AcpAuthenticationPanel({
                       })}
             </Button>
           )}
-          {phase === 'authenticated' ? (
+          {phase === 'authenticated' && !pickingMethod ? (
             <span {...stylex.props(styles.success)}>
               {t('agents.authentication.succeeded', '{{provider}} sign-in completed', {
                 provider,
@@ -1033,12 +1100,15 @@ export function AcpAuthenticationPanel({
             interactionId: 'advertised-methods',
             methods: advertisedMethods,
           }}
+          onCancel={collapseAdvertisedMethods ? () => setPickingMethod(false) : undefined}
           values={EMPTY_FORM_VALUES}
           submitting={false}
           onValuesChange={() => {}}
           onSubmit={(input) => {
-            if (input.action === 'accept')
+            if (input.action === 'accept') {
+              setPickingMethod(false);
               void startAuthenticationFromPersistedConfig(input.methodId);
+            }
           }}
         />
       ) : null}
@@ -1063,10 +1133,14 @@ export function AcpAuthenticationPanel({
         <AcpAuthenticationInteractionView
           interaction={interaction}
           dialog={layout === 'action'}
-          onCancel={() => {
-            setActionOpen(false);
-            handleCancel();
-          }}
+          onCancel={
+            layout === 'action'
+              ? () => {
+                  setActionOpen(false);
+                  handleCancel();
+                }
+              : undefined
+          }
           values={formValues}
           submitting={submittingInteraction}
           onValuesChange={setFormValues}
@@ -1380,9 +1454,24 @@ export function AcpAuthenticationInteractionView({
     );
     return (
       <div {...stylex.props(surface.formBlock, styles.block)}>
-        <p {...stylex.props(styles.title)}>
-          {t('agents.authentication.chooseMethod', 'Choose a sign-in method')}
-        </p>
+        <div {...stylex.props(styles.methodsHead)}>
+          <p {...stylex.props(styles.title, styles.methodsTitle)}>
+            {t('agents.authentication.chooseMethod', 'Choose a sign-in method')}
+          </p>
+          {onCancel ? (
+            <div {...stylex.props(styles.methodsCancel)}>
+              <Button
+                type="button"
+                size="small"
+                variant="ghost"
+                disabled={submitting}
+                onClick={onCancel}
+              >
+                {t('common.cancel', 'Cancel')}
+              </Button>
+            </div>
+          ) : null}
+        </div>
         <div {...stylex.props(styles.methods)}>
           {methods.map((method) => (
             <button

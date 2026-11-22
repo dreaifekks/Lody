@@ -833,7 +833,6 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
             cliType: callbacks.cliType,
             agentType: callbacks.agentType,
           },
-          clientInfo: callbacks.clientInfo,
           modelId: this.config.modelId,
           configOptionValues: this.config.configOptionValues,
           launcher,

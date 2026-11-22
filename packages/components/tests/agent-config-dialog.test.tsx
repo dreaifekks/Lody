@@ -11,6 +11,7 @@ import {
   ACP_CAPABILITY_CACHE_VERSION,
   PROVIDER_SETUP_PROTOCOL_VERSION,
   getAcpCapabilityCacheKey,
+  getMachineRoomId,
   machineFlockKeys,
   serializeMachineFlockKey,
   serializeCustomAcpLaunchSpec,
@@ -28,7 +29,10 @@ import {
   getAllAgentConfigAtom,
 } from '../src/atoms/agents';
 import { setMachineFlockRowsForMachineAtom } from '../src/atoms/machine-flock';
+import { machineMetaCacheAtom } from '../src/atoms/doc-meta';
 import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
+import * as authenticationHook from '../src/hooks/use-machine-acp-authentication';
+import * as machineFlock from '../src/hooks/use-machine-flock-rows';
 import { currentWorkspaceIdAtom, currentWorkspaceSlugAtom } from '../src/atoms/workspace-context';
 import {
   AgentConfigDialog,
@@ -823,7 +827,7 @@ describe('AgentConfigDialog', () => {
     expect(saved.at(-1)?.runtimeOverrides?.antigravitySkipPermissions).toBeUndefined();
   });
 
-  it('keeps the Claude/GPT identity opt-in on persisted registry Antigravity only', async () => {
+  it('omits the removed Zed identity opt-in while preserving legacy env on persisted registry Antigravity', async () => {
     const saved: AgentConfigSubmitPayload[] = [];
     await renderDialog(
       {
@@ -842,13 +846,236 @@ describe('AgentConfigDialog', () => {
         saved.push(payload);
       })
     );
-    const toggle = document.querySelector<HTMLButtonElement>(
-      '[aria-label="Offer Claude and GPT models"]'
-    );
-    expect(toggle).not.toBeNull();
-    expect(toggle?.getAttribute('aria-checked')).toBe('true');
+    expect(document.body.textContent).not.toContain('Claude and GPT models');
+    expect(document.querySelector('[aria-label="Offer Claude and GPT models"]')).toBeNull();
     await act(async () => getPrimaryAction('Save').click());
     expect(saved.at(-1)?.env?.LODY_ANTIGRAVITY_THIRD_PARTY_MODELS).toBe('1');
+  });
+
+  it('collapses Antigravity sign-in methods behind Sign in again while editing until auth is required', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const configId = 'agy-edit' as AgentConfigId;
+    const machineWithAuthMethods: MachineViewMeta = {
+      ...createMachine('Workstation', {
+        acpProtocolAuthentication: 2,
+        acpAuthenticationInteractions: 2,
+        acpAuthenticationMethodSelection: 1,
+      }),
+      acpCapabilities: {
+        [getAcpCapabilityCacheKey(configId)]: {
+          cliType: 'builtin',
+          agentType: 'antigravity',
+          cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
+          sourceVersion: 'builtin:antigravity:1.5.14',
+          modes: [],
+          models: [],
+          configOptions: [],
+          availableCommands: [],
+          fetchedAt: Date.now(),
+          authMethods: [
+            { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+            { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+          ],
+        },
+      },
+    };
+    const onRefreshCapabilities = vi.fn<RefreshCapabilities>(async () => ({
+      type: 'machine/acp-capabilities-refresh_response',
+      machineId,
+      configId,
+      cliType: 'builtin',
+      agentType: 'antigravity',
+      success: false,
+      authRequired: true,
+      authMethods: [
+        { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+        { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+      ],
+      error: 'Authentication required',
+    }));
+    vi.spyOn(authenticationHook, 'useMachineAcpAuthentication').mockReturnValue({
+      startAuthentication: () => ({
+        requestId: 'auth-edit-1',
+        promise: Promise.resolve({
+          type: 'machine/acp-authenticate_response' as const,
+          machineId,
+          requestId: 'auth-edit-1',
+          agentType: 'antigravity',
+          success: true,
+          disposition: 'authenticated' as const,
+          capabilitiesRefreshed: true,
+        }),
+      }),
+      cancelAuthentication: vi.fn(),
+      submitAuthorizationCode: vi.fn(),
+      submitAuthenticationInput: vi.fn(),
+    });
+    vi.spyOn(machineFlock, 'resyncMachineFlockRows').mockResolvedValue(undefined as never);
+
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(machineId)]: machineWithAuthMethods as never,
+    });
+
+    await renderDialog(
+      {
+        kind: 'edit',
+        config: createBuiltinConfig({
+          id: configId,
+          name: 'Antigravity',
+          agentType: 'antigravity',
+          runtimeOverrides: { antigravityPath: '/usr/local/bin/agy' },
+        }),
+      },
+      machineWithAuthMethods,
+      vi.fn(async () => {}),
+      undefined,
+      onRefreshCapabilities
+    );
+
+    expect(findSignInAgainButton()).toBeDefined();
+    expect(document.body.textContent).not.toContain('Choose a sign-in method');
+
+    // Clicking "Sign in again" reveals the advertised methods locally with Cancel.
+    await act(async () => findSignInAgainButton()?.click());
+    expect(document.body.textContent).toContain('Choose a sign-in method');
+    expect(document.body.textContent).toContain('Log in with Google');
+    expect(document.body.textContent).toContain('Gemini API key');
+
+    // Completing sign-in collapses back with the completion status.
+    const googleMethod = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Log in with Google')
+    );
+    await act(async () => googleMethod?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Antigravity sign-in completed')
+    );
+    expect(document.body.textContent).not.toContain('Choose a sign-in method');
+
+    // A later probe reporting authRequired clears the stale completion status and expands methods.
+    const testButton = Array.from(document.body.querySelectorAll('button')).find((button) => {
+      const label = button.getAttribute('aria-label');
+      return label === 'Test runtime' || label === 'Ready';
+    });
+    expect(testButton).toBeDefined();
+    await act(async () => testButton?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        'This provider has no credentials on this machine yet.'
+      )
+    );
+    expect(document.body.textContent).not.toContain('Antigravity sign-in completed');
+    expect(document.body.textContent).toContain('Choose a sign-in method');
+  });
+
+  it('clears stale authenticated state when a second authRequired probe follows a timed-out verification', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const configId = 'agy-timeout' as AgentConfigId;
+    const machineWithAuthMethods: MachineViewMeta = {
+      ...createMachine('Workstation', {
+        acpProtocolAuthentication: 2,
+        acpAuthenticationInteractions: 2,
+        acpAuthenticationMethodSelection: 1,
+      }),
+      acpCapabilities: {
+        [getAcpCapabilityCacheKey(configId)]: {
+          cliType: 'builtin',
+          agentType: 'antigravity',
+          cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
+          sourceVersion: 'builtin:antigravity:1.5.14',
+          modes: [],
+          models: [],
+          configOptions: [],
+          availableCommands: [],
+          fetchedAt: Date.now(),
+          authMethods: [
+            { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+            { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+          ],
+        },
+      },
+    };
+    const onRefreshCapabilities = vi.fn<RefreshCapabilities>(async () => ({
+      type: 'machine/acp-capabilities-refresh_response',
+      machineId,
+      configId,
+      cliType: 'builtin',
+      agentType: 'antigravity',
+      success: false,
+      authRequired: true,
+      authMethods: [
+        { id: 'oauth-personal', name: 'Log in with Google', type: 'agent' },
+        { id: 'gemini-api-key', name: 'Gemini API key', type: 'agent' },
+      ],
+      error: 'Authentication required',
+    }));
+    vi.spyOn(authenticationHook, 'useMachineAcpAuthentication').mockReturnValue({
+      startAuthentication: () => ({
+        requestId: 'auth-timeout-1',
+        promise: Promise.resolve({
+          type: 'machine/acp-authenticate_response' as const,
+          machineId,
+          requestId: 'auth-timeout-1',
+          agentType: 'antigravity',
+          success: true,
+          disposition: 'authenticated' as const,
+          capabilitiesRefreshed: false,
+          error: 'Authentication succeeded, but capability verification timed out',
+        }),
+      }),
+      cancelAuthentication: vi.fn(),
+      submitAuthorizationCode: vi.fn(),
+      submitAuthenticationInput: vi.fn(),
+    });
+    store.set(machineMetaCacheAtom, {
+      [getMachineRoomId(machineId)]: machineWithAuthMethods as never,
+    });
+
+    await renderDialog(
+      {
+        kind: 'edit',
+        config: createBuiltinConfig({
+          id: configId,
+          name: 'Antigravity',
+          agentType: 'antigravity',
+          runtimeOverrides: { antigravityPath: '/usr/local/bin/agy' },
+        }),
+      },
+      machineWithAuthMethods,
+      vi.fn(async () => {}),
+      undefined,
+      onRefreshCapabilities
+    );
+
+    const findTestButton = () =>
+      Array.from(document.body.querySelectorAll('button')).find((button) => {
+        const label = button.getAttribute('aria-label');
+        return label === 'Test runtime' || label === 'Ready';
+      });
+
+    // 1. First probe returns authRequired -> reauthentication becomes false.
+    await act(async () => findTestButton()?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Choose a sign-in method')
+    );
+
+    // 2. Sign-in succeeds but post-auth capability verification times out -> phase='authenticated',
+    //    while parent authRequired stays true (reauthentication remains false).
+    const googleMethod = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Log in with Google')
+    );
+    await act(async () => googleMethod?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Antigravity sign-in completed')
+    );
+    expect(document.body.textContent).not.toContain('Choose a sign-in method');
+
+    // 3. Second probe returns authRequired again -> must clear stale authenticated state and reopen methods.
+    await act(async () => findTestButton()?.click());
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('Choose a sign-in method')
+    );
+    expect(document.body.textContent).not.toContain('Antigravity sign-in completed');
+    expect(document.body.textContent).not.toContain('capability verification timed out');
   });
 
   it('leaves Lody Agent to its own settings page even while its beta is on', async () => {

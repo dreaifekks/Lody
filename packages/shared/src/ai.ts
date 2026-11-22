@@ -64,21 +64,6 @@ export const migrateLegacyAntigravityModeOption = <T extends Record<string, unkn
  * server's own mode, so stored sessions and Roles keep working.
  */
 export const ANTIGRAVITY_YOLO_MODE_ID = 'yolo';
-/**
- * Agent-config env key that opts an Antigravity provider into Claude/GPT models.
- * The former registry server (`agy_acp_server`) listed them only to clients that
- * name themselves Zed, so the daemon sends `clientInfo.name = 'zed'` while this is
- * `'1'`. That is a client identity Lody does not own: the owner accepts the account
- * risk in Settings. The agy CLI's ACP server lists them to every client.
- */
-export const ANTIGRAVITY_THIRD_PARTY_MODELS_ENV = 'LODY_ANTIGRAVITY_THIRD_PARTY_MODELS';
-
-export function isAntigravityThirdPartyModelsEnabled(
-  agentType: string,
-  env: Readonly<Record<string, string | undefined>> | undefined
-): boolean {
-  return agentType === ANTIGRAVITY_AGENT_TYPE && env?.[ANTIGRAVITY_THIRD_PARTY_MODELS_ENV] === '1';
-}
 /** Rate-limit id of Antigravity's Claude/GPT quota group; the Gemini group is `gemini`. */
 export const ANTIGRAVITY_THIRD_PARTY_LIMIT_ID = 'third-party';
 /** Separate Argon quota on Pro plans; Ultra includes Argon in the Gemini group. */

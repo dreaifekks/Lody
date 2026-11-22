@@ -42,9 +42,10 @@ older read settles; a cache failure never reports the approval as failed.
 
 Builtin and persisted registry Providers prefer the `antigravity` quota snapshot in
 Settings and session usage, retaining all agy window labels. The old Gemini/Argon
-selection is used only when no native snapshot is present. The Claude/GPT identity
-opt-in belongs only to the legacy registry Provider; builtin agy already advertises
-these models and does not send the Zed identity. Quota display and refresh share the
+selection is used only when no native snapshot is present. Both identities run the
+agy CLI, which advertises Claude/GPT models directly, so the former Zed identity opt-in
+has been removed; leftover `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` env entries in older
+configs are ignored harmlessly. Quota display and refresh share the
 [account environment policy](../../../../shared/src/subscription-quota.ts).
 
 ## Agent Role summaries
