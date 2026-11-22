@@ -97,6 +97,9 @@ import type {
   SessionEditAndResendSpec,
   SessionForkResponse,
   SessionForkSpec,
+  SessionBtwProgress,
+  SessionBtwRequest,
+  SessionBtwResponse,
   SessionSteerResponse,
   SessionGoalAction,
   SessionGoalResponse,
@@ -239,6 +242,25 @@ const redactRpcRequestForLog = (raw: unknown): unknown => {
       request.method === 'android-emulator/control')
   ) {
     return { method: request.method, params: '[REDACTED PREVIEW CONTROL]' };
+  }
+  if (
+    request.method === 'session/btw' &&
+    typeof request.params === 'object' &&
+    request.params !== null
+  ) {
+    const params = request.params as Record<string, unknown>;
+    return {
+      ...request,
+      params: {
+        action: params.action,
+        sessionId: params.sessionId,
+        btwId: params.btwId,
+        readOnlyTools: params.readOnlyTools,
+        ...(Object.hasOwn(params, 'question') ? { question: '[REDACTED]' } : {}),
+        ...(Object.hasOwn(params, 'articleContext') ? { articleContext: '[REDACTED]' } : {}),
+        ...(Object.hasOwn(params, 'priorTurns') ? { priorTurns: '[REDACTED]' } : {}),
+      },
+    };
   }
   if (
     (request.method !== 'machine/acp-authenticate' &&
@@ -513,6 +535,10 @@ type RpcServerDeps = {
   }) => Promise<SessionGoalResponse>;
   terminateSession?: (args: { sessionId: SessionId }) => Promise<SessionTerminateResponse>;
   forkSession?: (args: SessionForkSpec) => Promise<SessionForkResponse>;
+  handleSessionBtw?: (
+    request: SessionBtwRequest,
+    options: { onProgress?: (progress: SessionBtwProgress) => void }
+  ) => Promise<SessionBtwResponse>;
   editAndResendSession?: (
     args: SessionEditAndResendSpec & { inputConfig: SessionTurnInputConfig }
   ) => Promise<SessionEditAndResendResponse>;
@@ -1053,14 +1079,16 @@ export class LoroStreamsMachineRpcServer {
     const request = raw as { method?: unknown; params?: unknown };
     if (typeof request.method !== 'string') return false;
     if (CONTROL_METHODS.has(request.method)) return true;
-    if (
-      request.method !== 'machine/acp-authenticate' ||
-      typeof request.params !== 'object' ||
-      request.params === null
-    ) {
+    if (typeof request.params !== 'object' || request.params === null) {
       return false;
     }
     const action = (request.params as { action?: unknown }).action;
+    if (request.method === 'session/btw') {
+      return action === 'cancel' || action === 'close';
+    }
+    if (request.method !== 'machine/acp-authenticate') {
+      return false;
+    }
     return action === 'cancel' || action === 'submit-code' || action === 'submit-input';
   }
 
@@ -1898,6 +1926,29 @@ export class LoroStreamsMachineRpcServer {
             targetContext: request.params.targetContext,
             targetPlacement: request.params.targetPlacement,
           });
+          await appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
+        case 'session/btw': {
+          if (!this.deps.handleSessionBtw) {
+            await appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Session /btw is not available on this machine.',
+            });
+            return;
+          }
+          let progressWrites: Promise<void> = Promise.resolve();
+          const appendProgress = (progress: SessionBtwProgress) => {
+            progressWrites = progressWrites
+              .then(() =>
+                appendResultResponse(request.replyTo, request.id, request.method, progress)
+              )
+              .catch(() => undefined);
+          };
+          const response = await this.deps.handleSessionBtw(request.params, {
+            onProgress: request.params.action === 'ask' ? appendProgress : undefined,
+          });
+          await progressWrites;
           await appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
         }
@@ -2765,6 +2816,8 @@ export class LoroStreamsMachineRpcServer {
       | SessionGoalResponse
       | SessionTerminateResponse
       | SessionForkResponse
+      | SessionBtwProgress
+      | SessionBtwResponse
       | SessionEditAndResendResponse
       | SessionDispatchTurnResponse
       | SessionHistoryReadResponse

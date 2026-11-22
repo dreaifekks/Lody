@@ -120,6 +120,9 @@ import {
   type SessionTerminateResponse,
   type SessionForkResponse,
   type SessionForkSpec,
+  type SessionBtwProgress,
+  type SessionBtwRequest,
+  type SessionBtwResponse,
   type SessionEditAndResendResponse,
   type SessionEditAndResendSpec,
   type SessionTurnInputConfig,
@@ -1229,6 +1232,44 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     }
   };
 
+  /**
+   * Ephemeral `/btw` side-question RPC. Always uses Streams RPC (bypassing
+   * `canUseLocalMachineRpc`) so both local and cross-machine requests receive
+   * real-time SSE `onProgress` delta frames.
+   */
+  const requestSessionBtw = async (
+    machineId: MachineId,
+    params: SessionBtwRequest,
+    options?: {
+      onProgress?: (progress: SessionBtwProgress) => void;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    }
+  ): Promise<SessionBtwResponse | null> => {
+    if (options?.signal?.aborted) {
+      return null;
+    }
+    try {
+      await deps.waitForContentAdmission?.();
+      if (options?.signal?.aborted) {
+        return null;
+      }
+      const client = await getMachineRpcClient(machineId);
+      return await client.requestSessionBtw({
+        request: params,
+        onProgress: options?.onProgress,
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      });
+    } catch (error) {
+      return {
+        btwId: params.btwId,
+        text: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
   const requestSessionEditAndResend = async (
     machineId: MachineId,
     args: SessionEditAndResendSpec,
@@ -2068,7 +2109,10 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
       if (!machineSupportsRealtimeVoice({ protocolCapabilities })) {
         return fail('This machine does not support voice. Update the local agent.');
       }
-      if (request.action === 'geminiToken' && !machineSupportsGeminiVoice({ protocolCapabilities })) {
+      if (
+        request.action === 'geminiToken' &&
+        !machineSupportsGeminiVoice({ protocolCapabilities })
+      ) {
         return fail('This machine cannot sign Gemini voice tokens yet. Update Lody on it.');
       }
       if (
@@ -2321,6 +2365,7 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     requestSessionGoal,
     requestSessionTerminate,
     requestSessionFork,
+    requestSessionBtw,
     requestSessionEditAndResend,
     requestSessionDispatchTurn,
     requestSessionHistoryRead,

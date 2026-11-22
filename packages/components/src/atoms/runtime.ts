@@ -423,6 +423,15 @@ export type WorkspaceRuntime = {
     args: import('@lody/shared').SessionForkSpec,
     options?: { timeoutMs?: number }
   ) => Promise<import('@lody/shared').SessionForkResponse | null>;
+  requestSessionBtw: (
+    machineId: MachineId,
+    params: import('@lody/shared').SessionBtwRequest,
+    options?: {
+      onProgress?: (progress: import('@lody/shared').SessionBtwProgress) => void;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    }
+  ) => Promise<import('@lody/shared').SessionBtwResponse | null>;
   requestSessionEditAndResend: (
     machineId: MachineId,
     args: import('@lody/shared').SessionEditAndResendSpec,

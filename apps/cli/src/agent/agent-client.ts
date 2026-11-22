@@ -567,6 +567,10 @@ export interface AgentClientOptions {
    * adapter uses the native local runner; other agents default to true.
    */
   terminalEnabled?: boolean;
+  /** Disable ACP filesystem writes (`clientCapabilities.fs.writeTextFile = false` and reject `writeTextFile`). */
+  readOnlyFs?: boolean;
+  /** Omit the built-in Lody MCP server from ACP session startup. */
+  disableBuiltinMcp?: boolean;
   /** Capability probe only: discover authentication methods without authenticating. */
   discoverAuthenticationMethods?: boolean;
   onStartupStage?: (event: AcpStartupStageEvent) => void;
@@ -720,7 +724,7 @@ export class AgentClient implements acp.Client {
     agentTools: readonly LodyAgentToolId[] = [],
     boardId?: string
   ): acp.McpServer[] {
-    if (!this.options.workspaceId || !this.options.machineId) {
+    if (this.options.disableBuiltinMcp || !this.options.workspaceId || !this.options.machineId) {
       return [];
     }
     // agy puts client MCP tools into its prompt by size up to a budget it shares with
@@ -809,11 +813,13 @@ export class AgentClient implements acp.Client {
     workdir: string,
     externalLoad: Promise<SessionMcpCatalogSelector> | undefined
   ): Promise<acp.McpServer[]> {
-    const builtin = this.buildBuiltinMcpServers(
-      workdir,
-      await this.readLodyAgentTools(),
-      await this.options.loadBoardId?.()
-    );
+    const builtin = this.options.disableBuiltinMcp
+      ? []
+      : this.buildBuiltinMcpServers(
+          workdir,
+          await this.readLodyAgentTools(),
+          await this.options.loadBoardId?.()
+        );
     if (!externalLoad) {
       return builtin;
     }
@@ -1371,6 +1377,12 @@ export class AgentClient implements acp.Client {
   }
 
   async writeTextFile?(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
+    if (this.options.readOnlyFs) {
+      throw acp.RequestError.invalidRequest(
+        undefined,
+        'File writes are disabled in read-only mode'
+      );
+    }
     // ACP file writes are executed locally by the CLI and may be invoked by the agent.
     this.ensureSessionMatch(params.sessionId as ACPSessionId);
     const resolvedPath = this.resolvePath(params.path);
@@ -2047,7 +2059,7 @@ export class AgentClient implements acp.Client {
               // Advertise file tools so agents can use structured reads/writes instead of shelling out.
               fs: {
                 readTextFile: true,
-                writeTextFile: true,
+                writeTextFile: !this.options.readOnlyFs,
               },
               // Form elicitation is how acp-extension-claude >= 0.44.0 surfaces
               // AskUserQuestion; without it the agent disables the tool entirely.

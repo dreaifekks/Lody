@@ -1403,7 +1403,7 @@ export function getBuiltinTitleGenerationDefaults(
   return undefined;
 }
 
-const leastPermissionModeRank = (value: string, name: string): number => {
+export const leastPermissionModeRank = (value: string, name: string): number => {
   const normalized = `${value} ${name}`.toLowerCase().replace(/[\s_-]+/g, '-');
   if (normalized.includes('read-only') || normalized.includes('readonly')) return 0;
   if (normalized.includes('ask')) return 1;
@@ -1412,7 +1412,7 @@ const leastPermissionModeRank = (value: string, name: string): number => {
   return 50;
 };
 
-const reasoningEffortRank = (value: string, name: string): number => {
+export const reasoningEffortRank = (value: string, name: string): number => {
   const normalized = `${value} ${name}`.toLowerCase().replace(/[\s_-]+/g, '-');
   if (normalized.includes('none')) return 0;
   if (normalized.includes('minimal')) return 1;

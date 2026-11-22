@@ -133,6 +133,8 @@ export type CreateAcpClientOptions = {
    * adapter uses the native local runner; other agents default to true.
    */
   terminalEnabled?: boolean;
+  readOnlyFs?: boolean;
+  disableBuiltinMcp?: boolean;
   discoverAuthenticationMethods?: boolean;
   workspaceId?: WorkspaceId;
   machineId?: MachineId;
@@ -179,6 +181,8 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     resolveAdditionalDirectories: options.resolveAdditionalDirectories,
     launcher: options.launcher,
     terminalEnabled: options.terminalEnabled,
+    readOnlyFs: options.readOnlyFs,
+    disableBuiltinMcp: options.disableBuiltinMcp,
     discoverAuthenticationMethods: options.discoverAuthenticationMethods,
     onStartupStage: options.onStartupStage,
     onUpdateMessage: options.onUpdateMessage,
@@ -322,6 +326,18 @@ export type StartLocalAcpAgentOptions = {
   terminalManager: TerminalManager;
   /** Set to false to disable terminal capability advertisement. Defaults to true. */
   terminalEnabled?: boolean;
+  /** Disable ACP filesystem writes (`writeTextFile`). */
+  readOnlyFs?: boolean;
+  /** Omit the built-in Lody MCP server from ACP session startup. */
+  disableBuiltinMcp?: boolean;
+  /** Bypass the shared `AcpSessionStartGate` when the caller enforces its own bounded gate. */
+  skipStartGate?: boolean;
+  /** Replace resolved launch args before spawning (and before `launchArgFilter`). */
+  customLaunchArgs?: readonly string[];
+  /** Transform resolved launch args before spawning. */
+  launchArgFilter?: (args: readonly string[]) => string[];
+  /** Final child-env transform applied right before spawn (after login-shell & profile merges). */
+  envTransform?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   discoverAuthenticationMethods?: boolean;
   onUsageUpdate?: CreateAcpClientOptions['onUsageUpdate'];
   onContextWindowUsageUpdate?: CreateAcpClientOptions['onContextWindowUsageUpdate'];
@@ -818,11 +834,14 @@ async function startLocalAcpProtocol<T>(
         : { env: envWithAcpStartup, close: undefined };
       closeBroker = prepared.close;
       if (releaseProfile) prepared.env.LODY_CODEX_PROCESS_TOKEN = releaseProfile.token;
+      const finalSpawnEnv = options.envTransform
+        ? options.envTransform(prepared.env)
+        : prepared.env;
       agentProcess = spawnAcpProcess({
         cliType: options.cliType,
         agentType: options.agentType,
         workdir: options.workdir,
-        env: prepared.env,
+        env: finalSpawnEnv,
         command: launch.command,
         args: [...attemptArgs],
         spawnImpl: options.spawnImpl,
@@ -940,6 +959,8 @@ async function startLocalAcpProtocol<T>(
         },
         launcher,
         terminalEnabled: options.terminalEnabled,
+        readOnlyFs: options.readOnlyFs,
+        disableBuiltinMcp: options.disableBuiltinMcp,
         discoverAuthenticationMethods: options.discoverAuthenticationMethods,
         onUsageUpdate: options.onUsageUpdate,
         onContextWindowUsageUpdate: options.onContextWindowUsageUpdate,
@@ -998,6 +1019,35 @@ async function startLocalAcpProtocol<T>(
     }
   };
 
+  const baseLaunchArgs = options.customLaunchArgs
+    ? [...options.customLaunchArgs]
+    : [...launch.args];
+  const effectiveLaunchArgs = options.launchArgFilter
+    ? options.launchArgFilter(baseLaunchArgs)
+    : baseLaunchArgs;
+  const recoveryEnv = options.envTransform
+    ? options.envTransform(envWithAcpStartup)
+    : envWithAcpStartup;
+
+  const runStartup = async () =>
+    await runNpxStartupWithRecovery({
+      maxAttempts: retainCleanupFailure ? 1 : undefined,
+      canRetryOfflineAfterFailure: safeOfflineBeforeInitialization
+        ? () => safeOfflineFailure
+        : undefined,
+      command: launch.command,
+      args: effectiveLaunchArgs,
+      env: recoveryEnv,
+      logger: options.logger,
+      logPrefix: '[acp-startup]',
+      attempt: ({ args, startupTimeouts }) => attemptStart(args, startupTimeouts),
+      getStderrTail: () => lastStderrTail,
+    });
+
+  if (options.skipStartGate) {
+    return await runStartup();
+  }
+
   return await withAcpSessionStartSlot(
     {
       label: `acp-startup:${options.agentType}`,
@@ -1010,20 +1060,7 @@ async function startLocalAcpProtocol<T>(
       // deliberately has no such bound — see the gate's options.
       waitTimeoutMs: ACP_STARTUP_QUEUE_WAIT_TIMEOUT_MS,
     },
-    async () =>
-      await runNpxStartupWithRecovery({
-        maxAttempts: retainCleanupFailure ? 1 : undefined,
-        canRetryOfflineAfterFailure: safeOfflineBeforeInitialization
-          ? () => safeOfflineFailure
-          : undefined,
-        command: launch.command,
-        args: launch.args,
-        env: envWithAcpStartup,
-        logger: options.logger,
-        logPrefix: '[acp-startup]',
-        attempt: ({ args, startupTimeouts }) => attemptStart(args, startupTimeouts),
-        getStderrTail: () => lastStderrTail,
-      })
+    runStartup
   );
 }
 

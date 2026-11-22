@@ -1267,3 +1267,55 @@ describe('AgentClient advisory prompt suggestions', () => {
     }
   );
 });
+
+describe('AgentClient readOnlyFs and disableBuiltinMcp', () => {
+  it('advertises writeTextFile: false, rejects writeTextFile calls, and omits builtin MCP servers', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'lody-agent-client-ro-'));
+    try {
+      let advertisedFs: { readTextFile?: boolean; writeTextFile?: boolean } | undefined;
+      connectionMocks.initialize.mockImplementationOnce(async ({ clientCapabilities }) => {
+        advertisedFs = clientCapabilities?.fs;
+        return { agentCapabilities: {} };
+      });
+      connectionMocks.newSession.mockResolvedValueOnce({ sessionId: 'acp-ro-1' });
+
+      const client = new AgentClient({
+        logger: createLogger(),
+        sessionId: 'session-ro-1' as SessionId,
+        workspaceId: 'ws-1' as WorkspaceId,
+        machineId: 'machine-1' as MachineId,
+        terminalManager: {} as never,
+        terminalEnabled: false,
+        readOnlyFs: true,
+        disableBuiltinMcp: true,
+        onUpdateMessage: vi.fn(),
+        onRequestPermission: vi.fn(),
+      });
+
+      await client.startSession({} as never, tmpDir);
+
+      expect(advertisedFs).toEqual({
+        readTextFile: true,
+        writeTextFile: false,
+      });
+      expect(connectionMocks.newSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: tmpDir,
+          mcpServers: [],
+        })
+      );
+
+      const targetPath = join(tmpDir, 'should-not-exist.txt');
+      await expect(
+        client.writeTextFile?.({
+          sessionId: 'acp-ro-1',
+          path: targetPath,
+          content: 'blocked',
+        })
+      ).rejects.toThrow(/read-only/i);
+      await expect(readFile(targetPath, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

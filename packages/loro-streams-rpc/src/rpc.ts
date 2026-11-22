@@ -1,5 +1,13 @@
 import { ManagedDaemonUpgradeOptionsSchema, type ManagedDaemonUpgradeOptions } from '@lody/shared';
 import {
+  SessionBtwProgressSchema,
+  SessionBtwRequestSchema,
+  SessionBtwResponseSchema,
+  type SessionBtwProgress,
+  type SessionBtwRequest,
+  type SessionBtwResponse,
+} from '@lody/shared';
+import {
   CodeCollabOpenDiffManifestResponseSchema,
   CodeCollabReadBlobResponseSchema,
   type CodeCollabOpenDiffManifestRequest,
@@ -325,6 +333,7 @@ export const LoroStreamsRpcMethodSchema = z.enum([
   'session/goal',
   'session/terminate',
   'session/fork',
+  'session/btw',
   'session/edit-and-resend',
   'session/dispatch-turn',
   'session/history-read',
@@ -722,6 +731,11 @@ export const LoroSessionForkRpcRequestSchema = BaseRpcRequestSchema.extend({
   params: SessionForkSpecSchema,
 }).strict();
 
+export const LoroSessionBtwRpcRequestSchema = BaseRpcRequestSchema.extend({
+  method: z.literal('session/btw'),
+  params: SessionBtwRequestSchema,
+}).strict();
+
 export const LoroSessionEditAndResendRpcRequestSchema = BaseRpcRequestSchema.extend({
   method: z.literal('session/edit-and-resend'),
   params: SessionEditAndResendSpecSchema,
@@ -915,6 +929,7 @@ export const LoroStreamsRpcRequestSchema = z.discriminatedUnion('method', [
   LoroSessionGoalRpcRequestSchema,
   LoroSessionTerminateRpcRequestSchema,
   LoroSessionForkRpcRequestSchema,
+  LoroSessionBtwRpcRequestSchema,
   LoroSessionEditAndResendRpcRequestSchema,
   LoroSessionDispatchTurnRpcRequestSchema,
   LoroSessionHistoryReadRpcRequestSchema,
@@ -1768,6 +1783,7 @@ export type LoroMachineRpcResult =
   | SessionGoalResponse
   | SessionTerminateResponse
   | SessionForkResponse
+  | SessionBtwResponse
   | SessionEditAndResendResponse
   | SessionDispatchTurnResponse
   | SessionHistoryReadResponse
@@ -1827,7 +1843,8 @@ const toLegacyRpcErrorResponse = (
   },
   dispatchContext?: { sessionId: string; userTurnId: string },
   historyContext?: { sessionId: string; operation?: SessionHistoryWriteOperation },
-  historyFailure?: SessionHistoryRpcFailure
+  historyFailure?: SessionHistoryRpcFailure,
+  btwContext?: { btwId: string }
 ): LoroMachineRpcResult => {
   if (method === 'machine/automation-control')
     return {
@@ -1998,6 +2015,14 @@ const toLegacyRpcErrorResponse = (
       'INTERNAL_ERROR',
       `${error.code}: ${error.message}`
     );
+  }
+
+  if (method === 'session/btw') {
+    return {
+      btwId: btwContext?.btwId ?? '',
+      text: '',
+      error: `${error.code}: ${error.message}`,
+    } satisfies SessionBtwResponse;
   }
 
   if (method === 'session/edit-and-resend') {
@@ -2267,6 +2292,10 @@ const parseRpcSuccessResult = async (
     const parsed = SessionForkResponseSchema.safeParse(response.result);
     return parsed.success ? (parsed.data as SessionForkResponse) : null;
   }
+  if (response.method === 'session/btw') {
+    const parsed = SessionBtwResponseSchema.safeParse(response.result);
+    return parsed.success ? parsed.data : null;
+  }
   if (response.method === 'session/edit-and-resend') {
     const parsed = SessionEditAndResendResponseSchema.safeParse(response.result);
     return parsed.success ? (parsed.data as SessionEditAndResendResponse) : null;
@@ -2371,6 +2400,7 @@ export type LoroStreamsRpcPendingRegistration = {
   binaryContext?: { agentType: string; requestId?: string };
   cancelContext?: { sessionId: string };
   forkContext?: { sourceSessionId: string; targetSessionId: string };
+  btwContext?: { btwId: string };
   editAndResendContext?: { sessionId: string; replacementUserTurnId: string };
   steerContext?: { sessionId: string; userTurnId: string };
   goalContext?: { sessionId: string; action: SessionGoalAction };
@@ -2385,6 +2415,7 @@ export type LoroStreamsRpcPendingRegistration = {
   codeCollabOwnerSessionId?: string;
   onAcpBinaryProgress?: (message: MachineAcpBinaryProgressMessage) => void;
   onAcpAuthenticationProgress?: (message: MachineAcpAuthenticationProgressMessage) => void;
+  onBtwProgress?: (progress: SessionBtwProgress) => void;
   startedAtMs: number;
 };
 
@@ -2843,6 +2874,14 @@ export class LoroStreamsRpcResponseDispatcher {
     });
 
     if (!parsed.data.error) {
+      if (parsed.data.method === 'session/btw') {
+        const btwProgress = SessionBtwProgressSchema.safeParse(parsed.data.result);
+        if (btwProgress.success) {
+          this.renewPending(parsed.data.id, pending);
+          pending.onBtwProgress?.(btwProgress.data);
+          return;
+        }
+      }
       const progress = MachineAcpBinaryProgressMessageSchema.safeParse(parsed.data.result);
       if (progress.success) {
         // The machine is alive and working. Restart the silence deadline
@@ -2915,7 +2954,8 @@ export class LoroStreamsRpcResponseDispatcher {
             code: error.code,
             requestId: parsed.data.id,
             machineId: parsed.data.machineId,
-          }
+          },
+          finalPending.btwContext
         )
       );
       return;
@@ -2954,7 +2994,8 @@ export class LoroStreamsRpcResponseDispatcher {
             code: 'invalid_result',
             requestId: parsed.data.id,
             machineId: parsed.data.machineId,
-          }
+          },
+          finalPending.btwContext
         )
       );
       return;
@@ -3547,6 +3588,21 @@ export class LoroStreamsMachineRpcClient {
     })) as SessionForkResponse | null;
   }
 
+  async requestSessionBtw(options: {
+    request: SessionBtwRequest;
+    onProgress?: (progress: SessionBtwProgress) => void;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<SessionBtwResponse | null> {
+    return (await this.sendRequest({
+      method: 'session/btw',
+      timeoutMs: options.timeoutMs ?? (options.request.action === 'ask' ? 120_000 : 15_000),
+      onBtwProgress: options.onProgress,
+      signal: options.signal,
+      params: options.request,
+    })) as SessionBtwResponse | null;
+  }
+
   async requestSessionEditAndResend(
     options: SessionEditAndResendSpec & { timeoutMs?: number }
   ): Promise<SessionEditAndResendResponse | null> {
@@ -4052,6 +4108,24 @@ export class LoroStreamsMachineRpcClient {
     await this.options.streamClient.appendJson(this.requestStreamId, request);
   }
 
+  private async appendSessionBtwCancel(sessionId: string, btwId: string): Promise<void> {
+    const now = Math.round(this.options.now?.() ?? Date.now());
+    const request: LoroStreamsRpcRequest = {
+      jsonrpc: JSON_RPC_VERSION,
+      id: crypto.randomUUID(),
+      method: 'session/btw',
+      rpcVersion: this.options.rpcVersion ?? LORO_STREAMS_RPC_VERSION,
+      machineId: this.options.machineId,
+      workspaceId: this.options.workspaceId,
+      replyTo: this.responseDispatcher.getResponseStreamId(),
+      sentAt: now,
+      expiresAt: now + 30_000,
+      params: { action: 'cancel', sessionId, btwId },
+    };
+    if (!this.options.streamClient) throw new Error('RPC transport unavailable');
+    await this.options.streamClient.appendJson(this.requestStreamId, request);
+  }
+
   private async sendRequest(
     args:
       | {
@@ -4223,6 +4297,13 @@ export class LoroStreamsMachineRpcClient {
           method: 'session/fork';
           timeoutMs: number;
           params: SessionForkSpec;
+        }
+      | {
+          method: 'session/btw';
+          timeoutMs: number;
+          onBtwProgress?: (progress: SessionBtwProgress) => void;
+          signal?: AbortSignal;
+          params: SessionBtwRequest;
         }
       | {
           method: 'session/edit-and-resend';
@@ -4425,7 +4506,9 @@ export class LoroStreamsMachineRpcClient {
     if (this.stopped) return null;
 
     const abortSignal =
-      args.method === 'machine/acp-capabilities-refresh' ? args.signal : undefined;
+      args.method === 'machine/acp-capabilities-refresh' || args.method === 'session/btw'
+        ? args.signal
+        : undefined;
     if (abortSignal?.aborted) return null;
 
     const requestId =
@@ -4500,6 +4583,7 @@ export class LoroStreamsMachineRpcClient {
               targetSessionId: args.params.targetSessionId,
             }
           : undefined,
+      btwContext: args.method === 'session/btw' ? { btwId: args.params.btwId } : undefined,
       editAndResendContext:
         args.method === 'session/edit-and-resend'
           ? {
@@ -4553,6 +4637,7 @@ export class LoroStreamsMachineRpcClient {
           : undefined,
       onAcpAuthenticationProgress:
         args.method === 'machine/acp-authenticate' ? args.onAcpAuthenticationProgress : undefined,
+      onBtwProgress: args.method === 'session/btw' ? args.onBtwProgress : undefined,
       startedAtMs,
     });
 
@@ -4562,7 +4647,13 @@ export class LoroStreamsMachineRpcClient {
     const appendCancellation = (): void => {
       if (cancellationAppended) return;
       cancellationAppended = true;
-      void this.appendMachineAcpCapabilitiesRefreshCancel(requestId).catch(() => undefined);
+      if (args.method === 'machine/acp-capabilities-refresh') {
+        void this.appendMachineAcpCapabilitiesRefreshCancel(requestId).catch(() => undefined);
+      } else if (args.method === 'session/btw' && args.params.action === 'ask') {
+        void this.appendSessionBtwCancel(args.params.sessionId, args.params.btwId).catch(
+          () => undefined
+        );
+      }
     };
     const handleAbort = (): void => {
       const pending = this.responseDispatcher.takePending(requestId);
@@ -4661,6 +4752,9 @@ export class LoroStreamsMachineRpcClient {
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'session/fork':
+          request = { ...envelope, method: args.method, params: args.params };
+          break;
+        case 'session/btw':
           request = { ...envelope, method: args.method, params: args.params };
           break;
         case 'session/edit-and-resend':
@@ -4836,8 +4930,11 @@ export class LoroStreamsMachineRpcClient {
         appendPromise.then(() => ({ type: 'append' as const })),
         promise.then((result) => ({ type: 'response' as const, result })),
       ]);
+      const supportsRemoteCancel =
+        args.method === 'machine/acp-capabilities-refresh' ||
+        (args.method === 'session/btw' && args.params.action === 'ask');
       if (firstSettled.type === 'response') {
-        if (firstSettled.result === null && args.method === 'machine/acp-capabilities-refresh') {
+        if (firstSettled.result === null && supportsRemoteCancel) {
           cancellationRequested = true;
           if (requestAppended) {
             appendCancellation();
@@ -4854,11 +4951,7 @@ export class LoroStreamsMachineRpcClient {
       }
 
       const result = await promise;
-      if (
-        result === null &&
-        requestAppended &&
-        args.method === 'machine/acp-capabilities-refresh'
-      ) {
+      if (result === null && requestAppended && supportsRemoteCancel) {
         cancellationRequested = true;
         appendCancellation();
       }
@@ -4906,7 +4999,8 @@ export class LoroStreamsMachineRpcClient {
           code: isMissingRequestStream ? 'machine_rpc_unavailable' : 'request_failed',
           requestId,
           machineId: this.options.machineId,
-        }
+        },
+        pending.btwContext
       );
       pending.resolve(errorResponse);
       return errorResponse;

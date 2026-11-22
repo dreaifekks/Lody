@@ -354,6 +354,8 @@ import {
 import type { AcpAgentEditEvidence, AcpStandardDiffBlockEvidence } from '@/lib/acp/history';
 import { mergeAcpRuntimeConfigUpdates } from '@/lib/acp/runtime-config';
 import { VoiceHost } from '@/agent/voice-host';
+import { formatMainConversationTail, readRecentMainHistoryEntries } from '@/btw/btw-context';
+import { BtwService } from '@/btw/btw-service';
 import { loadSessionWorkspaceSettings } from '@/agent/session-mcp-resolver';
 import {
   AgentNoticeRateLimiter,
@@ -893,6 +895,7 @@ export class MessageHandler {
 
   private machineId: MachineId;
   private voiceHostInstance: VoiceHost | null = null;
+  private btwServiceInstance: BtwService | null = null;
   private token: string;
   private userId: string;
   private workspaceId: WorkspaceId;
@@ -4148,6 +4151,8 @@ export class MessageHandler {
         controlSessionGoal: async (args) => await this.controlSessionGoalWithAccessCheck(args),
         terminateSession: async ({ sessionId }) => await this.terminateAcpSession(sessionId),
         forkSession: async (args) => await this.forkSessionWithAccessCheck(args),
+        handleSessionBtw: async (request, options) =>
+          await this.btwService.handleRequest(request, options),
         editAndResendSession: async (args) => await this.editAndResendSessionWithAccessCheck(args),
         dispatchSessionTurn: async ({
           sessionId,
@@ -7103,6 +7108,81 @@ export class MessageHandler {
       logger: this.logger,
     });
     return this.voiceHostInstance;
+  }
+
+  private get btwService(): BtwService {
+    this.btwServiceInstance ??= new BtwService({
+      logger: this.logger,
+      resolveSessionTarget: async (sessionId, { includeWorkdir }) => {
+        const record = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
+        if (!record?.meta || isLoroRepoDocDeleted(record)) {
+          throw new Error('Session not found.');
+        }
+        const meta = record.meta as Partial<SessionMeta>;
+        if (meta.machineId && meta.machineId !== this.machineId) {
+          throw new Error('Session does not belong to this machine.');
+        }
+        const agentConfigId = meta.agentConfigId;
+        const provider = agentConfigId
+          ? await this.workspaceDocument.getAgentConfigForMachineLaunch(
+              agentConfigId,
+              this.machineId
+            )
+          : null;
+        if (!provider) {
+          throw new Error('Session provider configuration not found.');
+        }
+        const profileStore = getCodexProfileStore();
+        if (
+          !provider.codexAuth &&
+          (await profileStore.isAccountBound({
+            workspaceId: this.workspaceId,
+            machineId: this.machineId,
+            configId: provider.id,
+          }))
+        ) {
+          throw new Error('Codex account reference is missing for this provider.');
+        }
+        const resolvedCodexProfile = provider.codexAuth
+          ? await profileStore.resolve(this.workspaceId, provider)
+          : undefined;
+        const codexProfile = resolvedCodexProfile ? { profile: resolvedCodexProfile } : undefined;
+        let sessionWorkdir: string | null = null;
+        if (includeWorkdir) {
+          sessionWorkdir =
+            this.resolveSessionWorkspaceRoot(sessionId) ??
+            (await this.sessionManager.resolveSessionWorkdir(sessionId).catch(() => null));
+        }
+        return {
+          cliType: provider.cliType,
+          agentType: provider.agentType,
+          agentConfigId: provider.id,
+          customAcp: provider.customAcp,
+          runtimeOverrides: provider.runtimeOverrides,
+          magpieGatewayUrl: provider.magpieGatewayUrl,
+          codexProfile,
+          env: { ...this.lanEnv?.(), ...process.env, ...provider.env },
+          userExplicitEnv: provider.env,
+          sessionWorkdir,
+        };
+      },
+      readMainHistoryTail: async (sessionId) => {
+        const record = await this.workspaceDocument.repo.getDocMeta(getSessionRoomId(sessionId));
+        if (!record?.meta || isLoroRepoDocDeleted(record)) {
+          return '';
+        }
+        return await this.workspaceDocument.readSessionDocTransiently(
+          sessionId,
+          async (sessionDoc) => {
+            const backend = await this.getSessionBackend(sessionDoc);
+            const entries = await readRecentMainHistoryEntries(backend);
+            return formatMainConversationTail(entries);
+          },
+          { remoteSyncTimeoutMs: 0 }
+        );
+      },
+    });
+    return this.btwServiceInstance;
   }
 
   /** What this daemon answers, which is more than what its build could. */
@@ -12677,6 +12757,7 @@ export class MessageHandler {
     ]);
     await this.iosSimulatorMemberPorts.closeAll();
     await this.voiceHostInstance?.dispose();
+    await this.btwServiceInstance?.dispose();
     for (const timer of this.alertGraceTimers) clearTimeout(timer);
     this.alertGraceTimers.clear();
     for (const timer of this.liveActivityHeartbeats.values()) clearTimeout(timer);

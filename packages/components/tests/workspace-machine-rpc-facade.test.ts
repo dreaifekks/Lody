@@ -2136,4 +2136,61 @@ describe('encrypted remote files from a browser or mobile device', () => {
       message: unavailable.message,
     });
   });
+
+  it('routes requestSessionBtw through Streams RPC even for local machines and forwards onProgress and signal', async () => {
+    const localSend = vi.fn();
+    vi.stubGlobal('window', {
+      __LODY_ELECTRON__: true,
+      ipc: { invoke: localSend },
+    });
+    const requestSessionBtw = vi.fn(
+      async (opts: {
+        request: { btwId: string };
+        onProgress?: (progress: { btwId: string; kind: 'delta'; delta: string }) => void;
+        signal?: AbortSignal;
+      }) => {
+        opts.onProgress?.({ btwId: opts.request.btwId, kind: 'delta', delta: 'streamed' });
+        return { btwId: opts.request.btwId, text: 'streamed', readOnlyTools: false };
+      }
+    );
+
+    const facade = createWorkspaceMachineRpcFacade({
+      workspaceId,
+      targetRouter: {
+        getPlaneForMachine: () => 'local',
+        resolvePlaneForMachine: async () => 'local',
+      },
+      getMachineProtocolCapabilities: async () => CURRENT_MACHINE_PROTOCOL_CAPABILITIES,
+      getMachineRpcClient: async () =>
+        ({
+          requestSessionBtw,
+        }) as never,
+    });
+
+    const controller = new AbortController();
+    const frames: unknown[] = [];
+    const response = await facade.requestSessionBtw(
+      localMachineId,
+      {
+        action: 'ask',
+        sessionId,
+        btwId: 'btw-local-1',
+        question: 'Stream locally?',
+      },
+      {
+        onProgress: (frame) => frames.push(frame),
+        signal: controller.signal,
+      }
+    );
+
+    expect(localSend).not.toHaveBeenCalled();
+    expect(requestSessionBtw).toHaveBeenCalledTimes(1);
+    expect(requestSessionBtw.mock.calls[0]?.[0]?.signal).toBe(controller.signal);
+    expect(frames).toEqual([{ btwId: 'btw-local-1', kind: 'delta', delta: 'streamed' }]);
+    expect(response).toEqual({
+      btwId: 'btw-local-1',
+      text: 'streamed',
+      readOnlyTools: false,
+    });
+  });
 });
