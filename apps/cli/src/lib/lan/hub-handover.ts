@@ -38,9 +38,15 @@ export const LAN_HUB_HANDOVER_FILES = [
   'apns.json',
   'apns-key.p8',
   'push-devices.json',
-  'env.json',
-  'mcp-auth.enc',
   'term.json',
+] as const;
+
+/** Additional credential files transferred only when the receiver opts in with `?credentials=1`. */
+export const LAN_HUB_EXTRA_CREDENTIAL_FILES = ['env.json', 'mcp-auth.enc'] as const;
+
+export const LAN_HUB_ALL_HANDOVER_FILES = [
+  ...LAN_HUB_HANDOVER_FILES,
+  ...LAN_HUB_EXTRA_CREDENTIAL_FILES,
 ] as const;
 
 const TERM_FILE_NAME = 'term.json';
@@ -70,7 +76,7 @@ export function writeLanHubTerm(dataDir: string, term: number): void {
 const FileHeaderSchema = z
   .object({
     type: z.literal('file'),
-    name: z.enum(LAN_HUB_HANDOVER_FILES),
+    name: z.enum(LAN_HUB_ALL_HANDOVER_FILES),
     sizeBytes: z.number().int().nonnegative(),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
   })
@@ -191,10 +197,11 @@ async function digest(filePath: string): Promise<string> {
 export async function writeLanHubHandover(
   dataDir: string,
   stream: Writable,
-  options: { shares?: boolean } = {}
+  options: { shares?: boolean; credentials?: boolean } = {}
 ): Promise<number> {
+  const names = options.credentials ? LAN_HUB_ALL_HANDOVER_FILES : LAN_HUB_HANDOVER_FILES;
   let count = 0;
-  for (const name of LAN_HUB_HANDOVER_FILES) {
+  for (const name of names) {
     const filePath = path.join(dataDir, name);
     const stat = await fs.promises.stat(filePath).catch(() => null);
     if (!stat?.isFile()) continue;

@@ -11,7 +11,7 @@ import { pipeline } from 'node:stream/promises';
 import Database from 'better-sqlite3';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { z } from 'zod';
-import { LAN_HUB_HANDOVER_FILES } from './hub-handover';
+import { LAN_HUB_ALL_HANDOVER_FILES, LAN_HUB_HANDOVER_FILES } from './hub-handover';
 import { pullLanHubSharesCopy } from './hub-shares';
 import { ByteReader } from './lan-files';
 
@@ -23,10 +23,13 @@ const DATABASE_FILE_NAME = 'streams.sqlite';
 const COPY_DIRECTORY_NAME = '.standby-copy';
 /** Pages one backup step copies: a few milliseconds of the hub's event loop. */
 const COPY_PAGES_PER_STEP = 1024;
-/** What travels beside the database: everything a hub keeps except the database itself. */
-const SIDE_FILES = LAN_HUB_HANDOVER_FILES.filter(
+/** What travels beside the database: baseline files for older receivers, plus credential files when requested. */
+const BASE_SIDE_FILES = LAN_HUB_HANDOVER_FILES.filter(
   (name) => !name.startsWith(DATABASE_FILE_NAME)
 ) as Array<(typeof LAN_HUB_HANDOVER_FILES)[number]>;
+const ALL_SIDE_FILES = LAN_HUB_ALL_HANDOVER_FILES.filter(
+  (name) => !name.startsWith(DATABASE_FILE_NAME)
+) as Array<(typeof LAN_HUB_ALL_HANDOVER_FILES)[number]>;
 const MAX_BLOCKS = 1_000_000;
 // Each SHA-256 occupies 67 JSON bytes, plus room for the header fields.
 const LINE_MAX_BYTES = MAX_BLOCKS * 67 + 1024;
@@ -47,7 +50,7 @@ const BlockSchema = z
 const FileSchema = z
   .object({
     type: z.literal('file'),
-    name: z.enum(LAN_HUB_HANDOVER_FILES),
+    name: z.enum(LAN_HUB_ALL_HANDOVER_FILES),
     sizeBytes: z.number().int().nonnegative(),
     sha256: SHA256,
   })
@@ -129,6 +132,7 @@ export async function writeLanHubSnapshot(options: {
   have: readonly string[];
   stream: Writable;
   blockBytes?: number;
+  credentials?: boolean;
   now?: () => Date;
 }): Promise<{ sizeBytes: number; blocks: number; sent: number }> {
   const blockBytes = options.blockBytes ?? LAN_HUB_SNAPSHOT_BLOCK_BYTES;
@@ -167,7 +171,7 @@ export async function writeLanHubSnapshot(options: {
     } finally {
       await fs.promises.rm(directory, { recursive: true, force: true });
     }
-    for (const name of SIDE_FILES) {
+    for (const name of options.credentials ? ALL_SIDE_FILES : BASE_SIDE_FILES) {
       const filePath = path.join(options.dataDir, name);
       const stat = await fs.promises.stat(filePath).catch(() => null);
       if (!stat?.isFile()) continue;
@@ -245,12 +249,15 @@ export async function pullLanHubSnapshot(options: {
       kept = null;
     }
   }
-  const response = await (options.fetch ?? fetch)(`${options.hub.url}${LAN_HUB_SNAPSHOT_PATH}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${options.hub.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ have: kept?.blocks ?? [] }),
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+  const response = await (options.fetch ?? fetch)(
+    `${options.hub.url}${LAN_HUB_SNAPSHOT_PATH}?credentials=1`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${options.hub.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ have: kept?.blocks ?? [] }),
+      signal: AbortSignal.timeout(10 * 60_000),
+    }
+  );
   if (!response.ok || !response.body) {
     await response.body?.cancel();
     throw new Error(`The hub answered ${response.status} when asked for a copy`);

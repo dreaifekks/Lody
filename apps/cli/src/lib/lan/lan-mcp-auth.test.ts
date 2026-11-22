@@ -610,7 +610,9 @@ describe('LanMcpAuthentication member integration', () => {
       hub2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-mcp-failover-hub2-'));
       const handoverStream = new PassThrough();
       await Promise.all([
-        writeLanHubHandover(hubDir, handoverStream).then(() => handoverStream.end()),
+        writeLanHubHandover(hubDir, handoverStream, { credentials: true }).then(() =>
+          handoverStream.end()
+        ),
         readLanHubHandover(handoverStream, hub2Dir),
       ]);
       await hub.close();
@@ -759,8 +761,191 @@ describe('LanMcpAuthentication member integration', () => {
         hasCredentials: false,
       });
       expect(memberIo.closedCallbacks()).toBe(2);
+
+      // Re-authorizing from a brand-new desktop instance (simulating daemon restart / another desktop)
+      // fetches the preconfigured clientId/clientSecret from Hub via /authorize-config
+      const desktop2Io = world.makeMemberIo();
+      const desktop2 = new LanMcpAuthentication({
+        userId: 'lan-user',
+        resolveHub: activeHub,
+        io: desktop2Io.io,
+        now: () => nowMs,
+      });
+      try {
+        const waiting2 = await desktop2.request({
+          machineId: 'm2',
+          workspaceId: 'ws-lan',
+          method: 'mcp/authentication',
+          params: { requesterUserId: 'lan-user', action: 'authorize', server: HTTP_ENTRY },
+        });
+        expect(waiting2.status).toBe('waiting');
+        expect(waiting2.authorizationUrl).toContain('client_id=preconf-client');
+        await desktop2Io.waitForCallbackReady();
+        desktop2Io.resolveCallback({ code: 'synthetic-auth-code' });
+        await vi.waitFor(async () => {
+          expect(await desktop2.status(HTTP_ENTRY)).toEqual({
+            type: 'mcp/authentication',
+            status: 'authorized',
+            hasCredentials: true,
+            mode: 'oauth',
+          });
+        });
+      } finally {
+        await desktop2.close();
+      }
     } finally {
       await member.close();
+    }
+  });
+
+  it('expires manual relay cache within 30s on cross-machine signout, invalidates immediately on hub switch, and surfaces oauth_required when manual credentials hit a 401 OAuth challenge', async () => {
+    let activeHubTarget: Pick<LanHub, 'url' | 'token'> = activeHub();
+    const memberAIo = world.makeMemberIo();
+    const memberBIo = world.makeMemberIo();
+    const memberA = new LanMcpAuthentication({
+      userId: 'lan-user',
+      resolveHub: activeHub,
+      io: memberAIo.io,
+      now: () => nowMs,
+    });
+    const memberB = new LanMcpAuthentication({
+      userId: 'lan-user',
+      resolveHub: () => activeHubTarget,
+      io: memberBIo.io,
+      now: () => nowMs,
+    });
+    let hub2: LanHubServer | undefined;
+    let hub2Dir: string | undefined;
+    const resolved = {
+      type: 'http' as const,
+      name: HTTP_ENTRY.name,
+      url: 'https://resource.example/mcp',
+      headers: [],
+    };
+    try {
+      // Member A configures manual token v1 -> Member B starts relay and forwards with token-v1
+      await memberA.request({
+        machineId: 'mA',
+        workspaceId: 'ws-lan',
+        method: 'mcp/authentication',
+        params: {
+          requesterUserId: 'lan-user',
+          action: 'configure',
+          server: HTTP_ENTRY,
+          authentication: { mode: 'manual', bearerToken: 'manual-token-v1' },
+        },
+      });
+      await memberB.prepare(HTTP_ENTRY, resolved, 'relay-owner', 'lan-user');
+      const r1 = await memberBIo.sendRelay({ method: 'POST', body: '{}' });
+      expect(r1.status).toBe(200);
+      expect(world.seenRemoteHeaders.at(-1)?.get('authorization')).toBe('Bearer manual-token-v1');
+
+      // Suggestion #2: manual token hitting 401 OAuth Bearer challenge in listTools overrides status to oauth_required
+      expect(await memberB.status(HTTP_ENTRY)).toEqual({
+        type: 'mcp/authentication',
+        status: 'authorized',
+        hasCredentials: true,
+        mode: 'manual',
+      });
+      world.queueRemoteResponse(
+        () =>
+          new Response(null, {
+            status: 401,
+            headers: {
+              'WWW-Authenticate':
+                'Bearer resource_metadata="https://resource.example/.well-known/oauth-protected-resource/mcp"',
+            },
+          })
+      );
+      await expect(memberB.listTools(HTTP_ENTRY, 'lan-user')).rejects.toThrow();
+      expect(await memberB.status(HTTP_ENTRY)).toEqual({
+        type: 'mcp/authentication',
+        status: 'required',
+        hasCredentials: false,
+        reason: 'oauth_required',
+      });
+
+      // Updating credentials on Hub advances revision -> clears stale revision-bound oauth_required
+      await memberA.request({
+        machineId: 'mA',
+        workspaceId: 'ws-lan',
+        method: 'mcp/authentication',
+        params: {
+          requesterUserId: 'lan-user',
+          action: 'configure',
+          server: HTTP_ENTRY,
+          authentication: { mode: 'manual', bearerToken: 'manual-token-v2' },
+        },
+      });
+      expect(await memberB.status(HTTP_ENTRY)).toEqual({
+        type: 'mcp/authentication',
+        status: 'authorized',
+        hasCredentials: true,
+        mode: 'manual',
+      });
+
+      // Advance 30s TTL -> Member B's running relay picks up manual-token-v2
+      nowMs += 30_000;
+      const r2 = await memberBIo.sendRelay({ method: 'POST', body: '{}' });
+      expect(r2.status).toBe(200);
+      expect(world.seenRemoteHeaders.at(-1)?.get('authorization')).toBe('Bearer manual-token-v2');
+
+      // Switch to Hub 2 holding manual-token-hub2 -> Member B IMMEDIATELY invalidates cache (no 30s wait)
+      hub2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-lan-mcp-switch-hub2-'));
+      hub2 = await startLanHubServer({
+        host: '127.0.0.1',
+        port: 0,
+        sharePort: null,
+        dataDir: hub2Dir,
+        startUpstream: startFakeUpstream,
+        mcpAuthIo: world.hubIo,
+        now: () => nowMs,
+      });
+      const hub2Target = { url: hub2.url, token: hub2.token };
+      const memberHub2 = new LanMcpAuthentication({
+        userId: 'lan-user',
+        resolveHub: () => hub2Target,
+        io: world.makeMemberIo().io,
+        now: () => nowMs,
+      });
+      try {
+        await memberHub2.request({
+          machineId: 'mA',
+          workspaceId: 'ws-lan',
+          method: 'mcp/authentication',
+          params: {
+            requesterUserId: 'lan-user',
+            action: 'configure',
+            server: HTTP_ENTRY,
+            authentication: { mode: 'manual', bearerToken: 'manual-token-hub2' },
+          },
+        });
+      } finally {
+        await memberHub2.close();
+      }
+      activeHubTarget = hub2Target;
+      const rHub2 = await memberBIo.sendRelay({ method: 'POST', body: '{}' });
+      expect(rHub2.status).toBe(200);
+      expect(world.seenRemoteHeaders.at(-1)?.get('authorization')).toBe('Bearer manual-token-hub2');
+
+      // Cross-machine signout on Hub 1 + switch back -> after 30s TTL, running relay fails closed (503)
+      activeHubTarget = activeHub();
+      const rBack = await memberBIo.sendRelay({ method: 'POST', body: '{}' });
+      expect(rBack.status).toBe(200);
+      await memberA.request({
+        machineId: 'mA',
+        workspaceId: 'ws-lan',
+        method: 'mcp/authentication',
+        params: { requesterUserId: 'lan-user', action: 'signout', server: HTTP_ENTRY },
+      });
+      nowMs += 30_000;
+      const rAfterSignout = await memberBIo.sendRelay({ method: 'POST', body: '{}' });
+      expect(rAfterSignout.status).toBe(503);
+    } finally {
+      await memberA.close();
+      await memberB.close();
+      await hub2?.close();
+      if (hub2Dir) fs.rmSync(hub2Dir, { recursive: true, force: true });
     }
   });
 });

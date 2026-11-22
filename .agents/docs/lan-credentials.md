@@ -112,27 +112,43 @@ tokens. Instead, LAN workspaces keep MCP authentication centrally on the hub
   derived from the hub bearer token with HKDF-SHA256
   (`lody-lan-hub:mcp-auth-at-rest` and `lody-lan-hub:mcp-auth-wire`). The hub
   persists `<hubDataDir>/mcp-auth.enc` atomically (`0600` temp file + rename)
-  with AES-256-GCM and explicit AAD; `PUT /lan/mcp-auth/records/:serverId` and
-  `POST /lan/mcp-auth/token/:serverId` carry `{ v: 1, iv, tag, ciphertext }`
-  envelopes bound to route/method/serverId/direction AAD behind the hub's
-  `Bearer <hub.token>` gate.
+  with AES-256-GCM and explicit AAD; `PUT /lan/mcp-auth/records/:serverId`,
+  `POST /lan/mcp-auth/token/:serverId`, and
+  `POST /lan/mcp-auth/authorize-config/:serverId` carry
+  `{ v: 1, iv, tag, ciphertext }` envelopes bound to route/method/serverId/direction
+  AAD behind the hub's `Bearer <hub.token>` gate.
 - **Single-lock serialized refresh & custody**: Refreshing OAuth tokens runs
   only on the hub under a per-`serverId` mutex. Concurrent `401` retries carry
   `failedRevision` so the hub deduplicates them via CAS (`failedRevision <
-  revision`) and rotates a single-use refresh token at most once, persisting
-  atomically before releasing the lock. `refresh_token` and `client_secret`
-  never leave the hub; members hold only short-lived `Authorization` headers (or
-  manual headers/env) in process memory and serve HTTP MCP servers to agents via
-  a local loopback relay (`io.ts`) that passes through MCP `404`/`405` status
-  codes and safe protocol headers with redacted bodies.
-- **Isolation & failover**: Credentials never enter Workspace Flock, Loro
-  Streams, renderer processes (`lan-hub-forward.ts` still forwards `/ds/*` and
-  `/api/time` alone), logs, or agent configs. `GET /lan/mcp-auth/status` returns
-  sanitized metadata only. Both `mcp-auth.enc` and `env.json` are included in
-  `LAN_HUB_HANDOVER_FILES` so handover and standby snapshots transfer them
-  between hub hosts without replicating `mcp-auth.enc` to ordinary members'
-  `/lan/credentials` copies. Members resolve the active hub dynamically on each
-  call, so handover and failover redirect automatically.
+  revision`, reusing the rotated token until actual expiry even for short-lived
+  tokens) and rotates a single-use refresh token at most once. Rotated tokens
+  are committed in memory before persisting so a transient disk error (`ENOSPC`)
+  never reuses an invalidated refresh token and retries flushing on subsequent
+  operations or handover `idle()`. `refresh_token` never leaves the hub;
+  `POST /lan/mcp-auth/authorize-config/:serverId` returns only OAuth client
+  metadata (`clientId`/`clientSecret`/`client`, never tokens) so pre-registered
+  clients work across daemon restarts and across desktops. Members hold only
+  short-lived `Authorization` headers (or manual headers/env with a 30-second
+  cache TTL bound to the active hub URL) in process memory and serve HTTP MCP
+  servers to agents via a local loopback relay (`io.ts`) that passes through MCP
+  `404`/`405` status codes and safe protocol headers with redacted bodies.
+- **Isolation, rolling upgrades & failover**: Credentials never enter Workspace
+  Flock, Loro Streams, renderer processes (`lan-hub-forward.ts` still forwards
+  `/ds/*` and `/api/time` alone), logs, or agent configs.
+  `GET /lan/mcp-auth/status` returns sanitized metadata with a SHA-256
+  `targetHash` rather than plaintext `target`. Extra credential files
+  (`env.json`, `mcp-auth.enc`) are negotiated via `?credentials=1` on
+  `/lan/handover` and `/lan/snapshot` (just like `?shares=1`): older hubs ignore
+  the parameter, older standbys without `?credentials=1` receive baseline files
+  only without crashing, and handover without `?credentials=1` refuses with
+  `409` before stopping upstream when the hub holds MCP auth records so
+  credentials are not silently dropped. During handover, the hub enters a
+  synchronous draining gate and awaits all in-flight MCP auth requests before
+  streaming `mcp-auth.enc`. Because standby snapshots run every ten minutes, an
+  unplanned failover that permanently loses the previous hub may lag behind a
+  single-use refresh-token rotation performed since the last snapshot, requiring
+  re-authorization for that server. Members resolve the active hub dynamically on
+  each call, so handover and failover redirect automatically.
 
 ## Credentials on every member
 

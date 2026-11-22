@@ -244,9 +244,9 @@ describe('the standby of a LAN hub', () => {
     now += 60_000;
     await keeper.tick();
     expect(requests).toEqual([
-      { url: `${home.url}/lan/snapshot`, minute: 0 },
-      { url: `${hub.url}/lan/snapshot`, minute: 1 },
-      { url: `${hub.url}/lan/snapshot`, minute: 11 },
+      { url: `${home.url}/lan/snapshot?credentials=1`, minute: 0 },
+      { url: `${hub.url}/lan/snapshot?credentials=1`, minute: 1 },
+      { url: `${hub.url}/lan/snapshot?credentials=1`, minute: 11 },
     ]);
   });
 

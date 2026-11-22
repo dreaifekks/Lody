@@ -11,6 +11,7 @@ export const LAN_HUB_MCP_AUTH_PREFIX = '/lan/mcp-auth/';
 export const LAN_HUB_MCP_AUTH_STATUS_PATH = '/lan/mcp-auth/status';
 export const LAN_HUB_MCP_AUTH_RECORDS_PREFIX = '/lan/mcp-auth/records/';
 export const LAN_HUB_MCP_AUTH_TOKEN_PREFIX = '/lan/mcp-auth/token/';
+export const LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX = '/lan/mcp-auth/authorize-config/';
 
 export const LAN_MCP_AUTH_AT_REST_INFO = 'lody-lan-hub:mcp-auth-at-rest';
 export const LAN_MCP_AUTH_WIRE_INFO = 'lody-lan-hub:mcp-auth-wire';
@@ -68,8 +69,21 @@ export function mcpAuthTokenRequestAad(serverId: string): Buffer {
   return buildLanMcpAuthAad(['wire', 'POST', 'token', serverId, 'req']);
 }
 
+/** SHA-256 digest of a canonical target JSON so `/status` never exposes expanded `${VAR}` values. */
+export function hashLanMcpAuthTarget(target: string): string {
+  return crypto.createHash('sha256').update(target, 'utf8').digest('hex');
+}
+
 export function mcpAuthTokenResponseAad(serverId: string): Buffer {
   return buildLanMcpAuthAad(['wire', 'POST', 'token', serverId, 'res']);
+}
+
+export function mcpAuthAuthorizeConfigRequestAad(serverId: string): Buffer {
+  return buildLanMcpAuthAad(['wire', 'POST', 'authorize-config', serverId, 'req']);
+}
+
+export function mcpAuthAuthorizeConfigResponseAad(serverId: string): Buffer {
+  return buildLanMcpAuthAad(['wire', 'POST', 'authorize-config', serverId, 'res']);
 }
 
 function decodeStrictBase64(value: string, label: string): Buffer {
@@ -137,7 +151,7 @@ export type LanMcpAuthRefreshError = z.infer<typeof LanMcpAuthRefreshErrorSchema
 export const LanMcpAuthStatusItemSchema = z
   .object({
     mode: z.enum(['oauth', 'manual']),
-    target: z.string(),
+    targetHash: z.string().regex(/^[0-9a-f]{64}$/),
     hasTokens: z.boolean(),
     hasRefreshToken: z.boolean(),
     hasCredentials: z.boolean(),
@@ -210,6 +224,35 @@ export const LanMcpAuthTokenResponseSchema = z.discriminatedUnion('mode', [
     .strict(),
 ]);
 export type LanMcpAuthTokenResponse = z.infer<typeof LanMcpAuthTokenResponseSchema>;
+
+export const LanMcpAuthAuthorizeConfigRequestSchema = z
+  .object({
+    target: z.string().min(1),
+  })
+  .strict();
+export type LanMcpAuthAuthorizeConfigRequest = z.infer<
+  typeof LanMcpAuthAuthorizeConfigRequestSchema
+>;
+
+/** Pre-registered/DCR OAuth client configuration for interactive browser authorization. Never carries tokens. */
+export const LanMcpAuthAuthorizeConfigResponseSchema = z
+  .object({
+    clientId: z.string().max(2048).optional(),
+    clientSecret: z.string().max(16_384).optional(),
+    client: z
+      .object({
+        client_id: z.string(),
+        client_secret: z.string().optional(),
+        issuer: z.string().optional(),
+        client_secret_expires_at: z.number().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type LanMcpAuthAuthorizeConfigResponse = z.infer<
+  typeof LanMcpAuthAuthorizeConfigResponseSchema
+>;
 
 export const LanMcpAuthErrorResponseSchema = z.object({
   error: z.string().min(1),

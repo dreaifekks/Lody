@@ -35,17 +35,23 @@ import {
   decryptLanMcpAuthJson,
   deriveLanMcpAuthKey,
   encryptLanMcpAuthJson,
+  hashLanMcpAuthTarget,
+  LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX,
   LAN_HUB_MCP_AUTH_RECORDS_PREFIX,
   LAN_HUB_MCP_AUTH_STATUS_PATH,
   LAN_HUB_MCP_AUTH_TOKEN_PREFIX,
+  LanMcpAuthAuthorizeConfigResponseSchema,
   LanMcpAuthDeleteRecordResponseSchema,
   LanMcpAuthErrorResponseSchema,
   LanMcpAuthPutRecordResponseSchema,
   LanMcpAuthStatusResponseSchema,
   LanMcpAuthTokenResponseSchema,
+  mcpAuthAuthorizeConfigRequestAad,
+  mcpAuthAuthorizeConfigResponseAad,
   mcpAuthPutRecordRequestAad,
   mcpAuthTokenRequestAad,
   mcpAuthTokenResponseAad,
+  type LanMcpAuthAuthorizeConfigResponse,
   type LanMcpAuthPutRecordResponse,
   type LanMcpAuthStatusItem,
   type LanMcpAuthStatusResponse,
@@ -54,6 +60,7 @@ import {
 } from './lan-mcp-auth-crypto';
 
 const REFRESH_SKEW_MS = 30_000;
+const MANUAL_CACHE_TTL_MS = 30_000;
 const HUB_REQUEST_TIMEOUT_MS = 20_000;
 const HUB_TOKEN_TIMEOUT_MS = 35_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 10 * 60_000;
@@ -104,11 +111,13 @@ export interface LanMcpAuthenticationOptions {
 }
 
 type CachedToken = {
+  hubUrl: string;
   target: string;
   mode: 'oauth' | 'manual';
   headers: Record<string, string>;
   env: Record<string, string>;
   expiresAt?: number;
+  cachedUntil?: number;
   revision: number;
 };
 
@@ -116,12 +125,6 @@ type LocalStateEntry = {
   target: string;
   basedOnRevision?: number;
   value: McpAuthenticationResult;
-};
-
-type OAuthClientConfigEntry = {
-  target: string;
-  clientId?: string;
-  clientSecret?: string;
 };
 
 type Attempt = {
@@ -303,7 +306,6 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
   private leaseLock: Promise<void> = Promise.resolve();
   private readonly tokenCache = new Map<string, CachedToken>();
   private readonly localStates = new Map<string, LocalStateEntry>();
-  private readonly oauthClientConfig = new Map<string, OAuthClientConfigEntry>();
   private readonly attempts = new Map<string, Attempt>();
   private readonly leases = new Map<string, RelayLease>();
   private readonly closedOwners = new Set<string>();
@@ -507,9 +509,9 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
   private async hubFetchToken(
     serverId: string,
     payload: LanMcpAuthTokenRequest,
+    hub: { url: string; token: string; wireKey: Buffer },
     signal?: AbortSignal
   ): Promise<LanMcpAuthTokenResponse> {
-    const hub = this.requireHub();
     const envelope = encryptLanMcpAuthJson(hub.wireKey, mcpAuthTokenRequestAad(serverId), payload);
     const { response, wireKey } = await this.hubRequest(
       `${LAN_HUB_MCP_AUTH_TOKEN_PREFIX}${encodeURIComponent(serverId)}`,
@@ -522,6 +524,33 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
         await response.json()
       );
       return LanMcpAuthTokenResponseSchema.parse(decrypted);
+    } catch {
+      throw new McpAuthenticationError({ reason: 'connection_failed' });
+    }
+  }
+
+  private async hubFetchAuthorizeConfig(
+    serverId: string,
+    target: string,
+    signal?: AbortSignal
+  ): Promise<LanMcpAuthAuthorizeConfigResponse> {
+    const hub = this.requireHub();
+    const envelope = encryptLanMcpAuthJson(
+      hub.wireKey,
+      mcpAuthAuthorizeConfigRequestAad(serverId),
+      { target }
+    );
+    const { response, wireKey } = await this.hubRequest(
+      `${LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX}${encodeURIComponent(serverId)}`,
+      { method: 'POST', hub, body: envelope, signal }
+    );
+    try {
+      const decrypted = decryptLanMcpAuthJson(
+        wireKey,
+        mcpAuthAuthorizeConfigResponseAad(serverId),
+        await response.json()
+      );
+      return LanMcpAuthAuthorizeConfigResponseSchema.parse(decrypted);
     } catch {
       throw new McpAuthenticationError({ reason: 'connection_failed' });
     }
@@ -541,8 +570,9 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
     meta: LanMcpAuthStatusItem | undefined
   ): McpAuthenticationResult {
     const target = targetOf(server);
+    const targetHash = hashLanMcpAuthTarget(target);
     const local = this.localStates.get(server.id);
-    if (!meta || meta.target !== target) {
+    if (!meta || meta.targetHash !== targetHash) {
       if (local && local.target === target && local.value.status !== 'authorized') {
         return local.value;
       }
@@ -552,7 +582,7 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
       local &&
       local.target === target &&
       local.basedOnRevision === meta.revision &&
-      local.value.status === 'error'
+      (local.value.status === 'error' || local.value.reason === 'oauth_required')
     ) {
       return local.value;
     }
@@ -635,15 +665,6 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
       const saved = await this.hubPutRecord(server.id, { target, settings });
       this.tokenCache.delete(server.id);
       this.localStates.delete(server.id);
-      if (settings.mode === 'oauth' && (settings.clientId || settings.clientSecret)) {
-        this.oauthClientConfig.set(server.id, {
-          target,
-          ...(settings.clientId ? { clientId: settings.clientId } : {}),
-          ...(settings.clientSecret ? { clientSecret: settings.clientSecret } : {}),
-        });
-      } else {
-        this.oauthClientConfig.delete(server.id);
-      }
       return {
         ...authResult(saved.hasCredentials ? 'authorized' : 'required', saved.hasCredentials),
         mode: saved.mode,
@@ -682,20 +703,29 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
       await this.stopAttempt(server.id);
       // Verify hub reachability and read existing metadata before launching browser OAuth.
       const hubStatus = await this.hubGetStatus();
+      const targetHash = hashLanMcpAuthTarget(target);
       const existingMeta =
-        hubStatus.records[server.id]?.target === target ? hubStatus.records[server.id] : undefined;
-      const savedConfig = this.oauthClientConfig.get(server.id);
+        hubStatus.records[server.id]?.targetHash === targetHash
+          ? hubStatus.records[server.id]
+          : undefined;
+      let authorizeConfig: LanMcpAuthAuthorizeConfigResponse | undefined;
+      if (existingMeta?.mode === 'oauth' && existingMeta.hasClient) {
+        try {
+          authorizeConfig = await this.hubFetchAuthorizeConfig(server.id, target);
+        } catch (error) {
+          if (!(error instanceof McpAuthenticationError) || error.reason !== 'oauth_required') {
+            throw error;
+          }
+        }
+      }
       const staged: McpStoredAuthentication = {
         target,
         settings: {
           mode: 'oauth',
-          ...(savedConfig?.target === target && savedConfig.clientId
-            ? { clientId: savedConfig.clientId }
-            : {}),
-          ...(savedConfig?.target === target && savedConfig.clientSecret
-            ? { clientSecret: savedConfig.clientSecret }
-            : {}),
+          ...(authorizeConfig?.clientId ? { clientId: authorizeConfig.clientId } : {}),
+          ...(authorizeConfig?.clientSecret ? { clientSecret: authorizeConfig.clientSecret } : {}),
         },
+        ...(authorizeConfig?.client ? { client: authorizeConfig.client } : {}),
       };
 
       const controller = new AbortController();
@@ -888,7 +918,6 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
     await this.revokeLeases((lease) => lease.serverId === server.id);
     return await this.withServerLock(server.id, async () => {
       this.tokenCache.delete(server.id);
-      this.oauthClientConfig.delete(server.id);
       this.localStates.delete(server.id);
       await this.hubDeleteRecord(server.id);
       return authResult('required');
@@ -933,7 +962,8 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
   private async observe(
     server: WorkspaceMcpServerMeta,
     response: Response,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    basedOnRevision?: number
   ): Promise<void> {
     try {
       const metadata = mcpOAuthChallenge(response);
@@ -949,7 +979,11 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
         info.authorizationServerMetadata.token_endpoint
       );
       if (supported) {
-        this.rememberLocal(server, authResult('required', false, 'oauth_required'));
+        this.rememberLocal(
+          server,
+          authResult('required', false, 'oauth_required'),
+          basedOnRevision
+        );
       }
     } catch {
       // Discovery failure does not turn an ordinary 401 into an OAuth prompt.
@@ -980,12 +1014,16 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
   ): Promise<CachedToken> {
     const target = targetOf(server);
     return await this.withServerLock(server.id, async () => {
+      const currentHub = this.requireHub();
       const cached = this.tokenCache.get(server.id);
       const currentNow = this.now();
-      const cacheMatches = cached !== undefined && cached.target === target;
+      const cacheMatches =
+        cached !== undefined && cached.hubUrl === currentHub.url && cached.target === target;
       const cacheFresh =
         cacheMatches &&
-        (cached.expiresAt === undefined || cached.expiresAt > currentNow + REFRESH_SKEW_MS);
+        (cached.mode === 'manual'
+          ? cached.cachedUntil !== undefined && cached.cachedUntil > currentNow
+          : cached.expiresAt === undefined || cached.expiresAt > currentNow + REFRESH_SKEW_MS);
 
       if (!options.forceFromHub) {
         if (options.forceRefresh) {
@@ -1012,7 +1050,7 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
       };
       let fetched: LanMcpAuthTokenResponse;
       try {
-        fetched = await this.hubFetchToken(server.id, payload, options.signal);
+        fetched = await this.hubFetchToken(server.id, payload, currentHub, options.signal);
       } catch (error) {
         if (
           error instanceof McpAuthenticationError &&
@@ -1023,6 +1061,7 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
         throw error;
       }
       const next: CachedToken = {
+        hubUrl: currentHub.url,
         target,
         mode: fetched.mode,
         headers: fetched.mode === 'oauth' ? fetched.headers : (fetched.headers ?? {}),
@@ -1030,6 +1069,7 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
         ...(fetched.mode === 'oauth' && fetched.expiresAt !== undefined
           ? { expiresAt: fetched.expiresAt }
           : {}),
+        ...(fetched.mode === 'manual' ? { cachedUntil: this.now() + MANUAL_CACHE_TTL_MS } : {}),
         revision: fetched.revision,
       };
       this.tokenCache.set(server.id, next);
@@ -1050,10 +1090,13 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
     const server = this.connectionTarget(authoredServer);
     let headers: Record<string, string> = {};
     let localEnv: Record<string, string> = {};
+    let tokenRevision: number | undefined;
     if (server.connection?.authentication === 'local') {
       if (server.transport === 'http') {
         try {
-          headers = (await this.acquireToken(server, { forceFromHub: true })).headers;
+          const token = await this.acquireToken(server, { forceFromHub: true });
+          headers = token.headers;
+          tokenRevision = token.revision;
         } catch (error) {
           if (
             !(error instanceof McpAuthenticationError) ||
@@ -1080,7 +1123,8 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
           await this.observe(
             server,
             response,
-            init?.signal ?? (input instanceof Request ? input.signal : undefined)
+            init?.signal ?? (input instanceof Request ? input.signal : undefined),
+            tokenRevision
           );
         }
         return response;
@@ -1178,12 +1222,14 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
             { ...baseHeaders, ...(token?.headers ?? {}) },
             leaseSignal
           );
+          let observedRevision = token?.revision;
           if (response?.status === 401 && own && server.connection?.authentication === 'local') {
             const fresh = await this.acquireToken(server, {
               forceRefresh: true,
               failedRevision: token?.revision,
               signal: leaseSignal,
             });
+            observedRevision = fresh.revision;
             response = await this.io.forward(
               job,
               resolved.url,
@@ -1193,7 +1239,7 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
           }
           if (response) {
             if (response.status === 401) {
-              if (own) await this.observe(server, response, leaseSignal);
+              if (own) await this.observe(server, response, leaseSignal, observedRevision);
               writeRedactedUnavailable(job);
             } else if (response.status === 404 || response.status === 405) {
               writeProtocolStatusError(job, response);
@@ -1276,7 +1322,6 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
 
       await this.revokeLeases(() => true);
       this.tokenCache.clear();
-      this.oauthClientConfig.clear();
       this.localStates.clear();
     })();
     return this.closing;

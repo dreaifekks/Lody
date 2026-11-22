@@ -4,8 +4,8 @@
 // AES-256-GCM key HKDF-derived from the hub token. Over the wire, credential
 // payloads travel in AES-256-GCM envelopes using a distinct HKDF-derived key
 // behind the hub's Bearer gate. OAuth refresh runs exclusively on the hub under
-// a per-serverId mutex so `refresh_token` and `client_secret` never leave the
-// hub and concurrent 401/near-expiry storms collapse to a single rotation.
+// a per-serverId mutex so `refresh_token` never leaves the hub and concurrent
+// 401/near-expiry storms collapse to a single rotation.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
@@ -22,18 +22,25 @@ import {
   decryptLanMcpAuthJson,
   deriveLanMcpAuthKey,
   encryptLanMcpAuthJson,
+  hashLanMcpAuthTarget,
+  LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX,
   LAN_HUB_MCP_AUTH_PREFIX,
   LAN_HUB_MCP_AUTH_RECORDS_PREFIX,
   LAN_HUB_MCP_AUTH_STATUS_PATH,
   LAN_HUB_MCP_AUTH_TOKEN_PREFIX,
   LAN_MCP_AUTH_FILE_NAME,
+  LanMcpAuthAuthorizeConfigRequestSchema,
+  LanMcpAuthAuthorizeConfigResponseSchema,
   LanMcpAuthPutRecordPayloadSchema,
   LanMcpAuthTokenRequestSchema,
   LanMcpAuthTokenResponseSchema,
   mcpAuthAtRestAad,
+  mcpAuthAuthorizeConfigRequestAad,
+  mcpAuthAuthorizeConfigResponseAad,
   mcpAuthPutRecordRequestAad,
   mcpAuthTokenRequestAad,
   mcpAuthTokenResponseAad,
+  type LanMcpAuthAuthorizeConfigResponse,
   type LanMcpAuthDeleteRecordResponse,
   type LanMcpAuthPutRecordResponse,
   type LanMcpAuthRefreshError,
@@ -67,7 +74,13 @@ const StoredFileSchema = z
 export type LanHubMcpAuth = {
   handles(url: string | undefined): boolean;
   handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<void>;
-  /** Waits for in-flight mutations/refreshes so handover reads a settled `mcp-auth.enc`. */
+  /** Rejects new MCP auth requests while the hub is handing over or moved. */
+  beginHandover(): void;
+  /** Re-admits MCP auth requests when an aborted handover resumes serving here. */
+  resumeHandover(): void;
+  /** Whether this hub holds MCP authentication state (in memory or `mcp-auth.enc`). */
+  hasRecords(): boolean;
+  /** Waits for all in-flight requests/mutations and flushes any pending persist before handover. */
   idle(): Promise<void>;
   /** Aborts in-flight upstream refreshes when the hub closes. */
   close(): void;
@@ -90,11 +103,17 @@ class HttpError extends Error {
   }
 }
 
-function sendJson(response: http.ServerResponse, status: number, body: unknown): void {
+function sendJson(
+  response: http.ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: Record<string, string>
+): void {
   if (response.headersSent || response.destroyed) return;
   response.writeHead(status, {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   response.end(JSON.stringify(body));
 }
@@ -145,7 +164,7 @@ function toStatusItem(
 ): LanMcpAuthStatusItem {
   return {
     mode: entry.record.settings.mode,
-    target: entry.record.target,
+    targetHash: hashLanMcpAuthTarget(entry.record.target),
     hasTokens: Boolean(entry.record.tokens),
     hasRefreshToken: Boolean(entry.record.tokens?.refresh_token),
     hasCredentials: hasRecordCredentials(entry.record),
@@ -237,8 +256,19 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
   const refreshErrors = new Map<string, LanMcpAuthRefreshError>();
   const serverLocks = new Map<string, Promise<void>>();
   const activeOps = new Set<Promise<unknown>>();
+  const idleWaiters = new Set<() => void>();
   let nextRevision = 1;
   let storageCorrupted = false;
+  let pendingPersist = false;
+  let draining = false;
+  let inFlightRequests = 0;
+
+  const notifyIfIdle = (): void => {
+    if (inFlightRequests === 0 && activeOps.size === 0) {
+      for (const resolve of idleWaiters) resolve();
+      idleWaiters.clear();
+    }
+  };
 
   const loadFromDisk = (): void => {
     let raw: string;
@@ -274,7 +304,11 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     if (storageCorrupted) throw new HttpError(500, 'storage_unavailable');
   };
 
-  /** Atomically writes the full encrypted store with `0600` permissions before committing memory. */
+  const ensureNotDraining = (): void => {
+    if (draining) throw new HttpError(503, 'moving');
+  };
+
+  /** Atomically writes the full encrypted store with `0600` permissions. */
   const persistSnapshot = (
     nextRecords: ReadonlyMap<string, StoredEntry>,
     candidateNextRevision: number
@@ -293,6 +327,19 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     } catch (error) {
       fs.rmSync(temporary, { force: true });
       throw error;
+    }
+  };
+
+  const flushPendingPersist = (context: string): void => {
+    if (!pendingPersist) return;
+    try {
+      persistSnapshot(records, nextRevision);
+      pendingPersist = false;
+    } catch (error) {
+      options.log?.(
+        `[mcp-auth] retry persist failed (${context}): ${error instanceof Error ? error.name : 'error'}`
+      );
+      throw new HttpError(500, 'storage_unavailable');
     }
   };
 
@@ -320,7 +367,10 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
       () => undefined
     );
     activeOps.add(settled);
-    void settled.finally(() => activeOps.delete(settled));
+    void settled.finally(() => {
+      activeOps.delete(settled);
+      notifyIfIdle();
+    });
     return await op;
   };
 
@@ -356,6 +406,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
       throw new HttpError(400, 'invalid_envelope');
     }
     const status = await withServerLock(serverId, async () => {
+      ensureNotDraining();
       ensureStorageHealthy();
       const timestamp = now();
       const normalizedRecord: McpStoredAuthentication = {
@@ -374,9 +425,17 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
       };
       const staged = new Map(records);
       staged.set(serverId, entry);
-      persistSnapshot(staged, revision + 1);
+      try {
+        persistSnapshot(staged, revision + 1);
+      } catch (error) {
+        options.log?.(
+          `[mcp-auth] persist failed on PUT for ${serverId}: ${error instanceof Error ? error.name : 'error'}`
+        );
+        throw new HttpError(500, 'storage_unavailable');
+      }
       records.set(serverId, entry);
       nextRevision = revision + 1;
+      pendingPersist = false;
       refreshErrors.delete(serverId);
       options.log?.(
         `[mcp-auth] saved ${entry.record.settings.mode} credentials for ${serverId} (rev ${revision})`
@@ -392,19 +451,80 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
   ): Promise<void> => {
     ensureStorageHealthy();
     const removed = await withServerLock(serverId, async () => {
+      ensureNotDraining();
       ensureStorageHealthy();
       const existed = records.has(serverId);
       if (existed) {
         const staged = new Map(records);
         staged.delete(serverId);
-        persistSnapshot(staged, nextRevision);
+        try {
+          persistSnapshot(staged, nextRevision);
+        } catch (error) {
+          options.log?.(
+            `[mcp-auth] persist failed on DELETE for ${serverId}: ${error instanceof Error ? error.name : 'error'}`
+          );
+          throw new HttpError(500, 'storage_unavailable');
+        }
         records.delete(serverId);
+        pendingPersist = false;
         options.log?.(`[mcp-auth] removed credentials for ${serverId}`);
+      } else if (pendingPersist) {
+        flushPendingPersist(`DELETE ${serverId}`);
       }
       refreshErrors.delete(serverId);
       return existed;
     });
     sendJson(response, 200, { removed } satisfies LanMcpAuthDeleteRecordResponse);
+  };
+
+  const handleAuthorizeConfig = async (
+    serverId: string,
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> => {
+    ensureStorageHealthy();
+    const rawBody = await readJsonBody(request);
+    let configRequest: z.infer<typeof LanMcpAuthAuthorizeConfigRequestSchema>;
+    try {
+      const decrypted = decryptLanMcpAuthJson(
+        wireKey,
+        mcpAuthAuthorizeConfigRequestAad(serverId),
+        rawBody
+      );
+      configRequest = LanMcpAuthAuthorizeConfigRequestSchema.parse(decrypted);
+    } catch {
+      throw new HttpError(400, 'invalid_envelope');
+    }
+
+    const configResponse = await withServerLock(
+      serverId,
+      async (): Promise<LanMcpAuthAuthorizeConfigResponse> => {
+        ensureNotDraining();
+        ensureStorageHealthy();
+        const entry = records.get(serverId);
+        if (!entry) throw new HttpError(404, 'not_found');
+        if (
+          entry.record.target !== configRequest.target ||
+          entry.record.settings.mode !== 'oauth'
+        ) {
+          throw new HttpError(409, 'oauth_required');
+        }
+        return LanMcpAuthAuthorizeConfigResponseSchema.parse({
+          ...(entry.record.settings.clientId ? { clientId: entry.record.settings.clientId } : {}),
+          ...(entry.record.settings.clientSecret
+            ? { clientSecret: entry.record.settings.clientSecret }
+            : {}),
+          ...(entry.record.client ? { client: entry.record.client } : {}),
+        });
+      }
+    );
+
+    const envelope = encryptLanMcpAuthJson(
+      wireKey,
+      mcpAuthAuthorizeConfigResponseAad(serverId),
+      configResponse
+    );
+    sendJson(response, 200, envelope);
   };
 
   const handleToken = async (
@@ -425,6 +545,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     const tokenResponse = await withServerLock(
       serverId,
       async (): Promise<LanMcpAuthTokenResponse> => {
+        ensureNotDraining();
         ensureStorageHealthy();
         let entry = records.get(serverId);
         if (!entry) throw new HttpError(404, 'not_found');
@@ -439,6 +560,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           if (!hasRecordCredentials(entry.record)) {
             throw new HttpError(409, 'manual_required');
           }
+          flushPendingPersist(`token ${serverId}`);
           const manual = buildManualCredentials(entry.record);
           return LanMcpAuthTokenResponseSchema.parse({
             mode: 'manual',
@@ -452,6 +574,8 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
         }
 
         const currentNow = now();
+        const expiredNow =
+          entry.record.expiresAt !== undefined && entry.record.expiresAt <= currentNow;
         const nearExpiry =
           entry.record.expiresAt !== undefined &&
           entry.record.expiresAt <= currentNow + REFRESH_SKEW_MS;
@@ -459,8 +583,10 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           tokenRequest.forceRefresh === true &&
           tokenRequest.failedRevision !== undefined &&
           tokenRequest.failedRevision < entry.revision;
-        const needsRefresh =
-          nearExpiry || (tokenRequest.forceRefresh === true && !alreadyRefreshed);
+        // Short-lived tokens already rotated past failedRevision are reused until actually expired.
+        const needsRefresh = alreadyRefreshed
+          ? expiredNow
+          : nearExpiry || tokenRequest.forceRefresh === true;
 
         if (needsRefresh) {
           if (!entry.record.tokens.refresh_token) {
@@ -525,15 +651,25 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
             record: nextRecord,
             updatedAt: refreshedAt,
           };
-          const staged = new Map(records);
-          staged.set(serverId, nextEntry);
-          // Persist atomically before releasing the mutex so rotated refresh tokens are durable.
-          persistSnapshot(staged, revision + 1);
+          // Commit rotated tokens in memory first so an ENOSPC persist failure never
+          // causes subsequent calls to reuse an already-invalidated single-use refresh token.
           records.set(serverId, nextEntry);
           nextRevision = revision + 1;
           refreshErrors.delete(serverId);
           entry = nextEntry;
+          try {
+            persistSnapshot(records, nextRevision);
+            pendingPersist = false;
+          } catch (error) {
+            pendingPersist = true;
+            options.log?.(
+              `[mcp-auth] failed to persist rotated OAuth token for ${serverId}: ${error instanceof Error ? error.name : 'error'}`
+            );
+            throw new HttpError(500, 'storage_unavailable');
+          }
           options.log?.(`[mcp-auth] refreshed OAuth token for ${serverId} (rev ${revision})`);
+        } else {
+          flushPendingPersist(`token ${serverId}`);
         }
 
         return LanMcpAuthTokenResponseSchema.parse({
@@ -559,6 +695,12 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
       return pathname === '/lan/mcp-auth' || pathname.startsWith(LAN_HUB_MCP_AUTH_PREFIX);
     },
     handle: async (request, response) => {
+      // Synchronous admission check before any await so handover draining cannot miss mid-body writes.
+      if (draining) {
+        sendJson(response, 503, { error: 'moving' }, { 'Retry-After': '30' });
+        return;
+      }
+      inFlightRequests += 1;
       const pathname = request.url?.split('?')[0] ?? '';
       const method = request.method ?? '';
       try {
@@ -585,24 +727,57 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           await handleToken(serverId, request, response);
           return;
         }
+        if (pathname.startsWith(LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX)) {
+          const serverId = parseServerIdSegment(pathname, LAN_HUB_MCP_AUTH_AUTHORIZE_CONFIG_PREFIX);
+          if (method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+          await handleAuthorizeConfig(serverId, request, response);
+          return;
+        }
         throw new HttpError(404, 'not_found');
       } catch (error) {
         if (error instanceof HttpError) {
-          sendJson(response, error.status, { error: error.code });
+          sendJson(
+            response,
+            error.status,
+            { error: error.code },
+            error.status === 503 && error.code === 'moving' ? { 'Retry-After': '30' } : undefined
+          );
           return;
         }
         options.log?.(
           `[mcp-auth] ${method} ${pathname} failed: ${error instanceof Error ? error.name : 'error'}`
         );
         sendJson(response, 500, { error: 'mcp_auth_failed' });
+      } finally {
+        inFlightRequests -= 1;
+        notifyIfIdle();
       }
     },
+    beginHandover: () => {
+      draining = true;
+    },
+    resumeHandover: () => {
+      draining = false;
+    },
+    hasRecords: () => records.size > 0 || storageCorrupted || fs.existsSync(filePath),
     idle: async () => {
-      while (activeOps.size > 0) {
-        await Promise.allSettled([...activeOps]);
+      while (inFlightRequests > 0 || activeOps.size > 0) {
+        if (activeOps.size > 0) {
+          await Promise.allSettled([...activeOps]);
+        }
+        if (inFlightRequests > 0 || activeOps.size > 0) {
+          await new Promise<void>((resolve) => {
+            idleWaiters.add(resolve);
+          });
+        }
+      }
+      if (pendingPersist && !storageCorrupted) {
+        persistSnapshot(records, nextRevision);
+        pendingPersist = false;
       }
     },
     close: () => {
+      draining = true;
       shutdown.abort();
     },
   };

@@ -749,6 +749,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     options.log?.(`[handover] Serving the LAN here again: ${reason}`);
     try {
       await serve();
+      mcpAuth.resumeHandover();
     } catch (error) {
       await close(error instanceof Error ? error : new Error(String(error)));
     }
@@ -802,6 +803,17 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       sendJson(request, response, 409, { error: state.kind });
       return;
     }
+    const params = new URL(request.url ?? '/', 'http://hub.invalid').searchParams;
+    const sharesRequested = params.has('shares');
+    const credentialsRequested = params.has('credentials');
+    if (!credentialsRequested && mcpAuth.hasRecords()) {
+      sendJson(request, response, 409, {
+        error: 'upgrade_required',
+        message:
+          'Upgrade the destination host before taking over a hub with MCP authentication records.',
+      });
+      return;
+    }
     const { upstream } = state;
     const timer = setTimeout(
       () => void resume('the new host did not say it runs'),
@@ -809,18 +821,26 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     );
     timer.unref?.();
     state = { kind: 'handing-over', timer };
+    mcpAuth.beginHandover();
     options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
     await upstream.stop();
     await upstream.exited;
-    // A share or MCP auth write being committed lands before its files are read.
-    await Promise.all([shares.idle(), mcpAuth.idle()]);
+    try {
+      // A share or MCP auth write being committed lands before its files are read.
+      await Promise.all([shares.idle(), mcpAuth.idle()]);
+    } catch (error) {
+      sendJson(request, response, 500, { error: 'handover_idle_failed' });
+      await resume(`preparing files failed: ${error instanceof Error ? error.name : 'error'}`);
+      return;
+    }
     response.writeHead(200, {
       ...corsHeaders(request),
       'Content-Type': 'application/octet-stream',
     });
     try {
       const files = await writeLanHubHandover(dataDir, response, {
-        shares: new URL(request.url ?? '/', 'http://hub.invalid').searchParams.has('shares'),
+        shares: sharesRequested,
+        credentials: credentialsRequested,
       });
       response.end();
       options.log?.(`[handover] Sent ${files} file(s); waiting for the new host.`);
@@ -856,8 +876,11 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         ...corsHeaders(request),
         'Content-Type': 'application/octet-stream',
       });
+      const credentials = new URL(request.url ?? '/', 'http://hub.invalid').searchParams.has(
+        'credentials'
+      );
       try {
-        const sent = await writeLanHubSnapshot({ dataDir, have, stream: response });
+        const sent = await writeLanHubSnapshot({ dataDir, have, stream: response, credentials });
         options.log?.(
           `[standby] Sent a copy: ${sent.sent} of ${sent.blocks} block(s) of ${sent.sizeBytes} bytes.`
         );
@@ -908,6 +931,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       return;
     }
     state = { kind: 'moved', moved };
+    mcpAuth.beginHandover();
     if (previous.kind === 'serving') {
       await previous.upstream.stop();
       await previous.upstream.exited;
@@ -955,6 +979,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
       return;
     }
     state = { kind: 'moved', moved };
+    mcpAuth.beginHandover();
     options.log?.(`[handover] The LAN moved to ${moved.movedTo}; members are pointed there.`);
     sendJson(request, response, 200, moved);
   };
@@ -963,6 +988,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     const moved = readLanHubMoved(dataDir);
     if (moved) {
       state = { kind: 'moved', moved };
+      mcpAuth.beginHandover();
       options.log?.(`[handover] This LAN moved to ${moved.movedTo}; members are pointed there.`);
     } else {
       await serve();

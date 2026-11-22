@@ -4,7 +4,10 @@ import {
   decryptLanMcpAuthJson,
   deriveLanMcpAuthKey,
   encryptLanMcpAuthJson,
+  hashLanMcpAuthTarget,
   mcpAuthAtRestAad,
+  mcpAuthAuthorizeConfigRequestAad,
+  mcpAuthAuthorizeConfigResponseAad,
   mcpAuthPutRecordRequestAad,
   mcpAuthTokenRequestAad,
   mcpAuthTokenResponseAad,
@@ -67,12 +70,23 @@ describe('LAN MCP auth cryptography', () => {
       decryptLanMcpAuthJson(wireKey, mcpAuthTokenResponseAad('srv-alpha'), envelope)
     ).toThrow();
     expect(() =>
+      decryptLanMcpAuthJson(wireKey, mcpAuthAuthorizeConfigRequestAad('srv-alpha'), envelope)
+    ).toThrow();
+    expect(() =>
+      decryptLanMcpAuthJson(wireKey, mcpAuthAuthorizeConfigResponseAad('srv-alpha'), envelope)
+    ).toThrow();
+    expect(() =>
       decryptLanMcpAuthJson(
         wireKey,
         buildLanMcpAuthAad(['wire', 'PUT', 'records', 'srv-alpha']),
         envelope
       )
     ).toThrow();
+
+    const hashA = hashLanMcpAuthTarget('{"transport":"http","url":"https://a.example/mcp"}');
+    const hashB = hashLanMcpAuthTarget('{"transport":"http","url":"https://b.example/mcp"}');
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashA).not.toBe(hashB);
 
     // Tampered ciphertext / tag / iv
     const badCiphertext = Buffer.from(envelope.ciphertext, 'base64');
