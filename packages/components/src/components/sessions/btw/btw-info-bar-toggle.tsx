@@ -2,6 +2,7 @@ import { CircleAlert, Hand, MessageCircle, MessageCircleDashed, X } from 'lucide
 import { Tooltip } from '@lody/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { commands, formatKeyBinding } from '@/lib/commands';
+import type { BtwPresentationMode } from './btw-layout';
 import type { MainConversationStatus } from './main-conversation-status';
 
 export const BTW_SURFACE_BG_CLASS =
@@ -24,6 +25,7 @@ export type BtwInfoBarToggleProps = {
   readonly hasBtwUnread: boolean;
   readonly btwTurnCount: number;
   readonly mainStatus: MainConversationStatus;
+  readonly presentationMode?: BtwPresentationMode;
   readonly onToggle: () => void;
 };
 
@@ -41,6 +43,7 @@ export function BtwInfoBarToggle({
   hasBtwUnread,
   btwTurnCount,
   mainStatus,
+  presentationMode = 'overlay',
   onToggle,
 }: BtwInfoBarToggleProps) {
   let toneClass: string;
@@ -85,6 +88,11 @@ export function BtwInfoBarToggle({
       toneClass = 'text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground';
       tooltip = `/btw 临时旁白 (${getBtwShortcutHint()})`;
     }
+    iconNode = <MessageCircleDashed className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
+  } else if (presentationMode === 'side-panel') {
+    statusAttr = 'btw-side-panel';
+    toneClass = 'bg-primary/12 text-primary hover:bg-primary/20';
+    tooltip = `收起 /btw (${getBtwShortcutHint()})`;
     iconNode = <MessageCircleDashed className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
   } else {
     statusAttr = `main-${mainStatus.kind}`;

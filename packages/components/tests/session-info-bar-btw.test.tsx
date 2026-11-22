@@ -120,6 +120,41 @@ describe('SessionInfoBar /btw toggle & DocumentSelectionSurface /btw action', ()
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps active dashed /btw toggle in side-panel mode without switching to main-return status icon', () => {
+    const onToggle = vi.fn();
+    act(() => {
+      root.render(
+        withTestI18n(
+          <SessionInfoBar
+            {...CONTEXT_LESS_PROPS}
+            surfaceTone="default"
+            btwToggle={
+              <BtwInfoBarToggle
+                isOpen
+                isBtwStreaming={false}
+                hasBtwUnread={false}
+                btwTurnCount={2}
+                mainStatus={{ kind: 'waiting', tooltip: '返回主对话 · 等待审批' }}
+                presentationMode="side-panel"
+                onToggle={onToggle}
+              />
+            }
+          />,
+          testI18n
+        )
+      );
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>('[data-btw-toggle]')!;
+    expect(toggle.getAttribute('data-btw-open')).toBe('true');
+    expect(toggle.getAttribute('data-btw-status')).toBe('btw-side-panel');
+    expect(toggle.getAttribute('aria-label')).toContain('收起 /btw');
+    expect(container.querySelector('[data-btw-clear]')).toBeNull();
+
+    act(() => toggle.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
   it('renders /btw beside Comment in DocumentSelectionSurface prompt and hands off selection', async () => {
     const rect = new DOMRect(10, 10, 120, 16);
     Object.defineProperties(Range.prototype, {

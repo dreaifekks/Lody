@@ -308,11 +308,15 @@ import { SessionInfoBar } from './session-info-bar';
 import {
   BtwInfoBarClearButton,
   BtwInfoBarToggle,
+  BtwSidePanel,
   BtwStreamView,
   deriveMainConversationStatus,
   mergeBtwAvailableCommands,
+  resolveBtwPresentationMode,
+  useBtwContainerWidth,
   useBtwController,
 } from './btw';
+import type { ComposerInputElement } from '@/ui/mention/composer-input';
 import { SessionPreviewPreload } from './session-preview-preload';
 import { CurrentSessionRelationsChip, useHasSessionRelations } from './session-relations-chip';
 import { SessionProjectMembersChip } from './session-project-members-chip';
@@ -2503,6 +2507,12 @@ export interface SessionChatInterfaceProps {
   onConversationPrepared?: () => void;
   /** Signals a terminal failure while preparing this conversation surface. */
   onConversationPrepareError?: () => void;
+  /**
+   * Whether `/btw` may split out as a right side panel when this conversation surface
+   * is wide enough. Must stay false whenever another right panel, Board thread pane,
+   * Side Chat, or Article/Review split is already present.
+   */
+  allowBtwSidePanel?: boolean;
 }
 
 function SpinningLoaderIcon({ className }: { className?: string }) {
@@ -2704,6 +2714,7 @@ export const SessionChatInterface = memo(
       onNavigateSession,
       onConversationPrepared,
       onConversationPrepareError,
+      allowBtwSidePanel = false,
     },
     ref
   ) {
@@ -7476,20 +7487,73 @@ export const SessionChatInterface = memo(
       permissionSessionHistory
     );
 
+    const btwLayoutRootRef = useRef<HTMLDivElement>(null);
+    const [btwLayoutRoot, setBtwLayoutRoot] = useState<HTMLDivElement | null>(null);
+    const setBtwLayoutRootNode = useCallback((node: HTMLDivElement | null) => {
+      btwLayoutRootRef.current = node;
+      setBtwLayoutRoot(node);
+    }, []);
+    const btwSidePanelComposerRef = useRef<ComposerInputElement | null>(null);
+    const btwSidePanelFocusedRef = useRef(false);
+    const btwContainerWidth = useBtwContainerWidth(
+      btwLayoutRoot,
+      allowBtwSidePanel && !isMobile && isVisible && !hideMessageArea
+    );
+    const btwPresentationMode = resolveBtwPresentationMode({
+      allowSidePanel: allowBtwSidePanel,
+      isMobile,
+      containerWidth: btwContainerWidth,
+    });
+    const btwPresentationModeRef = useRef(btwPresentationMode);
+    btwPresentationModeRef.current = btwPresentationMode;
+    const focusBtwComposer = useCallback(() => {
+      if (btwPresentationModeRef.current === 'side-panel') {
+        btwSidePanelComposerRef.current?.focus();
+        return;
+      }
+      inputAreaRef.current?.focusInput();
+    }, []);
+
     const btw = useBtwController({
       sessionId: session.id,
       machineId: session.machineId,
       agentType: session.agentType,
       isVisible: isVisible && session.isArchived !== true,
-      scopeElementRef: messageAreaRef,
-      onFocusComposer: () => inputAreaRef.current?.focusInput(),
+      scopeElementRef: btwLayoutRootRef,
+      onFocusComposer: focusBtwComposer,
     });
     const isBtwActive = btw.state.isOpen && session.isArchived !== true;
-    const hideComposerForPermission = shouldReplaceComposerWithPermission && !isBtwActive;
+    const isBtwSidePanelActive = isBtwActive && btwPresentationMode === 'side-panel';
+    const isBtwOverlayActive = isBtwActive && btwPresentationMode === 'overlay';
+    const hideComposerForPermission = shouldReplaceComposerWithPermission && !isBtwOverlayActive;
+    const prevBtwPresentationModeRef = useRef(btwPresentationMode);
+    useLayoutEffect(() => {
+      const prevMode = prevBtwPresentationModeRef.current;
+      prevBtwPresentationModeRef.current = btwPresentationMode;
+      const hadSidePanelFocus = btwSidePanelFocusedRef.current;
+      if (!isBtwSidePanelActive) {
+        btwSidePanelFocusedRef.current = false;
+      }
+      if (!isBtwActive || !isVisible || prevMode === btwPresentationMode) return undefined;
+      const active = document.activeElement;
+      const wasInSidePanel =
+        prevMode === 'side-panel' &&
+        hadSidePanelFocus &&
+        (!active || active === document.body || active === document.documentElement);
+      const wasInOverlay =
+        prevMode === 'overlay' &&
+        active instanceof Element &&
+        active.closest('[data-btw-composer-active="true"]') !== null;
+      if (!wasInSidePanel && !wasInOverlay) return undefined;
+      const frame = requestAnimationFrame(() => {
+        focusBtwComposer();
+      });
+      return () => cancelAnimationFrame(frame);
+    }, [btwPresentationMode, focusBtwComposer, isBtwActive, isBtwSidePanelActive, isVisible]);
     const wasMainActiveInBtwRef = useRef(false);
     const [mainCompletedInBtw, setMainCompletedInBtw] = useState(false);
     useEffect(() => {
-      if (!isBtwActive) {
+      if (!isBtwOverlayActive) {
         wasMainActiveInBtwRef.current = false;
         setMainCompletedInBtw(false);
         return;
@@ -7503,7 +7567,7 @@ export const SessionChatInterface = memo(
       }
     }, [
       isAwaitingQuestion,
-      isBtwActive,
+      isBtwOverlayActive,
       isSessionWorking,
       session.status?.type,
       shouldReplaceComposerWithPermission,
@@ -7549,7 +7613,7 @@ export const SessionChatInterface = memo(
     );
     const btwComposerMode = useMemo(
       () => ({
-        isOpen: isBtwActive,
+        isOpen: isBtwOverlayActive,
         isStreaming: btw.state.isStreaming,
         modelLabel: btw.modelPillLabel,
         articleFileName: btw.articleFileName,
@@ -7568,7 +7632,7 @@ export const SessionChatInterface = memo(
         btw.modelPillLabel,
         btw.state.isStreaming,
         btw.state.pendingSelection,
-        isBtwActive,
+        isBtwOverlayActive,
       ]
     );
 
@@ -7902,9 +7966,6 @@ export const SessionChatInterface = memo(
               hideMessageArea={hideMessageArea}
               {...pageDropHandlers}
             >
-              {/* The outline must centre in the whole conversation page, not only
-              the flex area left after the composer takes its height. */}
-              <div ref={setOutlineOverlayRoot} {...stylex.props(styles.pageOutlineOverlay)} />
               {!shouldHideHeader &&
                 (headerVariant === 'toolbar' ? (
                   /* Compact toolbar for the merged desktop tab row: right-side
@@ -7985,536 +8046,582 @@ export const SessionChatInterface = memo(
                 ))}
               {subHeader}
               {hideMessageArea ? null : (
-                <>
-                  <SessionPin
-                    pinnedHistoryId={pinnedHistoryId}
-                    pinnedMessage={pinnedMessage}
-                    onUnpin={handleUnpin}
-                    onScrollToMessage={handleScrollToMessage}
-                  />
-                  <SessionSearchProvider value={searchContextValue}>
-                    <SessionPinContext.Provider value={pinContextValue}>
-                      {/* Message area */}
-                      <MessageQuoteAction
-                        root={foldMessageArea}
-                        enabled={
-                          isVisible &&
-                          !session.isArchived &&
-                          !shareSelection.active &&
-                          !shouldReplaceComposerWithPermission &&
-                          !isBtwActive
-                        }
-                        onQuote={(text) => inputAreaRef.current?.addMessageQuote(text) ?? false}
-                      />
-                      <div
-                        ref={setMessageArea}
-                        {...stylex.props(styles.messageArea)}
-                        style={
-                          horizontalFold ? { maxHeight: horizontalFold.messageHeight } : undefined
-                        }
-                      >
-                        {isSearchOpen ? (
-                          <SessionSearchBar
-                            query={searchQuery}
-                            currentIndex={activeSearchResultIndex}
-                            totalCount={searchResults.length}
-                            inputRef={searchInputRef}
-                            onQueryChange={handleSearchQueryChange}
-                            onPrevious={() => moveToSearchResult('previous')}
-                            onNext={() => moveToSearchResult('next')}
-                            onClose={closeSearch}
-                            t={t}
-                          />
-                        ) : null}
-                        <ErrorBoundary
-                          name="SessionChatStream"
-                          variant="section"
-                          resetKeys={[session.id]}
-                          fallbackRender={(props) => <MessageListErrorFallback {...props} />}
-                        >
-                          {/* Key forces remount on session change, preventing scroll state bleed between sessions */}
-                          <MessageSendStatusContext.Provider value={sendingMessageIds}>
-                            <MessageSelectionContext.Provider value={shareSelection.context}>
-                              <SessionAgentFileLinkMenuProvider
-                                session={session}
-                                workspaceId={workspaceId}
-                                isVisible={isVisible}
-                              >
-                                <AgentSurfaceContext.Provider value={agentSurfaceActions}>
-                                  <SessionChatStream
-                                    key={session.id}
-                                    ref={chatStreamRef}
-                                    sessionId={session?.id}
-                                    workspaceId={workspaceId}
-                                    showSenderIdentity={isMultiMember}
-                                    view={conversationView}
-                                    isVisible={isVisible}
-                                    sessionCreatedAt={session?.createdAt}
-                                    dividerLabel={sessionDividerLabel}
-                                    {...stylex.props(styles.stream)}
-                                    leadingContent={openedByConversationStart}
-                                    emptyState={chatStreamEmptyState}
-                                    trailingContent={
-                                      unsentFirstMessage ? undefined : (
-                                        <>
-                                          {pendingMessages.trailingContent}
-                                          {continuation.views.length > 0 ? (
-                                            // The stream's trailing row is full-bleed, so the
-                                            // note mounts its own conversation column like every
-                                            // other region; otherwise it paints the whole pane.
-                                            <ConversationColumn
-                                              {...stylex.props(styles.continuationNotesColumn)}
-                                            >
-                                              {continuation.views.map((view) => (
-                                                <SessionContinuationNote
-                                                  key={view.id}
-                                                  view={
-                                                    continuation.error
-                                                      ? { ...view, block: 'unavailable' }
-                                                      : view
-                                                  }
-                                                  now={continuationNow}
-                                                  compact={isMobile}
-                                                  statusUnavailable={continuation.error}
-                                                  onCancel={continuation.cancel}
-                                                  onResume={() => {
-                                                    void setTreeCollaborationStopped(
-                                                      session.id,
-                                                      false
-                                                    )
-                                                      .then(continuation.refresh)
-                                                      .catch(() =>
-                                                        toast.error(
-                                                          t('sessions.relations.controlFailed')
-                                                        )
-                                                      );
-                                                  }}
-                                                />
-                                              ))}
-                                            </ConversationColumn>
-                                          ) : null}
-                                        </>
-                                      )
-                                    }
-                                    localUserMessages={pendingMessages.localUserMessages}
-                                    agentActivityLabel={agentActivityLabel}
-                                    agentActivityTone={agentActivityTone}
-                                    agentActivityShimmer={agentActivityShimmer}
-                                    backgroundTaskStatus={backgroundTaskStatus}
-                                    liveTurnActivity={liveTurnActivity}
-                                    historyLive={historyLive}
-                                    onFileDiffClick={onFileDiffClick}
-                                    onFilePathClick={
-                                      onFilePathClick ? handleFilePathClick : undefined
-                                    }
-                                    onOpenHtmlFile={handleOpenHtmlAttachment}
-                                    onAnnotateImage={
-                                      isArchivedSession ? undefined : handleAnnotateImage
-                                    }
-                                    messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
-                                    assistantActions={assistantQuickActions}
-                                    assistantActionsMessageId={latestCompletedProposedPlan?.entryId}
-                                    onCopyContext={(messageId) => {
-                                      void handleCopyConversationHistory(messageId);
-                                    }}
-                                    onForkLastAssistant={onForkLastAssistant}
-                                    forkWorktreeAvailability={forkWorktreeAvailability}
-                                    onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
-                                    onEditLastUser={
-                                      editableLastUserMessageId ? handleEditLastUser : undefined
-                                    }
-                                    editMentionContext={editMentionContext}
-                                    onResendUndelivered={handleResendUndelivered}
-                                    capacityRetry={capacityRetry ?? undefined}
-                                    forkingAssistantMessageId={forkingAssistantMessageId}
-                                    onNavigateSession={onNavigateSession}
-                                    conversationFontSize={conversationFontSize}
-                                    suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
-                                    outlineOverlayRoot={outlineOverlayRoot}
-                                  />
-                                </AgentSurfaceContext.Provider>
-                              </SessionAgentFileLinkMenuProvider>
-                            </MessageSelectionContext.Provider>
-                          </MessageSendStatusContext.Provider>
-                        </ErrorBoundary>
-                        {isBtwActive ? (
-                          <BtwStreamView
-                            turns={btw.state.turns}
-                            streamingText={btw.state.streamingText}
-                            isStreaming={btw.state.isStreaming}
-                            readOnlyTools={btw.state.readOnlyTools}
-                            error={btw.state.error}
-                            conversationFontSize={conversationFontSize}
-                            onToggleReadOnlyTools={btw.toggleReadOnlyTools}
-                          />
-                        ) : null}
-                      </div>
-
-                      <div
-                        data-horizontal-fold-lower
-                        style={
-                          horizontalFold
-                            ? {
-                                position: 'absolute',
-                                left: 0,
-                                right: 0,
-                                bottom: 0,
-                                top: horizontalFold.lowerTop,
-                                display: 'flex',
-                                flexDirection: 'column',
-                                justifyContent: 'flex-end',
-                                minHeight: 0,
-                              }
-                            : { display: 'contents' }
-                        }
-                      >
-                        {/* Requests and their editor must survive virtual row eviction. */}
-                        {workspaceId && (
-                          <div {...stylex.props(styles.shareRequestsScroller)}>
-                            <ConversationColumn {...stylex.props(styles.shareRequestsColumn)}>
-                              <SessionShareRequestCards
-                                workspaceId={workspaceId}
-                                session={session}
-                                isVisible={isVisible}
-                              />
-                            </ConversationColumn>
-                          </div>
-                        )}
-
-                        {/* The one place a pending permission request is answered; it stands in for the composer. */}
+                <div
+                  ref={setBtwLayoutRootNode}
+                  data-btw-layout-mode={btwPresentationMode}
+                  className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
+                >
+                  <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+                    {/* The outline must centre in the whole conversation column, not only
+                    the flex area left after the composer takes its height. */}
+                    <div ref={setOutlineOverlayRoot} {...stylex.props(styles.pageOutlineOverlay)} />
+                    <SessionPin
+                      pinnedHistoryId={pinnedHistoryId}
+                      pinnedMessage={pinnedMessage}
+                      onUnpin={handleUnpin}
+                      onScrollToMessage={handleScrollToMessage}
+                    />
+                    <SessionSearchProvider value={searchContextValue}>
+                      <SessionPinContext.Provider value={pinContextValue}>
+                        {/* Message area */}
+                        <MessageQuoteAction
+                          root={foldMessageArea}
+                          enabled={
+                            isVisible &&
+                            !session.isArchived &&
+                            !shareSelection.active &&
+                            !shouldReplaceComposerWithPermission &&
+                            !isBtwOverlayActive
+                          }
+                          onQuote={(text) => inputAreaRef.current?.addMessageQuote(text) ?? false}
+                        />
                         <div
-                          hidden={isBtwActive}
-                          style={isBtwActive ? { display: 'none' } : { display: 'contents' }}
+                          ref={setMessageArea}
+                          {...stylex.props(styles.messageArea)}
+                          style={
+                            horizontalFold ? { maxHeight: horizontalFold.messageHeight } : undefined
+                          }
                         >
-                          <FloatingPermissionRequest
-                            liftAboveKeyboard={isMobile}
-                            sessionId={session.id}
-                            sessionStatus={liveSessionStatus ?? undefined}
-                            sessionHistory={permissionSessionHistory}
-                            onStop={() => {
-                              void handleStop();
-                            }}
-                          />
+                          {isSearchOpen ? (
+                            <SessionSearchBar
+                              query={searchQuery}
+                              currentIndex={activeSearchResultIndex}
+                              totalCount={searchResults.length}
+                              inputRef={searchInputRef}
+                              onQueryChange={handleSearchQueryChange}
+                              onPrevious={() => moveToSearchResult('previous')}
+                              onNext={() => moveToSearchResult('next')}
+                              onClose={closeSearch}
+                              t={t}
+                            />
+                          ) : null}
+                          <ErrorBoundary
+                            name="SessionChatStream"
+                            variant="section"
+                            resetKeys={[session.id]}
+                            fallbackRender={(props) => <MessageListErrorFallback {...props} />}
+                          >
+                            {/* Key forces remount on session change, preventing scroll state bleed between sessions */}
+                            <MessageSendStatusContext.Provider value={sendingMessageIds}>
+                              <MessageSelectionContext.Provider value={shareSelection.context}>
+                                <SessionAgentFileLinkMenuProvider
+                                  session={session}
+                                  workspaceId={workspaceId}
+                                  isVisible={isVisible}
+                                >
+                                  <AgentSurfaceContext.Provider value={agentSurfaceActions}>
+                                    <SessionChatStream
+                                      key={session.id}
+                                      ref={chatStreamRef}
+                                      sessionId={session?.id}
+                                      workspaceId={workspaceId}
+                                      showSenderIdentity={isMultiMember}
+                                      view={conversationView}
+                                      isVisible={isVisible}
+                                      sessionCreatedAt={session?.createdAt}
+                                      dividerLabel={sessionDividerLabel}
+                                      {...stylex.props(styles.stream)}
+                                      leadingContent={openedByConversationStart}
+                                      emptyState={chatStreamEmptyState}
+                                      trailingContent={
+                                        unsentFirstMessage ? undefined : (
+                                          <>
+                                            {pendingMessages.trailingContent}
+                                            {continuation.views.length > 0 ? (
+                                              // The stream's trailing row is full-bleed, so the
+                                              // note mounts its own conversation column like every
+                                              // other region; otherwise it paints the whole pane.
+                                              <ConversationColumn
+                                                {...stylex.props(styles.continuationNotesColumn)}
+                                              >
+                                                {continuation.views.map((view) => (
+                                                  <SessionContinuationNote
+                                                    key={view.id}
+                                                    view={
+                                                      continuation.error
+                                                        ? { ...view, block: 'unavailable' }
+                                                        : view
+                                                    }
+                                                    now={continuationNow}
+                                                    compact={isMobile}
+                                                    statusUnavailable={continuation.error}
+                                                    onCancel={continuation.cancel}
+                                                    onResume={() => {
+                                                      void setTreeCollaborationStopped(
+                                                        session.id,
+                                                        false
+                                                      )
+                                                        .then(continuation.refresh)
+                                                        .catch(() =>
+                                                          toast.error(
+                                                            t('sessions.relations.controlFailed')
+                                                          )
+                                                        );
+                                                    }}
+                                                  />
+                                                ))}
+                                              </ConversationColumn>
+                                            ) : null}
+                                          </>
+                                        )
+                                      }
+                                      localUserMessages={pendingMessages.localUserMessages}
+                                      agentActivityLabel={agentActivityLabel}
+                                      agentActivityTone={agentActivityTone}
+                                      agentActivityShimmer={agentActivityShimmer}
+                                      backgroundTaskStatus={backgroundTaskStatus}
+                                      liveTurnActivity={liveTurnActivity}
+                                      historyLive={historyLive}
+                                      onFileDiffClick={onFileDiffClick}
+                                      onFilePathClick={
+                                        onFilePathClick ? handleFilePathClick : undefined
+                                      }
+                                      onOpenHtmlFile={handleOpenHtmlAttachment}
+                                      onAnnotateImage={
+                                        isArchivedSession ? undefined : handleAnnotateImage
+                                      }
+                                      messageFileDiffEntriesByTurn={messageFileDiffEntriesByTurn}
+                                      assistantActions={assistantQuickActions}
+                                      assistantActionsMessageId={
+                                        latestCompletedProposedPlan?.entryId
+                                      }
+                                      onCopyContext={(messageId) => {
+                                        void handleCopyConversationHistory(messageId);
+                                      }}
+                                      onForkLastAssistant={onForkLastAssistant}
+                                      forkWorktreeAvailability={forkWorktreeAvailability}
+                                      onForkWorktreeMenuOpen={onForkWorktreeMenuOpen}
+                                      onEditLastUser={
+                                        editableLastUserMessageId ? handleEditLastUser : undefined
+                                      }
+                                      editMentionContext={editMentionContext}
+                                      onResendUndelivered={handleResendUndelivered}
+                                      capacityRetry={capacityRetry ?? undefined}
+                                      forkingAssistantMessageId={forkingAssistantMessageId}
+                                      onNavigateSession={onNavigateSession}
+                                      conversationFontSize={conversationFontSize}
+                                      suppressStickyAutoScrollRef={suppressStickyAutoScrollRef}
+                                      outlineOverlayRoot={outlineOverlayRoot}
+                                    />
+                                  </AgentSurfaceContext.Provider>
+                                </SessionAgentFileLinkMenuProvider>
+                              </MessageSelectionContext.Provider>
+                            </MessageSendStatusContext.Provider>
+                          </ErrorBoundary>
+                          {isBtwOverlayActive ? (
+                            <BtwStreamView
+                              turns={btw.state.turns}
+                              streamingText={btw.state.streamingText}
+                              isStreaming={btw.state.isStreaming}
+                              readOnlyTools={btw.state.readOnlyTools}
+                              error={btw.state.error}
+                              conversationFontSize={conversationFontSize}
+                              onToggleReadOnlyTools={btw.toggleReadOnlyTools}
+                            />
+                          ) : null}
                         </div>
 
-                        {/* Notification permission prompt - shown when session becomes idle (turn completed) */}
-                        {/* TODO(analytics): session/notification_prompt_shown|_permission_granted|_permission_denied.
+                        <div
+                          data-horizontal-fold-lower
+                          style={
+                            horizontalFold
+                              ? {
+                                  position: 'absolute',
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  top: horizontalFold.lowerTop,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  justifyContent: 'flex-end',
+                                  minHeight: 0,
+                                }
+                              : { display: 'contents' }
+                          }
+                        >
+                          {/* Requests and their editor must survive virtual row eviction. */}
+                          {workspaceId && (
+                            <div {...stylex.props(styles.shareRequestsScroller)}>
+                              <ConversationColumn {...stylex.props(styles.shareRequestsColumn)}>
+                                <SessionShareRequestCards
+                                  workspaceId={workspaceId}
+                                  session={session}
+                                  isVisible={isVisible}
+                                />
+                              </ConversationColumn>
+                            </div>
+                          )}
+
+                          {/* The one place a pending permission request is answered; it stands in for the composer. */}
+                          <div
+                            hidden={isBtwOverlayActive}
+                            style={
+                              isBtwOverlayActive ? { display: 'none' } : { display: 'contents' }
+                            }
+                          >
+                            <FloatingPermissionRequest
+                              liftAboveKeyboard={isMobile}
+                              sessionId={session.id}
+                              sessionStatus={liveSessionStatus ?? undefined}
+                              sessionHistory={permissionSessionHistory}
+                              onStop={() => {
+                                void handleStop();
+                              }}
+                            />
+                          </div>
+
+                          {/* Notification permission prompt - shown when session becomes idle (turn completed) */}
+                          {/* TODO(analytics): session/notification_prompt_shown|_permission_granted|_permission_denied.
                       Visibility + enable/dismiss live inside NotificationPermissionPrompt (owned elsewhere)
                       and the actual grant/deny resolves on the settings page, so these must be emitted from
                       that component via onShown/onEnableClicked/onDismissed callbacks (see crossFileNeeds). */}
-                        <NotificationPermissionPrompt
-                          sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
-                        />
+                          <NotificationPermissionPrompt
+                            sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
+                          />
 
-                        {/* Session info bar (desktop AND mobile): the canonical
+                          {/* Session info bar (desktop AND mobile): the canonical
                       cluster + fixed stage row merging status, goal, schedule,
                       and work context, glued to the composer shell. It
                       replaced the mobile status strip / goal banner /
                       in-composer scheduled panel. */}
-                        <SessionInfoBar
-                          status={statusStripState}
-                          machine={
-                            sessionMachine
-                              ? {
-                                  machineId: session.machineId,
-                                  name: sessionMachine.name,
-                                  ownerName: workspaceMembers.find(
-                                    (member) => member.userId === sessionMachine.ownerUserId
-                                  )?.name,
-                                  isOwn:
-                                    !!currentUser?.id &&
-                                    sessionMachine.ownerUserId === currentUser.id,
-                                  isCurrent: localMachineId ? isLocalSession : undefined,
-                                  onlineStatus: sessionMachineOnlineStatus,
-                                }
-                              : null
-                          }
-                          compactMachineInfo={isMobile}
-                          goal={latestGoal}
-                          goalCommands={goalCommands}
-                          goalPendingCommand={
-                            pendingGoalCommand &&
-                            pendingGoalCommand.threadId === latestGoal?.threadId
-                              ? pendingGoalCommand.command
-                              : null
-                          }
-                          onGoalCommand={handleGoalCardCommand}
-                          onGoalDismiss={handleDismissGoalBanner}
-                          scheduleSource={
-                            session.scheduleId
-                              ? {
-                                  title:
-                                    scheduleRegistry.rows.find(
-                                      (row) => row.scheduleId === session.scheduleId
-                                    )?.title ?? t('schedules.source', 'Scheduled task'),
-                                  onOpen: () => {
-                                    if (session.scheduleId) openSchedule(session.scheduleId);
-                                  },
-                                }
-                              : null
-                          }
-                          scheduledTasks={pendingScheduledTasks}
-                          prCiRuns={infoBarPrCiRuns}
-                          onOpenPrCiRun={handleOpenPrCiRun}
-                          prCiState={latestPrState?.s}
-                          projectName={infoBarProjectName}
-                          branch={isMobile ? null : infoBarBranch}
-                          workspaceLocation={infoBarWorkspaceLocation}
-                          pr={canShowGitHubActions ? latestPr : null}
-                          onOpenPr={prLinkHandler}
-                          prHistory={canShowGitHubActions ? pullRequestHistory : undefined}
-                          onOpenHistoryPr={openHistoryPr}
-                          contextActions={infoBarContextActions}
-                          onOpenAllChanges={onOpenAllChanges}
-                          // Opener + every Session/Tab created here: the in-stream
-                          // creation cards scroll away with the conversation.
-                          projectMembers={
-                            sessionProjectRun && projectMemberRows.length > 0 ? (
-                              <SessionProjectMembersChip
-                                groupName={sessionProjectRun.name}
-                                rows={projectMemberRows}
-                                selectedMemberId={selectedProjectMemberRow?.id}
-                                onSelectMember={setSelectedProjectMemberId}
-                                onOpenPullRequest={(url) => {
-                                  void openExternalUrl(url);
-                                }}
-                              />
-                            ) : undefined
-                          }
-                          relations={
-                            hasSessionRelations ? (
-                              <CurrentSessionRelationsChip
-                                sessionId={session.id}
-                                onOpenSession={handleOpenRelatedSession}
-                              />
-                            ) : undefined
-                          }
-                          btwToggle={
-                            session.isArchived !== true ? (
-                              <BtwInfoBarToggle
-                                isOpen={isBtwActive}
-                                isBtwStreaming={btw.state.isStreaming}
-                                hasBtwUnread={btw.state.hasUnread}
-                                btwTurnCount={btw.completedTurnCount}
-                                mainStatus={mainConversationStatus}
-                                onToggle={btw.toggleOpen}
-                              />
-                            ) : undefined
-                          }
-                          btwClearAction={
-                            session.isArchived !== true && btw.canClear ? (
-                              <BtwInfoBarClearButton onClear={btw.clearAndClose} />
-                            ) : undefined
-                          }
-                          surfaceTone={isBtwActive ? 'btw' : 'default'}
-                          onOpenBrowser={browserActionAvailable ? handleOpenBrowser : undefined}
-                          onOpenIosSimulator={
-                            session.iosSimulatorPreviewRequestId ? onOpenIosSimulator : undefined
-                          }
-                          onOpenAndroidEmulator={
-                            session.androidEmulatorPreviewRequestId
-                              ? onOpenAndroidEmulator
-                              : undefined
-                          }
-                          privateAccessStatus={
-                            isMobile && sharing?.visibility === 'private'
-                              ? {
-                                  label: t('sharing.privateOnlyYou', 'Private · Only you'),
-                                  description: getSessionSharingDescription(t, sharing),
-                                  onAction:
-                                    sharing.canManage && onShareWithTeam
-                                      ? () => {
-                                          void onShareWithTeam();
-                                        }
-                                      : undefined,
-                                }
-                              : undefined
-                          }
-                          diffStat={infoBarDiffStat}
-                          // Desktop only: mobile already shows catch-up in its header.
-                          syncStatus={
-                            isMobile
-                              ? null
-                              : contentSyncState === 'catching-up'
-                                ? 'updating'
-                                : effectiveTitleSyncing
-                                  ? 'syncing'
-                                  : null
-                          }
-                          // Mobile keeps the bar above the session drawer's z-30
-                          // edge-back strip so its leading chip stays tappable.
-                          protectFromEdgeBackZone={isMobile}
-                          // Queued turns stack on the bar (or on the composer when the
-                          // bar is empty). Hidden with the composer: a pending
-                          // permission bypasses the queue, as does share selection.
-                          queue={
-                            (messageQueue.length > 0 ||
-                              hasPendingQueueRecords ||
-                              scheduledQueueItems.length > 0) &&
-                            !shouldReplaceComposerWithPermission &&
-                            !isBtwActive &&
-                            !shareSelection.active ? (
-                              <MessageQueueDisplay
-                                sessionId={session.id}
-                                items={messageQueue}
-                                scheduledItems={scheduledQueueItems}
-                                onOpenScheduled={(item) => {
-                                  void openScheduledMessageEditor(item);
-                                }}
-                                onEditScheduledTime={(item) => {
-                                  void openScheduledTimeEditor(item);
-                                }}
-                                onCancelScheduled={(item) => {
-                                  void cancelScheduledMessage(item);
-                                }}
-                                onRemove={handleRemoveQueueItem}
-                                onReorder={handleReorderQueueItem}
-                                onEditStart={handleStartQueueItemEdit}
-                                onEditCancel={handleCancelQueueItemEdit}
-                                onEditSave={handleSaveQueueItemEdit}
-                                onSteer={handleSteerQueuedMessage}
-                                showSteerAction={
-                                  isSessionActive &&
-                                  !!activeAssistantTurnId &&
-                                  !isExternalHistoryRefreshing
-                                }
-                                nativeSteerAvailable={nativeSteerAvailable}
-                                roomy={isMobile}
-                                footerPosition={isMobile ? 'inline' : 'below'}
-                              />
-                            ) : undefined
-                          }
-                        />
-
-                        {/* Input area - isolated component to prevent full re-renders on typing.
-                      Hidden while a permission is pending so the response buttons claim
-                      the bottom surface; chat queue is bypassed for the same reason. */}
-                        {scheduledTimeEdit ? (
-                          <ScheduledMessageTimeDialog
-                            at={
-                              scheduledTimeEdit.document.definition.trigger.kind === 'once'
-                                ? scheduledTimeEdit.document.definition.trigger.at
+                          <SessionInfoBar
+                            status={statusStripState}
+                            machine={
+                              sessionMachine
+                                ? {
+                                    machineId: session.machineId,
+                                    name: sessionMachine.name,
+                                    ownerName: workspaceMembers.find(
+                                      (member) => member.userId === sessionMachine.ownerUserId
+                                    )?.name,
+                                    isOwn:
+                                      !!currentUser?.id &&
+                                      sessionMachine.ownerUserId === currentUser.id,
+                                    isCurrent: localMachineId ? isLocalSession : undefined,
+                                    onlineStatus: sessionMachineOnlineStatus,
+                                  }
                                 : null
                             }
-                            timeZone={getDeviceTimeZone(sessionMachine?.timeZone)}
-                            now={getServerNow()}
-                            onClose={() => setScheduledTimeEdit(null)}
-                            onApply={(at) => {
-                              void applyScheduledTime(at);
-                            }}
-                          />
-                        ) : null}
-                        {scheduledMessageEdit ? (
-                          <ScheduledMessageEditDialog
-                            document={scheduledMessageEdit.document}
-                            state={
-                              scheduledMessageEdit.item.state === 'failed' ? 'failed' : undefined
+                            compactMachineInfo={isMobile}
+                            goal={latestGoal}
+                            goalCommands={goalCommands}
+                            goalPendingCommand={
+                              pendingGoalCommand &&
+                              pendingGoalCommand.threadId === latestGoal?.threadId
+                                ? pendingGoalCommand.command
+                                : null
                             }
-                            disabledReason={scheduledMessageDisabledReason}
-                            onClose={() => setScheduledMessageEdit(null)}
-                            onCancel={async () => {
-                              if (await cancelScheduledMessage(scheduledMessageEdit.item))
-                                setScheduledMessageEdit(null);
-                            }}
-                            onSaved={() => setScheduledMessageEdit(null)}
+                            onGoalCommand={handleGoalCardCommand}
+                            onGoalDismiss={handleDismissGoalBanner}
+                            scheduleSource={
+                              session.scheduleId
+                                ? {
+                                    title:
+                                      scheduleRegistry.rows.find(
+                                        (row) => row.scheduleId === session.scheduleId
+                                      )?.title ?? t('schedules.source', 'Scheduled task'),
+                                    onOpen: () => {
+                                      if (session.scheduleId) openSchedule(session.scheduleId);
+                                    },
+                                  }
+                                : null
+                            }
+                            scheduledTasks={pendingScheduledTasks}
+                            prCiRuns={infoBarPrCiRuns}
+                            onOpenPrCiRun={handleOpenPrCiRun}
+                            prCiState={latestPrState?.s}
+                            projectName={infoBarProjectName}
+                            branch={isMobile ? null : infoBarBranch}
+                            workspaceLocation={infoBarWorkspaceLocation}
+                            pr={canShowGitHubActions ? latestPr : null}
+                            onOpenPr={prLinkHandler}
+                            prHistory={canShowGitHubActions ? pullRequestHistory : undefined}
+                            onOpenHistoryPr={openHistoryPr}
+                            contextActions={infoBarContextActions}
+                            onOpenAllChanges={onOpenAllChanges}
+                            // Opener + every Session/Tab created here: the in-stream
+                            // creation cards scroll away with the conversation.
+                            projectMembers={
+                              sessionProjectRun && projectMemberRows.length > 0 ? (
+                                <SessionProjectMembersChip
+                                  groupName={sessionProjectRun.name}
+                                  rows={projectMemberRows}
+                                  selectedMemberId={selectedProjectMemberRow?.id}
+                                  onSelectMember={setSelectedProjectMemberId}
+                                  onOpenPullRequest={(url) => {
+                                    void openExternalUrl(url);
+                                  }}
+                                />
+                              ) : undefined
+                            }
+                            relations={
+                              hasSessionRelations ? (
+                                <CurrentSessionRelationsChip
+                                  sessionId={session.id}
+                                  onOpenSession={handleOpenRelatedSession}
+                                />
+                              ) : undefined
+                            }
+                            btwToggle={
+                              session.isArchived !== true ? (
+                                <BtwInfoBarToggle
+                                  isOpen={isBtwActive}
+                                  isBtwStreaming={btw.state.isStreaming}
+                                  hasBtwUnread={btw.state.hasUnread}
+                                  btwTurnCount={btw.completedTurnCount}
+                                  mainStatus={mainConversationStatus}
+                                  presentationMode={btwPresentationMode}
+                                  onToggle={btw.toggleOpen}
+                                />
+                              ) : undefined
+                            }
+                            btwClearAction={
+                              session.isArchived !== true && isBtwOverlayActive && btw.canClear ? (
+                                <BtwInfoBarClearButton onClear={btw.clearAndClose} />
+                              ) : undefined
+                            }
+                            surfaceTone={isBtwOverlayActive ? 'btw' : 'default'}
+                            onOpenBrowser={browserActionAvailable ? handleOpenBrowser : undefined}
+                            onOpenIosSimulator={
+                              session.iosSimulatorPreviewRequestId ? onOpenIosSimulator : undefined
+                            }
+                            onOpenAndroidEmulator={
+                              session.androidEmulatorPreviewRequestId
+                                ? onOpenAndroidEmulator
+                                : undefined
+                            }
+                            privateAccessStatus={
+                              isMobile && sharing?.visibility === 'private'
+                                ? {
+                                    label: t('sharing.privateOnlyYou', 'Private · Only you'),
+                                    description: getSessionSharingDescription(t, sharing),
+                                    onAction:
+                                      sharing.canManage && onShareWithTeam
+                                        ? () => {
+                                            void onShareWithTeam();
+                                          }
+                                        : undefined,
+                                  }
+                                : undefined
+                            }
+                            diffStat={infoBarDiffStat}
+                            // Desktop only: mobile already shows catch-up in its header.
+                            syncStatus={
+                              isMobile
+                                ? null
+                                : contentSyncState === 'catching-up'
+                                  ? 'updating'
+                                  : effectiveTitleSyncing
+                                    ? 'syncing'
+                                    : null
+                            }
+                            // Mobile keeps the bar above the session drawer's z-30
+                            // edge-back strip so its leading chip stays tappable.
+                            protectFromEdgeBackZone={isMobile}
+                            // Queued turns stack on the bar (or on the composer when the
+                            // bar is empty). Hidden with the composer: a pending
+                            // permission bypasses the queue, as does share selection.
+                            queue={
+                              (messageQueue.length > 0 ||
+                                hasPendingQueueRecords ||
+                                scheduledQueueItems.length > 0) &&
+                              !shouldReplaceComposerWithPermission &&
+                              !isBtwOverlayActive &&
+                              !shareSelection.active ? (
+                                <MessageQueueDisplay
+                                  sessionId={session.id}
+                                  items={messageQueue}
+                                  scheduledItems={scheduledQueueItems}
+                                  onOpenScheduled={(item) => {
+                                    void openScheduledMessageEditor(item);
+                                  }}
+                                  onEditScheduledTime={(item) => {
+                                    void openScheduledTimeEditor(item);
+                                  }}
+                                  onCancelScheduled={(item) => {
+                                    void cancelScheduledMessage(item);
+                                  }}
+                                  onRemove={handleRemoveQueueItem}
+                                  onReorder={handleReorderQueueItem}
+                                  onEditStart={handleStartQueueItemEdit}
+                                  onEditCancel={handleCancelQueueItemEdit}
+                                  onEditSave={handleSaveQueueItemEdit}
+                                  onSteer={handleSteerQueuedMessage}
+                                  showSteerAction={
+                                    isSessionActive &&
+                                    !!activeAssistantTurnId &&
+                                    !isExternalHistoryRefreshing
+                                  }
+                                  nativeSteerAvailable={nativeSteerAvailable}
+                                  roomy={isMobile}
+                                  footerPosition={isMobile ? 'inline' : 'below'}
+                                />
+                              ) : undefined
+                            }
                           />
-                        ) : null}
-                        <MessageSelectionToolbar selection={shareSelection} />
-                        <div
-                          {...stylex.props(
-                            styles.composerContents,
-                            shareSelection.active && styles.composerHidden
-                          )}
-                        >
-                          {hideComposerForPermission ? null : (
-                            <SessionChatInputArea
-                              isVisible={isVisible && !shareSelection.active}
-                              claimNavigationFocus={
-                                isVisible && !preparingWindow ? claimNavigationFocus : undefined
+
+                          {/* Input area - isolated component to prevent full re-renders on typing.
+                      Hidden while a permission is pending so the response buttons claim
+                      the bottom surface; chat queue is bypassed for the same reason. */}
+                          {scheduledTimeEdit ? (
+                            <ScheduledMessageTimeDialog
+                              at={
+                                scheduledTimeEdit.document.definition.trigger.kind === 'once'
+                                  ? scheduledTimeEdit.document.definition.trigger.at
+                                  : null
                               }
-                              ref={inputAreaRef}
-                              session={session}
-                              sessionLocalProjectRootPath={
-                                resolvedLocalProjectMeta?.rootPath ?? null
-                              }
-                              isMachineRemoved={isMachineRemoved}
-                              isAgentBusy={isAgentBusy}
-                              canStopAgent={canStopAgent}
-                              isExternalHistoryRefreshing={isExternalHistoryRefreshing}
-                              externalHistorySyncLabel={externalHistorySyncLabel}
-                              isDark={isDark}
-                              isEmptyConversation={isEmptyConversation}
-                              selectedModeId={selectedModeId}
-                              selectedModelId={selectedModelId}
-                              durableAgentRoleId={sessionConversationConfig.agentRoleId}
-                              durableAgentRoleRevision={sessionConversationConfig.agentRoleRevision}
-                              durableAgentRoleInstanceId={
-                                sessionConversationConfig.agentRoleSnapshot?.instanceId as
-                                  | SessionMeta['agentRoleInstanceId']
-                                  | undefined
-                              }
-                              durableAgentRoleSourceTurnKey={
-                                sessionConversationSourceFence.currentTurnKey
-                              }
-                              durableAgentRoleKnownTurnKeys={
-                                sessionConversationSourceFence.knownTurnKeys
-                              }
-                              durableAgentRoleReady={sessionDocReady || hasPendingConfig}
-                              runConfigHasUserEdits={sessionRunConfigHasUserEdits}
-                              modeOptions={modeOptions}
-                              modelOptions={modelOptions}
-                              rateLimits={sessionRateLimits}
-                              quotaConfig={sessionAgentConfig}
-                              showCodexResetForecast={showCodexResetForecast}
-                              isContextCompacting={isContextCompacting}
-                              resolvedConfigOptionSelectors={resolvedConfigOptionSelectors}
-                              configOptionSelectors={configOptionSelectors}
-                              configOptionValues={configOptionValues}
-                              isRepoPublic={isRepoPublic}
-                              availableCommands={composerAvailableCommands}
-                              commandsEnabled={isVisible}
-                              freeTurnLimitNotice={freeSessionTurnNotice}
-                              mcp={mcpSelection.menu}
-                              mcpSelectionReady={mcpSelection.ready}
-                              mcpDefaultsFailed={mcpSelection.defaultsFailed}
-                              onRetryMcpDefaults={mcpSelection.retryDefaults}
-                              // The info bar above owns this gap (and seats the queue).
-                              hideTopSpacer
-                              onModeChange={handleModeChange}
-                              onModelChange={handleModelChange}
-                              onConfigOptionChange={handleConfigOptionChange}
-                              onSendMessage={handleSendMessage}
-                              voiceTurns={sessionTailHistory}
-                              onContinue={canContinue ? handleContinue : undefined}
-                              onRestoreSession={
-                                onRestoreSession ?? toolbarActions?.onRestoreSession
-                              }
-                              onStop={() => {
-                                void handleStop();
+                              timeZone={getDeviceTimeZone(sessionMachine?.timeZone)}
+                              now={getServerNow()}
+                              onClose={() => setScheduledTimeEdit(null)}
+                              onApply={(at) => {
+                                void applyScheduledTime(at);
                               }}
-                              onRemoveQueueItem={handleRemoveQueueItem}
-                              onAgentConfigChange={
-                                isChildSession ? handleAgentConfigChange : undefined
-                              }
-                              onNavigateToComment={onNavigateToComment}
-                              onCommentReferencesChange={onCommentReferencesChange}
-                              onVisualAnnotationReferencesChange={
-                                onVisualAnnotationReferencesChange
-                              }
-                              onVisualAnnotationReferencesSubmitted={
-                                onVisualAnnotationReferencesSubmitted
-                              }
-                              btwMode={session.isArchived === true ? undefined : btwComposerMode}
-                              onBtwCommand={
-                                session.isArchived === true ? undefined : handleBtwCommand
-                              }
                             />
-                          )}
+                          ) : null}
+                          {scheduledMessageEdit ? (
+                            <ScheduledMessageEditDialog
+                              document={scheduledMessageEdit.document}
+                              state={
+                                scheduledMessageEdit.item.state === 'failed' ? 'failed' : undefined
+                              }
+                              disabledReason={scheduledMessageDisabledReason}
+                              onClose={() => setScheduledMessageEdit(null)}
+                              onCancel={async () => {
+                                if (await cancelScheduledMessage(scheduledMessageEdit.item))
+                                  setScheduledMessageEdit(null);
+                              }}
+                              onSaved={() => setScheduledMessageEdit(null)}
+                            />
+                          ) : null}
+                          <MessageSelectionToolbar selection={shareSelection} />
+                          <div
+                            {...stylex.props(
+                              styles.composerContents,
+                              shareSelection.active && styles.composerHidden
+                            )}
+                          >
+                            {hideComposerForPermission ? null : (
+                              <SessionChatInputArea
+                                isVisible={isVisible && !shareSelection.active}
+                                claimNavigationFocus={
+                                  isVisible && !preparingWindow ? claimNavigationFocus : undefined
+                                }
+                                ref={inputAreaRef}
+                                session={session}
+                                sessionLocalProjectRootPath={
+                                  resolvedLocalProjectMeta?.rootPath ?? null
+                                }
+                                isMachineRemoved={isMachineRemoved}
+                                isAgentBusy={isAgentBusy}
+                                canStopAgent={canStopAgent}
+                                isExternalHistoryRefreshing={isExternalHistoryRefreshing}
+                                externalHistorySyncLabel={externalHistorySyncLabel}
+                                isDark={isDark}
+                                isEmptyConversation={isEmptyConversation}
+                                selectedModeId={selectedModeId}
+                                selectedModelId={selectedModelId}
+                                durableAgentRoleId={sessionConversationConfig.agentRoleId}
+                                durableAgentRoleRevision={
+                                  sessionConversationConfig.agentRoleRevision
+                                }
+                                durableAgentRoleInstanceId={
+                                  sessionConversationConfig.agentRoleSnapshot?.instanceId as
+                                    | SessionMeta['agentRoleInstanceId']
+                                    | undefined
+                                }
+                                durableAgentRoleSourceTurnKey={
+                                  sessionConversationSourceFence.currentTurnKey
+                                }
+                                durableAgentRoleKnownTurnKeys={
+                                  sessionConversationSourceFence.knownTurnKeys
+                                }
+                                durableAgentRoleReady={sessionDocReady || hasPendingConfig}
+                                runConfigHasUserEdits={sessionRunConfigHasUserEdits}
+                                modeOptions={modeOptions}
+                                modelOptions={modelOptions}
+                                rateLimits={sessionRateLimits}
+                                quotaConfig={sessionAgentConfig}
+                                showCodexResetForecast={showCodexResetForecast}
+                                isContextCompacting={isContextCompacting}
+                                resolvedConfigOptionSelectors={resolvedConfigOptionSelectors}
+                                configOptionSelectors={configOptionSelectors}
+                                configOptionValues={configOptionValues}
+                                isRepoPublic={isRepoPublic}
+                                availableCommands={composerAvailableCommands}
+                                commandsEnabled={isVisible}
+                                freeTurnLimitNotice={freeSessionTurnNotice}
+                                mcp={mcpSelection.menu}
+                                mcpSelectionReady={mcpSelection.ready}
+                                mcpDefaultsFailed={mcpSelection.defaultsFailed}
+                                onRetryMcpDefaults={mcpSelection.retryDefaults}
+                                // The info bar above owns this gap (and seats the queue).
+                                hideTopSpacer
+                                onModeChange={handleModeChange}
+                                onModelChange={handleModelChange}
+                                onConfigOptionChange={handleConfigOptionChange}
+                                onSendMessage={handleSendMessage}
+                                voiceTurns={sessionTailHistory}
+                                onContinue={canContinue ? handleContinue : undefined}
+                                onRestoreSession={
+                                  onRestoreSession ?? toolbarActions?.onRestoreSession
+                                }
+                                onStop={() => {
+                                  void handleStop();
+                                }}
+                                onRemoveQueueItem={handleRemoveQueueItem}
+                                onAgentConfigChange={
+                                  isChildSession ? handleAgentConfigChange : undefined
+                                }
+                                onNavigateToComment={onNavigateToComment}
+                                onCommentReferencesChange={onCommentReferencesChange}
+                                onVisualAnnotationReferencesChange={
+                                  onVisualAnnotationReferencesChange
+                                }
+                                onVisualAnnotationReferencesSubmitted={
+                                  onVisualAnnotationReferencesSubmitted
+                                }
+                                btwMode={session.isArchived === true ? undefined : btwComposerMode}
+                                onBtwCommand={
+                                  session.isArchived === true ? undefined : handleBtwCommand
+                                }
+                              />
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </SessionPinContext.Provider>
-                  </SessionSearchProvider>
-                </>
+                      </SessionPinContext.Provider>
+                    </SessionSearchProvider>
+                  </div>
+                  {isBtwSidePanelActive ? (
+                    <BtwSidePanel
+                      sessionId={session.id}
+                      containerWidth={btwContainerWidth}
+                      isDark={isDark}
+                      isVisible={isVisible}
+                      isArchived={session.isArchived === true}
+                      isMachineRemoved={isMachineRemoved}
+                      turns={btw.state.turns}
+                      streamingText={btw.state.streamingText}
+                      isStreaming={btw.state.isStreaming}
+                      readOnlyTools={btw.state.readOnlyTools}
+                      error={btw.state.error}
+                      modelLabel={btw.modelPillLabel}
+                      articleFileName={btw.articleFileName}
+                      pendingSelection={btw.state.pendingSelection}
+                      canClear={btw.canClear}
+                      conversationFontSize={conversationFontSize}
+                      composerRef={btwSidePanelComposerRef}
+                      onComposerFocusChange={(focused) => {
+                        btwSidePanelFocusedRef.current = focused;
+                      }}
+                      onToggleReadOnlyTools={btw.toggleReadOnlyTools}
+                      onClearPendingSelection={btw.clearPendingSelection}
+                      onSend={btw.ask}
+                      onCancel={btw.cancel}
+                      onClear={btw.clearAndClose}
+                      onClose={btw.close}
+                    />
+                  ) : null}
+                </div>
               )}
               <RenameSessionDialog
                 target={renameDialogTarget?.sessionId === session.id ? renameDialogTarget : null}

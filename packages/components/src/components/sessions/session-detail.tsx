@@ -8673,6 +8673,12 @@ const SessionDetail = ({
               <SessionChatSurface
                 {...getSharedChatSurfaceProps(tabSession, isActive)}
                 {...pageChatFileLinks}
+                allowBtwSidePanel={
+                  !isSidebarVisible &&
+                  !isCompactDesktop &&
+                  articleTabId !== tabSession.id &&
+                  reviewTabId !== tabSession.id
+                }
                 paintSessionMentionOverlay={false}
                 isChildTab={tabSession.id !== sessionId}
                 isExternalHistoryRefreshing={externalHistoryRefresh !== undefined}

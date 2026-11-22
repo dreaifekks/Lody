@@ -36,7 +36,7 @@ import {
   forwardRef,
   useImperativeHandle,
 } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { ArrowUp, Play } from 'lucide-react';
 import { Spinner } from '@lody/ui/spinner';
 import { Button } from '@lody/ui/button';
@@ -169,7 +169,7 @@ import { readPastedSessionLink } from '@/lib/session-deep-link';
 import { SessionUsagePopover } from './session-usage-popover';
 import type { MachineRateLimits } from '@/lib/session-usage';
 import { cn } from '@/lib/utils';
-import type { BtwSelectionAttachment } from './btw/btw-atoms';
+import { btwDraftAtomFamily, type BtwSelectionAttachment } from './btw/btw-atoms';
 import { BtwComposerFooter, BtwPendingSelectionChip } from './btw/btw-composer-chrome';
 import { BTW_SURFACE_BG_OVERRIDE_CLASS } from './btw/btw-info-bar-toggle';
 import { parseBtwSlashCommand } from './btw/btw-slash-command';
@@ -1918,17 +1918,8 @@ export const SessionChatInputArea = memo(
       ]
     );
 
-    const [btwInputBySession, setBtwInputBySession] = useState<Record<string, string>>({});
+    const [btwInput, setBtwInput] = useAtom(btwDraftAtomFamily(session.id));
     const isBtwOpen = btwMode?.isOpen === true;
-    const btwInput = btwInputBySession[session.id] ?? '';
-    const setBtwInput = useCallback(
-      (nextValue: string) => {
-        setBtwInputBySession((current) =>
-          current[session.id] === nextValue ? current : { ...current, [session.id]: nextValue }
-        );
-      },
-      [session.id]
-    );
 
     const handleInputChange = useCallback(
       (nextValue: string) => {
@@ -2035,7 +2026,9 @@ export const SessionChatInputArea = memo(
         // conversation while `/btw` is expanded, `textareaRef` holds the unsent `/btw`
         // draft rather than the main draft, so read `userInput` directly.
         const currentValue =
-          !btwMode?.isOpen && textareaRef.current ? getComposerText(textareaRef.current) : userInput;
+          !btwMode?.isOpen && textareaRef.current
+            ? getComposerText(textareaRef.current)
+            : userInput;
         // One pass: pasted placeholders, `$skill`, `@session:`, and the mentions
         // that need no rewrite all resolve against the same original text, and
         // the spans record where each landed.
@@ -2651,7 +2644,9 @@ export const SessionChatInputArea = memo(
         buttonClassName={primaryActionSizeClassName}
         iconClassName={isMobile ? 'h-5 w-5' : 'h-4 w-4'}
         onDictationStart={() => {
-          dictationBaseRef.current = textareaRef.current ? getComposerText(textareaRef.current) : userInput;
+          dictationBaseRef.current = textareaRef.current
+            ? getComposerText(textareaRef.current)
+            : userInput;
         }}
         onDictationText={(text) => {
           const base = dictationBaseRef.current;
@@ -2844,9 +2839,7 @@ export const SessionChatInputArea = memo(
           submissionPending || isBtwOpen ? [] : visualAnnotationReferences
         }
         onVisualAnnotationReferenceRemove={
-          submissionPending || isArchived || isBtwOpen
-            ? undefined
-            : removeVisualAnnotationReference
+          submissionPending || isArchived || isBtwOpen ? undefined : removeVisualAnnotationReference
         }
         pastedTextDrafts={submissionPending || isBtwOpen ? [] : pastedTextDrafts}
         onPastedTextDraftsChange={

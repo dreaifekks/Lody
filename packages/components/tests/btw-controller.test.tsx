@@ -13,6 +13,7 @@ import type {
 import { runtimeAtom, type WorkspaceRuntime } from '../src/atoms/runtime';
 import {
   activeBtwArticleContextAtomFamily,
+  btwDraftAtomFamily,
   btwSessionStateAtomFamily,
   buildBtwArticleContextPayload,
   openBtwForSessionAtom,
@@ -491,8 +492,9 @@ describe('useBtwController and btw-atoms', () => {
       params: { action: 'close', sessionId, btwId },
     });
 
-    // Atom must synchronously settle to isStreaming=false with partial text committed
+    // Atom must synchronously settle to isStreaming=false and isOpen=false with partial text committed
     const settled = store.get(btwSessionStateAtomFamily(sessionId));
+    expect(settled.isOpen).toBe(false);
     expect(settled.isStreaming).toBe(false);
     expect(settled.streamingText).toBe('');
     expect(settled.turns.at(-1)).toMatchObject({
@@ -516,6 +518,7 @@ describe('useBtwController and btw-atoms', () => {
         </Provider>
       );
     });
+    expect(latest.state.isOpen).toBe(false);
     expect(latest.state.isStreaming).toBe(false);
     await act(async () => {
       await latest.ask('Follow-up after reopen');
@@ -691,5 +694,310 @@ describe('useBtwController and btw-atoms', () => {
 
     // Old response must NOT flip readOnlyTools back to true
     expect(latest.state.readOnlyTools).toBe(false);
+  });
+
+  it('closes /btw back to main conversation when hidden (tab switch) while preserving history and live background stream', async () => {
+    const store = createStore();
+    const sessionId = 'session-btw-tab-hide' as SessionId;
+    const pendingAsk = createDeferred<SessionBtwResponse | null>();
+    const requestSessionBtw = vi.fn((_machineId: MachineId, params: SessionBtwRequest) => {
+      if (params.action === 'ask') return pendingAsk.promise;
+      return Promise.resolve({ btwId: params.btwId, text: '' });
+    });
+    store.set(runtimeAtom, { requestSessionBtw } as unknown as WorkspaceRuntime);
+
+    let latest!: BtwController;
+    function Harness({ isVisible }: { readonly isVisible: boolean }) {
+      latest = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'antigravity',
+        isVisible,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness isVisible />
+        </Provider>
+      );
+    });
+
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = latest.ask('Background question');
+    });
+    const btwId = requestSessionBtw.mock.calls[0]![1].btwId;
+    expect(latest.state.isOpen).toBe(true);
+    expect(latest.state.isStreaming).toBe(true);
+
+    // Switch away to another tab (`isVisible: true -> false`): closes /btw to main view,
+    // does NOT abort the background stream, and preserves turns & btwId.
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness isVisible={false} />
+        </Provider>
+      );
+    });
+    expect(latest.state.isOpen).toBe(false);
+    expect(latest.state.isStreaming).toBe(true);
+    expect(latest.state.btwId).toBe(btwId);
+    expect(latest.state.turns).toHaveLength(1);
+
+    // Stream completes while tab is hidden -> marks hasUnread = true without reopening /btw
+    await act(async () => {
+      pendingAsk.resolve({ btwId, text: 'Completed in background' });
+      await askPromise;
+    });
+    expect(latest.state.isOpen).toBe(false);
+    expect(latest.state.isStreaming).toBe(false);
+    expect(latest.state.hasUnread).toBe(true);
+    expect(latest.state.turns).toHaveLength(2);
+
+    // Switching back to the tab lands on main conversation with unread indicator preserved
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness isVisible />
+        </Provider>
+      );
+    });
+    expect(latest.state.isOpen).toBe(false);
+    expect(latest.state.hasUnread).toBe(true);
+    expect(latest.completedTurnCount).toBe(1);
+
+    // Clicking toggle reopens /btw with full history and clears unread
+    act(() => {
+      latest.toggleOpen();
+    });
+    expect(latest.state.isOpen).toBe(true);
+    expect(latest.state.hasUnread).toBe(false);
+    expect(latest.state.turns.at(-1)?.text).toBe('Completed in background');
+  });
+
+  it('defaults to main conversation after unmount and remount while preserving turns and btwId', async () => {
+    const store = createStore();
+    const sessionId = 'session-btw-remount-main' as SessionId;
+    const requestSessionBtw = vi.fn((_machineId: MachineId, params: SessionBtwRequest) =>
+      Promise.resolve({ btwId: params.btwId, text: 'Preserved answer' })
+    );
+    store.set(runtimeAtom, { requestSessionBtw } as unknown as WorkspaceRuntime);
+
+    let latest!: BtwController;
+    function Harness() {
+      latest = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'claude',
+        isVisible: true,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+
+    await act(async () => {
+      await latest.ask('Keep my history');
+    });
+    const originalBtwId = latest.state.btwId;
+    expect(latest.state.isOpen).toBe(true);
+    expect(latest.state.turns).toHaveLength(2);
+
+    // Navigate away to another session (unmount)
+    act(() => {
+      root.unmount();
+    });
+    const afterLeave = store.get(btwSessionStateAtomFamily(sessionId));
+    expect(afterLeave.isOpen).toBe(false);
+    expect(afterLeave.btwId).toBe(originalBtwId);
+    expect(afterLeave.turns).toHaveLength(2);
+
+    // Re-enter the session (remount) -> opens on main conversation with turns preserved
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+    expect(latest.state.isOpen).toBe(false);
+    expect(latest.state.btwId).toBe(originalBtwId);
+    expect(latest.completedTurnCount).toBe(1);
+    expect(latest.state.turns).toHaveLength(2);
+  });
+
+  it('keeps explicit openBtwWithSelectionAtom open and focuses composer when triggered while hidden or pre-mount', () => {
+    const store = createStore();
+    const sessionId = 'session-btw-explicit-open' as SessionId;
+    const onFocusComposer = vi.fn();
+    const originalRaf = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    }) as typeof window.requestAnimationFrame;
+
+    try {
+      let latest!: BtwController;
+      function Harness({ isVisible }: { readonly isVisible: boolean }) {
+        latest = useBtwController({
+          sessionId,
+          machineId: MACHINE_ID,
+          agentType: 'antigravity',
+          isVisible,
+          onFocusComposer,
+        });
+        return null;
+      }
+
+      // Mount hidden (e.g. Board thread covered by File Viewer tab), then explicitly quote into /btw
+      act(() => {
+        root.render(
+          <Provider store={store}>
+            <Harness isVisible={false} />
+          </Provider>
+        );
+      });
+      act(() => {
+        store.set(openBtwWithSelectionAtom, {
+          sessionId,
+          selection: { path: 'docs/spec.md', text: 'important paragraph' },
+        });
+      });
+      expect(latest.state.isOpen).toBe(true);
+      expect(onFocusComposer).not.toHaveBeenCalled();
+
+      // Returning to that session MUST keep /btw open and focus composer
+      act(() => {
+        root.render(
+          <Provider store={store}>
+            <Harness isVisible />
+          </Provider>
+        );
+      });
+      expect(latest.state.isOpen).toBe(true);
+      expect(latest.state.pendingSelection?.text).toBe('important paragraph');
+      expect(onFocusComposer).toHaveBeenCalledTimes(1);
+
+      // Pre-mount explicit open also stays open and focuses on mount
+      const sessionId2 = 'session-btw-premount-open' as SessionId;
+      const onFocus2 = vi.fn();
+      store.set(openBtwForSessionAtom, sessionId2);
+      const container2 = document.createElement('div');
+      document.body.append(container2);
+      const root2 = createRoot(container2);
+      let latest2!: BtwController;
+      function Harness2() {
+        latest2 = useBtwController({
+          sessionId: sessionId2,
+          machineId: MACHINE_ID,
+          agentType: 'antigravity',
+          isVisible: true,
+          onFocusComposer: onFocus2,
+        });
+        return null;
+      }
+      try {
+        act(() => {
+          root2.render(
+            <Provider store={store}>
+              <Harness2 />
+            </Provider>
+          );
+        });
+        expect(latest2.state.isOpen).toBe(true);
+        expect(onFocus2).toHaveBeenCalledTimes(1);
+      } finally {
+        act(() => root2.unmount());
+        container2.remove();
+      }
+    } finally {
+      window.requestAnimationFrame = originalRaf;
+    }
+  });
+
+  it('clears btwDraftAtomFamily on clearAndClose and yields Escape to active search bar or open menu', () => {
+    const store = createStore();
+    const sessionId = 'session-btw-clear-and-escape' as SessionId;
+
+    let latest!: BtwController;
+    function Harness() {
+      latest = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'claude',
+        isVisible: true,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+    act(() => {
+      latest.open();
+      store.set(btwDraftAtomFamily(sessionId), 'unsent draft');
+    });
+    expect(store.get(btwDraftAtomFamily(sessionId))).toBe('unsent draft');
+
+    // Escape inside a search bar yields to search
+    const searchEl = document.createElement('div');
+    searchEl.setAttribute('role', 'search');
+    const searchInput = document.createElement('input');
+    searchEl.append(searchInput);
+    document.body.append(searchEl);
+    try {
+      const evSearch = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        searchInput.dispatchEvent(evSearch);
+      });
+      expect(evSearch.defaultPrevented).toBe(false);
+      expect(latest.state.isOpen).toBe(true);
+    } finally {
+      searchEl.remove();
+    }
+
+    // Escape while an open menu is mounted yields to the menu
+    const menuEl = document.createElement('div');
+    menuEl.setAttribute('role', 'menu');
+    document.body.append(menuEl);
+    try {
+      const evMenu = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        document.body.dispatchEvent(evMenu);
+      });
+      expect(evMenu.defaultPrevented).toBe(false);
+      expect(latest.state.isOpen).toBe(true);
+    } finally {
+      menuEl.remove();
+    }
+
+    // clearAndClose clears both state and unsent draft
+    act(() => {
+      latest.clearAndClose();
+    });
+    expect(latest.state.isOpen).toBe(false);
+    expect(store.get(btwDraftAtomFamily(sessionId))).toBe('');
   });
 });

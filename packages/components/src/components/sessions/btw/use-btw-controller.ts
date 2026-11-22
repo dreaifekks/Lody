@@ -17,6 +17,7 @@ import { useAtom, useAtomValue, useStore } from 'jotai';
 import { runtimeAtom, type WorkspaceRuntime } from '@/atoms/runtime';
 import {
   activeBtwArticleContextAtomFamily,
+  btwDraftAtomFamily,
   btwSessionStateAtomFamily,
   createInitialBtwSessionState,
   formatBtwFileName,
@@ -154,10 +155,10 @@ export function useBtwController({
   const activeRequestSeqRef = useRef(0);
   const activeBackendTargetRef = useRef<ActiveBackendTarget | null>(null);
   const lastSessionIdRef = useRef(sessionId);
-  const lastHandledFocusSeqRef = useRef(state.focusRequestSeq);
+  const lastHandledFocusSeqRef = useRef(state.isOpen ? 0 : state.focusRequestSeq);
   if (lastSessionIdRef.current !== sessionId) {
     lastSessionIdRef.current = sessionId;
-    lastHandledFocusSeqRef.current = state.focusRequestSeq;
+    lastHandledFocusSeqRef.current = state.isOpen ? 0 : state.focusRequestSeq;
   }
 
   const open = useCallback(() => {
@@ -231,6 +232,7 @@ export function useBtwController({
     }
 
     setState(createInitialBtwSessionState());
+    store.set(btwDraftAtomFamily(sessionId), '');
 
     if (matchedTarget) {
       void matchedTarget.runtime
@@ -241,7 +243,7 @@ export function useBtwController({
         })
         .catch(() => undefined);
     }
-  }, [sessionId, setState]);
+  }, [sessionId, setState, store]);
 
   const ask = useCallback(
     async (rawQuestion: string) => {
@@ -437,6 +439,27 @@ export function useBtwController({
     [cancel, open, sessionId, setState, store]
   );
 
+  // Leaving/hiding a mounted session (tab switch, side-panel collapse, viewer
+  // covering board thread, archive) resets `/btw` to closed so re-entering lands
+  // on the main conversation while keeping history, unread state, and any
+  // background stream alive.
+  const prevVisibilityRef = useRef<{
+    readonly sessionId: SessionId;
+    readonly isVisible: boolean;
+  }>({
+    sessionId,
+    isVisible,
+  });
+  useEffect(() => {
+    const prev = prevVisibilityRef.current;
+    prevVisibilityRef.current = { sessionId, isVisible };
+    if (prev.sessionId === sessionId && prev.isVisible && !isVisible) {
+      store.set(btwSessionStateAtomFamily(sessionId), (current) =>
+        current.isOpen ? { ...current, isOpen: false } : current
+      );
+    }
+  }, [isVisible, sessionId, store]);
+
   // Focus the shared composer whenever `/btw` is opened via icon, shortcut, or selection.
   useEffect(() => {
     if (!isVisible || !state.isOpen) return undefined;
@@ -449,7 +472,7 @@ export function useBtwController({
   }, [isVisible, state.focusRequestSeq, state.isOpen]);
 
   // Capture-phase Escape returns to the main conversation before dialog listeners (e.g. BoardArticleDialog),
-  // while yielding to any modal dialog/popover stacked above this conversation.
+  // while yielding to any modal dialog/popover/search/menu stacked above or beside this surface.
   useEffect(() => {
     if (!isVisible || !state.isOpen) return undefined;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -461,14 +484,24 @@ export function useBtwController({
       ) {
         return;
       }
+      const targetEl =
+        event.target instanceof Element
+          ? event.target
+          : document.activeElement instanceof Element
+            ? document.activeElement
+            : null;
+      if (targetEl?.closest('[role="search"]')) {
+        return;
+      }
+      if (
+        document.querySelector(
+          '[role="menu"]:not([hidden]):not([aria-hidden="true"]), [role="listbox"]:not([hidden]):not([aria-hidden="true"])'
+        )
+      ) {
+        return;
+      }
       const scopeRoot = scopeElementRef?.current?.parentElement ?? scopeElementRef?.current ?? null;
       if (scopeRoot) {
-        const targetEl =
-          event.target instanceof Element
-            ? event.target
-            : document.activeElement instanceof Element
-              ? document.activeElement
-              : null;
         const targetDialog = targetEl?.closest('[role="dialog"], [role="alertdialog"]');
         if (targetDialog && !targetDialog.contains(scopeRoot)) {
           return;
@@ -487,7 +520,9 @@ export function useBtwController({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [close, isVisible, scopeElementRef, state.isOpen]);
 
-  // Clean up warm backend process and settle any in-flight stream on unmount or session switch.
+  // Clean up warm backend process, settle any in-flight stream, and reset `isOpen`
+  // to false on unmount or session switch so returning later opens on the main
+  // conversation while preserving in-memory `/btw` turns and unread state.
   useEffect(() => {
     const originSessionId = sessionId;
     return () => {
@@ -501,12 +536,13 @@ export function useBtwController({
         activeBackendTargetRef.current = null;
       }
 
-      // Synchronously settle `isStreaming` on the origin session's Jotai atom (preserving
-      // any partial streamed text as a cancelled turn) so remounting the same session
-      // never stays stuck in "streaming" state.
-      store.set(btwSessionStateAtomFamily(originSessionId), (current) =>
-        finalizeCancelledStreamingState(current)
-      );
+      // Synchronously settle `isStreaming` and close `isOpen` on the origin
+      // session's Jotai atom (preserving turns, `btwId`, `hasUnread`, and any
+      // partial streamed text as a cancelled turn).
+      store.set(btwSessionStateAtomFamily(originSessionId), (current) => {
+        const settled = finalizeCancelledStreamingState(current);
+        return settled.isOpen ? { ...settled, isOpen: false } : settled;
+      });
 
       if (matchedTarget) {
         void matchedTarget.runtime

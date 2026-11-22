@@ -15,7 +15,7 @@ export function BtwComposerFooter({
       <span
         data-btw-model-pill=""
         className={cn(
-          'inline-flex shrink-0 items-center rounded-md bg-primary/12 px-2 py-0.5 text-[11px] font-medium',
+          'inline-flex max-w-full shrink-0 items-center truncate rounded-md bg-primary/12 px-2 py-0.5 text-[11px] font-medium',
           BTW_ACCENT_TEXT_CLASS
         )}
       >

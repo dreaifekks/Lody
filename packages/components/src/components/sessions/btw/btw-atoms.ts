@@ -7,6 +7,7 @@ import {
 } from '@lody/shared';
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
+import { BTW_SIDE_PANEL_DEFAULT_WIDTH_PX } from './btw-layout';
 
 export type BtwSelectionAttachment = {
   readonly path: string;
@@ -72,6 +73,17 @@ export function createInitialBtwSessionState(): BtwSessionState {
 export const btwSessionStateAtomFamily = atomFamily((_sessionId: SessionId) =>
   atom<BtwSessionState>(createInitialBtwSessionState())
 );
+
+/**
+ * Pure in-memory per-session `/btw` unsent draft text. Kept separate from
+ * `btwSessionStateAtomFamily` so typing never re-renders `SessionChatInterface`
+ * or `BtwStreamView`, while preserving drafts seamlessly across `side-panel`
+ * and `overlay` mode switches.
+ */
+export const btwDraftAtomFamily = atomFamily((_sessionId: SessionId) => atom(''));
+
+/** Session-wide in-memory preferred width (px) for the `/btw` right side panel. */
+export const btwSidePanelWidthPxAtom = atom<number>(BTW_SIDE_PANEL_DEFAULT_WIDTH_PX);
 
 type BtwArticleContextCandidateEntry = {
   readonly payload: BtwActiveArticleContext;

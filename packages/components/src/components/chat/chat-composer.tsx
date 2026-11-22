@@ -290,6 +290,8 @@ export interface ChatComposerProps {
   maxRows?: number;
   /** Focus the textarea when clicking the container background. */
   focusOnContainerClick?: boolean;
+  /** Suppress the desktop `⌘L` focus hint badge (e.g. secondary `/btw` side-panel composer). */
+  hideFocusHint?: boolean;
 }
 
 export function getChatComposerTextareaClassName({
@@ -398,6 +400,7 @@ export function ChatComposer({
   autoResize = false,
   maxRows = 12,
   focusOnContainerClick = false,
+  hideFocusHint = false,
 }: ChatComposerProps) {
   const { t, i18n } = useTranslation();
   const shortcutsAllowed = useWorkspaceFeature('shortcuts');
@@ -959,6 +962,7 @@ export function ChatComposer({
   // Only when the box is idle: desktop, has a focus binding, and nothing entered/attached
   // yet (so the chip never collides with text or thumbnails). focus-within hides it too.
   const showFocusHint =
+    !hideFocusHint &&
     focusHintSupported &&
     Boolean(focusHintBinding) &&
     !promptValue &&
@@ -1023,7 +1027,12 @@ export function ChatComposer({
             <div
               ref={composerBoxRef}
               data-mention-frame=""
-              className={cn(boxContainerClassName, imageDropClassName, boxClassName, 'group relative')}
+              className={cn(
+                boxContainerClassName,
+                imageDropClassName,
+                boxClassName,
+                'group relative'
+              )}
               onDragEnter={canHandleImageDrop ? handleImageDragEnter : undefined}
               onDragOver={canHandleImageDrop ? handleImageDragOver : undefined}
               onDragLeave={canHandleImageDrop ? handleImageDragLeave : undefined}
