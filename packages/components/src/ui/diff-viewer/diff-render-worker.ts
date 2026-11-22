@@ -23,7 +23,7 @@ const diffRenderWorkerPools = new Map<string, DiffRenderWorkerPoolEntry>();
 const diffRenderWorkerPoolEntries = new WeakMap<WorkerPoolManager, DiffRenderWorkerPoolEntry>();
 
 function getRenderProfileKey(options: WorkerInitializationRenderOptions): string {
-  return `${options.lineDiffType ?? 'word-alt'}:${options.tokenizeMaxLineLength ?? 1_000}`;
+  return `${options.lineDiffType ?? 'word-alt'}:${options.tokenizeMaxLineLength ?? 1_000}:${options.useTokenTransformer ? 'tokens' : 'plain'}`;
 }
 
 function getRenderOptionsKey(options: WorkerInitializationRenderOptions): string {

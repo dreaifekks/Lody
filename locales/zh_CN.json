@@ -6432,6 +6432,8 @@
   "sessions.article.reload": "重新加载",
   "sessions.article.openInTab": "在侧边 tab 打开",
   "sessions.article.openAsArticle": "作为 article 打开",
+  "sessions.review.openDialog": "打开 Review 浮窗",
+  "sessions.review.openShort": "Review",
   "sessions.article.outline": "大纲",
   "sessions.article.annotation.add": "添加批注",
   "sessions.article.annotation.count": "批注（{{count}} 条）",

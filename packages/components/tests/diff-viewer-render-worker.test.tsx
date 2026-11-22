@@ -226,6 +226,32 @@ describe('DiffViewer render worker routing', () => {
     );
     expect(container.querySelector('[data-testid="file-diff"]')?.textContent).toBe(second);
   });
+
+  it('synchronizes useTokenTransformer into worker pool options when onTokenClick is enabled', async () => {
+    const baseProps = {
+      path: 'sample.ts',
+      oldText: 'const a = 1;\n',
+      newText: 'const a = 2;\n',
+      showHeader: false,
+    };
+    await act(async () => root.render(createElement(DiffViewer, baseProps)));
+    expect(workerMocks.createPool).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ useTokenTransformer: true })
+    );
+
+    workerMocks.createPool.mockClear();
+    await act(async () =>
+      root.render(
+        createElement(DiffViewer, {
+          ...baseProps,
+          onTokenClick: vi.fn(),
+        })
+      )
+    );
+    expect(workerMocks.createPool).toHaveBeenLastCalledWith(
+      expect.objectContaining({ useTokenTransformer: true })
+    );
+  });
 });
 
 function readRenderedDiff(container: HTMLElement): FileDiffMetadata {

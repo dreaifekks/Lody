@@ -1,8 +1,14 @@
 import {
+  CODE_NAV_LIMITS,
+  CodeNavQueryResponseSchema,
+  codeNavError,
+  machineSupportsCodeNav,
   type CodeCollabOpenDiffManifestRequest,
   type CodeCollabOpenDiffManifestResponse,
   type CodeCollabReadBlobRequest,
   type CodeCollabReadBlobResponse,
+  type CodeNavQueryRequest,
+  type CodeNavQueryResponse,
 } from '@lody/shared';
 import {
   machineSupportsAndroidEmulatorProtocol,
@@ -2068,7 +2074,10 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
       if (!machineSupportsRealtimeVoice({ protocolCapabilities })) {
         return fail('This machine does not support voice. Update the local agent.');
       }
-      if (request.action === 'geminiToken' && !machineSupportsGeminiVoice({ protocolCapabilities })) {
+      if (
+        request.action === 'geminiToken' &&
+        !machineSupportsGeminiVoice({ protocolCapabilities })
+      ) {
         return fail('This machine cannot sign Gemini voice tokens yet. Update Lody on it.');
       }
       if (
@@ -2310,7 +2319,96 @@ export function createWorkspaceMachineRpcFacade(deps: WorkspaceMachineRpcFacadeD
     return result;
   };
 
+  /**
+   * Code Navigation v1 (`code-nav/query`). Pure read-only AST lookup; never
+   * activates Code Collab and degrades gracefully when a target machine lacks
+   * `codeNav >= 1`.
+   */
+  const queryCodeNav = async (
+    machineId: MachineId,
+    request: CodeNavQueryRequest,
+    options?: CodeCollabRequestOptions
+  ): Promise<CodeNavQueryResponse> => {
+    try {
+      const capabilities = await deps.getMachineProtocolCapabilities(machineId);
+      if (!machineSupportsCodeNav({ protocolCapabilities: capabilities })) {
+        return codeNavError('unavailable', {
+          message: 'Code navigation is unsupported on this machine.',
+          retryable: false,
+        });
+      }
+      const timeoutMs = options?.timeoutMs ?? CODE_NAV_LIMITS.defaultTimeoutMs + 4_000;
+      const ownerSessionId =
+        options?.ownerSessionId !== undefined
+          ? options.ownerSessionId.toString()
+          : request.sessionId;
+      const localRequest: LocalMachineRpcRequest = {
+        machineId,
+        workspaceId,
+        method: 'code-nav/query',
+        params: request,
+        ownerSessionId,
+        timeoutMs,
+      };
+      let raw: unknown;
+      if (await canUseLocalMachineRpc(machineId)) {
+        const sender = getLocalMachineRpcSender();
+        if (!sender) {
+          return codeNavError('unavailable', {
+            message: 'Local Machine RPC is not available.',
+            retryable: false,
+          });
+        }
+        const response = await sender(localRequest);
+        if (!response.ok) {
+          return codeNavError('transient_io', { message: response.error, retryable: true });
+        }
+        raw = response.result;
+      } else {
+        if (deps.protectedContent && !deps.requestEncryptedFeature) {
+          return codeNavError('permission_denied', {
+            message: workspaceFeatureUnavailableMessage('rpc'),
+            retryable: false,
+          });
+        }
+        if (deps.requestEncryptedFeature) {
+          const response = await deps.requestEncryptedFeature(localRequest);
+          if (!response.ok) {
+            return codeNavError('transient_io', { message: response.error, retryable: true });
+          }
+          raw = response.result;
+        } else {
+          const client = await getMachineRpcClient(machineId);
+          raw = await client.queryCodeNav({
+            ...request,
+            ownerSessionId,
+            timeoutMs,
+          });
+        }
+      }
+      if (raw == null) {
+        return codeNavError('timeout', {
+          message: 'Code navigation request timed out.',
+          retryable: true,
+        });
+      }
+      const parsed = CodeNavQueryResponseSchema.safeParse(raw);
+      return parsed.success
+        ? parsed.data
+        : codeNavError('transient_io', {
+            message: 'Unexpected code navigation response.',
+            retryable: false,
+          });
+    } catch (error) {
+      return codeNavError('transient_io', {
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+      });
+    }
+  };
+
   return {
+    queryCodeNav,
     requestLocalSorbetCredentials,
     requestLocalSorbetProviders,
     requestSessionAutomationControl,

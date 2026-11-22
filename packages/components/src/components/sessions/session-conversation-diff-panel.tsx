@@ -35,6 +35,7 @@ import {
   captureDiffCommentSentToChat,
   classifyGithubThreadError,
 } from './diff-pr-analytics';
+import { GitCompareArrows } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { DiffBlobReadError } from '@/lib/diff-blob-client';
 import { getSessionDiffErrorMessage } from '@/lib/session-diff-diagnostics';
@@ -154,6 +155,11 @@ const styles = stylex.create({
     fontSize: '12px',
     fontVariantNumeric: 'tabular-nums',
     lineHeight: '16px',
+  },
+  baseHeaderAction: {
+    marginInlineStart: 'auto',
+    display: 'flex',
+    alignItems: 'center',
   },
   fileBlock: { width: '100%' },
   deferredBody: { height: '160px' },
@@ -340,6 +346,8 @@ export type SessionConversationDiffPanelProps = {
   fileProvider?: SessionFileProvider | null;
   fileProviderPending?: boolean;
   onOpenFile?: (path: string) => void;
+  /** Open the read-only full-window Worktree Review dialog for this session. */
+  onOpenReviewDialog?: () => void;
 };
 
 type DiffFileBlockProps = {
@@ -432,6 +440,19 @@ const DiffFileBlock = memo(function DiffFileBlock({
       }
     };
   }, [data, filePath, onReload]);
+  const inlineLoadDiffFiles = useMemo(() => {
+    if (data?.status !== 'ready') return undefined;
+    const oldText = data.oldSnapshot.kind === 'text' ? data.oldSnapshot.text : '';
+    const newText = data.newSnapshot.kind === 'text' ? data.newSnapshot.text : '';
+    return async () => ({
+      oldFile: { name: filePath, contents: oldText },
+      newFile: { name: filePath, contents: newText },
+    });
+  }, [data, filePath]);
+  const inlineOptions = useMemo(
+    () => (inlineLoadDiffFiles ? { loadDiffFiles: inlineLoadDiffFiles } : undefined),
+    [inlineLoadDiffFiles]
+  );
   const { t } = useTranslation();
   const diffViewerParseCacheKey =
     (data && 'contentKey' in data && data.contentKey
@@ -576,6 +597,7 @@ const DiffFileBlock = memo(function DiffFileBlock({
       path={filePath}
       oldText={data.oldSnapshot.kind === 'text' ? data.oldSnapshot.text : ''}
       newText={data.newSnapshot.kind === 'text' ? data.newSnapshot.text : ''}
+      options={inlineOptions}
       commentsEnabled={commentsEnabled}
       currentUser={currentUser}
       githubThreads={githubThreads}
@@ -622,6 +644,7 @@ function SessionConversationDiffPanelImpl({
   fileProvider,
   fileProviderPending,
   onOpenFile,
+  onOpenReviewDialog,
 }: SessionConversationDiffPanelProps) {
   const { t } = useTranslation();
   const postHog = usePostHog();
@@ -1051,6 +1074,20 @@ function SessionConversationDiffPanelImpl({
       {allChangesDiffData.refreshing && (
         <span role="status">{t('sessions.fileDiff.loadingChanges', 'Loading changes…')}</span>
       )}
+      {onOpenReviewDialog ? (
+        <div {...stylex.props(styles.baseHeaderAction)}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="mini"
+            onClick={onOpenReviewDialog}
+            aria-label={t('sessions.review.openDialog', 'Open review window')}
+          >
+            <GitCompareArrows size={13} aria-hidden="true" />
+            <span>{t('sessions.review.openShort', 'Review')}</span>
+          </Button>
+        </div>
+      ) : null}
     </div>
   ) : null;
 
@@ -1261,6 +1298,7 @@ export const areSessionConversationDiffPanelPropsEqual = (
   prev.fileProvider === next.fileProvider &&
   prev.fileProviderPending === next.fileProviderPending &&
   prev.onOpenFile === next.onOpenFile &&
+  prev.onOpenReviewDialog === next.onOpenReviewDialog &&
   prev.fileDiffsPending === next.fileDiffsPending &&
   areFileDiffListsEqual(prev.fileDiffs, next.fileDiffs) &&
   areStringArraysEqual(
