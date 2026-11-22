@@ -364,6 +364,17 @@ describe('WorktreeReview navigation stack & resolution', () => {
     expect(plan!.steps[1]!.lines).toBe(h1Start - h0End - 1);
     expect(plan!.steps[2]!.lines).toBe(101 - h1End);
 
+    // Remote partial patch (`isPartial: true`): `additionLines` only holds patch lines
+    // (e.g. 7 lines for lines 88..94), so trailing expansion must NOT clamp against 7.
+    const partialDiff = {
+      isPartial: true,
+      additionLines: new Array<string>(7).fill('line'),
+      hunks: [{ additionStart: 88, additionCount: 7, collapsedBefore: 87 }],
+    } as Parameters<typeof computeEnclosingExpandPlan>[0];
+    expect(computeEnclosingExpandPlan(partialDiff, 0, { startLine: 90, endLine: 110 })).toEqual({
+      steps: [{ gapIndex: 1, direction: 'up', lines: 16 }], // lines 95..110
+    });
+
     const outlineFile: CodeNavDiffOutlineFile = {
       path: 'a.ts',
       symbols: [],

@@ -178,6 +178,7 @@ export function WorktreeReviewFileView({
 
     let cancelled = false;
     const controller = new AbortController();
+    loadedCoverageRef.current = null;
     setFileState({ status: 'loading' });
 
     const run = async () => {

@@ -453,6 +453,14 @@ export function WorktreeReviewWorkspace({
     }
   }, [initialPopover]);
   const popoverSeqRef = useRef(0);
+  const prevDiffRevisionRef = useRef(diffRevision);
+  useEffect(() => {
+    if (prevDiffRevisionRef.current !== diffRevision) {
+      prevDiffRevisionRef.current = diffRevision;
+      popoverSeqRef.current += 1;
+      setPopover(null);
+    }
+  }, [diffRevision]);
 
   const handleClosePopover = useCallback(() => {
     popoverSeqRef.current += 1;

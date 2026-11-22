@@ -508,4 +508,122 @@ describe('WorktreeReviewWorkspace interactions', () => {
     expect(rendered).not.toBeNull();
     expect(rendered!.textContent!.split('\n').length).toBeGreaterThan(targetLine);
   });
+
+  it('closes an open token popover when diff data refreshes so stale preview targets cannot be jumped to', async () => {
+    const queryOverride = vi.fn(async (req: CodeNavQueryRequest) => {
+      if (req.action === 'diff-outline') return OUTLINE;
+      if (req.action === 'definition') return DEF_EXACT;
+      return CALLERS_RESULT;
+    });
+
+    const initialDiffOverride = {
+      status: 'ready' as const,
+      filePaths: ['apps/cli/src/agent/session-mcp-resolver.ts'],
+      resolvedByPath: {
+        'apps/cli/src/agent/session-mcp-resolver.ts': {
+          status: 'ready' as const,
+          oldSnapshot: { kind: 'text' as const, text: 'old\n' },
+          newSnapshot: { kind: 'text' as const, text: 'new\n' },
+          baseRef: 'lan-hub',
+        },
+      },
+      base: 'lan-hub',
+      diffScope: 'branch' as const,
+      loading: false,
+      error: null,
+    };
+
+    await act(async () => {
+      root.render(
+        createElement(WorktreeReviewWorkspace, {
+          sessionId: SESSION_ID,
+          machineId: MACHINE_ID,
+          fileProvider: null,
+          diffDataOverride: initialDiffOverride,
+          codeNavOverride: queryOverride,
+          readFileOverride: async () => ({ ok: true as const, text: 'export function a() {}\n' }),
+          onClose: vi.fn(),
+        })
+      );
+    });
+
+    // Click token (without metaKey) to open popover and load preview.
+    await act(async () => {
+      container
+        .querySelector('[data-testid="mock-token:apps/cli/src/agent/session-mcp-resolver.ts"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(document.querySelector('[data-worktree-review-popover]')).not.toBeNull();
+
+    // Refresh diffDataOverride -> open popover must close immediately.
+    const refreshedDiffOverride = {
+      ...initialDiffOverride,
+      base: 'lan-hub-2',
+    };
+    await act(async () => {
+      root.render(
+        createElement(WorktreeReviewWorkspace, {
+          sessionId: SESSION_ID,
+          machineId: MACHINE_ID,
+          fileProvider: null,
+          diffDataOverride: refreshedDiffOverride,
+          codeNavOverride: queryOverride,
+          readFileOverride: async () => ({ ok: true as const, text: 'export function b() {}\n' }),
+          onClose: vi.fn(),
+        })
+      );
+    });
+    expect(document.querySelector('[data-worktree-review-popover]')).toBeNull();
+  });
+
+  it('reloads file A cleanly when returning from an in-flight file B instead of sticking in loading skeleton', async () => {
+    let resolveB: ((res: { ok: true; text: string }) => void) | null = null;
+    const readFileOverride = vi.fn((path: string) => {
+      if (path === 'src/a.ts') {
+        return Promise.resolve({ ok: true as const, text: 'export const A = 1;\n' });
+      }
+      return new Promise<{ ok: true; text: string }>((resolve) => {
+        resolveB = resolve;
+      });
+    });
+
+    const renderView = (filePath: string) =>
+      createElement(WorktreeReviewFileView, {
+        filePath,
+        line: 1,
+        fileProvider: null,
+        readFileOverride,
+        canOpenInIde: false,
+        codeNavSupported: false,
+        onBackToDiff: vi.fn(),
+        onTokenClick: vi.fn(),
+        onSelectCaller: vi.fn(),
+        onTraceCallerFurther: vi.fn(),
+        onOpenInIde: vi.fn(),
+      });
+
+    // 1. Load file A to ready.
+    await act(async () => {
+      root.render(renderView('src/a.ts'));
+    });
+    expect(container.querySelector('[data-testid="mock-readonly-file:src/a.ts"]')).not.toBeNull();
+
+    // 2. Navigate to slow-loading file B (puts view in loading state).
+    await act(async () => {
+      root.render(renderView('src/b.ts'));
+    });
+    expect(container.querySelector('[data-testid="mock-readonly-file:src/a.ts"]')).toBeNull();
+
+    // 3. Before B settles, return to file A -> must reload A and render ready content.
+    await act(async () => {
+      root.render(renderView('src/a.ts'));
+    });
+    expect(container.querySelector('[data-testid="mock-readonly-file:src/a.ts"]')).not.toBeNull();
+
+    // 4. Late settlement of B must be ignored and keep A visible.
+    await act(async () => {
+      resolveB?.({ ok: true, text: 'export const B = 2;\n' });
+    });
+    expect(container.querySelector('[data-testid="mock-readonly-file:src/a.ts"]')).not.toBeNull();
+  });
 });

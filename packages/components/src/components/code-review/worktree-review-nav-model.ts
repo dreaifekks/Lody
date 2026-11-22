@@ -265,7 +265,8 @@ function getHunkAdditionBounds(hunk: FileDiffMetadata['hunks'][number]): {
  * an enclosing function `[enclosing.startLine, enclosing.endLine]`.
  */
 export function computeEnclosingExpandPlan(
-  fileDiff: Pick<FileDiffMetadata, 'hunks'> & Partial<Pick<FileDiffMetadata, 'additionLines'>>,
+  fileDiff: Pick<FileDiffMetadata, 'hunks'> &
+    Partial<Pick<FileDiffMetadata, 'additionLines' | 'isPartial'>>,
   hunkIndex: number,
   enclosing: Pick<CodeNavSymbol, 'startLine' | 'endLine'>
 ): EnclosingExpandPlan | null {
@@ -326,8 +327,10 @@ export function computeEnclosingExpandPlan(
 
   // Trailing gap after the last hunk (`gapIndex === fileDiff.hunks.length`),
   // which `@pierre/diffs` expands exclusively via `direction: 'up'` (`fromStart`).
+  // On remote partial patches (`isPartial === true`), `additionLines` only holds
+  // patch lines rather than the full file, so do not clamp against its length.
   const trailingStart = prevHunkEndExclusive;
-  const totalAdditionLines = fileDiff.additionLines?.length ?? 0;
+  const totalAdditionLines = fileDiff.isPartial ? 0 : (fileDiff.additionLines?.length ?? 0);
   const trailingEnd = totalAdditionLines > 0 ? totalAdditionLines : targetEnd;
   if (trailingStart <= trailingEnd && targetEnd >= trailingStart) {
     const clampedEnd = Math.min(targetEnd, trailingEnd);

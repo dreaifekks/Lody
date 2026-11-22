@@ -284,8 +284,10 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
       const meta = annotation.metadata as HunkAnnotationMeta | undefined;
       if (!meta) return null;
       const isExpanded = expandedFunctions.has(getEnclosingFunctionKey(meta.enclosing));
+      const canHydratePartial = !renderedMeta?.isPartial || Boolean(diffOptions?.loadDiffFiles);
       const canExpand =
         renderedMeta !== null &&
+        canHydratePartial &&
         (isExpanded ||
           computeEnclosingExpandPlan(renderedMeta, meta.hunkIndex, meta.enclosing) !== null);
       return (
@@ -324,6 +326,7 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
     },
     [
       canOpenInIde,
+      diffOptions?.loadDiffFiles,
       expandedFunctions,
       filePath,
       handleToggleExpandFunction,
@@ -392,9 +395,11 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
   const primaryExpanded = primaryEnclosing
     ? expandedFunctions.has(getEnclosingFunctionKey(primaryEnclosing))
     : false;
+  const canHydratePrimaryPartial = !renderedMeta?.isPartial || Boolean(diffOptions?.loadDiffFiles);
   const canExpandPrimary =
     Boolean(primaryEnclosing) &&
     renderedMeta !== null &&
+    canHydratePrimaryPartial &&
     (primaryExpanded || computeEnclosingExpandPlan(renderedMeta, 0, primaryEnclosing!) !== null);
 
   const combinedUnsafeCSS = useMemo(() => {
