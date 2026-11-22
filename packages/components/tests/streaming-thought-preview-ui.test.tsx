@@ -298,6 +298,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
       backgroundTaskStatus?: SessionBackgroundTaskStatus | null;
       activeSearchBlockId?: string | null;
       onFilePathClick?: (filePath: string) => void;
+      onFileDiffClick?: (turnId: string, filePath: string) => void;
       onFork?: () => void;
     } = {}
   ) => {
@@ -351,6 +352,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
         agentActivityShimmer: options.agentActivityShimmer,
         backgroundTaskStatus: currentBgStatus,
         onFilePathClick: options.onFilePathClick,
+        onFileDiffClick: options.onFileDiffClick,
         onForkLastAssistant: options.onFork,
       });
       const activeSearchBlockId = options.activeSearchBlockId ?? null;
@@ -2304,5 +2306,108 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     );
     expect(container.textContent).toContain('Build succeeded and dist artifacts are ready.');
     expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+  });
+
+  it('keeps persisted edited-file cards accessible during background wakeup and segmented waiting while suppressing finished footer metadata', async () => {
+    const turnId = nextAssistantId();
+    const endedAt = Date.parse('2026-11-21T00:02:00Z');
+    const editedFiles = [{ filePath: 'src/lib/message-handler.ts', add: 12, del: 4 }];
+    const onFileDiffClick = vi.fn();
+    const baseItems: MessageContent[] = [
+      { type: 'thought', text: 'Updated message handler and started verification job.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'edit-handler',
+        kind: 'edit',
+        title: 'Edit src/lib/message-handler.ts',
+        locations: [{ path: 'src/lib/message-handler.ts' }],
+        status: 'completed',
+      },
+      { type: 'text', text: 'Applied the patch; background test suite is running.' },
+    ];
+    const wakeupItems: MessageContent[] = [
+      ...baseItems,
+      { type: 'thought', text: 'Background suite finished; inspecting failures.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'late-check',
+        kind: 'execute',
+        title: 'Run pnpm test',
+        status: 'in_progress',
+      },
+    ];
+
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory(baseItems, {
+        id: turnId,
+        finished: true,
+        endedAt,
+        fileDiff: editedFiles,
+      }),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: { mode: 'waiting', taskCount: 1 },
+        onFileDiffClick,
+        onFork: () => {},
+      }
+    );
+
+    // Waiting with single answer: edited files card + finished metadata are visible.
+    expect(container.textContent).toContain('message-handler.ts');
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).not.toBeNull();
+
+    // Flipping to wakeup (before late items land): edited files card stays visible & clickable,
+    // while premature finished metadata (Copy / Fork / timestamp) is suppressed.
+    await rerenderHistory(
+      buildTurnHistory(baseItems, {
+        id: turnId,
+        finished: true,
+        endedAt,
+        fileDiff: editedFiles,
+      }),
+      { mode: 'wakeup', taskCount: 1 }
+    );
+    expect(container.textContent).toContain('message-handler.ts');
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
+    const diffButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find((btn) =>
+      btn.textContent?.includes('message-handler.ts')
+    );
+    expect(diffButton).toBeDefined();
+    await act(async () => diffButton!.click());
+    expect(onFileDiffClick).toHaveBeenCalledWith(turnId, 'src/lib/message-handler.ts');
+
+    // Late wakeup stream with segmented trailing live header: edited files card stays visible,
+    // finished metadata stays suppressed, and shimmer stays on the live trailing Option C header.
+    await rerenderHistory(
+      buildTurnHistory(wakeupItems, {
+        id: turnId,
+        finished: true,
+        endedAt,
+        fileDiff: editedFiles,
+      }),
+      { mode: 'wakeup', taskCount: 1 }
+    );
+    expect(container.textContent).toContain('message-handler.ts');
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
+    expect(
+      container.querySelector('[data-compact-work-header="live"] .agent-shimmer')
+    ).not.toBeNull();
+
+    // Segmented waiting after wakeup: edited files card still stays visible while finished metadata stays suppressed.
+    await rerenderHistory(
+      buildTurnHistory(wakeupItems, {
+        id: turnId,
+        finished: true,
+        endedAt,
+        fileDiff: editedFiles,
+      }),
+      { mode: 'waiting', taskCount: 1 }
+    );
+    expect(container.textContent).toContain('message-handler.ts');
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
   });
 });

@@ -1236,11 +1236,14 @@ const shouldRenderAssistantFooter = ({
   // The run config (model, mode, options) is recorded when the turn opens, so
   // its info button is available while the reply is still streaming.
   if (hasAssistantTurnConfigInfo(message)) return true;
-  if (message.finished !== true || suppressFinishedMetadata) return false;
+  if (message.finished !== true) return false;
+  // Persisted turn file diffs remain accessible even while finished footer
+  // metadata (timestamp, duration, copy, fork) is suppressed during wakeup.
+  if (fileDiffs.length > 0) return true;
+  if (suppressFinishedMetadata) return false;
   const visibleContentItems = renderEntries.map((entry) => entry.content);
   return (
     getTextContentFromMessageItems(visibleContentItems).trim().length > 0 ||
-    fileDiffs.length > 0 ||
     hasAssistantTurnConfigInfo(message) ||
     (typeof message.endedAt === 'number' && Number.isFinite(message.endedAt)) ||
     (showDuration && resolveSessionHistoryDurationMs(message) !== null)
@@ -6700,7 +6703,7 @@ export const AssistantTurnFooter = ({
 
   return (
     <div className="flex flex-col gap-1">
-      {showFinishedMetadata && fileDiffs.length > 0 ? (
+      {message.finished === true && fileDiffs.length > 0 ? (
         <AssistantEditedFiles
           files={fileDiffs}
           /* Mobile: quieter surface so the file card does not outrank the answer. */

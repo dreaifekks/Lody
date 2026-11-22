@@ -1578,6 +1578,44 @@ describe('MessageHandler ACP batching', () => {
           status: 'completed',
         },
       });
+      const subagentProgress: AcpSessionNotification = {
+        sessionId,
+        update: {
+          sessionUpdate: 'subagent_event',
+          event: {
+            version: 1,
+            sessionId,
+            runId: 'sub-1',
+            type: 'progress',
+            progress: { summary: 'Subagent running tests' },
+          },
+        },
+      };
+      const planChecklist: AcpSessionNotification = {
+        sessionId,
+        update: {
+          sessionUpdate: 'plan',
+          entries: [{ content: 'Verify build', priority: 'medium', status: 'in_progress' }],
+        },
+      };
+      const planUpdate: AcpSessionNotification = {
+        sessionId,
+        update: {
+          sessionUpdate: 'plan_update',
+          plan: {
+            type: 'markdown',
+            planId: 'plan-1',
+            content: 'Follow-up verification plan',
+          },
+        },
+      };
+      const planRemoved: AcpSessionNotification = {
+        sessionId,
+        update: {
+          sessionUpdate: 'plan_removed',
+          planId: 'plan-1',
+        },
+      };
       const titleInfo = (title: string): AcpSessionNotification => ({
         sessionId,
         update: { sessionUpdate: 'session_info_update', title },
@@ -1618,6 +1656,22 @@ describe('MessageHandler ACP batching', () => {
 
         await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
         host.enqueueACPUpdate(sessionId, text('after the background task'));
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, subagentProgress);
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, planChecklist);
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, planUpdate);
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, planRemoved);
         expect(handler.getLastActivity(sessionId)).toBe(Date.now());
       } finally {
         await destroyRepoOnRealTimers(repo);
