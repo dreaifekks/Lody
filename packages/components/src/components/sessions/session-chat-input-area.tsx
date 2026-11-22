@@ -168,6 +168,11 @@ import { isPlainLinkPasteShortcut, parseAppSessionUrl } from '@/lib/session-app-
 import { readPastedSessionLink } from '@/lib/session-deep-link';
 import { SessionUsagePopover } from './session-usage-popover';
 import type { MachineRateLimits } from '@/lib/session-usage';
+import { cn } from '@/lib/utils';
+import type { BtwSelectionAttachment } from './btw/btw-atoms';
+import { BtwComposerFooter, BtwPendingSelectionChip } from './btw/btw-composer-chrome';
+import { BTW_SURFACE_BG_OVERRIDE_CLASS } from './btw/btw-info-bar-toggle';
+import { parseBtwSlashCommand } from './btw/btw-slash-command';
 import {
   type ComposerInputElement,
   getComposerSelection,
@@ -571,6 +576,19 @@ export interface SessionChatInputAreaProps {
   onVisualAnnotationReferencesSubmitted?: (
     references: VisualAnnotationReferencePayload[]
   ) => void | Promise<void>;
+  /** Shared composer `/btw` side-chat mode state and actions. */
+  btwMode?: {
+    readonly isOpen: boolean;
+    readonly isStreaming: boolean;
+    readonly modelLabel: string;
+    readonly articleFileName?: string | null;
+    readonly pendingSelection?: BtwSelectionAttachment | null;
+    readonly onClearPendingSelection?: () => void;
+    readonly onSend: (question: string) => void | Promise<void>;
+    readonly onCancel: () => void;
+  };
+  /** Intercepts `/btw <question>` typed in the main composer without writing to main history. */
+  onBtwCommand?: (question: string) => void;
 }
 
 export type SessionTurnAgentRoleSelection = ComposerTurnAgentRoleSelection;
@@ -678,6 +696,8 @@ export const SessionChatInputArea = memo(
       onCommentReferencesChange,
       onVisualAnnotationReferencesChange,
       onVisualAnnotationReferencesSubmitted,
+      btwMode,
+      onBtwCommand,
     }: SessionChatInputAreaProps,
     ref: React.ForwardedRef<SessionChatInputAreaHandle>
   ) {
@@ -1897,14 +1917,30 @@ export const SessionChatInputArea = memo(
       ]
     );
 
+    const [btwInputBySession, setBtwInputBySession] = useState<Record<string, string>>({});
+    const isBtwOpen = btwMode?.isOpen === true;
+    const btwInput = btwInputBySession[session.id] ?? '';
+    const setBtwInput = useCallback(
+      (nextValue: string) => {
+        setBtwInputBySession((current) =>
+          current[session.id] === nextValue ? current : { ...current, [session.id]: nextValue }
+        );
+      },
+      [session.id]
+    );
+
     const handleInputChange = useCallback(
       (nextValue: string) => {
         if (isArchived) {
           return;
         }
+        if (isBtwOpen) {
+          setBtwInput(nextValue);
+          return;
+        }
         setUserInput(nextValue);
       },
-      [isArchived, setUserInput]
+      [isArchived, isBtwOpen, setBtwInput, setUserInput]
     );
     const handlePastedTextDraftsChange = useCallback(
       (drafts: PastedTextDraft[]) => {
@@ -1918,6 +1954,19 @@ export const SessionChatInputArea = memo(
     const sendMessage = useCallback(
       async (options?: SessionSendMessageOptions) => {
         if (!isVisible) return;
+        if (btwMode?.isOpen) {
+          if (isArchived || isMachineRemoved || btwMode.isStreaming) return;
+          const rawValue = textareaRef.current ? getComposerText(textareaRef.current) : btwInput;
+          const trimmedBtw = rawValue.trim();
+          if (!trimmedBtw) return;
+          const parsedBtw = parseBtwSlashCommand(trimmedBtw);
+          const question = parsedBtw.matched ? parsedBtw.question : trimmedBtw;
+          setBtwInput('');
+          if (question) {
+            void btwMode.onSend(question);
+          }
+          return;
+        }
         if (freeTurnLimitNotice && freeTurnLimitNotice.current >= freeTurnLimitNotice.limit) {
           capturePostHogEvent(postHog, 'session/input_blocked', {
             reason: 'free_session_turn_limit_reached',
@@ -1990,6 +2039,22 @@ export const SessionChatInputArea = memo(
           pastedTextDrafts: currentPastedTextDrafts,
         });
         const trimmedPrompt = expandedPrompt.text.trim();
+        if (
+          onBtwCommand &&
+          !scheduled.at &&
+          pendingImages.length === 0 &&
+          pendingFiles.length === 0 &&
+          commentReferencesRef.current.length === 0 &&
+          visualAnnotationReferencesRef.current.length === 0 &&
+          articleAnnotations.length === 0
+        ) {
+          const parsedBtw = parseBtwSlashCommand(trimmedPrompt);
+          if (parsedBtw.matched) {
+            clearInput();
+            onBtwCommand(parsedBtw.question);
+            return;
+          }
+        }
         // The trim moves every character left; re-anchor before the offsets ship.
         const trimmedSpans = reanchorMessageTextSpansForTrim(
           expandedPrompt.text,
@@ -2165,8 +2230,12 @@ export const SessionChatInputArea = memo(
       [
         articleAnnotations,
         beginSubmission,
+        btwInput,
+        btwMode,
+        onBtwCommand,
         onSendMessage,
         clearInput,
+        setBtwInput,
         clearPendingImages,
         clearPendingFiles,
         freeTurnLimitNotice,
@@ -2593,6 +2662,46 @@ export const SessionChatInputArea = memo(
       />
     );
     const showContinueAction = !showStopButton && !hasSendableContent && Boolean(onContinue);
+    const btwPrimaryActionNode = btwMode?.isOpen ? (
+      btwMode.isStreaming ? (
+        <Button
+          type="button"
+          onClick={() => {
+            btwMode.onCancel();
+          }}
+          variant="ghost"
+          size={isMobile ? 'medium' : 'small'}
+          shape="pill"
+          icon
+          aria-label="停止 /btw"
+          className="shadow-xs transition-all bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground active:translate-y-[1px]"
+        >
+          <span
+            {...stylex.props(
+              styles.stopGlyph,
+              isMobile ? styles.stopGlyphMobile : styles.stopGlyphDesktop
+            )}
+            aria-hidden="true"
+          />
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          icon
+          variant="ghost"
+          size={isMobile ? 'medium' : 'small'}
+          shape="pill"
+          onClick={() => {
+            void sendMessage();
+          }}
+          disabled={btwInput.trim().length === 0 || !isVisible || isMachineRemoved || isArchived}
+          aria-label={t('sessions.send')}
+          className="shadow-xs transition-all bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground active:translate-y-[1px]"
+        >
+          <ArrowUp {...stylex.props(isMobile ? styles.sendIconMobile : styles.sendIconDesktop)} />
+        </Button>
+      )
+    ) : null;
     const primaryActionNode =
       isArchived && onRestoreSession ? (
         <Button
@@ -2685,62 +2794,84 @@ export const SessionChatInputArea = memo(
       <ChatComposer
         tone={tone}
         variant="session"
-        mentionSource={isArchived ? undefined : mentionSource}
-        availableCommands={isArchived ? undefined : availableCommands}
-        commandsEnabled={commandsEnabled}
-        skillAgent={skillAgent}
+        mentionSource={isArchived || isBtwOpen ? undefined : mentionSource}
+        availableCommands={isArchived || isBtwOpen ? undefined : availableCommands}
+        commandsEnabled={commandsEnabled && !isBtwOpen}
+        skillAgent={isBtwOpen ? undefined : skillAgent}
         currentSessionId={session.id}
         promptRef={textareaRef}
-        promptValue={submissionPending ? '' : userInput}
+        promptValue={isBtwOpen ? btwInput : submissionPending ? '' : userInput}
         onPromptChange={handleInputChange}
         onPromptKeyDown={handleKeyDown}
-        promptSuggestion={submissionPending || isArchived ? null : promptSuggestion}
-        onPromptPaste={handlePaste}
-        onImageDrop={!submissionPending && attachmentAddEnabled ? handleImageDrop : undefined}
-        onDirectoryDrop={handleDirectoryDrop}
+        promptSuggestion={submissionPending || isArchived || isBtwOpen ? null : promptSuggestion}
+        onPromptPaste={isBtwOpen ? undefined : handlePaste}
+        onImageDrop={
+          !submissionPending && attachmentAddEnabled && !isBtwOpen ? handleImageDrop : undefined
+        }
+        onDirectoryDrop={isBtwOpen ? undefined : handleDirectoryDrop}
         // The dropzone accepts files AND images, so it must NOT inherit the
         // image-only disable (which trips at 8 pending images). Per-type count
         // limits are enforced inside handleImageDrop's handlers. Drops are only
         // blocked when the session is archived or the machine was removed;
         // a merely offline machine still accepts input (deferred execution).
-        imageDropDisabled={submissionPending || isArchived || isMachineRemoved}
-        promptPlaceholder={promptPlaceholder}
-        compactPlaceholderName={compactPlaceholderName}
-        promptDisabled={submissionPending || isArchived}
-        preservePromptFocus={usesMobileKeyboardAction && submissionPending && !isArchived}
+        imageDropDisabled={submissionPending || isArchived || isMachineRemoved || isBtwOpen}
+        promptPlaceholder={isBtwOpen ? '顺便问一句…' : promptPlaceholder}
+        compactPlaceholderName={isBtwOpen ? null : compactPlaceholderName}
+        promptDisabled={isBtwOpen ? isArchived : submissionPending || isArchived}
+        preservePromptFocus={
+          !isBtwOpen && usesMobileKeyboardAction && submissionPending && !isArchived
+        }
         promptRows={2}
         promptEnterKeyHint={promptEnterKeyHint}
-        commentReferenceItems={submissionPending ? [] : commentReferences}
+        boxClassName={isBtwOpen ? 'border-primary/40 dark:border-primary/40' : undefined}
+        boxHeader={
+          isBtwOpen && btwMode?.pendingSelection ? (
+            <BtwPendingSelectionChip
+              selection={btwMode.pendingSelection}
+              onRemove={btwMode.onClearPendingSelection}
+            />
+          ) : undefined
+        }
+        commentReferenceItems={submissionPending || isBtwOpen ? [] : commentReferences}
         onCommentReferenceRemove={
-          submissionPending || isArchived ? undefined : removeCommentReference
+          submissionPending || isArchived || isBtwOpen ? undefined : removeCommentReference
         }
         onCommentReferenceClick={onNavigateToComment}
         revealCommentReferenceRemoveOnClick={isMobile}
-        visualAnnotationReferenceItems={submissionPending ? [] : visualAnnotationReferences}
-        onVisualAnnotationReferenceRemove={
-          submissionPending || isArchived ? undefined : removeVisualAnnotationReference
+        visualAnnotationReferenceItems={
+          submissionPending || isBtwOpen ? [] : visualAnnotationReferences
         }
-        pastedTextDrafts={submissionPending ? [] : pastedTextDrafts}
-        onPastedTextDraftsChange={submissionPending ? undefined : handlePastedTextDraftsChange}
-        onMentionRangesChange={handleMentionRangesChange}
-        mentionActionsRef={mentionActionsRef}
-        persistedMentions={persistedMentionRanges}
+        onVisualAnnotationReferenceRemove={
+          submissionPending || isArchived || isBtwOpen
+            ? undefined
+            : removeVisualAnnotationReference
+        }
+        pastedTextDrafts={submissionPending || isBtwOpen ? [] : pastedTextDrafts}
+        onPastedTextDraftsChange={
+          submissionPending || isBtwOpen ? undefined : handlePastedTextDraftsChange
+        }
+        onMentionRangesChange={isBtwOpen ? undefined : handleMentionRangesChange}
+        mentionActionsRef={isBtwOpen ? undefined : mentionActionsRef}
+        persistedMentions={isBtwOpen ? undefined : persistedMentionRanges}
         // This composer switches sessions in place, so the draft's identity has
         // to travel with its text — otherwise the previous session's ranges stay
         // committed over the incoming draft.
-        draftKey={session.id}
-        imageItems={submissionPending ? [] : imageItems}
+        draftKey={isBtwOpen ? `${session.id}:btw` : session.id}
+        imageItems={submissionPending || isBtwOpen ? [] : imageItems}
         attachmentAddDisabled={
           submissionPending ||
           isArchived ||
           isMachineRemoved ||
+          isBtwOpen ||
           (pendingFiles.length >= SESSION_FILE_MAX_COUNT &&
             (disableImageUpload || pendingImages.length >= SESSION_IMAGE_MAX_COUNT))
         }
-        onAttachmentAddClick={attachmentAddEnabled ? handleAttachmentAddClick : undefined}
-        onImageRemove={submissionPending || isArchived ? undefined : handleRemoveImage}
+        onAttachmentAddClick={
+          attachmentAddEnabled && !isBtwOpen ? handleAttachmentAddClick : undefined
+        }
+        onImageRemove={submissionPending || isArchived || isBtwOpen ? undefined : handleRemoveImage}
         onImageAnnotate={
-          submissionPending || isArchived
+          submissionPending || isArchived || isBtwOpen
             ? undefined
             : (id) => {
                 const image = pendingImages.find((entry) => entry.localId === id);
@@ -2748,36 +2879,49 @@ export const SessionChatInputArea = memo(
                   setImageMarkup({ sessionId: session.id, id, file: image.file });
               }
         }
-        onImageRetry={submissionPending || isArchived ? undefined : handleRetryImage}
-        fileItems={submissionPending ? [] : fileItems}
-        mcp={mcp}
+        onImageRetry={submissionPending || isArchived || isBtwOpen ? undefined : handleRetryImage}
+        fileItems={submissionPending || isBtwOpen ? [] : fileItems}
+        mcp={isBtwOpen ? undefined : mcp}
         onScheduleSend={
-          (scheduled.available || scheduled.featureUnavailable) && !isArchived
+          (scheduled.available || scheduled.featureUnavailable) && !isArchived && !isBtwOpen
             ? scheduled.openPicker
             : undefined
         }
         scheduleDisabledReason={scheduled.disabledReason}
-        secondaryAction={scheduledAction}
+        secondaryAction={isBtwOpen ? undefined : scheduledAction}
         statusMessage={
-          submissionPending && scheduled.progress !== null
-            ? t('scheduledMessage.preparing', { progress: scheduled.progress })
-            : mcpSelectionReady === false && !mcpDefaultsFailed
-              ? t('chat.validation.mcpDefaultsLoading')
-              : articleAnnotations.length > 0
-                ? t('sessions.article.annotation.pending', 'Includes {{count}} comments', {
-                    count: articleAnnotations.length,
-                  })
-                : undefined
+          isBtwOpen
+            ? undefined
+            : submissionPending && scheduled.progress !== null
+              ? t('scheduledMessage.preparing', { progress: scheduled.progress })
+              : mcpSelectionReady === false && !mcpDefaultsFailed
+                ? t('chat.validation.mcpDefaultsLoading')
+                : articleAnnotations.length > 0
+                  ? t('sessions.article.annotation.pending', 'Includes {{count}} comments', {
+                      count: articleAnnotations.length,
+                    })
+                  : undefined
         }
-        onFileRemove={submissionPending || isArchived ? undefined : handleRemoveFile}
-        onFileRetry={submissionPending || isArchived ? undefined : handleRetryFile}
-        footerSelector={footerSelectorNode}
+        onFileRemove={submissionPending || isArchived || isBtwOpen ? undefined : handleRemoveFile}
+        onFileRetry={submissionPending || isArchived || isBtwOpen ? undefined : handleRetryFile}
+        footerSelector={
+          btwMode?.isOpen ? (
+            <BtwComposerFooter
+              modelLabel={btwMode.modelLabel}
+              articleFileName={btwMode.articleFileName}
+            />
+          ) : (
+            footerSelectorNode
+          )
+        }
         bottomBar={bottomBarNode}
         primaryAction={
-          <>
-            {voiceControlsNode}
-            {primaryActionNode}
-          </>
+          btwPrimaryActionNode ?? (
+            <>
+              {voiceControlsNode}
+              {primaryActionNode}
+            </>
+          )
         }
         autoResize
         maxRows={11}
@@ -2787,10 +2931,14 @@ export const SessionChatInputArea = memo(
 
     return (
       <div
-        className={getSessionChatInputAreaShellClassName({
-          protectFromEdgeBackZone: isMobile,
-          liftAboveKeyboard: isMobile,
-        })}
+        data-btw-composer-active={isBtwOpen ? 'true' : undefined}
+        className={cn(
+          getSessionChatInputAreaShellClassName({
+            protectFromEdgeBackZone: isMobile,
+            liftAboveKeyboard: isMobile,
+          }),
+          isBtwOpen && BTW_SURFACE_BG_OVERRIDE_CLASS
+        )}
         onMouseDown={(event) => {
           // Keep the restored shell-owned bottom spacing focusable without
           // stealing focus from selectors, attachments, or the prompt itself.
@@ -2828,8 +2976,8 @@ export const SessionChatInputArea = memo(
         ) : null}
         <ConversationColumn>
           {hideTopSpacer ? null : <div aria-hidden="true" {...stylex.props(styles.topSpacer)} />}
-          {externalHistorySyncNode}
-          {freeTurnLimitNoticeNode}
+          {isBtwOpen ? null : externalHistorySyncNode}
+          {isBtwOpen ? null : freeTurnLimitNoticeNode}
           {attachmentAddEnabled ? (
             <input
               ref={attachmentInputRef}
@@ -2839,7 +2987,7 @@ export const SessionChatInputArea = memo(
               onChange={handleAttachmentInputChange}
             />
           ) : null}
-          {mcpDefaultsFailed && onRetryMcpDefaults ? (
+          {!isBtwOpen && mcpDefaultsFailed && onRetryMcpDefaults ? (
             <McpDefaultsRecovery
               onRetry={onRetryMcpDefaults}
               onSendWithoutMcp={() => void sendMessage({ mcpServerIds: [], skipMcpOnce: true })}

@@ -43,6 +43,7 @@ describe('commands-built-ins', () => {
       expect(commands.getDefaultKeybindingsFor('session.toggleTerminal')).toEqual([]);
       expect(commands.getDefaultKeybindingsFor('workspace.openSettings')).toEqual(['Mod+,']);
       expect(commands.getDefaultKeybindingsFor('layout.toggleZenMode')).toEqual(['Mod+.']);
+      expect(commands.getDefaultKeybindingsFor('session.toggleBtw')).toEqual(['Mod+/']);
       // Cyclers with no default binding stay rebindable from the settings page.
       expect(commands.getDefaultKeybindingsFor('session.cycleProvider')).toEqual([]);
       expect(commands.getDefaultKeybindingsFor('mention.toggleSessionProjectScope')).toEqual([]);
@@ -93,6 +94,7 @@ describe('commands-built-ins', () => {
       // ⌘, but registerAccelerator:false leaves the key to the registry), so it shows here too.
       expect(commands.getDefaultKeybindingsFor('workspace.openSettings')).toEqual(['Mod+,']);
       expect(commands.getDefaultKeybindingsFor('layout.toggleZenMode')).toEqual(['Mod+.']);
+      expect(commands.getDefaultKeybindingsFor('session.toggleBtw')).toEqual(['Mod+/']);
     });
   });
 });

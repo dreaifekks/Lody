@@ -52,6 +52,7 @@ import { pendingSessionLinkAtom } from '@/lib/session-deep-link';
 import { windowPreparationAtom } from '@/lib/window-preparation';
 import { useEmptySessionDraft } from '@/hooks/use-empty-session-draft';
 import { sessionHasUnreadMessages } from '@/lib/session-read-receipt';
+import { openBtwForSessionAtom } from './btw';
 import {
   Archive,
   ArchiveRestore,
@@ -5769,6 +5770,26 @@ const SessionDetail = ({
     keybindings: getCommandKeybindings('session.focusInput'),
     when: () => Boolean(boardThreadCommandTarget() ?? chatRefsMap.current.get(activeTabSessionId)),
     run: handleFocusActiveInput,
+  });
+
+  const toggleBtwForSession = useSetAtom(openBtwForSessionAtom);
+  const resolveBtwCommandTargetSessionId = () =>
+    articleThreadId ??
+    articleTabId ??
+    (boardThreadCommandTarget() ? boardThreadId : activeSessionTabId);
+  useCommand({
+    id: 'session.toggleBtw',
+    title: t('commands.session.toggleBtw', 'Toggle /btw Side Chat'),
+    category: 'Session',
+    keybindings: getCommandKeybindings('session.toggleBtw'),
+    allowInTextInput: true,
+    when: () => Boolean(resolveBtwCommandTargetSessionId()),
+    run: () => {
+      const targetSessionId = resolveBtwCommandTargetSessionId();
+      if (targetSessionId) {
+        toggleBtwForSession({ sessionId: targetSessionId, toggle: true });
+      }
+    },
   });
 
   useCommand({

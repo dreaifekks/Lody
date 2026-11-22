@@ -19,6 +19,7 @@ import { ConversationColumn } from '@/components/shared/conversation-column';
 import { cn } from '@/lib/utils';
 import { INFO_BAR_TEXT_CLASS } from './info-bar-type';
 import { ActionChip, PopoverActionChip } from './info-chip';
+import { BTW_SURFACE_BG_CLASS } from './btw/btw-info-bar-toggle';
 import {
   ContextChip,
   GoalChip,
@@ -86,6 +87,12 @@ export type SessionInfoBarProps = {
    *  cluster action with its own popover; never staged. Pass it only when a
    *  relation exists, so an otherwise empty bar still hides. */
   relations?: ReactNode;
+  /** Single-icon `/btw` ↔ main-conversation toggle right after `relations`. */
+  btwToggle?: ReactNode;
+  /** Quiet `×` clear button shown on the right edge while `/btw` is expanded with content. */
+  btwClearAction?: ReactNode;
+  /** Subtle surface tint behind the bar pill when `/btw` is active. */
+  surfaceTone?: 'default' | 'btw';
   /** Repositories of a multi-repository conversation: a plain cluster action
    *  with its own popover, placed before Related sessions; never staged. */
   projectMembers?: ReactNode;
@@ -180,6 +187,9 @@ export function SessionInfoBar({
   contextActions,
   onOpenAllChanges,
   relations,
+  btwToggle,
+  btwClearAction,
+  surfaceTone = 'default',
   projectMembers,
   onOpenBrowser,
   onOpenIosSimulator,
@@ -275,6 +285,7 @@ export function SessionInfoBar({
     defaultKey ||
     projectMembers ||
     relations ||
+    btwToggle ||
     onOpenBrowser ||
     onOpenIosSimulator ||
     onOpenAndroidEmulator ||
@@ -364,6 +375,7 @@ export function SessionInfoBar({
     clusterKeys.length > 0 ||
     !!projectMembers ||
     !!relations ||
+    !!btwToggle ||
     !!onOpenBrowser ||
     !!onOpenIosSimulator ||
     !!onOpenAndroidEmulator;
@@ -385,7 +397,8 @@ export function SessionInfoBar({
     // Light: same fill and lift as the session composer. Dark: recessed input.
     <div
       className={cn(
-        'w-full shrink-0 bg-background pb-2',
+        'w-full shrink-0 pb-2',
+        surfaceTone === 'btw' ? BTW_SURFACE_BG_CLASS : 'bg-background',
         /* Gutter is on ConversationColumn (same as stream + composer).
            The native session drawer's transparent edge-back strip is z-30 and
            spans the body's left 48px. Elevating this band keeps the leading
@@ -428,6 +441,7 @@ export function SessionInfoBar({
           (clusterKeys.length > 0 ||
             projectMembers ||
             relations ||
+            btwToggle ||
             onOpenBrowser ||
             onOpenIosSimulator ||
             onOpenAndroidEmulator ||
@@ -435,9 +449,10 @@ export function SessionInfoBar({
             <span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-muted-foreground/25" />
           ) : null}
           {clusterKeys.map((key) => renderItem(key, 'cluster'))}
-          {/* Repositories, Relations and Browser are plain actions with no stage form. */}
+          {/* Repositories, Relations, /btw toggle and Browser are plain actions with no stage form. */}
           {projectMembers}
           {relations}
+          {btwToggle}
           {onOpenBrowser ? (
             <ActionChip
               icon={MonitorPlay}
@@ -499,6 +514,11 @@ export function SessionInfoBar({
               {renderItem(stagedKey, 'stage')}
             </div>
           ) : null}
+          {btwClearAction ? (
+            <span className={cn(!stagedKey && 'ml-auto', 'inline-flex shrink-0 items-center')}>
+              {btwClearAction}
+            </span>
+          ) : null}
           {/* Ambient sync state hugs the right edge, outside the
               cluster/stage model. Under squeeze the label yields first
               (spinner stays) so the stage's diffstat never clips. In
@@ -506,7 +526,9 @@ export function SessionInfoBar({
               ml-auto keeps the spinner pinned right; with a stage present
               its flex-1 has already eaten the space (no-op). */}
           {ambientSync ? (
-            <span className="ml-auto inline-flex shrink-0 items-center">
+            <span
+              className={cn(!btwClearAction && 'ml-auto', 'inline-flex shrink-0 items-center')}
+            >
               <SessionSyncingIndicator
                 variant={ambientSync}
                 labelClassName="hidden @[560px]:inline"

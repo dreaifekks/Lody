@@ -1,7 +1,7 @@
 import { ReadOnlyHtmlPreview } from './read-only-html-preview';
 import { PagedFileViewer } from './paged-file-viewer';
 import * as stylex from '@stylexjs/stylex';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
   Copy,
@@ -84,6 +84,11 @@ import { normalizePinnedProviderOpenResult } from '@/lib/session-file-provider-o
 import { SessionFileBinaryPreview } from './session-file-binary-preview';
 import { SessionFileCsvPreview } from './session-file-csv-preview';
 import { DocumentSelectionSurface } from './document-selection-surface';
+import {
+  activeBtwArticleContextAtomFamily,
+  buildBtwArticleContextPayload,
+  openBtwWithSelectionAtom,
+} from './btw';
 import { locateMarkdownSelection, type DocumentSelection } from '@/lib/document-selection';
 import { ArticleAnnotationMarkers } from '../boards/article-annotation-markers';
 import {
@@ -1766,6 +1771,61 @@ function SessionFileContentViewImpl({
   // A Markdown article's comments wait here, at their passages, for the next
   // message of the thread beside it; nothing goes into its composer.
   const annotationThreadId = isArticle && isMarkdownTextFile ? article.annotationThreadId : null;
+  const btwArticleOwnerId = useId();
+  const btwTargetSessionId = (article?.annotationThreadId ?? sessionId) as SessionId;
+  const openBtwWithSelection = useSetAtom(openBtwWithSelectionAtom);
+  const setActiveBtwArticleContext = useSetAtom(
+    activeBtwArticleContextAtomFamily(btwTargetSessionId)
+  );
+  const btwLoadedText =
+    data.status === 'ready' && data.snapshot.kind === 'text'
+      ? (latestEditorTextRef.current ?? data.snapshot.text)
+      : null;
+
+  useEffect(() => {
+    if (!isActiveSurface || !normalizedPath || btwLoadedText === null) return undefined;
+    const priority = isArticle ? 2 : 1;
+    const payload = buildBtwArticleContextPayload({
+      path: normalizedPath,
+      text: btwLoadedText,
+      ownerId: btwArticleOwnerId,
+      priority,
+    });
+    if (!payload) return undefined;
+    setActiveBtwArticleContext((current) => {
+      if (current && (current.priority ?? 0) > priority && current.ownerId !== btwArticleOwnerId) {
+        return current;
+      }
+      return payload;
+    });
+    return () => {
+      setActiveBtwArticleContext((current) =>
+        current?.ownerId === btwArticleOwnerId ? null : current
+      );
+    };
+  }, [
+    btwArticleOwnerId,
+    btwLoadedText,
+    isActiveSurface,
+    isArticle,
+    normalizedPath,
+    setActiveBtwArticleContext,
+  ]);
+
+  const handleAskBtwSelection = useCallback(
+    (selection: DocumentSelection) => {
+      if (!selection.text?.trim()) return;
+      openBtwWithSelection({
+        sessionId: btwTargetSessionId,
+        selection: {
+          path: selection.path,
+          text: selection.text,
+          location: selection.location,
+        },
+      });
+    },
+    [btwTargetSessionId, openBtwWithSelection]
+  );
   const [markdownRoot, setMarkdownRoot] = useState<HTMLDivElement | null>(null);
   const annotationActions = useArticleAnnotationActions();
   const articleAnnotations = useArticleFileAnnotations(
@@ -2048,6 +2108,8 @@ function SessionFileContentViewImpl({
         source={latestEditorTextRef.current ?? data.snapshot.text}
         active={isActiveSurface}
         onAdd={onAddSelectionToChat}
+        onAskBtw={handleAskBtwSelection}
+        textSelectionPrompt
       >
         <SessionFileCsvPreview
           text={latestEditorTextRef.current ?? data.snapshot.text}
@@ -2073,6 +2135,7 @@ function SessionFileContentViewImpl({
           });
           return true;
         }}
+        onAskBtw={handleAskBtwSelection}
         locateText={locateMarkdownLines}
         onDraftChange={setSelectionDraftOpen}
         textSelectionPrompt
@@ -2088,6 +2151,7 @@ function SessionFileContentViewImpl({
         source={markdownPreviewText}
         active={isActiveSurface}
         onAdd={onAddSelectionToChat}
+        onAskBtw={handleAskBtwSelection}
         locateText={locateMarkdownLines}
         onDraftChange={setSelectionDraftOpen}
         textSelectionPrompt
@@ -2095,7 +2159,20 @@ function SessionFileContentViewImpl({
         {previewSurface}
       </DocumentSelectionSurface>
     );
-  } else if (showSvgRendered || showMarkdownRendered) {
+  } else if (showMarkdownRendered) {
+    body = (
+      <DocumentSelectionSurface
+        path={normalizedPath}
+        source={markdownPreviewText}
+        active={isActiveSurface}
+        onAskBtw={handleAskBtwSelection}
+        locateText={locateMarkdownLines}
+        textSelectionPrompt
+      >
+        {previewSurface}
+      </DocumentSelectionSurface>
+    );
+  } else if (showSvgRendered) {
     body = previewSurface;
   } else {
     if (shouldUseProviderFileContent) {

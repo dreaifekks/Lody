@@ -305,6 +305,14 @@ import { RenameSessionDialog, type RenameSessionDialogTarget } from './rename-se
 import { useResolvedTheme } from '../../theme-provider';
 import { PullRequestBadge } from './pull-request-badge';
 import { SessionInfoBar } from './session-info-bar';
+import {
+  BtwInfoBarClearButton,
+  BtwInfoBarToggle,
+  BtwStreamView,
+  deriveMainConversationStatus,
+  mergeBtwAvailableCommands,
+  useBtwController,
+} from './btw';
 import { SessionPreviewPreload } from './session-preview-preload';
 import { CurrentSessionRelationsChip, useHasSessionRelations } from './session-relations-chip';
 import { SessionProjectMembersChip } from './session-project-members-chip';
@@ -7468,6 +7476,100 @@ export const SessionChatInterface = memo(
       permissionSessionHistory
     );
 
+    const btw = useBtwController({
+      sessionId: session.id,
+      machineId: session.machineId,
+      agentType: session.agentType,
+      isVisible: isVisible && session.isArchived !== true,
+      scopeElementRef: messageAreaRef,
+      onFocusComposer: () => inputAreaRef.current?.focusInput(),
+    });
+    const isBtwActive = btw.state.isOpen && session.isArchived !== true;
+    const hideComposerForPermission = shouldReplaceComposerWithPermission && !isBtwActive;
+    const wasMainActiveInBtwRef = useRef(false);
+    const [mainCompletedInBtw, setMainCompletedInBtw] = useState(false);
+    useEffect(() => {
+      if (!isBtwActive) {
+        wasMainActiveInBtwRef.current = false;
+        setMainCompletedInBtw(false);
+        return;
+      }
+      if (isSessionWorking || shouldReplaceComposerWithPermission || isAwaitingQuestion) {
+        wasMainActiveInBtwRef.current = true;
+        setMainCompletedInBtw(false);
+      } else if (wasMainActiveInBtwRef.current && session.status?.type === 'idle') {
+        wasMainActiveInBtwRef.current = false;
+        setMainCompletedInBtw(true);
+      }
+    }, [
+      isAwaitingQuestion,
+      isBtwActive,
+      isSessionWorking,
+      session.status?.type,
+      shouldReplaceComposerWithPermission,
+    ]);
+    const mainConversationStatus = useMemo(
+      () =>
+        deriveMainConversationStatus({
+          hasPendingPermission: shouldReplaceComposerWithPermission,
+          hasPendingQuestion: isAwaitingQuestion,
+          isWorking: isSessionWorking,
+          agentActivityLabel,
+          history: sessionTailHistory,
+          statusStripState,
+          queuedCount: messageQueue.length,
+          completedWhileInBtw: mainCompletedInBtw,
+          sessionStatusType: session.status?.type,
+        }),
+      [
+        agentActivityLabel,
+        isAwaitingQuestion,
+        isSessionWorking,
+        mainCompletedInBtw,
+        messageQueue.length,
+        session.status?.type,
+        sessionTailHistory,
+        shouldReplaceComposerWithPermission,
+        statusStripState,
+      ]
+    );
+    const composerAvailableCommands = useMemo(
+      () => mergeBtwAvailableCommands(availableCommands),
+      [availableCommands]
+    );
+    const handleBtwCommand = useCallback(
+      (question: string) => {
+        if (question) {
+          void btw.ask(question);
+        } else {
+          btw.open();
+        }
+      },
+      [btw.ask, btw.open]
+    );
+    const btwComposerMode = useMemo(
+      () => ({
+        isOpen: isBtwActive,
+        isStreaming: btw.state.isStreaming,
+        modelLabel: btw.modelPillLabel,
+        articleFileName: btw.articleFileName,
+        pendingSelection: btw.state.pendingSelection,
+        onClearPendingSelection: btw.clearPendingSelection,
+        onSend: btw.ask,
+        onCancel: btw.cancel,
+      }),
+      [
+        btw.articleFileName,
+        btw.ask,
+        btw.cancel,
+        btw.clearPendingSelection,
+        btw.modelPillLabel,
+        btw.state.isStreaming,
+        btw.state.pendingSelection,
+        isBtwActive,
+      ]
+    );
+
     /* Shared header pieces used by both header variants. */
     const headerLauncherActions = (
       <>
@@ -7897,7 +7999,8 @@ export const SessionChatInterface = memo(
                           isVisible &&
                           !session.isArchived &&
                           !shareSelection.active &&
-                          !shouldReplaceComposerWithPermission
+                          !shouldReplaceComposerWithPermission &&
+                          !isBtwActive
                         }
                         onQuote={(text) => inputAreaRef.current?.addMessageQuote(text) ?? false}
                       />
@@ -8032,6 +8135,17 @@ export const SessionChatInterface = memo(
                             </MessageSelectionContext.Provider>
                           </MessageSendStatusContext.Provider>
                         </ErrorBoundary>
+                        {isBtwActive ? (
+                          <BtwStreamView
+                            turns={btw.state.turns}
+                            streamingText={btw.state.streamingText}
+                            isStreaming={btw.state.isStreaming}
+                            readOnlyTools={btw.state.readOnlyTools}
+                            error={btw.state.error}
+                            conversationFontSize={conversationFontSize}
+                            onToggleReadOnlyTools={btw.toggleReadOnlyTools}
+                          />
+                        ) : null}
                       </div>
 
                       <div
@@ -8066,15 +8180,20 @@ export const SessionChatInterface = memo(
                         )}
 
                         {/* The one place a pending permission request is answered; it stands in for the composer. */}
-                        <FloatingPermissionRequest
-                          liftAboveKeyboard={isMobile}
-                          sessionId={session.id}
-                          sessionStatus={liveSessionStatus ?? undefined}
-                          sessionHistory={permissionSessionHistory}
-                          onStop={() => {
-                            void handleStop();
-                          }}
-                        />
+                        <div
+                          hidden={isBtwActive}
+                          style={isBtwActive ? { display: 'none' } : { display: 'contents' }}
+                        >
+                          <FloatingPermissionRequest
+                            liftAboveKeyboard={isMobile}
+                            sessionId={session.id}
+                            sessionStatus={liveSessionStatus ?? undefined}
+                            sessionHistory={permissionSessionHistory}
+                            onStop={() => {
+                              void handleStop();
+                            }}
+                          />
+                        </div>
 
                         {/* Notification permission prompt - shown when session becomes idle (turn completed) */}
                         {/* TODO(analytics): session/notification_prompt_shown|_permission_granted|_permission_denied.
@@ -8168,6 +8287,24 @@ export const SessionChatInterface = memo(
                               />
                             ) : undefined
                           }
+                          btwToggle={
+                            session.isArchived !== true ? (
+                              <BtwInfoBarToggle
+                                isOpen={isBtwActive}
+                                isBtwStreaming={btw.state.isStreaming}
+                                hasBtwUnread={btw.state.hasUnread}
+                                btwTurnCount={btw.completedTurnCount}
+                                mainStatus={mainConversationStatus}
+                                onToggle={btw.toggleOpen}
+                              />
+                            ) : undefined
+                          }
+                          btwClearAction={
+                            session.isArchived !== true && btw.canClear ? (
+                              <BtwInfoBarClearButton onClear={btw.clearAndClose} />
+                            ) : undefined
+                          }
+                          surfaceTone={isBtwActive ? 'btw' : 'default'}
                           onOpenBrowser={browserActionAvailable ? handleOpenBrowser : undefined}
                           onOpenIosSimulator={
                             session.iosSimulatorPreviewRequestId ? onOpenIosSimulator : undefined
@@ -8213,6 +8350,7 @@ export const SessionChatInterface = memo(
                               hasPendingQueueRecords ||
                               scheduledQueueItems.length > 0) &&
                             !shouldReplaceComposerWithPermission &&
+                            !isBtwActive &&
                             !shareSelection.active ? (
                               <MessageQueueDisplay
                                 sessionId={session.id}
@@ -8286,7 +8424,7 @@ export const SessionChatInterface = memo(
                             shareSelection.active && styles.composerHidden
                           )}
                         >
-                          {shouldReplaceComposerWithPermission ? null : (
+                          {hideComposerForPermission ? null : (
                             <SessionChatInputArea
                               isVisible={isVisible && !shareSelection.active}
                               claimNavigationFocus={
@@ -8331,7 +8469,7 @@ export const SessionChatInterface = memo(
                               configOptionSelectors={configOptionSelectors}
                               configOptionValues={configOptionValues}
                               isRepoPublic={isRepoPublic}
-                              availableCommands={availableCommands}
+                              availableCommands={composerAvailableCommands}
                               commandsEnabled={isVisible}
                               freeTurnLimitNotice={freeSessionTurnNotice}
                               mcp={mcpSelection.menu}
@@ -8363,6 +8501,10 @@ export const SessionChatInterface = memo(
                               }
                               onVisualAnnotationReferencesSubmitted={
                                 onVisualAnnotationReferencesSubmitted
+                              }
+                              btwMode={session.isArchived === true ? undefined : btwComposerMode}
+                              onBtwCommand={
+                                session.isArchived === true ? undefined : handleBtwCommand
                               }
                             />
                           )}

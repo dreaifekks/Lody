@@ -88,6 +88,12 @@ const UNAVAILABLE_COMMANDS: BuiltInCommandDefinition[] = [
     category: 'Editor',
   },
   {
+    id: 'session.toggleBtw',
+    titleKey: 'commands.session.toggleBtw',
+    title: 'Toggle /btw Side Chat',
+    category: 'Session',
+  },
+  {
     id: 'session.toggleExplorerSidebar',
     titleKey: 'commands.session.toggleExplorerSidebar',
     title: 'Toggle Files and Changes Sidebar',

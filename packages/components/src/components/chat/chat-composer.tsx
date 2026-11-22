@@ -270,6 +270,10 @@ export interface ChatComposerProps {
   onVisualAnnotationReferenceRemove?: (localId: string) => void;
   /** Selector node displayed above the textarea (e.g., repo, agent) */
   topSelector?: ReactNode;
+  /** Compact chips rendered inside the composer box above the prompt (e.g. `/btw` selection). */
+  boxHeader?: ReactNode;
+  /** Optional class override for the inner composer box frame (e.g. `/btw` subtle accent border). */
+  boxClassName?: string;
   /** Selector node displayed inside the input footer (e.g., model, mode) */
   footerSelector?: ReactNode;
   /** Node displayed below the input box (e.g., machine, agent) */
@@ -382,6 +386,8 @@ export function ChatComposer({
   visualAnnotationReferenceItems = [],
   onVisualAnnotationReferenceRemove,
   topSelector,
+  boxHeader,
+  boxClassName,
   footerSelector,
   bottomBar,
   statusMessage,
@@ -485,18 +491,18 @@ export function ChatComposer({
      compact placeholder ("Ask anything") drops the / @ $ discovery hints that
      make the blank composer legible. Keep the full hint there. */
   const resolvedPromptPlaceholder =
-    useCompactPlaceholder && !isSheet
+    promptPlaceholder ??
+    (useCompactPlaceholder && !isSheet
       ? compactPromptPlaceholder
-      : (promptPlaceholder ??
-        (isMobile
-          ? t(getChatComposerMobilePromptPlaceholderKey({ mentionSource, skillAgent }))
-          : t(
-              getChatComposerPromptPlaceholderKey({
-                mentionSource,
-                availableCommands,
-                skillAgent,
-              })
-            )));
+      : isMobile
+        ? t(getChatComposerMobilePromptPlaceholderKey({ mentionSource, skillAgent }))
+        : t(
+            getChatComposerPromptPlaceholderKey({
+              mentionSource,
+              availableCommands,
+              skillAgent,
+            })
+          ));
   const numberFormatter = useMemo(() => new Intl.NumberFormat(intlLocale), [intlLocale]);
   const previewPastedTextDraft =
     pastedTextDrafts.find((item) => item.id === previewPastedTextDraftId) ?? null;
@@ -944,6 +950,7 @@ export function ChatComposer({
       ? landingContainerClassName
       : sessionContainerClassName;
   const composerHasAttachments =
+    Boolean(boxHeader) ||
     imageItems.length > 0 ||
     fileItems.length > 0 ||
     commentReferenceItems.length > 0 ||
@@ -1016,7 +1023,7 @@ export function ChatComposer({
             <div
               ref={composerBoxRef}
               data-mention-frame=""
-              className={cn(boxContainerClassName, imageDropClassName, 'group relative')}
+              className={cn(boxContainerClassName, imageDropClassName, boxClassName, 'group relative')}
               onDragEnter={canHandleImageDrop ? handleImageDragEnter : undefined}
               onDragOver={canHandleImageDrop ? handleImageDragOver : undefined}
               onDragLeave={canHandleImageDrop ? handleImageDragLeave : undefined}
@@ -1044,6 +1051,7 @@ export function ChatComposer({
                   : undefined
               }
             >
+              {boxHeader}
               {commentReferenceItems.length > 0 ? (
                 <div className={cn('flex flex-wrap gap-2 pb-1', isSheet && 'px-5 pt-3')}>
                   {commentReferenceItems.map((item) => (

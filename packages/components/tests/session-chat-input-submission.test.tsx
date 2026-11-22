@@ -2076,4 +2076,97 @@ describe('SessionChatInputArea submission feedback', () => {
     const textarea = await renderComposer(props);
     expect(textarea.value).toBe('newer unsent draft');
   });
+
+  it('intercepts /btw commands before main submission and clears the composer draft', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const onBtwCommand = vi.fn();
+    const composerRef = createRef<SessionChatInputAreaHandle>();
+    const textarea = await renderComposer({
+      composerRef,
+      onSendMessage,
+      overrides: { onBtwCommand },
+    });
+
+    await act(async () => composerRef.current!.setInputText('/btw why 90ms batching?'));
+    await submit('keyboard');
+
+    expect(onBtwCommand).toHaveBeenCalledWith('why 90ms batching?');
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('');
+  });
+
+  it('renders /btw composer chrome, routes send to btwMode, and cancels only /btw without stopping main', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const onStop = vi.fn();
+    const onBtwSend = vi.fn();
+    const onBtwCancel = vi.fn();
+    const onClearSelection = vi.fn();
+    const sessionId = `btw-mode-${++nextSession}`;
+
+    const textarea = await renderComposer({
+      sessionId,
+      onSendMessage,
+      overrides: {
+        canStopAgent: true,
+        onStop,
+        btwMode: {
+          isOpen: true,
+          isStreaming: false,
+          modelLabel: 'Hydrogen · Low',
+          articleFileName: 'design.md',
+          pendingSelection: {
+            path: 'files/btw-drawer/design.md',
+            text: 'Loro Streams RPC onProgress',
+          },
+          onClearPendingSelection: onClearSelection,
+          onSend: onBtwSend,
+          onCancel: onBtwCancel,
+        },
+      },
+    });
+
+    expect(container!.querySelector('[data-btw-model-pill]')?.textContent).toBe('Hydrogen · Low');
+    expect(container!.querySelector('[data-btw-article-pill]')?.textContent).toBe('design.md');
+    expect(container!.querySelector('[data-btw-pending-selection]')?.textContent).toContain(
+      'design.md 选区'
+    );
+    expect(textarea.getAttribute('data-placeholder')).toBe('顺便问一句…');
+
+    // Type a side question in /btw mode and press Enter -> routes to btwMode.onSend, not main onSendMessage
+    textarea.edit('Explain SSE batching');
+    await submit('keyboard');
+    expect(onBtwSend).toHaveBeenCalledWith('Explain SSE batching');
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('');
+
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('button[aria-label="移除选区引用"]')?.click();
+    });
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+
+    // Switch into /btw streaming state and click Stop: must call btw cancel, never main onStop
+    await renderComposer({
+      sessionId,
+      onSendMessage,
+      overrides: {
+        canStopAgent: true,
+        onStop,
+        btwMode: {
+          isOpen: true,
+          isStreaming: true,
+          modelLabel: 'Hydrogen · Low · 只读',
+          articleFileName: 'design.md',
+          pendingSelection: null,
+          onSend: onBtwSend,
+          onCancel: onBtwCancel,
+        },
+      },
+    });
+    const stopBtn = container!.querySelector<HTMLButtonElement>('button[aria-label="停止 /btw"]');
+    expect(stopBtn).not.toBeNull();
+    await act(async () => stopBtn!.click());
+    expect(onBtwCancel).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onSendMessage).not.toHaveBeenCalled();
+  });
 });

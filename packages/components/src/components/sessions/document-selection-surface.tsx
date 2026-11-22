@@ -170,7 +170,19 @@ const styles = stylex.create({
     boxShadow: shadow.popover,
   },
   imagePopup: { width: 'min(420px, calc(100% - 24px))' },
-  prompt: { position: 'absolute', zIndex: 3, boxShadow: shadow.raised, borderRadius: radius.small },
+  prompt: {
+    position: 'absolute',
+    zIndex: 3,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: space[1],
+    boxShadow: shadow.raised,
+    borderRadius: radius.small,
+  },
+  promptBtw: {
+    color: colors.accent,
+    fontWeight: 550,
+  },
   hint: {
     position: 'absolute',
     zIndex: 4,
@@ -195,6 +207,7 @@ export function DocumentSelectionSurface({
   active,
   source,
   onAdd,
+  onAskBtw,
   children,
   standaloneCapture = false,
   locateText,
@@ -206,6 +219,8 @@ export function DocumentSelectionSurface({
   readonly active: boolean;
   readonly source: unknown;
   readonly onAdd?: (selection: DocumentSelection, range?: Range) => boolean;
+  /** Opens `/btw` side chat with the selected passage directly from the text-selection mini bar. */
+  readonly onAskBtw?: (selection: DocumentSelection) => void;
   readonly children: ReactNode;
   readonly standaloneCapture?: boolean;
   /** Where selected text sits in the source, when the preview can tell. */
@@ -248,7 +263,8 @@ export function DocumentSelectionSurface({
     visible: boolean;
     rects: SelectionRect[];
   }>({ left: 12, top: 48, visible: true, rects: [] });
-  const enabled = Boolean(onAdd) && active;
+  const canAdd = Boolean(onAdd) && active;
+  const enabled = (Boolean(onAdd) || Boolean(onAskBtw)) && active;
   const draftOpen = draft !== null && enabled;
   const onDraftChangeRef = useRef(onDraftChange);
   onDraftChangeRef.current = onDraftChange;
@@ -469,9 +485,10 @@ export function DocumentSelectionSurface({
       return;
     }
     const end = Array.from(range.getClientRects()).at(-1) ?? box;
+    const promptReserve = onAdd && onAskBtw ? 148 : 96;
     setPrompt({
       draft: { ...next, autoFocus: true },
-      left: Math.max(0, Math.min(end.right - bounds.left - 24, bounds.width - 96)),
+      left: Math.max(0, Math.min(end.right - bounds.left - 24, bounds.width - promptReserve)),
       top: end.bottom - bounds.top + 6,
     });
   };
@@ -498,7 +515,7 @@ export function DocumentSelectionSurface({
   );
   const capture = useMemo(
     () =>
-      enabled
+      canAdd
         ? {
             active: mode,
             toggle: () => {
@@ -512,10 +529,10 @@ export function DocumentSelectionSurface({
             },
           }
         : null,
-    [enabled, mode, cancelCapture, closeEditor]
+    [canAdd, mode, cancelCapture, closeEditor]
   );
   return (
-    <SelectionContext.Provider value={enabled ? select : undefined}>
+    <SelectionContext.Provider value={canAdd ? select : undefined}>
       <CaptureContext.Provider value={capture}>
         <div {...stylex.props(styles.root)}>
           <div
@@ -568,22 +585,39 @@ export function DocumentSelectionSurface({
                 style={{ left: prompt.left, top: prompt.top }}
                 data-document-selection-overlay
               >
-                <Button
-                  size="mini"
-                  variant="secondary"
-                  // Pressing keeps the selection the comment is about.
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    setDraft(prompt.draft);
-                    setPrompt(null);
-                  }}
-                >
-                  <MessageSquarePlus size={14} aria-hidden />
-                  {t('sessions.fileViewer.selection.annotate', 'Comment')}
-                </Button>
+                {onAdd ? (
+                  <Button
+                    size="mini"
+                    variant="secondary"
+                    // Pressing keeps the selection the comment is about.
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setDraft(prompt.draft);
+                      setPrompt(null);
+                    }}
+                  >
+                    <MessageSquarePlus size={14} aria-hidden />
+                    {t('sessions.fileViewer.selection.annotate', 'Comment')}
+                  </Button>
+                ) : null}
+                {onAskBtw ? (
+                  <Button
+                    size="mini"
+                    variant="secondary"
+                    className={stylex.props(styles.promptBtw).className}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      onAskBtw(prompt.draft.selection);
+                      setPrompt(null);
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  >
+                    /btw
+                  </Button>
+                ) : null}
               </div>
             ) : null}
-            {standaloneCapture && enabled ? (
+            {standaloneCapture && canAdd ? (
               <div {...stylex.props(styles.fallback)}>
                 <DocumentCaptureButton />
               </div>
