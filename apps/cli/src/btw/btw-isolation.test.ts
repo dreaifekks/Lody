@@ -561,4 +561,35 @@ describe('btw-isolation', () => {
       outcome: { outcome: 'cancelled' },
     });
   });
+
+  it('does not inject partial mcp_servers disable overrides from untrusted repo .codex/config.toml', async () => {
+    const root = makeTempRoot();
+    const fakeHome = path.join(root, 'home');
+    const fakeTmp = path.join(root, 'tmp');
+    const sessionWorkdir = path.join(root, 'repo');
+    fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+    fs.mkdirSync(fakeTmp, { recursive: true });
+    fs.mkdirSync(path.join(sessionWorkdir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, '.codex', 'auth.json'), '{"token":"ok"}');
+    fs.writeFileSync(
+      path.join(sessionWorkdir, '.codex', 'config.toml'),
+      '[mcp_servers.repo_only]\ncommand = "npx"\n'
+    );
+
+    const isolated = await prepareBtwIsolation({
+      cliType: 'builtin',
+      agentType: 'codex',
+      readOnlyTools: true,
+      sessionWorkdir,
+      baseEnv: { HOME: fakeHome },
+      logger: silentLogger,
+      tmpDir: fakeTmp,
+      homeDir: fakeHome,
+      initGitRepo: vi.fn(async () => true),
+    });
+
+    const codexConfig = JSON.parse(isolated.env.CODEX_CONFIG!);
+    expect(codexConfig.mcp_servers).toBeUndefined();
+    isolated.cleanup();
+  });
 });

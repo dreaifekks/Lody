@@ -2992,9 +2992,7 @@ export const SessionChatInputArea = memo(
           {!isBtwOpen && mcpDefaultsFailed && onRetryMcpDefaults ? (
             <McpDefaultsRecovery
               onRetry={onRetryMcpDefaults}
-              onSendWithoutMcp={() =>
-                void sendMessage({ mcpServerIds: [], skipMcpOnce: true }, 'main')
-              }
+              onSendWithoutMcp={() => void sendMessage({ mcpServerIds: [], skipMcpOnce: true })}
               disabled={submissionPending || isArchived || isMachineRemoved}
             />
           ) : null}

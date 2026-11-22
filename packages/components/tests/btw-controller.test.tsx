@@ -635,4 +635,61 @@ describe('useBtwController and btw-atoms', () => {
     store.set(removeBtwArticleContextAtom, { sessionId, ownerId: 'viewer-1' });
     expect(store.get(activeBtwArticleContextAtomFamily(sessionId))).toBeNull();
   });
+
+  it('preserves user readOnlyTools toggle made mid-stream when the in-flight response settles', async () => {
+    const store = createStore();
+    const sessionId = 'session-btw-midstream-toggle' as SessionId;
+    const pendingAsk = createDeferred<SessionBtwResponse | null>();
+    const requestSessionBtw = vi.fn((_machineId: MachineId, params: SessionBtwRequest) => {
+      if (params.action === 'ask') {
+        return pendingAsk.promise;
+      }
+      return Promise.resolve({ btwId: params.btwId, text: '' });
+    });
+    store.set(runtimeAtom, { requestSessionBtw } as unknown as WorkspaceRuntime);
+
+    let latest!: BtwController;
+    function Harness() {
+      latest = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'antigravity',
+        isVisible: true,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+
+    act(() => {
+      latest.toggleReadOnlyTools();
+    });
+    expect(latest.state.readOnlyTools).toBe(true);
+
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = latest.ask('Inspect file');
+    });
+    const btwId = requestSessionBtw.mock.calls[0]![1].btwId;
+
+    // User turns readOnlyTools OFF while the old read-only response is still in flight
+    act(() => {
+      latest.toggleReadOnlyTools();
+    });
+    expect(latest.state.readOnlyTools).toBe(false);
+
+    await act(async () => {
+      pendingAsk.resolve({ btwId, text: 'done', readOnlyTools: true });
+      await askPromise;
+    });
+
+    // Old response must NOT flip readOnlyTools back to true
+    expect(latest.state.readOnlyTools).toBe(false);
+  });
 });

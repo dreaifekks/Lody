@@ -1009,4 +1009,30 @@ describe('BtwService', () => {
 
     await harness.service.dispose();
   });
+
+  it('refuses real-workdir readOnlyTools when setSessionConfigOption returns undefined instead of confirming mode', async () => {
+    const harness = createHarness({
+      agentType: 'antigravity',
+      deltaThrottleMs: 0,
+      onSetConfigOption: async (_instance, key) => {
+        if (key === 'mode') {
+          return undefined;
+        }
+        return makeAntigravityConfigOptions();
+      },
+    });
+
+    const res = await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-unconfirmed-mode',
+      question: 'read repo',
+      readOnlyTools: true,
+    });
+
+    expect(res.error).toMatch(/read-only/i);
+    expect(harness.shutdownIds).toEqual(['agent-1']);
+    expect(harness.service.activeHandleCount).toBe(0);
+    await harness.service.dispose();
+  });
 });

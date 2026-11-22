@@ -372,9 +372,11 @@ export function useBtwController({
           const nextModelId = response.modelId ?? current.modelId;
           const nextModelLabel = response.modelLabel ?? current.modelLabel;
           const nextReadOnlyTools =
-            typeof response.readOnlyTools === 'boolean'
-              ? response.readOnlyTools
-              : current.readOnlyTools;
+            current.readOnlyTools !== readOnlyTools
+              ? current.readOnlyTools
+              : response.readOnlyTools === false && readOnlyTools
+                ? false
+                : current.readOnlyTools;
 
           if (response.error) {
             return {

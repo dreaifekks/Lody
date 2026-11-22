@@ -401,6 +401,25 @@ async function applyBtwFastConfigOptions(options: {
     if (isModeSelect || (currentOpt.type === 'boolean' && key === 'plan_mode')) {
       sawConfigModeOption = true;
     }
+    const existingValue = 'currentValue' in currentOpt ? currentOpt.currentValue : undefined;
+    if (existingValue === value) {
+      if (
+        typeof existingValue === 'string' &&
+        (currentOpt.category === 'thought_level' ||
+          key === 'thought_level' ||
+          key === 'reasoning_effort' ||
+          key === 'effort')
+      ) {
+        appliedEffortValue = existingValue;
+      }
+      if (isModeSelect && typeof existingValue === 'string') {
+        appliedModeValue = existingValue;
+      }
+      if (currentOpt.type === 'boolean' && key === 'plan_mode' && existingValue === true) {
+        appliedPlanModeBoolean = true;
+      }
+      continue;
+    }
     try {
       const updated = await raceWithAbort(
         options.client.setSessionConfigOption(options.acpSessionId, key, value),
@@ -409,21 +428,24 @@ async function applyBtwFastConfigOptions(options: {
       if (updated) {
         rawConfigOptions = updated;
         normalizedOptions = normalizeConfigOptions(updated) ?? normalizedOptions;
-      }
-      if (
-        typeof value === 'string' &&
-        (currentOpt.category === 'thought_level' ||
-          key === 'thought_level' ||
-          key === 'reasoning_effort' ||
-          key === 'effort')
-      ) {
-        appliedEffortValue = value;
-      }
-      if (isModeSelect && typeof value === 'string') {
-        appliedModeValue = value;
-      }
-      if (currentOpt.type === 'boolean' && key === 'plan_mode' && value === true) {
-        appliedPlanModeBoolean = true;
+        const confirmedOpt = rawConfigOptions.find((option) => option.id === key);
+        const confirmedValue =
+          confirmedOpt && 'currentValue' in confirmedOpt ? confirmedOpt.currentValue : undefined;
+        if (
+          typeof confirmedValue === 'string' &&
+          (currentOpt.category === 'thought_level' ||
+            key === 'thought_level' ||
+            key === 'reasoning_effort' ||
+            key === 'effort')
+        ) {
+          appliedEffortValue = confirmedValue;
+        }
+        if (isModeSelect && typeof confirmedValue === 'string') {
+          appliedModeValue = confirmedValue;
+        }
+        if (currentOpt.type === 'boolean' && key === 'plan_mode') {
+          appliedPlanModeBoolean = confirmedValue === true;
+        }
       }
     } catch (error) {
       if (options.signal.aborted) throw error;

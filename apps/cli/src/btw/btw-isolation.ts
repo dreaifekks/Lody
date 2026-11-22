@@ -878,15 +878,6 @@ export async function prepareBtwIsolation(
         for (const name of extracted.mcpServerNames) codexDisabledMcpServers.add(name);
         for (const name of extracted.pluginNames) codexDisabledPlugins.add(name);
       }
-
-      if (usedSessionWorkdir) {
-        const repoExtracted = readCodexDisabledOverridesFromFile(
-          path.join(workdir, '.codex', 'config.toml'),
-          options.logger
-        );
-        for (const name of repoExtracted.mcpServerNames) codexDisabledMcpServers.add(name);
-        for (const name of repoExtracted.pluginNames) codexDisabledPlugins.add(name);
-      }
     } else if (isClaudeAgent(options.agentType)) {
       providerOverrides.CLAUDE_CODE_SAFE_MODE = '1';
     }
