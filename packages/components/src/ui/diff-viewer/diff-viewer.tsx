@@ -1097,6 +1097,12 @@ function DiffViewerImpl({
   const hasCustomGutterUtility = !commentsEnabled && customRenderGutterUtility !== undefined;
 
   useEffect(() => {
+    if (!mountContent || fileDiff === null) {
+      onDiffInstanceReadyRef.current?.(null);
+    }
+  }, [fileDiff, mountContent]);
+
+  useEffect(() => {
     return () => {
       onDiffInstanceReadyRef.current?.(null);
     };

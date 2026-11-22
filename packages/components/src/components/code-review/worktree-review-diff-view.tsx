@@ -224,8 +224,19 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
 
   const handleDiffInstanceReady = useCallback(
     (instance: DiffViewerFileDiffInstance | null) => {
+      const prevInstance = instanceRef.current;
       instanceRef.current = instance;
       setHasInstance(instance !== null);
+      // Viewport overscan unmount or card collapse tears down the Pierre FileDiff
+      // instance (which holds hunk expansion state). Clear our mirrored expansion
+      // and fold state whenever the instance detaches or is replaced so the header
+      // controls never desync from a freshly mounted collapsed instance.
+      if (instance === null || (prevInstance !== null && prevInstance !== instance)) {
+        expandingFnsRef.current.clear();
+        setExpandedFunctions((prev) => (prev.size === 0 ? prev : new Map()));
+        setUnfoldedBlockIds((prev) => (prev.size === 0 ? prev : new Set()));
+        onLayoutChange?.();
+      }
       const meta = instance?.fileDiff ?? null;
       if (meta) {
         setRenderedMeta((prev) => (prev === meta ? prev : meta));
@@ -243,7 +254,7 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
         });
       }
     },
-    [filePath, onStatsResolved]
+    [filePath, onLayoutChange, onStatsResolved]
   );
 
   const inlineLoadDiffFiles = useMemo(() => {

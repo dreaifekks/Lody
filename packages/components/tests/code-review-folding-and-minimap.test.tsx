@@ -525,7 +525,7 @@ describe('WorktreeReviewDiffView folding + sticky header integration', () => {
     );
     expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(2);
 
-    const renderWithOpen = (open: boolean) =>
+    const renderWithOpen = (open: boolean, visible = true) =>
       createElement(WorktreeReviewDiffView, {
         filePaths: ['src/long-coordinator.ts'],
         resolvedByPath: {
@@ -536,7 +536,7 @@ describe('WorktreeReviewDiffView folding + sticky header integration', () => {
             newTextLength: newText.length,
           },
         },
-        visiblePaths: new Set(['src/long-coordinator.ts']),
+        visiblePaths: visible ? new Set(['src/long-coordinator.ts']) : new Set<string>(),
         outlineByPath,
         statsByPath: new Map(),
         openByPath: { 'src/long-coordinator.ts': open },
@@ -556,6 +556,30 @@ describe('WorktreeReviewDiffView folding + sticky header integration', () => {
     });
     await act(async () => {
       root.render(renderWithOpen(true));
+    });
+    expect(container.querySelector<HTMLButtonElement>('[data-expand-function]')!.textContent).toBe(
+      '展开整函数'
+    );
+    expect(container.querySelector('[data-review-toggle-folds]')).toBeNull();
+    expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(0);
+    expect(lastCapturedUnsafeCSS).not.toContain('[data-line="3"][data-line-type^="context"]');
+
+    // Re-expand function, then scroll the open card out of the viewport overscan
+    // (`visible: false`, keeping `open: true`) and scroll back in: DiffViewer tears
+    // down its Pierre instance on scroll-out, so expanded/fold state must also reset.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-expand-function]')!.click();
+    });
+    expect(container.querySelector<HTMLButtonElement>('[data-expand-function]')!.textContent).toBe(
+      '收起函数'
+    );
+    expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(2);
+
+    await act(async () => {
+      root.render(renderWithOpen(true, false));
+    });
+    await act(async () => {
+      root.render(renderWithOpen(true, true));
     });
     expect(container.querySelector<HTMLButtonElement>('[data-expand-function]')!.textContent).toBe(
       '展开整函数'
