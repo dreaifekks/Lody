@@ -459,6 +459,107 @@ describe('useSessionConversationDiffData', () => {
     expect(state?.base).toBe('head');
     expect(state?.normalizedPaths).toEqual(['worktree.ts']);
   });
+
+  it('exposes manifestStatsByPath immediately for inline and deferred entries and clears them on scope or session switch', async () => {
+    const emptyPaths: string[] = [];
+    const deferredGetDiff = createDeferred<{
+      status: 'ready';
+      path: string;
+      oldSnapshot: { kind: 'text'; text: string };
+      newSnapshot: { kind: 'text'; text: string };
+    }>();
+    const provider = createDiffProvider(() => deferredGetDiff.promise);
+    provider.getAllChangesDiff = async (_focusPath, scope) => {
+      if (scope === 'uncommitted') {
+        return {
+          status: 'ready',
+          base: 'head',
+          truncated: false,
+          entries: [
+            {
+              path: 'src/dirty.ts',
+              add: 3,
+              del: 1,
+              diff: { status: 'deferred', contentKey: 'dirty-1' },
+            },
+          ],
+        };
+      }
+      return {
+        status: 'ready',
+        base: 'origin/main',
+        truncated: false,
+        entries: [
+          {
+            path: 'src/inline.ts',
+            add: 12,
+            del: 4,
+            diff: {
+              status: 'ready',
+              path: 'src/inline.ts',
+              oldSnapshot: { kind: 'text', text: 'old\n' },
+              newSnapshot: { kind: 'text', text: 'new\n' },
+            },
+          },
+          {
+            path: 'src/deferred-a.ts',
+            add: 45,
+            del: 7,
+            diff: { status: 'deferred', contentKey: 'def-a' },
+          },
+          {
+            path: 'src/deferred-b.ts',
+            add: 8,
+            del: 0,
+            diff: { status: 'deferred', contentKey: 'def-b' },
+          },
+        ],
+      };
+    };
+
+    let state: ReturnType<typeof useSessionAllChangesDiffData> | undefined;
+    function Harness({
+      sessionId,
+      scope,
+    }: {
+      sessionId: SessionId;
+      scope: 'branch' | 'uncommitted';
+    }) {
+      const result = useSessionAllChangesDiffData({
+        sessionId,
+        filePaths: emptyPaths,
+        fileProvider: provider,
+        scope,
+      });
+      useEffect(() => {
+        state = result;
+      }, [result]);
+      return null;
+    }
+
+    render(<Harness sessionId={'sess-stats-1' as SessionId} scope="branch" />);
+    await flushMicrotasks();
+
+    // Deferred entries have not resolved bodies yet, yet manifestStatsByPath has exact add/del immediately.
+    expect(state?.resolvedByPath['src/deferred-a.ts']).toBeUndefined();
+    expect(state?.manifestStatsByPath).toEqual({
+      'src/inline.ts': { add: 12, del: 4 },
+      'src/deferred-a.ts': { add: 45, del: 7 },
+      'src/deferred-b.ts': { add: 8, del: 0 },
+    });
+
+    // Switching scope immediately drops previous scope stats while next scope loads, then replaces them.
+    rerender(<Harness sessionId={'sess-stats-1' as SessionId} scope="uncommitted" />);
+    expect(state?.manifestStatsByPath).toEqual({});
+    await flushMicrotasks();
+    expect(state?.manifestStatsByPath).toEqual({
+      'src/dirty.ts': { add: 3, del: 1 },
+    });
+
+    // Switching sessionId also clears previous session stats immediately before the new session resolves.
+    rerender(<Harness sessionId={'sess-stats-2' as SessionId} scope="uncommitted" />);
+    expect(state?.manifestStatsByPath).toEqual({});
+  });
 });
 
 function render(node: ReactNode): void {

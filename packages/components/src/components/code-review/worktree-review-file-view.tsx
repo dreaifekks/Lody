@@ -354,7 +354,7 @@ export function WorktreeReviewFileView({
   }, [fileState, onLineCountChange]);
 
   return (
-    <div data-worktree-review-file-view={filePath}>
+    <div data-worktree-review-file-view={filePath} className="pt-3.5">
       <section className="rounded-[10px] border border-foreground/[0.12] bg-background dark:border-border">
         <div
           data-file-view-sticky-header=""

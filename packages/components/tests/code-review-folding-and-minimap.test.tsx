@@ -107,6 +107,8 @@ import {
   WorktreeReviewFileTree,
 } from '../src/components/code-review/worktree-review-file-tree';
 import {
+  collectRenderedDiffChangeMarks,
+  computeCardSummaryMarkBounds,
   computeFileLineRangeMarker,
   computeScrollTopFromPointer,
   computeViewportThumb,
@@ -512,6 +514,56 @@ describe('WorktreeReviewDiffView folding + sticky header integration', () => {
     expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(0);
     expect(lastCapturedUnsafeCSS).not.toContain('[data-line="3"][data-line-type^="context"]');
     expect(lastCapturedAnnotations).toHaveLength(1);
+
+    // Re-expand function, then collapse the file card (`open: false`) and reopen (`open: true`):
+    // expanded function + fold state must reset cleanly so header controls match the fresh DiffViewer.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-expand-function]')!.click();
+    });
+    expect(container.querySelector<HTMLButtonElement>('[data-expand-function]')!.textContent).toBe(
+      '收起函数'
+    );
+    expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(2);
+
+    const renderWithOpen = (open: boolean) =>
+      createElement(WorktreeReviewDiffView, {
+        filePaths: ['src/long-coordinator.ts'],
+        resolvedByPath: {
+          'src/long-coordinator.ts': {
+            status: 'ready-parsed',
+            fileDiff: parsedDiff,
+            oldTextLength: oldText.length,
+            newTextLength: newText.length,
+          },
+        },
+        visiblePaths: new Set(['src/long-coordinator.ts']),
+        outlineByPath,
+        statsByPath: new Map(),
+        openByPath: { 'src/long-coordinator.ts': open },
+        onOpenChange: vi.fn(),
+        loading: false,
+        emptyMessage: null,
+        codeNavSupported: true,
+        canOpenInIde: true,
+        onTokenClick: vi.fn(),
+        onOpenInIde: vi.fn(),
+        onCardRef: vi.fn(),
+        onStatsResolved: vi.fn(),
+      });
+
+    await act(async () => {
+      root.render(renderWithOpen(false));
+    });
+    await act(async () => {
+      root.render(renderWithOpen(true));
+    });
+    expect(container.querySelector<HTMLButtonElement>('[data-expand-function]')!.textContent).toBe(
+      '展开整函数'
+    );
+    expect(container.querySelector('[data-review-toggle-folds]')).toBeNull();
+    expect(container.querySelectorAll('[data-review-fold-bar]')).toHaveLength(0);
+    expect(lastCapturedUnsafeCSS).not.toContain('[data-line="3"][data-line-type^="context"]');
+    expect(lastCapturedAnnotations).toHaveLength(1);
   });
 });
 
@@ -709,6 +761,186 @@ describe('WorktreeReviewMinimap', () => {
     });
     expect(fileRail.querySelector('[data-minimap-hover-label]')?.textContent).toBe('L51');
   });
+
+  it('ends active drag cleanly when filePaths empties mid-drag so restoring the list never sticks in dragging mode', async () => {
+    const scroller = document.createElement('div');
+    let scrollTopValue = 150;
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 500, configurable: true },
+      scrollTop: {
+        get: () => scrollTopValue,
+        set: (v: number) => {
+          scrollTopValue = v;
+        },
+        configurable: true,
+      },
+    });
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 500, left: 0, right: 600, width: 600, height: 500 }) as DOMRect;
+
+    const card = document.createElement('section');
+    card.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 2000, left: 0, right: 600, width: 600, height: 2000 }) as DOMRect;
+
+    const renderDiffMinimap = (paths: readonly string[]) =>
+      createElement(WorktreeReviewMinimap, {
+        mode: 'diff',
+        scrollContainer: scroller,
+        filePaths: paths,
+        getCardElement: (p) => (p === 'a.ts' ? card : null),
+        statsByPath: new Map([['a.ts', { additions: 5, deletions: 2, firstLine: 1 }]]),
+        openByPath: {},
+      });
+
+    await act(async () => {
+      root.render(renderDiffMinimap(['a.ts']));
+    });
+    const rail = container.querySelector<HTMLDivElement>('[data-worktree-review-minimap="diff"]')!;
+    rail.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 400, left: 580, right: 600, width: 20, height: 400 }) as DOMRect;
+
+    // Begin drag on track.
+    await act(async () => {
+      rail.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 590, clientY: 100 })
+      );
+    });
+    expect(rail.className).toContain('cursor-grabbing');
+    const scrollAfterDragStart = scrollTopValue;
+
+    // List clears mid-drag (track DOM detaches without firing pointerup on it).
+    await act(async () => {
+      root.render(renderDiffMinimap([]));
+    });
+    expect(container.querySelector('[data-worktree-review-minimap]')).toBeNull();
+
+    // Restore list: moving mouse WITHOUT pressing down must NOT drag scrollTop or stay cursor-grabbing.
+    await act(async () => {
+      root.render(renderDiffMinimap(['a.ts']));
+    });
+    const restoredRail = container.querySelector<HTMLDivElement>(
+      '[data-worktree-review-minimap="diff"]'
+    )!;
+    restoredRail.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 400, left: 580, right: 600, width: 20, height: 400 }) as DOMRect;
+    expect(restoredRail.className).not.toContain('cursor-grabbing');
+
+    await act(async () => {
+      restoredRail.dispatchEvent(
+        new MouseEvent('pointermove', { bubbles: true, clientX: 590, clientY: 360 })
+      );
+    });
+    expect(scrollTopValue).toBe(scrollAfterDragStart);
+  });
+
+  it('keeps collapsed file summary marks strictly within the card band and aligns open card marks to real Shadow DOM change rows', async () => {
+    // 1. Collapsed card occupying 2.1% of document height must stay <= 2.1% (never 40%).
+    const collapsedBounds = computeCardSummaryMarkBounds(0.1, 0.021, false);
+    expect(collapsedBounds.heightPct).toBeCloseTo(1.05, 4);
+    expect(collapsedBounds.heightPct).toBeLessThanOrEqual(2.1);
+    expect(collapsedBounds.topPct).toBeGreaterThanOrEqual(10);
+    expect(collapsedBounds.topPct + collapsedBounds.heightPct).toBeLessThanOrEqual(12.1);
+    expect(collapsedBounds.maxHeightPct).toBeCloseTo(2.1, 4);
+
+    // Ultra-tiny collapsed card (0.2% of document height) clamps strictly to 0.2%.
+    const tinyCollapsed = computeCardSummaryMarkBounds(0.5, 0.002, false);
+    expect(tinyCollapsed.heightPct).toBeCloseTo(0.2, 4);
+    expect(tinyCollapsed.maxHeightPct).toBeCloseTo(0.2, 4);
+
+    // 2. Mounted <diffs-container> with open Shadow DOM change rows measures exact rendered positions.
+    const scroller = document.createElement('div');
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 500, configurable: true },
+      scrollTop: { value: 0, configurable: true },
+    });
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 500, left: 0, right: 600, width: 600, height: 500 }) as DOMRect;
+
+    const openCard = document.createElement('section');
+    openCard.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 1600, left: 0, right: 600, width: 600, height: 1600 }) as DOMRect;
+    const shadowHost = document.createElement('div');
+    const shadow = shadowHost.attachShadow({ mode: 'open' });
+    const delLine = document.createElement('div');
+    delLine.setAttribute('data-line', '50');
+    delLine.setAttribute('data-line-type', 'change-deletion');
+    delLine.getBoundingClientRect = () =>
+      ({ top: 346, bottom: 366, left: 0, right: 600, width: 600, height: 20 }) as DOMRect;
+    const addLine1 = document.createElement('div');
+    addLine1.setAttribute('data-line', '50');
+    addLine1.setAttribute('data-line-type', 'change-addition');
+    addLine1.getBoundingClientRect = () =>
+      ({ top: 366, bottom: 386, left: 0, right: 600, width: 600, height: 20 }) as DOMRect;
+    const addLine2 = document.createElement('div');
+    addLine2.setAttribute('data-line', '51');
+    addLine2.setAttribute('data-line-type', 'change-addition');
+    addLine2.getBoundingClientRect = () =>
+      ({ top: 386, bottom: 406, left: 0, right: 600, width: 600, height: 20 }) as DOMRect;
+    shadow.append(delLine, addLine1, addLine2);
+    openCard.appendChild(shadowHost);
+    const origQuerySelector = openCard.querySelector.bind(openCard);
+    openCard.querySelector = ((selector: string) =>
+      selector === 'diffs-container'
+        ? shadowHost
+        : origQuerySelector(selector)) as typeof openCard.querySelector;
+
+    const measured = collectRenderedDiffChangeMarks({
+      card: openCard,
+      scrollContainer: scroller,
+      scrollHeight: 2000,
+      cardTop: 0,
+      cardHeight: 1600,
+    });
+    expect(measured).toHaveLength(2);
+    expect(measured[0]!.kind).toBe('deletion');
+    expect(measured[0]!.topPct).toBeCloseTo(17.3, 4);
+    expect(measured[0]!.heightPct).toBeCloseTo(1, 4);
+    expect(measured[1]!.kind).toBe('addition');
+    expect(measured[1]!.topPct).toBeCloseTo(18.3, 4);
+    expect(measured[1]!.heightPct).toBeCloseTo(2, 4);
+
+    // Collapsed second card (40px / 2000px = 2%) renders summary mark capped at <= 2%.
+    const collapsedCard = document.createElement('section');
+    collapsedCard.getBoundingClientRect = () =>
+      ({ top: 1600, bottom: 1640, left: 0, right: 600, width: 600, height: 40 }) as DOMRect;
+
+    await act(async () => {
+      root.render(
+        createElement(WorktreeReviewMinimap, {
+          mode: 'diff',
+          scrollContainer: scroller,
+          filePaths: ['src/open.ts', 'src/collapsed.ts'],
+          getCardElement: (p) => (p === 'src/open.ts' ? openCard : collapsedCard),
+          statsByPath: new Map([
+            [
+              'src/open.ts',
+              {
+                additions: 2,
+                deletions: 1,
+                firstLine: 50,
+                // Deliberately drifted hunkMarks to prove real Shadow DOM positions take precedence.
+                hunkMarks: [
+                  { startRatio: 0.05, heightRatio: 0.05, hasAdditions: true, hasDeletions: true },
+                ],
+              },
+            ],
+            ['src/collapsed.ts', { additions: 10, deletions: 0, firstLine: 1 }],
+          ]),
+          openByPath: { 'src/open.ts': true, 'src/collapsed.ts': false },
+        })
+      );
+    });
+
+    const delMark = container.querySelector<HTMLElement>('[data-minimap-mark="deletion"]')!;
+    const addMarks = container.querySelectorAll<HTMLElement>('[data-minimap-mark="addition"]');
+    expect(Number.parseFloat(delMark.style.top)).toBeCloseTo(17.3, 4);
+    expect(Number.parseFloat(addMarks[0]!.style.top)).toBeCloseTo(18.3, 4);
+    // Collapsed card mark must stay inside [80%, 82%] (never 40%).
+    expect(Number.parseFloat(addMarks[1]!.style.height)).toBeLessThanOrEqual(2);
+    expect(addMarks[1]!.style.maxHeight).toBe('2%');
+  });
 });
 
 describe('WorktreeReviewFileTree Portal tooltip', () => {
@@ -894,6 +1126,70 @@ describe('WorktreeReviewFileTree Portal tooltip', () => {
     );
     await act(async () => {
       longSymBtn.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(portalHost.querySelector('[data-worktree-review-tree-tooltip]')).toBeNull();
+  });
+
+  it('dismisses an active hover or focus tooltip immediately when the hovered row is removed by a tree refresh', async () => {
+    const treeWithBoth = buildWorktreeReviewFileTree([
+      { path: 'src/a.ts', additions: 3, deletions: 1 },
+      { path: 'src/b.ts', additions: 2, deletions: 0 },
+    ]);
+    const treeWithoutA = buildWorktreeReviewFileTree([
+      { path: 'src/b.ts', additions: 2, deletions: 0 },
+    ]);
+
+    const renderTree = (tree: ReturnType<typeof buildWorktreeReviewFileTree>) =>
+      createElement(
+        PopupContainerProvider,
+        { container: portalHost },
+        createElement(WorktreeReviewFileTree, {
+          tree,
+          activeFilePath: null,
+          activeSymbolId: null,
+          symbolsAvailable: false,
+          showSymbols: false,
+          onToggleShowSymbols: vi.fn(),
+          onSelectFile: vi.fn(),
+          onSelectSymbol: vi.fn(),
+        })
+      );
+
+    await act(async () => {
+      root.render(renderTree(treeWithBoth));
+    });
+
+    const btnA = container.querySelector<HTMLButtonElement>('[data-tree-file="src/a.ts"]')!;
+    btnA.getBoundingClientRect = () =>
+      ({ left: 8, right: 240, top: 60, bottom: 86, width: 232, height: 26 }) as DOMRect;
+
+    // Hover path: open tooltip on src/a.ts, then refresh tree removing src/a.ts.
+    await act(async () => {
+      btnA.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      vi.advanceTimersByTime(TREE_TOOLTIP_DELAY_MS);
+    });
+    expect(portalHost.querySelector('[data-worktree-review-tree-tooltip]')?.textContent).toBe(
+      'src/a.ts'
+    );
+
+    await act(async () => {
+      root.render(renderTree(treeWithoutA));
+    });
+    expect(portalHost.querySelector('[data-worktree-review-tree-tooltip]')).toBeNull();
+
+    // Keyboard focus path: open tooltip on src/b.ts, then refresh to empty tree.
+    const btnB = container.querySelector<HTMLButtonElement>('[data-tree-file="src/b.ts"]')!;
+    btnB.getBoundingClientRect = () =>
+      ({ left: 8, right: 240, top: 60, bottom: 86, width: 232, height: 26 }) as DOMRect;
+    await act(async () => {
+      btnB.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(portalHost.querySelector('[data-worktree-review-tree-tooltip]')?.textContent).toBe(
+      'src/b.ts'
+    );
+
+    await act(async () => {
+      root.render(renderTree(buildWorktreeReviewFileTree([])));
     });
     expect(portalHost.querySelector('[data-worktree-review-tree-tooltip]')).toBeNull();
   });

@@ -209,6 +209,19 @@ const ReviewDiffFileCard = memo(function ReviewDiffFileCard({
     }
   }, [data]);
 
+  // Collapsing the card unmounts the `@pierre/diffs` FileDiff instance (which owns
+  // context expansion state), so reset expanded function and fold-block state on
+  // close so reopening never desyncs header controls/CSS from the fresh instance.
+  useEffect(() => {
+    if (!open) {
+      expandingFnsRef.current.clear();
+      setExpandedFunctions((prev) => (prev.size === 0 ? prev : new Map()));
+      setUnfoldedBlockIds((prev) => (prev.size === 0 ? prev : new Set()));
+      setHasInstance(false);
+      onLayoutChange?.();
+    }
+  }, [onLayoutChange, open]);
+
   const handleDiffInstanceReady = useCallback(
     (instance: DiffViewerFileDiffInstance | null) => {
       instanceRef.current = instance;
@@ -941,7 +954,7 @@ export function WorktreeReviewDiffView({
 
   if (loading && filePaths.length === 0) {
     return (
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 pt-3.5">
         <div className="rounded-[10px] border border-border bg-background p-4">
           <Skeleton width="42%" height={14} />
           <div className="mt-3 flex flex-col gap-2">
@@ -955,7 +968,7 @@ export function WorktreeReviewDiffView({
   }
 
   return (
-    <div data-worktree-review-diff-view="">
+    <div data-worktree-review-diff-view="" className="pt-3.5">
       {filePaths.map((filePath) => {
         const stats = statsByPath.get(filePath);
         return (

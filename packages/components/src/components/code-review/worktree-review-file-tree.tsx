@@ -158,6 +158,7 @@ export function WorktreeReviewFileTree({
   const listRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingHoverRowKeyRef = useRef<string | null>(null);
   const suppressFocusTooltipRef = useRef(false);
   const appliedInitialTooltipRef = useRef<string | null>(null);
 
@@ -166,6 +167,7 @@ export function WorktreeReviewFileTree({
       clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = null;
     }
+    pendingHoverRowKeyRef.current = null;
   }, []);
 
   const hideTooltip = useCallback(() => {
@@ -210,6 +212,21 @@ export function WorktreeReviewFileTree({
       }),
     [collapsedDirs, showSymbols, symbolsAvailable, tree]
   );
+
+  // Clear active or pending tooltip immediately when its row disappears after a tree refresh.
+  useEffect(() => {
+    const activeRowKey = tooltip?.rowKey ?? null;
+    const pendingRowKey = pendingHoverRowKeyRef.current;
+    if (activeRowKey === null && pendingRowKey === null) return;
+    const rowKeys = new Set(rows.map((row) => row.key));
+    if (activeRowKey !== null && !rowKeys.has(activeRowKey)) {
+      hideTooltip();
+      return;
+    }
+    if (pendingRowKey !== null && !rowKeys.has(pendingRowKey)) {
+      clearHoverTimer();
+    }
+  }, [clearHoverTimer, hideTooltip, rows, tooltip]);
 
   // Support deterministic initial tooltip display for visual stories when requested.
   useLayoutEffect(() => {
@@ -256,8 +273,10 @@ export function WorktreeReviewFileTree({
         setTooltip(null);
         return;
       }
+      pendingHoverRowKeyRef.current = rowKey;
       hoverTimerRef.current = setTimeout(() => {
         hoverTimerRef.current = null;
+        pendingHoverRowKeyRef.current = null;
         if (!buttonEl.isConnected) return;
         setTooltip({
           rowKey,

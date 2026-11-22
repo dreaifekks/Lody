@@ -24,12 +24,15 @@ export {
 } from './worktree-review-diff-view';
 export {
   WorktreeReviewMinimap,
+  collectRenderedDiffChangeMarks,
+  computeCardSummaryMarkBounds,
   computeFileLineRangeMarker,
   computeScrollTopFromPointer,
   computeViewportThumb,
   extractFileDiffHunkMarks,
   type MinimapDiffFileStats,
   type MinimapDiffHunkMark,
+  type MinimapMeasuredChangeMark,
   type MinimapThumbGeometry,
   type WorktreeReviewMinimapProps,
 } from './worktree-review-minimap';
@@ -60,6 +63,7 @@ export {
 } from './worktree-review-token-popover';
 export {
   WorktreeReviewOpenContext,
+  resolveSessionBtwCommandTarget,
   sessionSupportsWorktreeReview,
   type WorktreeReviewOpenRequest,
 } from './worktree-review-open-context';

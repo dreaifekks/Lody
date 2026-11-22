@@ -16,7 +16,10 @@ import type { SessionFileProvider } from '@/lib/session-file-provider';
 import type { PathLauncherFileTarget } from '@/lib/session-path-launchers';
 import { ArticleDialogThreadContext } from '../boards/board-article-dialog';
 import type { FileDiffData } from '../sessions/session-conversation-diff-types';
-import { useSessionAllChangesDiffData } from '../sessions/use-session-all-changes-diff-data';
+import {
+  useSessionAllChangesDiffData,
+  type SessionAllChangesManifestStat,
+} from '../sessions/use-session-all-changes-diff-data';
 import { useCodeNav, type CodeNavQueryFn } from './use-code-nav';
 import { useSessionOpenInIde } from './use-session-open-in-ide';
 import {
@@ -49,6 +52,7 @@ import {
 } from './worktree-review-tree-model';
 
 const EMPTY_FILE_PATHS: string[] = [];
+const EMPTY_MANIFEST_STATS: Readonly<Record<string, SessionAllChangesManifestStat>> = {};
 
 export interface WorktreeReviewDiffDataOverride {
   readonly filePaths: readonly string[];
@@ -333,6 +337,12 @@ export function WorktreeReviewWorkspace({
     }
   );
 
+  // Clear stale per-file resolved stats whenever session/provider/scope changes.
+  useEffect(() => {
+    if (diffDataOverride) return;
+    setStatsByPath(new Map());
+  }, [diffDataOverride, fileProvider, scope, sessionId]);
+
   const handleStatsResolved = useCallback(
     (filePath: string, next: WorktreeReviewResolvedFileStats) => {
       setStatsByPath((prev) => {
@@ -391,11 +401,34 @@ export function WorktreeReviewWorkspace({
     });
   }, [filePaths, resolvedByPath]);
 
+  const manifestStatsByPath = diffDataOverride
+    ? EMPTY_MANIFEST_STATS
+    : liveDiffData.manifestStatsByPath;
+
+  // Prefer manifest-supplied `add`/`del` immediately (even for deferred files that
+  // have not scrolled into view yet) so total and per-file counts never jump while scrolling;
+  // fall back to parsed DiffViewer stats only when the manifest omits a path's counts.
+  const effectiveStatsByPath = useMemo(() => {
+    const map = new Map<string, WorktreeReviewResolvedFileStats>();
+    for (const path of filePaths) {
+      const manifest = manifestStatsByPath[path];
+      const resolved = statsByPath.get(path);
+      if (!manifest && !resolved) continue;
+      map.set(path, {
+        additions: manifest?.add !== undefined ? manifest.add : (resolved?.additions ?? 0),
+        deletions: manifest?.del !== undefined ? manifest.del : (resolved?.deletions ?? 0),
+        firstLine: resolved?.firstLine ?? 1,
+        ...(resolved?.hunkMarks ? { hunkMarks: resolved.hunkMarks } : {}),
+      });
+    }
+    return map;
+  }, [filePaths, manifestStatsByPath, statsByPath]);
+
   const treeModel = useMemo(
     () =>
       buildWorktreeReviewFileTree(
         filePaths.map((path) => {
-          const stat = statsByPath.get(path);
+          const stat = effectiveStatsByPath.get(path);
           return {
             path,
             additions: stat?.additions ?? 0,
@@ -404,7 +437,7 @@ export function WorktreeReviewWorkspace({
         }),
         outlineByPath
       ),
-    [filePaths, outlineByPath, statsByPath]
+    [effectiveStatsByPath, filePaths, outlineByPath]
   );
 
   const [showTreeSymbols, setShowTreeSymbols] = useState(true);
@@ -428,13 +461,13 @@ export function WorktreeReviewWorkspace({
   useEffect(() => {
     if (!activeFilePath) return;
     const outline = outlineByPath.get(activeFilePath);
-    const stat = statsByPath.get(activeFilePath);
+    const stat = effectiveStatsByPath.get(activeFilePath);
     const line =
       outline?.hunks[0]?.startLine && outline.hunks[0].startLine > 0
         ? outline.hunks[0].startLine
         : stat?.firstLine;
     setNavStack((prev) => updateDiffFrameTarget(prev, activeFilePath, line));
-  }, [activeFilePath, outlineByPath, statsByPath]);
+  }, [activeFilePath, effectiveStatsByPath, outlineByPath]);
 
   // Card DOM elements for smooth scroll from the File Tree and minimap measurement.
   const cardRefs = useRef(new Map<string, HTMLElement>());
@@ -1070,14 +1103,14 @@ export function WorktreeReviewWorkspace({
             aria-label="Diff"
             hidden={topFrame.kind !== 'diff'}
             data-review-diff-scroll=""
-            className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-3.5"
+            className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-0"
           >
             <WorktreeReviewDiffView
               filePaths={filePaths}
               resolvedByPath={resolvedByPath}
               visiblePaths={visiblePaths}
               outlineByPath={outlineByPath}
-              statsByPath={statsByPath}
+              statsByPath={effectiveStatsByPath}
               openByPath={openByPath}
               initialExpandedPaths={initialExpandedPaths}
               onOpenChange={handleCardOpenChange}
@@ -1093,13 +1126,13 @@ export function WorktreeReviewWorkspace({
             />
           </div>
 
-          {topFrame.kind === 'diff' && emptyMessage === null ? (
+          {topFrame.kind === 'diff' && emptyMessage === null && filePaths.length > 0 ? (
             <WorktreeReviewMinimap
               mode="diff"
               scrollContainer={diffScrollNode}
               filePaths={filePaths}
               getCardElement={getCardElement}
-              statsByPath={statsByPath}
+              statsByPath={effectiveStatsByPath}
               openByPath={openByPath}
               layoutVersion={minimapLayoutVersion}
             />
@@ -1113,7 +1146,7 @@ export function WorktreeReviewWorkspace({
                 role="region"
                 aria-label={topFrame.filePath}
                 data-review-file-scroll=""
-                className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-3.5"
+                className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-0"
               >
                 <WorktreeReviewFileView
                   filePath={topFrame.filePath}

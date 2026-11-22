@@ -114,7 +114,10 @@ vi.mock('../src/hooks/use-mobile', () => ({
 
 import { WorktreeReviewWorkspace } from '../src/components/code-review/worktree-review-workspace';
 import { WorktreeReviewFileView } from '../src/components/code-review/worktree-review-file-view';
-import { sessionSupportsWorktreeReview } from '../src/components/code-review/worktree-review-open-context';
+import {
+  resolveSessionBtwCommandTarget,
+  sessionSupportsWorktreeReview,
+} from '../src/components/code-review/worktree-review-open-context';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -625,5 +628,182 @@ describe('WorktreeReviewWorkspace interactions', () => {
       resolveB?.({ ok: true, text: 'export const B = 2;\n' });
     });
     expect(container.querySelector('[data-testid="mock-readonly-file:src/a.ts"]')).not.toBeNull();
+  });
+
+  it('returns null for /btw in a standalone Review window without a beside conversation so the hidden coordinator is never hijacked', () => {
+    const coordId = 'sess-coordinator' as SessionId;
+    const threadId = 'sess-thread-1' as SessionId;
+    const tabId = 'sess-tab-1' as SessionId;
+    const articleThread = 'sess-article-thread' as SessionId;
+
+    // Standalone Review window (beside === null -> reviewThreadId & reviewTabId both null):
+    // must return null rather than falling back to activeSessionTabId (coordinator).
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: false,
+        articleThreadId: null,
+        articleTabId: null,
+        reviewShown: true,
+        reviewThreadId: null,
+        reviewTabId: null,
+        hasBoardThreadTarget: false,
+        boardThreadId: null,
+        activeSessionTabId: coordId,
+      })
+    ).toBeNull();
+
+    // Review window with beside thread targets that beside thread.
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: false,
+        articleThreadId: null,
+        articleTabId: null,
+        reviewShown: true,
+        reviewThreadId: threadId,
+        reviewTabId: null,
+        hasBoardThreadTarget: false,
+        boardThreadId: threadId,
+        activeSessionTabId: coordId,
+      })
+    ).toBe(threadId);
+
+    // Review window with beside tab targets that beside tab.
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: false,
+        articleThreadId: null,
+        articleTabId: null,
+        reviewShown: true,
+        reviewThreadId: null,
+        reviewTabId: tabId,
+        hasBoardThreadTarget: false,
+        boardThreadId: null,
+        activeSessionTabId: coordId,
+      })
+    ).toBe(tabId);
+
+    // Overlaid Article with beside thread takes precedence over Review.
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: true,
+        articleThreadId: articleThread,
+        articleTabId: null,
+        reviewShown: true,
+        reviewThreadId: threadId,
+        reviewTabId: null,
+        hasBoardThreadTarget: false,
+        boardThreadId: threadId,
+        activeSessionTabId: coordId,
+      })
+    ).toBe(articleThread);
+
+    // When neither overlay is shown, falls back to focused board thread or active tab.
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: false,
+        articleThreadId: null,
+        articleTabId: null,
+        reviewShown: false,
+        reviewThreadId: null,
+        reviewTabId: null,
+        hasBoardThreadTarget: true,
+        boardThreadId: threadId,
+        activeSessionTabId: coordId,
+      })
+    ).toBe(threadId);
+    expect(
+      resolveSessionBtwCommandTarget({
+        articleShown: false,
+        articleThreadId: null,
+        articleTabId: null,
+        reviewShown: false,
+        reviewThreadId: null,
+        reviewTabId: null,
+        hasBoardThreadTarget: false,
+        boardThreadId: null,
+        activeSessionTabId: coordId,
+      })
+    ).toBe(coordId);
+  });
+
+  it('shows complete global and per-file +add/-del counts from manifest immediately even for deferred files and keeps scroll containers free of top sticky gaps', async () => {
+    const fileProvider = {
+      getAllChangesDiff: vi.fn(async () => ({
+        status: 'ready' as const,
+        base: 'origin/lan-hub',
+        truncated: false,
+        entries: [
+          {
+            path: 'apps/cli/src/inline.ts',
+            add: 12,
+            del: 4,
+            diff: {
+              status: 'ready' as const,
+              path: 'apps/cli/src/inline.ts',
+              oldSnapshot: { kind: 'text' as const, text: 'old\n' },
+              newSnapshot: { kind: 'text' as const, text: 'new\n' },
+            },
+          },
+          {
+            path: 'apps/cli/src/deferred-1.ts',
+            add: 45,
+            del: 7,
+            diff: { status: 'deferred' as const, contentKey: 'd1' },
+          },
+          {
+            path: 'apps/cli/src/deferred-2.ts',
+            add: 8,
+            del: 0,
+            diff: { status: 'deferred' as const, contentKey: 'd2' },
+          },
+        ],
+      })),
+      // Keep deferred per-file bodies pending indefinitely to prove manifest stats suffice immediately.
+      getDiff: vi.fn(() => new Promise(() => {})),
+    } as unknown as Parameters<typeof WorktreeReviewWorkspace>[0]['fileProvider'];
+
+    await act(async () => {
+      root.render(
+        createElement(WorktreeReviewWorkspace, {
+          sessionId: SESSION_ID,
+          machineId: MACHINE_ID,
+          branchName: 'fix/stats',
+          fileProvider,
+          codeNavOverride: async () => ({
+            type: 'code-nav/query',
+            status: 'ok',
+            action: 'diff-outline',
+            files: [],
+            truncated: false,
+            provider: 'ast-grep',
+          }),
+          onClose: vi.fn(),
+        })
+      );
+    });
+
+    // Global file tree summary immediately shows total +65 -11 across inline + deferred files.
+    const treeAside = container.querySelector('[data-worktree-review-tree]')!;
+    expect(treeAside.textContent).toContain('3 files');
+    expect(treeAside.textContent).toContain('+65');
+    expect(treeAside.textContent).toContain('-11');
+
+    // Deferred file rows and cards immediately display their exact manifest counts.
+    const deferredRow = container.querySelector('[data-tree-file="apps/cli/src/deferred-1.ts"]')!;
+    expect(deferredRow.textContent).toContain('+45');
+    expect(deferredRow.textContent).toContain('-7');
+    const deferredCard = container.querySelector(
+      'section[data-diff-path="apps/cli/src/deferred-1.ts"]'
+    )!;
+    expect(deferredCard.textContent).toContain('+45');
+    expect(deferredCard.textContent).toContain('-7');
+
+    // Scroll container uses pt-0 (0px gap above sticky headers) while inner content has pt-3.5.
+    const diffScroll = container.querySelector<HTMLElement>('[data-review-diff-scroll]')!;
+    expect(diffScroll.className).toContain('pt-0');
+    expect(diffScroll.className).not.toContain('pt-3.5');
+    expect(
+      container.querySelector<HTMLElement>('[data-worktree-review-diff-view]')!.className
+    ).toContain('pt-3.5');
   });
 });

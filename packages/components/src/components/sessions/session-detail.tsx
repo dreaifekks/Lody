@@ -309,6 +309,7 @@ import { BoardRenameDialog } from '../boards/board-rename-dialog';
 import {
   WorktreeReviewDialog,
   WorktreeReviewOpenContext,
+  resolveSessionBtwCommandTarget,
   sessionSupportsWorktreeReview,
   type WorktreeReviewOpenRequest,
 } from '../code-review';
@@ -5844,11 +5845,17 @@ const SessionDetail = ({
 
   const toggleBtwForSession = useSetAtom(openBtwForSessionAtom);
   const resolveBtwCommandTargetSessionId = () =>
-    articleThreadId ??
-    articleTabId ??
-    reviewThreadId ??
-    reviewTabId ??
-    (boardThreadCommandTarget() ? boardThreadId : activeSessionTabId);
+    resolveSessionBtwCommandTarget({
+      articleShown,
+      articleThreadId,
+      articleTabId,
+      reviewShown,
+      reviewThreadId,
+      reviewTabId,
+      hasBoardThreadTarget: Boolean(boardThreadCommandTarget()),
+      boardThreadId,
+      activeSessionTabId,
+    });
   useCommand({
     id: 'session.toggleBtw',
     title: t('commands.session.toggleBtw', 'Toggle /btw Side Chat'),

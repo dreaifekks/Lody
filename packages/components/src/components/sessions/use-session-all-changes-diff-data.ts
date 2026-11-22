@@ -14,6 +14,13 @@ const RETRY_DELAY_MS = 800;
 const EMPTY_PATHS: string[] = [];
 const EMPTY_DIFF_DATA: Record<string, FileDiffData> = {};
 
+export interface SessionAllChangesManifestStat {
+  readonly add?: number;
+  readonly del?: number;
+}
+
+const EMPTY_MANIFEST_STATS: Readonly<Record<string, SessionAllChangesManifestStat>> = {};
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     if (typeof window === 'undefined') {
@@ -58,6 +65,7 @@ export function useSessionAllChangesDiffData({
   cacheKey: string | null;
   normalizedPaths: string[];
   resolvedByPath: Record<string, FileDiffData>;
+  manifestStatsByPath: Readonly<Record<string, SessionAllChangesManifestStat>>;
   hasAllResolved: boolean;
   isDiffUnavailable: boolean;
   isPanelLoading: boolean;
@@ -85,18 +93,25 @@ export function useSessionAllChangesDiffData({
   const [batch, setBatch] = useState<{
     revision: number;
     reloadSeq: number;
+    sessionId: SessionId;
     provider: SessionFileProvider;
     pathsKey: string;
     scope: CodeCollabAllChangesScope;
     inline: Record<string, FileDiffData>;
     deferred: string[];
     entryPaths: string[];
+    manifestStatsByPath: Readonly<Record<string, SessionAllChangesManifestStat>>;
     base: string | null;
     unavailableScopeReason: 'not_a_git_worktree' | 'no_commits' | null;
     unavailableMessage: string | null;
   } | null>(null);
   const currentBatch =
-    batch !== null && batch.provider === fileProvider && batch.scope === scope ? batch : null;
+    batch !== null &&
+    batch.sessionId === sessionId &&
+    batch.provider === fileProvider &&
+    batch.scope === scope
+      ? batch
+      : null;
   const resultPathsKey = currentBatch
     ? JSON.stringify([...currentBatch.entryPaths].sort((a, b) => a.localeCompare(b)))
     : normalizedPathsKey;
@@ -162,6 +177,7 @@ export function useSessionAllChangesDiffData({
       deferred: string[] = [],
       extra: {
         base?: string | null;
+        manifestStatsByPath?: Readonly<Record<string, SessionAllChangesManifestStat>>;
         unavailableScopeReason?: 'not_a_git_worktree' | 'no_commits' | null;
         unavailableMessage?: string | null;
       } = {}
@@ -170,6 +186,7 @@ export function useSessionAllChangesDiffData({
         nextBatchRevisionRef.current += 1;
         setBatch({
           revision: nextBatchRevisionRef.current,
+          sessionId,
           provider: fileProvider,
           reloadSeq,
           pathsKey: normalizedPathsKey,
@@ -177,6 +194,7 @@ export function useSessionAllChangesDiffData({
           inline,
           deferred,
           entryPaths: [...Object.keys(inline), ...deferred],
+          manifestStatsByPath: extra.manifestStatsByPath ?? EMPTY_MANIFEST_STATS,
           base: extra.base ?? null,
           unavailableScopeReason: extra.unavailableScopeReason ?? null,
           unavailableMessage: extra.unavailableMessage ?? null,
@@ -237,7 +255,14 @@ export function useSessionAllChangesDiffData({
       };
       const deferredPaths: string[] = [];
       const next: Record<string, FileDiffData> = {};
+      const manifestStats: Record<string, SessionAllChangesManifestStat> = {};
       for (const entry of result.entries) {
+        if (entry.add !== undefined || entry.del !== undefined) {
+          manifestStats[entry.path] = {
+            ...(entry.add !== undefined ? { add: entry.add } : {}),
+            ...(entry.del !== undefined ? { del: entry.del } : {}),
+          };
+        }
         if (entry.diff.status === 'deferred') {
           const data = reusable(entry.path, entry.diff.contentKey);
           // Keep verified unchanged content and its hydrated context mounted.
@@ -252,7 +277,10 @@ export function useSessionAllChangesDiffData({
       }
       // The machine's current file set is authoritative; the synced index is a hint.
       if (cancelled) return;
-      publish(next, deferredPaths, { base: result.base });
+      publish(next, deferredPaths, {
+        base: result.base,
+        manifestStatsByPath: manifestStats,
+      });
     };
 
     void run().catch((error: unknown) => {
@@ -271,10 +299,10 @@ export function useSessionAllChangesDiffData({
       cancelled = true;
       controller?.abort();
     };
-    // Refetch when the provider is rebuilt (file-index/list changed → D4), the path set or
+    // Refetch when the session, provider (file-index/list changed → D4), path set or
     // the comparison scope changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, fileProvider, normalizedPathsKey, scope, reloadSeq]);
+  }, [enabled, fileProvider, normalizedPathsKey, scope, reloadSeq, sessionId]);
 
   const hasAllResolved = useMemo(
     () => normalizedPaths.every((path) => Boolean(resolvedByPath[path])),
@@ -291,6 +319,7 @@ export function useSessionAllChangesDiffData({
     cacheKey: null,
     normalizedPaths,
     resolvedByPath,
+    manifestStatsByPath: currentBatch?.manifestStatsByPath ?? EMPTY_MANIFEST_STATS,
     hasAllResolved,
     isDiffUnavailable,
     isPanelLoading,

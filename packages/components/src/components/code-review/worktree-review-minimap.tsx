@@ -233,6 +233,123 @@ export function extractFileDiffHunkMarks(
   return marks;
 }
 
+export interface MinimapMeasuredChangeMark {
+  readonly topPct: number;
+  readonly heightPct: number;
+  readonly kind: 'addition' | 'deletion' | 'mixed';
+}
+
+const MAX_MEASURED_CHANGE_MARKS_PER_FILE = 160;
+const CONTIGUOUS_LINE_GAP_PX = 4;
+
+/**
+ * Computes percentage bounds (`0..100`) for a fallback summary mark strictly
+ * clamped within the file card's own `[bandTopFraction, bandTopFraction + bandHeightFraction]`
+ * slice so collapsed cards never bleed into neighboring files.
+ */
+export function computeCardSummaryMarkBounds(
+  bandTopFraction: number,
+  bandHeightFraction: number,
+  open: boolean
+): {
+  readonly topPct: number;
+  readonly heightPct: number;
+  readonly maxHeightPct: number;
+} {
+  const bandTopPct = clamp01(bandTopFraction) * 100;
+  const bandHeightPct = clamp01(bandHeightFraction) * 100;
+  if (bandHeightPct <= 0) {
+    return { topPct: bandTopPct, heightPct: 0, maxHeightPct: 0 };
+  }
+  const desiredPct = Math.max(0.4, bandHeightPct * (open ? 0.6 : 0.5));
+  const heightPct = Math.min(bandHeightPct, desiredPct);
+  const topPct = bandTopPct + Math.max(0, (bandHeightPct - heightPct) / 2);
+  return { topPct, heightPct, maxHeightPct: bandHeightPct };
+}
+
+/**
+ * Measures actual visible `[data-line][data-line-type="change-addition"]` and
+ * `[data-line][data-line-type="change-deletion"]` rows inside a mounted
+ * `@pierre/diffs` `<diffs-container>` open Shadow DOM relative to
+ * `scrollContainer`, coalescing contiguous runs into percentage bands.
+ *
+ * Returns `[]` when no Shadow DOM change rows are laid out (e.g. collapsed card,
+ * deferred unloaded card, or non-DOM test stubs), letting the caller fall back
+ * to hunk metadata or summary bounds.
+ */
+export function collectRenderedDiffChangeMarks(params: {
+  readonly card: HTMLElement;
+  readonly scrollContainer: HTMLElement;
+  readonly scrollHeight: number;
+  readonly cardTop: number;
+  readonly cardHeight: number;
+}): readonly MinimapMeasuredChangeMark[] {
+  const { card, scrollContainer, scrollHeight, cardTop, cardHeight } = params;
+  if (scrollHeight <= 0 || cardHeight <= 0) return [];
+
+  const diffContainer = card.querySelector('diffs-container');
+  const shadowRoot = diffContainer?.shadowRoot;
+  if (!shadowRoot) return [];
+
+  const lineNodes = shadowRoot.querySelectorAll<HTMLElement>(
+    '[data-line][data-line-type="change-addition"], [data-line][data-line-type="change-deletion"]'
+  );
+  if (lineNodes.length === 0) return [];
+
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const scrollTop = scrollContainer.scrollTop;
+  const cardBottom = cardTop + cardHeight;
+
+  const rawRuns: Array<{
+    top: number;
+    bottom: number;
+    kind: 'addition' | 'deletion' | 'mixed';
+  }> = [];
+
+  for (const node of lineNodes) {
+    const rect = node.getBoundingClientRect();
+    if (rect.height <= 0) continue;
+    const rawTop = rect.top - containerRect.top + scrollTop;
+    const rawBottom = rawTop + rect.height;
+    const top = Math.max(cardTop, Math.min(cardBottom, rawTop));
+    const bottom = Math.max(top, Math.min(cardBottom, rawBottom));
+    if (bottom <= top) continue;
+
+    const kind: 'addition' | 'deletion' =
+      node.getAttribute('data-line-type') === 'change-deletion' ? 'deletion' : 'addition';
+    const prev = rawRuns[rawRuns.length - 1];
+    if (prev && prev.kind === kind && top - prev.bottom <= CONTIGUOUS_LINE_GAP_PX) {
+      prev.bottom = Math.max(prev.bottom, bottom);
+    } else {
+      rawRuns.push({ top, bottom, kind });
+    }
+  }
+
+  if (rawRuns.length === 0) return [];
+
+  let runs = rawRuns;
+  if (runs.length > MAX_MEASURED_CHANGE_MARKS_PER_FILE) {
+    const merged: typeof rawRuns = [];
+    for (const run of runs) {
+      const prev = merged[merged.length - 1];
+      if (prev && run.top - prev.bottom <= CONTIGUOUS_LINE_GAP_PX) {
+        prev.bottom = Math.max(prev.bottom, run.bottom);
+        if (prev.kind !== run.kind) prev.kind = 'mixed';
+      } else {
+        merged.push({ ...run });
+      }
+    }
+    runs = merged;
+  }
+
+  const denom = Math.max(1, scrollHeight);
+  return runs.map((run) => ({
+    topPct: clamp01(run.top / denom) * 100,
+    heightPct: clamp01((run.bottom - run.top) / denom) * 100,
+    kind: run.kind,
+  }));
+}
+
 interface MeasuredDiffSection {
   readonly filePath: string;
   readonly topFraction: number;
@@ -240,6 +357,7 @@ interface MeasuredDiffSection {
   readonly bodyTopFraction: number;
   readonly bodyHeightFraction: number;
   readonly open: boolean;
+  readonly measuredMarks: readonly MinimapMeasuredChangeMark[];
 }
 
 interface ScrollMetrics {
@@ -253,6 +371,7 @@ interface RenderedMark {
   readonly key: string;
   readonly topPct: number;
   readonly heightPct: number;
+  readonly maxHeightPct?: number;
   readonly kind: 'addition' | 'deletion' | 'mixed' | 'selected';
 }
 
@@ -299,8 +418,61 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
     grabOffsetPx: number;
   } | null>(null);
 
+  const resetDragState = useCallback(() => {
+    if (dragStateRef.current !== null) {
+      dragStateRef.current = null;
+      setDragging(false);
+    }
+  }, []);
+
+  const setTrackNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      trackRef.current = node;
+      if (!node) {
+        resetDragState();
+        setHoverState(null);
+      }
+    },
+    [resetDragState]
+  );
+
   const propsRef = useRef(props);
   propsRef.current = props;
+
+  const isDiffEmpty = mode === 'diff' && props.filePaths.length === 0;
+
+  // End any active drag if the list becomes empty, scroll container swaps, or component unmounts.
+  useEffect(() => {
+    if (isDiffEmpty || !scrollContainer) {
+      resetDragState();
+      setHoverState(null);
+    }
+  }, [isDiffEmpty, resetDragState, scrollContainer]);
+
+  useEffect(() => {
+    return () => {
+      dragStateRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!dragging || typeof window === 'undefined') return undefined;
+    const handleGlobalEnd = () => {
+      const active = dragStateRef.current;
+      if (active && trackRef.current?.hasPointerCapture?.(active.pointerId)) {
+        trackRef.current.releasePointerCapture?.(active.pointerId);
+      }
+      resetDragState();
+    };
+    window.addEventListener('pointerup', handleGlobalEnd);
+    window.addEventListener('pointercancel', handleGlobalEnd);
+    window.addEventListener('blur', handleGlobalEnd);
+    return () => {
+      window.removeEventListener('pointerup', handleGlobalEnd);
+      window.removeEventListener('pointercancel', handleGlobalEnd);
+      window.removeEventListener('blur', handleGlobalEnd);
+    };
+  }, [dragging, resetDragState]);
 
   const measureLayout = useCallback(() => {
     const current = propsRef.current;
@@ -347,13 +519,24 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
         const clampedHeader = Math.min(headerHeight, height);
         const bodyTop = top + clampedHeader;
         const bodyHeight = Math.max(0, height - clampedHeader);
+        const isOpen = current.openByPath[filePath] !== false;
+        const measuredMarks = isOpen
+          ? collectRenderedDiffChangeMarks({
+              card,
+              scrollContainer: scroller,
+              scrollHeight: denom,
+              cardTop: bodyTop,
+              cardHeight: bodyHeight,
+            })
+          : [];
         nextSections.push({
           filePath,
           topFraction: clamp01(top / denom),
           heightFraction: clamp01(height / denom),
           bodyTopFraction: clamp01(bodyTop / denom),
           bodyHeightFraction: clamp01(bodyHeight / denom),
-          open: current.openByPath[filePath] !== false,
+          open: isOpen,
+          measuredMarks,
         });
       }
       setSections(nextSections);
@@ -397,6 +580,13 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
 
   useLayoutEffect(() => {
     measureLayout();
+    if (typeof requestAnimationFrame !== 'function') return undefined;
+    const rafId = requestAnimationFrame(() => {
+      measureLayout();
+    });
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
   }, [
     measureLayout,
     scrollContainer,
@@ -496,6 +686,19 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
 
     const marks: RenderedMark[] = [];
     for (const sec of sections) {
+      if (sec.open && sec.measuredMarks.length > 0) {
+        for (let i = 0; i < sec.measuredMarks.length; i += 1) {
+          const dm = sec.measuredMarks[i]!;
+          marks.push({
+            key: `${sec.filePath}:dom:${i}`,
+            topPct: dm.topPct,
+            heightPct: dm.heightPct,
+            kind: dm.kind,
+          });
+        }
+        continue;
+      }
+
       const stat = props.statsByPath.get(sec.filePath);
       if (!stat) continue;
 
@@ -525,6 +728,8 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
           sec.open && sec.bodyHeightFraction > 0 ? sec.bodyTopFraction : sec.topFraction;
         const bandHeight =
           sec.open && sec.bodyHeightFraction > 0 ? sec.bodyHeightFraction : sec.heightFraction;
+        const bounds = computeCardSummaryMarkBounds(bandTop, bandHeight, sec.open);
+        if (bounds.heightPct <= 0) continue;
         const kind =
           stat.additions > 0 && stat.deletions > 0
             ? 'mixed'
@@ -533,8 +738,9 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
               : 'deletion';
         marks.push({
           key: `${sec.filePath}:summary`,
-          topPct: (bandTop + bandHeight * 0.2) * 100,
-          heightPct: Math.max(0.4, bandHeight * 0.6) * 100,
+          topPct: bounds.topPct,
+          heightPct: bounds.heightPct,
+          maxHeightPct: bounds.maxHeightPct,
           kind,
         });
       }
@@ -678,16 +884,21 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
     [applyPointerScroll, resolveHoverLabel]
   );
 
-  const finishDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const activeDrag = dragStateRef.current;
-    if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
-    dragStateRef.current = null;
-    setDragging(false);
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    }
-    const track = trackRef.current;
-    if (track) {
+  const finishDrag = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const activeDrag = dragStateRef.current;
+      const isCancel = event.type === 'pointercancel' || event.type === 'lostpointercapture';
+      if (!activeDrag) return;
+      if (!isCancel && activeDrag.pointerId !== event.pointerId) return;
+      resetDragState();
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+      const track = trackRef.current;
+      if (isCancel || !track) {
+        setHoverState(null);
+        return;
+      }
       const rect = track.getBoundingClientRect();
       const inside =
         event.clientX >= rect.left &&
@@ -697,8 +908,9 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
       if (!inside) {
         setHoverState(null);
       }
-    }
-  }, []);
+    },
+    [resetDragState]
+  );
 
   const handlePointerLeave = useCallback(() => {
     if (!dragStateRef.current) {
@@ -706,7 +918,7 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
     }
   }, []);
 
-  if (mode === 'diff' && props.filePaths.length === 0) {
+  if (isDiffEmpty) {
     return null;
   }
 
@@ -715,7 +927,7 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
 
   return (
     <div
-      ref={trackRef}
+      ref={setTrackNode}
       role="scrollbar"
       aria-label={mode === 'diff' ? 'Diff overview minimap' : 'File overview minimap'}
       aria-orientation="vertical"
@@ -752,17 +964,19 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
 
       {/* Hunk change ticks (diff mode) or selected line ticks (file mode) */}
       {renderedMarks.map((mark) => {
+        const markStyle = {
+          top: `${mark.topPct}%`,
+          height: `${mark.heightPct}%`,
+          ...(mark.maxHeightPct !== undefined ? { maxHeight: `${mark.maxHeightPct}%` } : {}),
+        };
         if (mark.kind === 'mixed') {
           return (
             <div
               key={mark.key}
               aria-hidden="true"
               data-minimap-mark="mixed"
-              style={{
-                top: `${mark.topPct}%`,
-                height: `${mark.heightPct}%`,
-              }}
-              className="pointer-events-none absolute inset-x-[3px] flex min-h-[2.5px] gap-[1px]"
+              style={markStyle}
+              className="pointer-events-none absolute inset-x-[3px] flex min-h-[2px] gap-[1px]"
             >
               <span className="h-full flex-1 rounded-[1px] bg-[hsl(var(--github-deletion))]/80" />
               <span className="h-full flex-1 rounded-[1px] bg-[hsl(var(--github-addition))]/80" />
@@ -775,17 +989,14 @@ export function WorktreeReviewMinimap(props: WorktreeReviewMinimapProps) {
             key={mark.key}
             aria-hidden="true"
             data-minimap-mark={mark.kind}
-            style={{
-              top: `${mark.topPct}%`,
-              height: `${mark.heightPct}%`,
-            }}
+            style={markStyle}
             className={cn(
               'pointer-events-none absolute inset-x-[3px] rounded-[1.5px]',
               mark.kind === 'selected'
                 ? 'min-h-[4px] bg-[hsl(var(--primary))]'
                 : mark.kind === 'addition'
-                  ? 'min-h-[2.5px] bg-[hsl(var(--github-addition))]/80'
-                  : 'min-h-[2.5px] bg-[hsl(var(--github-deletion))]/80'
+                  ? 'min-h-[2px] bg-[hsl(var(--github-addition))]/80'
+                  : 'min-h-[2px] bg-[hsl(var(--github-deletion))]/80'
             )}
           />
         );
