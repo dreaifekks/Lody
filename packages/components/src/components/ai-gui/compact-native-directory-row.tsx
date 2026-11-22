@@ -15,7 +15,7 @@ import { getThoughtSearchBlockId } from '@/lib/session-chat-search';
 import { cn } from '@/lib/utils';
 import type { AssistantActivityRenderItem } from './assistant-turn-render-blocks';
 import {
-  extractLatestCompactThoughtSentence,
+  extractLatestCompactThoughtParagraph,
   findActiveNonBackgroundTool,
   summarizeCompactTools,
   type CompactDirectoryEntry,
@@ -39,6 +39,7 @@ const styles = stylex.create({
   trigger: {
     display: 'block',
     width: '100%',
+    maxWidth: '100%',
     paddingBlock: conversation.activityPadding,
     paddingInline: conversation.railInset,
     borderRadius: radius.mini,
@@ -78,9 +79,23 @@ const styles = stylex.create({
   separatorDot: {
     flexShrink: 0,
   },
-  targetEllipsis: {
+  activeTargetEllipsis: {
     minWidth: 0,
-    flex: '1 1 auto',
+    flex: '0 2 auto',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  toolCountsEllipsis: {
+    minWidth: 0,
+    flex: '0 1 auto',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  settledLabelEllipsis: {
+    minWidth: 0,
+    flex: '0 1 auto',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -91,14 +106,15 @@ const styles = stylex.create({
     fontVariantNumeric: 'tabular-nums',
   },
   secondaryLine: {
-    marginTop: '2px',
+    marginTop: '3px',
+    minWidth: 0,
+    maxWidth: '100%',
     fontSize: text.footnoteSize,
-    lineHeight: text.footnoteLeading,
+    lineHeight: text.subheadlineLeading,
     fontWeight: 400,
     color: colors.secondaryLabel,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    whiteSpace: 'pre-line',
+    overflowWrap: 'anywhere',
     userSelect: 'none',
   },
   toolbar: {
@@ -268,7 +284,7 @@ const CompactLiveDuration = ({ message }: { message: LiveDurationMessage }) => {
   const duration = formatDurationCompact(durationMs, getDurationUnitLabels(t));
   if (!duration) return null;
   return (
-    <span {...stylex.props(styles.duration)}>
+    <span {...stylex.props(styles.duration)} data-compact-live-duration="">
       {t('sessions.compactProcess.durationWrap', {
         duration,
         defaultValue: '({{duration}})',
@@ -347,9 +363,12 @@ const formatCompactToolCounts = (
 
 /**
  * Option C single-level work header:
- * - Streaming (`isLive`): 1-2 line zero-card live summary (Line 1 active tool or
- *   latest valid thought excerpt + elapsed duration; Line 2 retained thought or
- *   compact completed tool counts when collapsed).
+ * - Streaming (`isLive`): fixed two-tier zero-card live summary whose rows never
+ *   swap places:
+ *   - Row 1 (single-line, never wraps): live status (`Thinking` or `Running <target>`)
+ *     + persistent completed/background tool counts + elapsed duration.
+ *   - Row 2 (collapsed only, natural multi-line wrap): full latest valid thought
+ *     paragraph (retained while tools run or placeholder/unclosed chunks stream).
  * - Finished (`!isLive`): native "Worked for {{duration}}" / "Finished working"
  *   header with no extra token counts or chatter; one click opens the flat directory.
  */
@@ -380,20 +399,20 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
   const lowStimulusMode = useAtomValue(lowStimulusModeEnabledAtom);
 
   const candidateThought = useMemo(
-    () => (isLive ? extractLatestCompactThoughtSentence(entries) : null),
+    () => (isLive ? extractLatestCompactThoughtParagraph(entries) : null),
     [entries, isLive]
   );
   const minHoldMs = lowStimulusMode
     ? STREAMING_THOUGHT_PREVIEW_LOW_STIMULUS_HOLD_MS
     : STREAMING_THOUGHT_PREVIEW_MIN_HOLD_MS;
-  const thoughtExcerpt = useThrottledStreamingThoughtPreview(candidateThought, id, minHoldMs);
+  const thoughtParagraph = useThrottledStreamingThoughtPreview(candidateThought, id, minHoldMs);
   const activeTool = useMemo(
     () => (isLive ? findActiveNonBackgroundTool(entries) : null),
     [entries, isLive]
   );
   const toolCounts = useMemo(
-    () => (isLive && !activeTool ? summarizeCompactTools(entries) : null),
-    [activeTool, entries, isLive]
+    () => (isLive ? summarizeCompactTools(entries) : null),
+    [entries, isLive]
   );
   const toolSummaryLine = toolCounts ? formatCompactToolCounts(toolCounts, t) : '';
 
@@ -412,17 +431,7 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
       : t('sessions.finishedWorking', 'Finished working');
 
   const showShimmer = isLive && shimmer && !lowStimulusMode;
-
-  const secondaryLine =
-    isLive && !expanded
-      ? activeTool
-        ? thoughtExcerpt
-          ? { text: thoughtExcerpt, isThought: true }
-          : null
-        : toolSummaryLine
-          ? { text: toolSummaryLine, isThought: false }
-          : null
-      : null;
+  const latestThoughtBody = isLive && !expanded && thoughtParagraph ? thoughtParagraph : null;
 
   return (
     <button
@@ -444,35 +453,53 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
             {isLive ? (
               activeTool ? (
                 <>
-                  <span {...stylex.props(styles.verbStrong)}>
+                  <span {...stylex.props(styles.verbStrong)} data-compact-status-verb="">
                     {t('sessions.compactProcess.running', 'Running')}
                   </span>
-                  <span {...stylex.props(styles.targetEllipsis)}>{activeTool.shortTarget}</span>
-                  <CompactLiveDuration message={message} />
-                </>
-              ) : thoughtExcerpt ? (
-                <>
-                  <span {...stylex.props(styles.verbStrong)}>
-                    {t('sessions.compactProcess.thinking', 'Thinking')}
+                  <span
+                    {...stylex.props(styles.activeTargetEllipsis)}
+                    data-compact-active-target=""
+                  >
+                    {activeTool.shortTarget}
                   </span>
-                  <span {...stylex.props(styles.separatorDot)} aria-hidden="true">
-                    ·
-                  </span>
-                  <span {...stylex.props(styles.targetEllipsis)} data-streaming-thought-preview="">
-                    {thoughtExcerpt}
-                  </span>
+                  {toolSummaryLine ? (
+                    <>
+                      <span {...stylex.props(styles.separatorDot)} aria-hidden="true">
+                        ·
+                      </span>
+                      <span
+                        {...stylex.props(styles.toolCountsEllipsis)}
+                        data-compact-tool-counts=""
+                      >
+                        {toolSummaryLine}
+                      </span>
+                    </>
+                  ) : null}
                   <CompactLiveDuration message={message} />
                 </>
               ) : (
                 <>
-                  <span {...stylex.props(styles.verbStrong)}>
-                    {t('sessions.toolActivity.thinking', 'Thinking…')}
+                  <span {...stylex.props(styles.verbStrong)} data-compact-status-verb="">
+                    {t('sessions.compactProcess.thinking', 'Thinking')}
                   </span>
+                  {toolSummaryLine ? (
+                    <>
+                      <span {...stylex.props(styles.separatorDot)} aria-hidden="true">
+                        ·
+                      </span>
+                      <span
+                        {...stylex.props(styles.toolCountsEllipsis)}
+                        data-compact-tool-counts=""
+                      >
+                        {toolSummaryLine}
+                      </span>
+                    </>
+                  ) : null}
                   <CompactLiveDuration message={message} />
                 </>
               )
             ) : (
-              <span {...stylex.props(styles.targetEllipsis)}>{settledLabel}</span>
+              <span {...stylex.props(styles.settledLabelEllipsis)}>{settledLabel}</span>
             )}
           </span>
         </span>
@@ -490,13 +517,13 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
           <ChevronRight className="h-[1em] w-[1em]" aria-hidden="true" />
         </span>
       </div>
-      {secondaryLine ? (
+      {latestThoughtBody ? (
         <div
           {...stylex.props(styles.secondaryLine)}
           data-compact-secondary-line=""
-          data-streaming-thought-preview={secondaryLine.isThought ? '' : undefined}
+          data-streaming-thought-preview=""
         >
-          {secondaryLine.text}
+          {latestThoughtBody}
         </div>
       ) : null}
     </button>

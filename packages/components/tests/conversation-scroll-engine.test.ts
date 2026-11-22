@@ -381,6 +381,52 @@ describe('manual disclosures', () => {
       expectHealthy(sim);
     }
   );
+
+  it('re-measures a group disclosure header whose own height shrinks on expand and grows on collapse in the click commit', () => {
+    const liveHeader = (expanded: boolean): SimRow => ({
+      ...header,
+      height: expanded ? 36 : 160,
+      estimate: 36,
+    });
+    const detailRow: SimRow = {
+      key: 'tool-detail-0',
+      turnId: 'tool-turn',
+      turnIndex: 20,
+      itemIndex: 1,
+      height: 44,
+      estimate: 36,
+    };
+    const collapsedRows = [...prefix, liveHeader(false), ...tail];
+    const expandedRows = [...prefix, liveHeader(true), detailRow, ...tail];
+
+    const sim = new ScrollSim(collapsedRows, V);
+    sim.render();
+    sim.settle();
+    const before = screenY(sim);
+
+    // Expanding hides the multi-line live thought (160px -> 36px) and inserts sibling detailRow
+    // in the same batched click commit. Even before ResizeObserver delivers (`sim.frame()`),
+    // the sibling row must sit at header + 36.
+    sim.task(() => {
+      sim.controller.preserveDisclosure(header.key, 0);
+      sim.rows = expandedRows;
+    });
+    expect(sim.mounted.get(detailRow.key)).toBe(sim.mounted.get(header.key)! + 36);
+    expect(screenY(sim)).toBe(before);
+    sim.settle();
+    expect(sim.mounted.get(detailRow.key)).toBe(sim.mounted.get(header.key)! + 36);
+    expectHealthy(sim);
+
+    // Collapsing restores the multi-line live thought (36px -> 160px) and removes detailRow.
+    sim.task(() => {
+      sim.controller.preserveDisclosure(header.key, 0);
+      sim.rows = collapsedRows;
+    });
+    expect(sim.mounted.get(tail[0]!.key)).toBe(sim.mounted.get(header.key)! + 160);
+    expect(screenY(sim)).toBe(before);
+    sim.settle();
+    expectHealthy(sim);
+  });
 });
 
 describe('reading', () => {

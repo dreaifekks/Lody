@@ -4,7 +4,9 @@ import type { AssistantActivityRenderItem } from '../src/components/ai-gui/assis
 import {
   extractFirstThoughtPreviewFromText,
   extractLatestStreamingThoughtPreview,
+  extractLatestThoughtParagraphFromText,
   extractStreamingThoughtPreviewFromText,
+  inspectLatestThoughtParagraph,
   inspectStreamingThoughtPreview,
   resolveLiveThoughtPreviewRowKey,
   stripAgyPlaceholderFromMarkdown,
@@ -16,6 +18,7 @@ import {
 import {
   buildCompactDirectoryEntries,
   extractFirstSentence,
+  extractLatestCompactThoughtParagraph,
   findActiveNonBackgroundTool,
   summarizeCompactTools,
 } from '../src/components/ai-gui/compact-native-directory';
@@ -378,6 +381,134 @@ describe('extractLatestStreamingThoughtPreview', () => {
 
   it('returns null for tool-only groups', () => {
     expect(extractLatestStreamingThoughtPreview([toolEntry(0, 'tool-1')])).toBeNull();
+  });
+});
+
+describe('extractLatestThoughtParagraphFromText & extractLatestCompactThoughtParagraph', () => {
+  it('returns all valid lines and sentences of the latest paragraph with Markdown cleaned and natural newlines preserved', () => {
+    const raw = [
+      "I'm thinking through how to approach this.",
+      '',
+      '',
+      'Earlier paragraph that should be superseded by the latest paragraph.',
+      '',
+      '',
+      '**Checking virtual list row offsets**',
+      'First sentence inspects `view.tsx` and [the scroller](https://example.com/scroller_(v2)). Second sentence confirms `controller.ts` keeps `follow` mode sticky when the header grows.',
+      '- Third line verifies _emphasis_, *italics*, and `__init__` inside code spans stay clean.',
+      '> Fourth line confirms long paths like `/packages/components/src/components/ai-gui/compact-native-directory-row.tsx` are never truncated at 140 or 260 characters.',
+    ].join('\n');
+
+    const paragraph = extractLatestThoughtParagraphFromText(raw);
+    expect(paragraph).toBe(
+      [
+        'Checking virtual list row offsets',
+        'First sentence inspects view.tsx and the scroller. Second sentence confirms controller.ts keeps follow mode sticky when the header grows.',
+        'Third line verifies emphasis, italics, and __init__ inside code spans stay clean.',
+        'Fourth line confirms long paths like /packages/components/src/components/ai-gui/compact-native-directory-row.tsx are never truncated at 140 or 260 characters.',
+      ].join('\n')
+    );
+    expect(paragraph!.length).toBeGreaterThan(STREAMING_THOUGHT_PREVIEW_MAX_CHARS);
+  });
+
+  it('does not slice a normal >1024-char single-line paragraph at the 1024-char inline cap', () => {
+    const singleLongLine = `${'Evaluating multi-sentence reasoning across scroll boundaries. '.repeat(24)}Final verification sentence.`;
+    expect(singleLongLine.length).toBeGreaterThan(STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP);
+    expect(singleLongLine.length).toBeLessThan(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS);
+
+    const result = inspectLatestThoughtParagraph(`Earlier paragraph.\n\n${singleLongLine}`);
+    expect(result.preview).toBe(singleLongLine);
+    expect(result.cleanedLineCount).toBe(1);
+    expect(result.cleanedCharCount).toBe(singleLongLine.length);
+  });
+
+  it('strips Antigravity placeholder prefixes and falls back past placeholder, comment, formatting, or unclosed bold paragraphs', () => {
+    expect(
+      extractLatestThoughtParagraphFromText(
+        "I'm thinking through how to approach this.\nChecking `view.tsx` first.\nThen verifying `controller.ts`."
+      )
+    ).toBe('Checking view.tsx first.\nThen verifying controller.ts.');
+
+    expect(
+      extractLatestThoughtParagraphFromText(
+        "I'm thinking through how to approach this. Checking inline prefix.\nSecond line stays."
+      )
+    ).toBe('Checking inline prefix.\nSecond line stays.');
+
+    expect(
+      extractLatestThoughtParagraphFromText(
+        "Earlier multi-line paragraph.\nSecond line of earlier paragraph.\n\nI'm thinking through"
+      )
+    ).toBe('Earlier multi-line paragraph.\nSecond line of earlier paragraph.');
+
+    expect(
+      extractLatestThoughtParagraphFromText(
+        'Earlier valid paragraph.\nLine two.\n\n<!-- hidden comment -->\n\n**Unclosed heading'
+      )
+    ).toBe('Earlier valid paragraph.\nLine two.');
+
+    expect(extractLatestThoughtParagraphFromText('Line one of latest.\n**Unclosed next line')).toBe(
+      'Line one of latest.'
+    );
+
+    expect(
+      extractLatestThoughtParagraphFromText("I'm thinking through how to approach this.")
+    ).toBeNull();
+  });
+
+  it('stays strictly O(n) and bounded by STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS and MAX_CLEANED_LINES on giant inputs', () => {
+    const fillerParagraph = 'Evaluating repository structure and test contracts in detail. '.repeat(
+      14
+    );
+    const largeMultiParagraph = `${Array.from({ length: 170 }, () => fillerParagraph).join('\n\n\n')}\n\n\nFinal line one.\nFinal line two.`;
+    expect(largeMultiParagraph.length).toBeGreaterThan(138_000);
+
+    const multiResult = inspectLatestThoughtParagraph(largeMultiParagraph);
+    expect(multiResult.preview).toBe('Final line one.\nFinal line two.');
+    expect(multiResult.cleanedLineCount).toBe(2);
+
+    const giantSingleLine = `Leading sentence of giant thought. ${'word '.repeat(30_000)}`;
+    expect(giantSingleLine.length).toBeGreaterThan(138_000);
+    const giantResult = inspectLatestThoughtParagraph(giantSingleLine);
+    expect(giantResult.preview).not.toBeNull();
+    expect(giantResult.preview!.startsWith('Leading sentence of giant thought.')).toBe(true);
+    expect(giantResult.preview!.endsWith('…')).toBe(true);
+    expect(giantResult.cleanedLineCount).toBe(1);
+    expect(giantResult.cleanedCharCount).toBeLessThanOrEqual(
+      STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS
+    );
+
+    const overLineCap = Array.from({ length: 40 }, (_, i) => `Step ${i + 1}`).join('\n');
+    const lineCapResult = inspectLatestThoughtParagraph(overLineCap);
+    expect(lineCapResult.cleanedLineCount).toBe(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES);
+    const renderedLines = lineCapResult.preview!.split('\n');
+    expect(renderedLines).toHaveLength(STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES);
+    expect(renderedLines[renderedLines.length - 1]).toBe(
+      `Step ${STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES}…`
+    );
+
+    const giantUnclosedBold = `Valid fallback.\nLine two.\n\n**${'a'.repeat(138_000)}`;
+    const fallbackResult = inspectLatestThoughtParagraph(giantUnclosedBold);
+    expect(fallbackResult.preview).toBe('Valid fallback.\nLine two.');
+    expect(fallbackResult.cleanedLineCount).toBe(2);
+  });
+
+  it('scans entries backwards, retains previous valid paragraph across tools, and falls back past invalid newest thoughts', () => {
+    const entries: AssistantActivityRenderItem[] = [
+      thoughtEntry(0, 'First paragraph.\nFirst detail line.'),
+      toolEntry(1, 'tool-1'),
+      thoughtEntry(
+        2,
+        "I'm thinking through how to approach this.\n\n\nSecond paragraph sentence one. Sentence two.\nSecond paragraph line two."
+      ),
+      toolEntry(3, 'tool-2'),
+      thoughtEntry(4, "I'm thinking through how to approach this."),
+      thoughtEntry(5, '**Half typed streaming heading'),
+    ];
+    expect(extractLatestCompactThoughtParagraph(entries)).toBe(
+      'Second paragraph sentence one. Sentence two.\nSecond paragraph line two.'
+    );
+    expect(extractLatestCompactThoughtParagraph([toolEntry(0, 'tool-1')])).toBeNull();
   });
 });
 

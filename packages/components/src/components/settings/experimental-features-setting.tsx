@@ -82,7 +82,7 @@ export function ExperimentalFeatureRows() {
             label={t('settings.experimental.streamingThoughtPreview', 'Streaming thought preview')}
             helper={t(
               'settings.experimental.streamingThoughtPreviewHelper',
-              'Show a two-line preview of the latest thought beneath the collapsed activity header while a turn is running. Disappears when expanded or finished.'
+              'Show a fixed live header (status, tool counts, duration) with the full latest thought paragraph beneath it while a turn is running, and open a flat single-level process directory on click.'
             )}
           >
             <Switch

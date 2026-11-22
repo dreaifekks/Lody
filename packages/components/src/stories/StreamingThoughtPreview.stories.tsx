@@ -16,6 +16,7 @@ import {
   type SessionChatStreamViewProps,
 } from '@/components/ai-gui/view';
 import { SessionRowStatusIndicator } from '@/components/sidebar-row-shared';
+import { ForceMobileLayoutProvider } from '@/hooks/use-mobile';
 import { createConversationViewFromHistory } from '@/lib/conversation-view';
 import { BackgroundStatusMark } from '@/ui/working-status-mark';
 
@@ -39,6 +40,8 @@ type PreviewHarnessProps = {
   agentActivityShimmer?: boolean;
   backgroundTaskStatus?: SessionBackgroundTaskStatus | null;
   showStatusMarksStrip?: boolean;
+  containerWidth?: number;
+  forceMobile?: boolean;
 };
 
 function PreviewHarness({
@@ -54,6 +57,8 @@ function PreviewHarness({
   agentActivityShimmer = !finished,
   backgroundTaskStatus = null,
   showStatusMarksStrip = false,
+  containerWidth,
+  forceMobile = false,
 }: PreviewHarnessProps) {
   const [store] = useState(() => {
     const created = createStore();
@@ -104,43 +109,63 @@ function PreviewHarness({
     return { view, streamItems: buildChatStreamItems(view, sessionId).items };
   });
 
+  const content = (
+    <div
+      className="flex h-[560px] flex-col bg-background text-foreground"
+      style={
+        containerWidth
+          ? {
+              width: `${containerWidth}px`,
+              maxWidth: '100%',
+              marginInline: 'auto',
+              borderInline: '1px solid hsl(var(--border))',
+            }
+          : { width: '100%' }
+      }
+    >
+      {showStatusMarksStrip ? (
+        <div className="flex items-center gap-6 border-b border-border/60 px-6 py-2.5 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-2">
+            <SessionRowStatusIndicator isWorking workingStill={lowStimulusEnabled} />
+            <span>Sidebar active</span>
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <SessionRowStatusIndicator
+              isWorking
+              isBackgroundWorking
+              workingStill={lowStimulusEnabled}
+            />
+            <span>Sidebar background</span>
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <BackgroundStatusMark still={lowStimulusEnabled} />
+            <span>Tab background</span>
+          </span>
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <SessionChatStreamView
+          sessionId={sessionId}
+          items={stream.streamItems}
+          conversationView={stream.view}
+          renderMessageRow={renderMessageRow}
+          lastAssistantMessageId={turnId}
+          agentActivityLabel={agentActivityLabel}
+          agentActivityTone={agentActivityTone}
+          agentActivityShimmer={agentActivityShimmer}
+          backgroundTaskStatus={backgroundTaskStatus}
+        />
+      </div>
+    </div>
+  );
+
   return (
     <Provider store={store}>
-      <div className="flex h-[560px] w-full flex-col bg-background text-foreground">
-        {showStatusMarksStrip ? (
-          <div className="flex items-center gap-6 border-b border-border/60 px-6 py-2.5 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-2">
-              <SessionRowStatusIndicator isWorking workingStill={lowStimulusEnabled} />
-              <span>Sidebar active</span>
-            </span>
-            <span className="inline-flex items-center gap-2">
-              <SessionRowStatusIndicator
-                isWorking
-                isBackgroundWorking
-                workingStill={lowStimulusEnabled}
-              />
-              <span>Sidebar background</span>
-            </span>
-            <span className="inline-flex items-center gap-2">
-              <BackgroundStatusMark still={lowStimulusEnabled} />
-              <span>Tab background</span>
-            </span>
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1">
-          <SessionChatStreamView
-            sessionId={sessionId}
-            items={stream.streamItems}
-            conversationView={stream.view}
-            renderMessageRow={renderMessageRow}
-            lastAssistantMessageId={turnId}
-            agentActivityLabel={agentActivityLabel}
-            agentActivityTone={agentActivityTone}
-            agentActivityShimmer={agentActivityShimmer}
-            backgroundTaskStatus={backgroundTaskStatus}
-          />
-        </div>
-      </div>
+      {forceMobile ? (
+        <ForceMobileLayoutProvider force>{content}</ForceMobileLayoutProvider>
+      ) : (
+        content
+      )}
     </Provider>
   );
 }
@@ -161,17 +186,21 @@ const AGY_PLACEHOLDER = "I'm thinking through how to approach this.";
 const thought1Text = [
   AGY_PLACEHOLDER,
   'Checking how adjacent thoughts and tool calls merge into one collapsed activity group in `assistant-turn-render-blocks.ts`.',
-  'Verifying whether the compact single-level header keeps the latest valid thought excerpt while commands run.',
+  'Verifying whether the fixed two-tier live header keeps status + tool counts on Row 1 while rendering the full latest thought paragraph on Row 2 without line clamping.\nAlso checking wrap behavior for long workspace paths like `/home/dreaife/.lody-oss/repos/local---fdfcc3e22d93/worktrees/c0f4e12c-9340-46b5-a7c1-251d8b1c83fc/packages/components/src/components/ai-gui/compact-native-directory-row.tsx` and links like https://example.com/lody/scroll-engine/verification/multi-line-live-thought-wrapping.',
 ].join('\n\n\n');
 
 const thought2Text = [
-  'Initial inspection confirms `extractLatestStreamingThoughtPreview` scans entries in reverse and skips placeholder-only chunks.',
+  'Initial inspection confirms `extractLatestCompactThoughtParagraph` scans entries in reverse and skips placeholder-only chunks.',
   'Next I will run the unit test suite and attach a background `gh run watch` task for CI.',
 ].join('\n\n\n');
 
 const thought3Text = [
   AGY_PLACEHOLDER,
-  'All unit tests passed and `gh run watch 20481937412 --exit-status` is running in the background. Writing the concise summary now.',
+  [
+    '**Wrapping up verification before posting the summary**',
+    'All unit tests passed and `gh run watch 20481937412 --exit-status` is running in the background while we inspect `packages/components/src/components/ai-gui/conversation-list/engine-conversation-scroller.tsx`.',
+    'Confirmed ResizeObserver updates `footer` and `subagent_tasks` row offsets immediately when this thought paragraph grows across multiple lines, keeping follow mode sticky with zero overlap. Reference: https://example.com/builds/20481937412/logs/very-long-unbroken-artifact-segment-to-verify-overflow-wrap-anywhere.',
+  ].join('\n'),
 ].join('\n\n\n');
 
 const runningToolItems: MessageContent[] = [
@@ -294,6 +323,39 @@ const finalAnswerItem: MessageContent = {
   ].join('\n'),
 };
 
+const narrowHeavyRunningItems: MessageContent[] = [
+  ...fullProcessItems.slice(0, -1),
+  {
+    type: 'tool_call',
+    toolCallId: 'edit-row',
+    kind: 'edit',
+    title: 'Edit packages/components/src/components/ai-gui/compact-native-directory-row.tsx',
+    locations: [
+      { path: 'packages/components/src/components/ai-gui/compact-native-directory-row.tsx' },
+    ],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'fetch-spec',
+    kind: 'fetch',
+    title: 'Fetch https://example.com/specs/conversation-rhythm.md',
+    status: 'completed',
+  },
+  {
+    type: 'thought',
+    text: thought3Text,
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'run-long-check',
+    kind: 'execute',
+    title:
+      'Run pnpm --filter @lody/components test tests/streaming-thought-preview.test.ts tests/streaming-thought-preview-ui.test.tsx tests/session-chat-search.test.ts',
+    status: 'in_progress',
+  },
+];
+
 export const LivePlaceholderOnly: Story = {
   args: {
     turnId: 'preview-placeholder-only',
@@ -327,6 +389,28 @@ export const LiveThinkingWithToolCounts: Story = {
     experimentalEnabled: true,
     thoughtPreviewEnabled: true,
     items: fullProcessItems,
+  },
+};
+
+export const LiveNarrowMobileNoSqueeze: Story = {
+  args: {
+    turnId: 'preview-narrow-mobile',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    containerWidth: 390,
+    forceMobile: true,
+    items: narrowHeavyRunningItems,
+  },
+};
+
+export const FinishedCollapsed: Story = {
+  args: {
+    turnId: 'preview-finished-collapsed',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    finished: true,
+    endedAt: Date.parse('2026-11-21T02:02:06.000Z'),
+    items: [...fullProcessItems, finalAnswerItem],
   },
 };
 

@@ -4781,7 +4781,7 @@
   "settings.experimental.lowStimulus": "Low-stimulus mode",
   "settings.experimental.lowStimulusHelper": "Opened sessions fold into the session that opened them, one mark per row. The Dock counts only what is waiting for you.",
   "settings.experimental.streamingThoughtPreview": "Streaming thought preview",
-  "settings.experimental.streamingThoughtPreviewHelper": "Show a two-line preview of the latest thought beneath the collapsed activity header while a turn is running. Disappears when expanded or finished.",
+  "settings.experimental.streamingThoughtPreviewHelper": "Show a fixed live header (status, tool counts, duration) with the full latest thought paragraph beneath it while a turn is running, and open a flat single-level process directory on click.",
   "settings.experimental.roostHistory": "Roost history",
   "settings.experimental.roostHistoryHelper": "Use Roost for new conversations. Existing conversations keep their current history backend.",
   "mention.category.file.label": "Files",

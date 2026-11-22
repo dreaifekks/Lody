@@ -20,9 +20,11 @@ import { SessionRowStatusIndicator } from '../src/components/sidebar-row-shared'
 import { SessionSearchProvider } from '../src/components/sessions/session-search-context';
 import { ExperimentalFeaturesSection } from '../src/components/settings/experimental-features-setting';
 import { initI18n } from '../src/i18n';
+import { ForceMobileLayoutProvider } from '../src/hooks/use-mobile';
 import { clearSavedScrollStates } from '../src/lib/conversation-scroll/saved-state';
 import { createConversationViewFromHistory } from '../src/lib/conversation-view';
 import { getThoughtSearchBlockId } from '../src/lib/session-chat-search';
+import { createFrameHarness } from './support/scroll-frame-harness';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -408,7 +410,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
-  it('renders Option C Stage 1 placeholder-only as Thinking… (duration) with no second line and quiet expanded note', async () => {
+  it('renders Option C Stage 1 placeholder-only as Thinking (duration) with no second line and quiet expanded note', async () => {
     await renderStream(
       buildTurnHistory([
         {
@@ -421,8 +423,10 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     const header = container.querySelector<HTMLButtonElement>('[data-compact-work-header="live"]');
     expect(header).not.toBeNull();
     const primary = header!.querySelector<HTMLElement>('[data-compact-primary-line]');
-    expect(primary?.textContent).toContain('Thinking…');
-    expect(primary?.textContent).toContain('(30s)');
+    expect(primary?.querySelector('[data-compact-status-verb]')?.textContent).toBe('Thinking');
+    expect(primary?.textContent).not.toContain('Thinking…');
+    expect(primary?.querySelector('[data-compact-live-duration]')?.textContent).toBe('(30s)');
+    expect(primary?.querySelector('[data-compact-tool-counts]')).toBeNull();
     expect(primary?.className).not.toContain('agent-shimmer');
     expect(primary?.parentElement?.className).toContain('agent-shimmer');
     expect(header!.querySelector('[data-compact-secondary-line]')).toBeNull();
@@ -437,32 +441,40 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     expect(container.querySelectorAll('[data-conversation-disclosure="group"]')).toHaveLength(1);
   });
 
-  it('renders Option C 2-line streaming division for thinking-only, running tool, and thinking after tools', async () => {
+  it('keeps fixed Row 1 (status + tool counts + duration) and Row 2 (full latest thought) without swapping across thinking and tool phases', async () => {
     const turnId = nextAssistantId();
-    // Stage 2: valid thought without tools -> Line 1 only (Thinking · excerpt (30s)), no Line 2.
+    // Stage 2: valid multi-sentence thought without tools -> Row 1 Thinking (30s), Row 2 full paragraph.
     const { rerenderHistory } = await renderStream(
       buildTurnHistory(
         [
           {
             type: 'thought',
-            text: "I'm thinking through how to approach this.\n\n\nChecking view.tsx first. More details later.",
+            text: "I'm thinking through how to approach this.\n\n\nChecking `view.tsx` first. More details later.\nSecond line stays intact.",
           },
         ],
         { id: turnId }
       )
     );
-    expect(container.querySelector('[data-compact-primary-line]')?.textContent).toContain(
-      'Checking view.tsx first.'
+    const primaryStage2 = container.querySelector('[data-compact-primary-line]');
+    const secondaryStage2 = container.querySelector('[data-compact-secondary-line]');
+    expect(primaryStage2?.querySelector('[data-compact-status-verb]')?.textContent).toBe(
+      'Thinking'
     );
-    expect(container.querySelector('[data-compact-secondary-line]')).toBeNull();
+    expect(primaryStage2?.querySelector('[data-compact-tool-counts]')).toBeNull();
+    expect(primaryStage2?.querySelector('[data-compact-live-duration]')?.textContent).toBe('(30s)');
+    expect(primaryStage2?.textContent).not.toContain('Checking view.tsx');
+    expect(secondaryStage2?.textContent).toBe(
+      'Checking view.tsx first. More details later.\nSecond line stays intact.'
+    );
 
-    // Stage 3: active non-background tool -> Line 1 Running <target>, Line 2 retained thought excerpt (no prefix).
+    // Stage 3: active non-background tool -> Row 1 keeps Running <target> · <toolCounts> (duration),
+    // Row 2 retains full latest thought paragraph (never swaps positions).
     await rerenderHistory(
       buildTurnHistory(
         [
           {
             type: 'thought',
-            text: "I'm thinking through how to approach this.\n\n\nChecking view.tsx first. More details later.",
+            text: "I'm thinking through how to approach this.\n\n\nChecking `view.tsx` first. More details later.\nSecond line stays intact.",
           },
           makeToolCall('view.tsx'),
           makeToolCall('surface.ts'),
@@ -477,14 +489,22 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
         { id: turnId }
       )
     );
-    const primaryTool = container.querySelector('[data-compact-primary-line]')?.textContent ?? '';
-    const secondaryTool =
-      container.querySelector('[data-compact-secondary-line]')?.textContent ?? '';
-    expect(primaryTool).toContain('Running');
-    expect(primaryTool).toContain('pnpm --filter @lody/components test');
-    expect(secondaryTool).toBe('Checking view.tsx first.');
+    const primaryTool = container.querySelector('[data-compact-primary-line]');
+    const secondaryTool = container.querySelector('[data-compact-secondary-line]');
+    expect(primaryTool?.querySelector('[data-compact-status-verb]')?.textContent).toBe('Running');
+    expect(primaryTool?.querySelector('[data-compact-active-target]')?.textContent).toBe(
+      'pnpm --filter @lody/components test'
+    );
+    expect(primaryTool?.querySelector('[data-compact-tool-counts]')?.textContent).toBe(
+      'Read 2 files'
+    );
+    expect(primaryTool?.querySelector('[data-compact-live-duration]')?.textContent).toBe('(30s)');
+    expect(secondaryTool?.textContent).toBe(
+      'Checking view.tsx first. More details later.\nSecond line stays intact.'
+    );
 
-    // Stage 4: command completed + backgrounded tool + new thought -> backgrounded tool does NOT hijack Line 1.
+    // Stage 4: command completed + backgrounded tool + new thought -> Row 1 stays Thinking · <toolCounts> (duration),
+    // Row 2 updates to the new full thought paragraph without swapping.
     await act(async () => vi.advanceTimersByTime(1_600));
     await rerenderHistory(
       buildTurnHistory(
@@ -513,20 +533,138 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
           },
           {
             type: 'thought',
-            text: 'Summarizing findings while CI watches in background.',
+            text: 'Summarizing findings while CI watches in background. Checking every test boundary.\nReady to compose the final answer.',
           },
         ],
         { id: turnId }
       )
     );
-    const primaryStage4 = container.querySelector('[data-compact-primary-line]')?.textContent ?? '';
-    const secondaryStage4 =
-      container.querySelector('[data-compact-secondary-line]')?.textContent ?? '';
-    expect(primaryStage4).toContain('Thinking');
-    expect(primaryStage4).toContain('Summarizing findings while CI watches in background.');
-    expect(secondaryStage4).toContain('Read 2 files');
-    expect(secondaryStage4).toContain('Ran 1 command');
-    expect(secondaryStage4).toContain('1 in background');
+    const primaryStage4 = container.querySelector('[data-compact-primary-line]');
+    const secondaryStage4 = container.querySelector('[data-compact-secondary-line]');
+    expect(primaryStage4?.querySelector('[data-compact-status-verb]')?.textContent).toBe(
+      'Thinking'
+    );
+    expect(primaryStage4?.querySelector('[data-compact-active-target]')).toBeNull();
+    const countsStage4 = primaryStage4?.querySelector('[data-compact-tool-counts]')?.textContent;
+    expect(countsStage4).toContain('Read 2 files');
+    expect(countsStage4).toContain('Ran 1 command');
+    expect(countsStage4).toContain('1 in background');
+    expect(primaryStage4?.textContent).not.toContain('Summarizing findings');
+    expect(secondaryStage4?.textContent).toBe(
+      'Summarizing findings while CI watches in background. Checking every test boundary.\nReady to compose the final answer.'
+    );
+  });
+
+  it('renders full multi-line long thought paragraphs (>1024 chars) with no clamping, retains across transient placeholders, and hides on expand or finish (including mobile settled header)', async () => {
+    const turnId = nextAssistantId();
+    const longLine = `${'Verifying dynamic height and full paragraph display without truncation. '.repeat(17)}Final path /packages/components/src/components/ai-gui/compact-native-directory-row.tsx and https://example.com/very/long/unbroken/path/for/wrap-check.`;
+    expect(longLine.length).toBeGreaterThan(1_100);
+    const multiLineThought = `**Inspecting header layout**\n${longLine}\nThird line confirms natural line breaks remain intact.`;
+
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory([{ type: 'thought', text: multiLineThought }], { id: turnId })
+    );
+
+    const secondary = container.querySelector<HTMLElement>('[data-compact-secondary-line]');
+    expect(secondary).not.toBeNull();
+    expect(secondary!.className).not.toContain('line-clamp');
+    expect(secondary!.textContent).toBe(
+      `Inspecting header layout\n${longLine}\nThird line confirms natural line breaks remain intact.`
+    );
+
+    // Transient placeholder or unclosed bold heading keeps Row 2 stable without flashing blank.
+    await act(async () => vi.advanceTimersByTime(2_000));
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: multiLineThought },
+          { type: 'thought', text: "I'm thinking through how to approach this.\n\n**Unclosed" },
+        ],
+        { id: turnId }
+      )
+    );
+    expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+      `Inspecting header layout\n${longLine}\nThird line confirms natural line breaks remain intact.`
+    );
+
+    // Expanding the live header hides Row 2; collapsing restores it.
+    const liveHeader = container.querySelector<HTMLButtonElement>(
+      '[data-compact-work-header="live"]'
+    )!;
+    await act(async () => liveHeader.click());
+    expect(container.querySelector('[data-compact-secondary-line]')).toBeNull();
+    await act(async () => liveHeader.click());
+    expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toContain(
+      'Third line confirms natural line breaks remain intact.'
+    );
+
+    // Finishing the turn collapses Row 2 automatically and shows clean desktop settled label.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: multiLineThought },
+          { type: 'text', text: 'Done.' },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:00:30Z'),
+        }
+      )
+    );
+    expect(container.querySelector('[data-compact-secondary-line]')).toBeNull();
+    expect(
+      container.querySelector('[data-compact-work-header="finished"]')?.textContent?.trim()
+    ).toBe('Worked for 29s');
+
+    // On mobile, finished header omits duration (owned by footer per ai-gui/AGENTS.md).
+    const mobileStore = createStore();
+    mobileStore.set(experimentalFeaturesEnabledAtom, true);
+    mobileStore.set(streamingThoughtPreviewExperimentEnabledAtom, true);
+    const mobileHistory = buildTurnHistory(
+      [
+        { type: 'thought', text: multiLineThought },
+        { type: 'text', text: 'Done.' },
+      ],
+      {
+        id: nextAssistantId(),
+        finished: true,
+        endedAt: Date.parse('2026-11-21T00:00:30Z'),
+      }
+    );
+    const mobileView = createConversationViewFromHistory({
+      sessionId: 'mobile-settled-session' as SessionId,
+      getHistory: () => mobileHistory as never,
+      subscribe: () => () => {},
+    });
+    const { items: mobileItems } = buildChatStreamItems(
+      mobileView,
+      'mobile-settled-session' as SessionId
+    );
+    await act(async () => {
+      root.render(
+        createElement(
+          Provider,
+          { store: mobileStore },
+          createElement(
+            ForceMobileLayoutProvider,
+            { force: true },
+            createElement(SessionChatStreamView, {
+              items: mobileItems,
+              sessionId: 'mobile-settled-session' as SessionId,
+              conversationView: mobileView,
+              renderMessageRow: () => null,
+              lastAssistantMessageId: (mobileHistory[1] as { id: string }).id,
+              agentActivityLabel: null,
+            })
+          )
+        )
+      );
+    });
+    expect(
+      container.querySelector('[data-compact-work-header="finished"]')?.textContent?.trim()
+    ).toBe('Finished working');
+    expect(container.querySelector('[data-compact-secondary-line]')).toBeNull();
   });
 
   it('opens a flat single-level directory on one click after finish, clustering reads, toggling thoughts, and stripping placeholders', async () => {
@@ -1006,17 +1144,32 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     expect(thoughtToggle?.innerHTML).not.toContain('duration-150');
   });
 
-  it('keeps the shimmer wrapper separate from the primary flex truncation container', async () => {
+  it('keeps the shimmer wrapper separate from the primary flex truncation container with anti-squeeze slots', async () => {
     const turnId = nextAssistantId();
     await renderStream(
       buildTurnHistory(
         [
+          makeToolCall('view.tsx'),
+          makeToolCall('surface.ts'),
+          {
+            type: 'tool_call',
+            toolCallId: 'edit-1',
+            kind: 'edit',
+            title:
+              'Edit packages/components/src/components/ai-gui/compact-native-directory-row.tsx',
+            locations: [
+              {
+                path: 'packages/components/src/components/ai-gui/compact-native-directory-row.tsx',
+              },
+            ],
+            status: 'completed',
+          },
           {
             type: 'tool_call',
             toolCallId: 'cmd-long',
             kind: 'execute',
             title:
-              'Run pnpm --filter @lody/components test tests/streaming-thought-preview.test.ts',
+              'Run pnpm --filter @lody/components test tests/streaming-thought-preview.test.ts tests/streaming-thought-preview-ui.test.tsx',
             status: 'in_progress',
           },
         ],
@@ -1031,8 +1184,282 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     // `[data-compact-primary-line]` itself, so flex truncation preserves the trailing duration.
     expect(primaryFlex!.className).not.toContain('agent-shimmer');
     expect(primaryFlex!.parentElement?.className).toContain('agent-shimmer');
-    expect(primaryFlex!.textContent).toContain('Running');
-    expect(primaryFlex!.textContent).toContain('(30s)');
+    expect(primaryFlex!.querySelector('[data-compact-status-verb]')?.textContent).toBe('Running');
+    expect(primaryFlex!.querySelector('[data-compact-active-target]')?.textContent).toContain(
+      'pnpm --filter @lody/components test'
+    );
+    expect(primaryFlex!.querySelector('[data-compact-tool-counts]')?.textContent).toBe(
+      'Read 2 files · Edited 1 file'
+    );
+    expect(primaryFlex!.querySelector('[data-compact-live-duration]')?.textContent).toBe('(30s)');
+  });
+
+  it('re-measures dynamic multi-line compact_work_header growth, throttled updates, shrinkage, and finish without overlapping following rows or breaking auto-follow', async () => {
+    const dynamicSessionId = 'compact-dynamic-height-session' as SessionId;
+    const VIEWPORT_HEIGHT = 400;
+    const BASE_ROW_HEIGHT = 120;
+    const FOOTER_HEIGHT = 40;
+    const SUBAGENT_HEIGHT = 64;
+    const px = (value: string | undefined) => parseFloat(value ?? '0') || 0;
+
+    let attachedViewport: HTMLElement | null = null;
+    const heightForRow = (rowEl: HTMLElement): number => {
+      const header = rowEl.querySelector<HTMLElement>('[data-compact-work-header]');
+      if (header) {
+        const secondary = header.querySelector<HTMLElement>('[data-compact-secondary-line]');
+        if (!secondary) return 36;
+        // Model realistic wrapped height proportional to line breaks and text length.
+        const lines = secondary.textContent
+          ? secondary.textContent
+              .split('\n')
+              .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / 45)), 0)
+          : 0;
+        return 36 + lines * 18;
+      }
+      if (rowEl.querySelector('[data-subagent-task-id]')) return SUBAGENT_HEIGHT;
+      if (rowEl.dataset.conversationRowKey?.endsWith(':footer')) return FOOTER_HEIGHT;
+      return BASE_ROW_HEIGHT;
+    };
+
+    const harness = createFrameHarness({
+      viewportHeight: () => VIEWPORT_HEIGHT,
+      scrollHeightOf: (viewport) => {
+        const rowsContainer = viewport.firstElementChild as HTMLElement | null;
+        const spacer = rowsContainer?.nextElementSibling as HTMLElement | null;
+        return (
+          px(rowsContainer?.style.height) +
+          px(rowsContainer?.style.marginTop) +
+          px(spacer?.style.height)
+        );
+      },
+      sizeOf: (element) => {
+        const el = element as HTMLElement;
+        if (el.hasAttribute('data-message-selection-scroll')) return VIEWPORT_HEIGHT;
+        if (el.hasAttribute('data-virtual-index')) return heightForRow(el);
+        return undefined;
+      },
+      rectOf: (element, scrollTop) => {
+        const el = element as HTMLElement;
+        if (el.hasAttribute('data-message-selection-scroll')) {
+          return { top: 0, height: VIEWPORT_HEIGHT };
+        }
+        if (
+          el.parentElement?.hasAttribute('data-message-selection-scroll') &&
+          !el.hasAttribute('data-conversation-reply-room')
+        ) {
+          return { top: px(el.style.marginTop) - scrollTop, height: px(el.style.height) };
+        }
+        if (el.hasAttribute('data-virtual-index')) {
+          return {
+            top: px(el.parentElement?.style.marginTop) + px(el.style.top) - scrollTop,
+            height: heightForRow(el),
+          };
+        }
+        return undefined;
+      },
+    });
+
+    const settleFrames = async () => {
+      const viewport = container.querySelector<HTMLElement>('[data-message-selection-scroll]');
+      if (viewport && viewport !== attachedViewport) {
+        attachedViewport = viewport;
+        harness.attachViewport(viewport);
+      }
+      for (let i = 0; i < 30; i += 1) {
+        let delivered = false;
+        await act(async () => {
+          delivered = harness.frame();
+          await Promise.resolve();
+        });
+        if (!delivered) return;
+      }
+      throw new Error('scroll frames did not settle');
+    };
+
+    try {
+      const store = createStore();
+      store.set(experimentalFeaturesEnabledAtom, true);
+      store.set(streamingThoughtPreviewExperimentEnabledAtom, true);
+      store.set(lowStimulusExperimentEnabledAtom, false);
+
+      const priorTurns = Array.from({ length: 4 }, (_, index) => [
+        {
+          id: `prior-u-${index}`,
+          role: 'user',
+          timestamp: `2026-11-21T00:00:0${index}Z`,
+          items: [{ type: 'text', text: `Earlier question ${index}` }],
+        },
+        {
+          id: `prior-a-${index}`,
+          role: 'assistant',
+          timestamp: `2026-11-21T00:00:1${index}Z`,
+          finished: true,
+          endedAt: Date.parse(`2026-11-21T00:00:1${index}Z`) + 2_000,
+          fileDiff: [],
+          items: [{ type: 'text', text: `Earlier answer ${index}` }],
+        },
+      ]).flat();
+
+      const liveTurnId = 'dynamic-live-turn';
+      const buildHistory = (
+        thoughtText: string,
+        options: { finished?: boolean; finalText?: string } = {}
+      ) => [
+        ...priorTurns,
+        {
+          id: `user-${liveTurnId}`,
+          role: 'user',
+          timestamp: '2026-11-21T00:00:25Z',
+          items: [{ type: 'text', text: 'Run checks and report progress.' }],
+        },
+        {
+          id: liveTurnId,
+          role: 'assistant',
+          timestamp: '2026-11-21T00:00:26Z',
+          fileDiff: [],
+          finished: options.finished ?? false,
+          ...(options.finished ? { endedAt: Date.parse('2026-11-21T00:00:30Z') } : {}),
+          items: [
+            {
+              type: 'subagent_task',
+              taskId: 'bg-worker-1',
+              status: 'in_progress',
+              taskType: 'subagent',
+              subagentType: 'Explore',
+              description: 'Verify virtual row offsets',
+              isBackgrounded: true,
+            },
+            { type: 'thought', text: thoughtText },
+            ...(options.finalText ? [{ type: 'text', text: options.finalText }] : []),
+          ],
+        },
+      ];
+
+      let currentHistory = buildHistory("I'm thinking through how to approach this.");
+      let notify: () => void = () => {};
+      const view = createConversationViewFromHistory({
+        sessionId: dynamicSessionId,
+        getHistory: () => currentHistory as never,
+        subscribe: (listener) => {
+          notify = listener;
+          return () => {};
+        },
+      });
+      let lastAtBottom = true;
+
+      const renderCurrent = async (nextHistory: unknown[]) => {
+        currentHistory = nextHistory as typeof currentHistory;
+        await act(async () => notify());
+        const { items } = buildChatStreamItems(view, dynamicSessionId);
+        await act(async () => {
+          root.render(
+            createElement(
+              Provider,
+              { store },
+              createElement(SessionChatStreamView, {
+                items,
+                sessionId: dynamicSessionId,
+                conversationView: view,
+                renderMessageRow: () => null,
+                lastAssistantMessageId: liveTurnId,
+                agentActivityLabel: 'Working',
+                agentActivityTone: 'primary',
+                agentActivityShimmer: true,
+                onAtBottomChange: (atBottom) => {
+                  lastAtBottom = atBottom;
+                },
+              })
+            )
+          );
+        });
+        await settleFrames();
+      };
+
+      const assertNoOverlapAndSticky = () => {
+        const headerRow = container
+          .querySelector('[data-compact-work-header]')
+          ?.closest<HTMLElement>('[data-virtual-index]');
+        const subagentRow = container
+          .querySelector('[data-subagent-task-id="bg-worker-1"]')
+          ?.closest<HTMLElement>('[data-virtual-index]');
+        expect(headerRow).not.toBeNull();
+        expect(subagentRow).not.toBeNull();
+
+        const headerTop = px(headerRow!.style.top);
+        const headerHeight = heightForRow(headerRow!);
+        const subagentTop = px(subagentRow!.style.top);
+        expect(subagentTop).toBeGreaterThanOrEqual(headerTop + headerHeight);
+
+        const viewport = container.querySelector<HTMLElement>('[data-message-selection-scroll]')!;
+        const maxTop = Math.max(0, viewport.scrollHeight - VIEWPORT_HEIGHT);
+        expect(lastAtBottom).toBe(true);
+        expect(Math.abs(harness.scrollTop - maxTop)).toBeLessThanOrEqual(1);
+        return { headerHeight, subagentTop };
+      };
+
+      // Phase 1: 0-line placeholder only (height 36px).
+      await renderCurrent(currentHistory);
+      const phase1 = assertNoOverlapAndSticky();
+      expect(phase1.headerHeight).toBe(36);
+
+      // Phase 2: 1-line thought appears immediately (height 54px).
+      await renderCurrent(buildHistory('Checking row offsets in view.tsx.'));
+      const phase2 = assertNoOverlapAndSticky();
+      expect(phase2.headerHeight).toBe(54);
+      expect(phase2.subagentTop).toBe(
+        phase1.subagentTop + (phase2.headerHeight - phase1.headerHeight)
+      );
+
+      // Phase 3: Multi-line long thought arrives within throttle window, then commits asynchronously on timer!
+      const longMultiLine = [
+        'Line 1 inspecting EngineConversationScroller and ResizeObserver callbacks in detail.',
+        'Line 2 verifying that ScrollController.onRowsResized updates geometry offsets synchronously.',
+        'Line 3 checking that subagent_tasks and footer rows never overlap a tall Row 2 thought.',
+        'Line 4 confirming follow mode stays sticky when height grows from throttled setTimeout.',
+      ].join('\n');
+      await renderCurrent(buildHistory(longMultiLine));
+      // Still holding phase 2 inside 1500ms hold window.
+      expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+        'Checking row offsets in view.tsx.'
+      );
+      // Advance timer to trigger async throttled state update inside CompactWorkHeaderRow alone!
+      await act(async () => vi.advanceTimersByTime(1_600));
+      await settleFrames();
+      const phase3 = assertNoOverlapAndSticky();
+      expect(phase3.headerHeight).toBeGreaterThan(150);
+      expect(phase3.subagentTop).toBe(
+        phase2.subagentTop + (phase3.headerHeight - phase2.headerHeight)
+      );
+
+      // Phase 4: Shrinking from long multi-line paragraph back to a short 1-line paragraph.
+      await act(async () => vi.advanceTimersByTime(1_600));
+      await renderCurrent(buildHistory('Short follow-up check.'));
+      const phase4 = assertNoOverlapAndSticky();
+      expect(phase4.headerHeight).toBe(54);
+      expect(phase4.subagentTop).toBe(
+        phase3.subagentTop + (phase4.headerHeight - phase3.headerHeight)
+      );
+
+      // Phase 5: Turn finishes -> Row 2 disappears (36px), final prose row mounts, still sticky at bottom.
+      await renderCurrent(
+        buildHistory('Short follow-up check.', {
+          finished: true,
+          finalText: 'All checks verified.',
+        })
+      );
+      const headerAfterFinish = container
+        .querySelector('[data-compact-work-header="finished"]')
+        ?.closest<HTMLElement>('[data-virtual-index]');
+      expect(headerAfterFinish).not.toBeNull();
+      expect(heightForRow(headerAfterFinish!)).toBe(36);
+      expect(lastAtBottom).toBe(true);
+      const viewport = container.querySelector<HTMLElement>('[data-message-selection-scroll]')!;
+      expect(
+        Math.abs(harness.scrollTop - Math.max(0, viewport.scrollHeight - VIEWPORT_HEIGHT))
+      ).toBeLessThanOrEqual(1);
+    } finally {
+      harness.restore();
+    }
   });
 
   it('renders the native background task status row with only authoritative aggregate waiting/wakeup signals', async () => {

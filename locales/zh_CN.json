@@ -4781,7 +4781,7 @@
   "settings.experimental.lowStimulus": "低刺激模式",
   "settings.experimental.lowStimulusHelper": "子会话折进开它们的会话，一行一个标记；Dock 只数等你的。",
   "settings.experimental.streamingThoughtPreview": "流式思维预览",
-  "settings.experimental.streamingThoughtPreviewHelper": "回合进行中时，在收起的活动组标题下显示最新一段思考的两行预览；手动展开或回合结束后消失。",
+  "settings.experimental.streamingThoughtPreviewHelper": "回合进行中时固定显示实时状态标题（状态、工具计数、耗时）并在下方完整展示最新一段思考正文；点击直接展开单层过程目录，回合结束后自动收起。",
   "settings.experimental.roostHistory": "Roost 历史",
   "settings.experimental.roostHistoryHelper": "让新会话使用 Roost。已有会话继续使用创建时选定的历史存储。",
   "mention.category.file.label": "文件",

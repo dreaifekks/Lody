@@ -572,6 +572,13 @@ export class ScrollController {
     this.gesture = null;
     this.setIntent({ kind: 'read', anchor: anchorOfRow(row, offsetPx), screenY });
     this.disclosureSpace = true;
+    // Re-measure the toggled row in the batched click commit: inline disclosures
+    // and live multi-line headers (such as CompactWorkHeaderRow hiding/showing
+    // Row 2) change their own height on toggle, so sibling rows and mobile reveal
+    // checks need the post-toggle size before ResizeObserver delivers.
+    if (revealOffsetPx === undefined) {
+      this.dirty.add(rowKey);
+    }
     // The click's state update and this commit are batched; measure the new body.
     this.host.requestCommit(false);
   }

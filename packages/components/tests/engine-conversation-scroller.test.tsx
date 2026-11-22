@@ -424,6 +424,146 @@ it('reveals mobile details that commit after the list captured the click', async
   }
 });
 
+it('re-measures a shrinking mobile group disclosure header before checking detail visibility', async () => {
+  const px = (value: string | undefined) => parseFloat(value ?? '0') || 0;
+  const rowHeights = new Map<string, number>([['r59', 160]]);
+  let attachedViewport: HTMLElement | null = null;
+  const harness = createFrameHarness({
+    viewportHeight: () => VIEWPORT,
+    scrollHeightOf: (viewport) => {
+      const container = viewport.firstElementChild as HTMLElement | null;
+      const spacer = container?.nextElementSibling as HTMLElement | null;
+      return (
+        px(container?.style.height) + px(container?.style.marginTop) + px(spacer?.style.height)
+      );
+    },
+    sizeOf: (element) => {
+      const el = element as HTMLElement;
+      if (el.hasAttribute('data-message-selection-scroll')) return VIEWPORT;
+      if (el.hasAttribute('data-virtual-index')) {
+        return (
+          rowHeights.get(el.querySelector<HTMLElement>('[data-row-key]')?.dataset.rowKey ?? '') ??
+          ROW
+        );
+      }
+      return undefined;
+    },
+    rectOf: (element, scrollTop) => {
+      const el = element as HTMLElement;
+      if (el.hasAttribute('data-message-selection-scroll')) return { top: 0, height: VIEWPORT };
+      if (
+        el.parentElement?.hasAttribute('data-message-selection-scroll') &&
+        !el.hasAttribute('data-conversation-reply-room')
+      ) {
+        return { top: px(el.style.marginTop) - scrollTop, height: px(el.style.height) };
+      }
+      if (el.hasAttribute('data-virtual-index')) {
+        const key = el.querySelector<HTMLElement>('[data-row-key]')?.dataset.rowKey ?? '';
+        return {
+          top: px(el.parentElement?.style.marginTop) + px(el.style.top) - scrollTop,
+          height: rowHeights.get(key) ?? ROW,
+        };
+      }
+      if (el.hasAttribute('data-conversation-disclosure')) {
+        const row = el.closest<HTMLElement>('[data-virtual-index]')!;
+        const key = row.querySelector<HTMLElement>('[data-row-key]')?.dataset.rowKey ?? '';
+        return {
+          top: px(row.style.top) - scrollTop,
+          height: rowHeights.get(key) ?? ROW,
+        };
+      }
+      return undefined;
+    },
+  });
+
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  const handle = createRef<ConversationListHandle>() as { current: ConversationListHandle | null };
+  const baseKeys = rowKeys(60);
+
+  function GroupList() {
+    const [expanded, setExpanded] = useState(false);
+    const keys = expanded ? [...baseKeys, 'r59.detail'] : baseKeys;
+    return (
+      <ForceMobileLayoutProvider force>
+        <EngineConversationScroller
+          sessionId={'shrinking-mobile-group-disclosure' as SessionId}
+          rows={keys.map((key) => (
+            <div key={key} data-row-key={key}>
+              {key === 'r59' ? (
+                <button
+                  type="button"
+                  data-conversation-disclosure="group"
+                  aria-expanded={expanded}
+                  onClick={() => {
+                    rowHeights.set('r59', expanded ? 160 : 36);
+                    rowHeights.set('r59.detail', 44);
+                    setExpanded(!expanded);
+                  }}
+                >
+                  Live compact header
+                </button>
+              ) : (
+                key
+              )}
+            </div>
+          ))}
+          rowMeta={keys.map((key, index) => meta(key, index))}
+          item={Row}
+          initialWindowReady
+          onStateChange={(next) => {
+            if (next.scrollElement && next.scrollElement !== attachedViewport) {
+              attachedViewport = next.scrollElement;
+              harness.attachViewport(next.scrollElement);
+            }
+          }}
+          layoutKey="14"
+          bufferSize={800}
+          handleRef={handle}
+        />
+      </ForceMobileLayoutProvider>
+    );
+  }
+
+  const settle = async () => {
+    for (let i = 0; i < 30; i += 1) {
+      let delivered = false;
+      await act(async () => {
+        delivered = harness.frame();
+        await Promise.resolve();
+      });
+      if (!delivered) return;
+    }
+  };
+
+  try {
+    act(() => root.render(<GroupList />));
+    await settle();
+    const viewport = host.firstElementChild as HTMLElement;
+    const button = viewport.querySelector<HTMLButtonElement>('[data-conversation-disclosure]')!;
+    // At bottom of 400px viewport, 160px header starts at screenY = 240 (bottom = 400).
+    // Expanding shrinks header to 36px so r59.detail starts at screenY = 276 (well inside 400px!).
+    // Without re-measuring r59 in the click commit, r59.detail would appear at 240 + 160 = 400 and
+    // spuriously trigger a 96px reveal jump.
+    const before = button.getBoundingClientRect().top;
+    expect(before).toBe(240);
+    act(() => button.click());
+    await settle();
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(button.getBoundingClientRect().top).toBe(before);
+    const headerRow = button.closest<HTMLElement>('[data-virtual-index]')!;
+    const detailRow = viewport
+      .querySelector<HTMLElement>('[data-row-key="r59.detail"]')!
+      .closest<HTMLElement>('[data-virtual-index]')!;
+    expect(px(detailRow.style.top)).toBe(px(headerRow.style.top) + 36);
+  } finally {
+    act(() => root.unmount());
+    host.remove();
+    harness.restore();
+  }
+});
+
 it('opens at the real bottom and never hides the viewport', async () => {
   const keys = rowKeys(60);
   const ctx = mount('engine-open' as SessionId, keys);

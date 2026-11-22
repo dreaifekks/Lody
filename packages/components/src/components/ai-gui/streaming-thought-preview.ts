@@ -605,9 +605,20 @@ const trimSplitBacktickRunEnd = (
   return safeCut;
 };
 
+const appendClippedEllipsis = (text: string): string => {
+  if (!text || text.endsWith('…')) {
+    return text;
+  }
+  const lastSpace = text.lastIndexOf(' ');
+  if (lastSpace > 0 && text.length - lastSpace <= WORD_BOUNDARY_LOOKBACK_CHARS) {
+    return `${text.slice(0, lastSpace).trimEnd()}…`;
+  }
+  return `${text.trimEnd()}…`;
+};
+
 /**
- * Slices a bounded prefix of `[start, end)` within `maxBudgetChars` without
- * splitting a complete inline code span (or an unclosed backtick run) at the cap.
+ * Slices a bounded prefix of `[start, end)` within `Math.min(perLineCap, maxBudgetChars)`
+ * without splitting a complete inline code span (or an unclosed backtick run) at the cap.
  * Massive code spans crossing the cap are truncated and closed with matching
  * backticks so literal code content remains protected during Markdown cleanup.
  */
@@ -615,26 +626,27 @@ const sliceCodeSpanSafePrefix = (
   source: string,
   start: number,
   end: number,
-  maxBudgetChars: number
-): string => {
-  const cap = Math.min(STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP, maxBudgetChars);
+  maxBudgetChars: number,
+  perLineCap: number = STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP
+): { slice: string; clipped: boolean } => {
+  const cap = Math.min(perLineCap, maxBudgetChars);
   if (cap <= 0) {
-    return '';
+    return { slice: '', clipped: end > start };
   }
   if (end - start <= cap) {
-    return source.slice(start, end);
+    return { slice: source.slice(start, end), clipped: false };
   }
 
   const capEnd = start + cap;
   const safeCapEnd = trimSplitBacktickRunEnd(source, start, capEnd, end);
   const firstTick = findCharCodeInRange(source, 96, start, capEnd);
   if (firstTick === -1) {
-    return source.slice(start, safeCapEnd);
+    return { slice: source.slice(start, safeCapEnd), clipped: safeCapEnd < end };
   }
 
   const codeSpanEndMap = buildCodeSpanEndMap(source, start, end);
   if (!codeSpanEndMap) {
-    return source.slice(start, safeCapEnd);
+    return { slice: source.slice(start, safeCapEnd), clipped: safeCapEnd < end };
   }
 
   let cursor = firstTick;
@@ -648,7 +660,7 @@ const sliceCodeSpanSafePrefix = (
         capEnd
       );
       if (nextTick === -1) {
-        return source.slice(start, safeCapEnd);
+        return { slice: source.slice(start, safeCapEnd), clipped: safeCapEnd < end };
       }
       cursor = nextTick;
       continue;
@@ -656,7 +668,7 @@ const sliceCodeSpanSafePrefix = (
     if (spanEnd <= capEnd) {
       const nextTick = findCharCodeInRange(source, 96, spanEnd, capEnd);
       if (nextTick === -1) {
-        return source.slice(start, safeCapEnd);
+        return { slice: source.slice(start, safeCapEnd), clipped: safeCapEnd < end };
       }
       cursor = nextTick;
       continue;
@@ -665,7 +677,7 @@ const sliceCodeSpanSafePrefix = (
       spanEnd <= capEnd + STREAMING_THOUGHT_PREVIEW_MAX_CHARS &&
       spanEnd - start <= maxBudgetChars
     ) {
-      return source.slice(start, spanEnd);
+      return { slice: source.slice(start, spanEnd), clipped: spanEnd < end };
     }
     const tickCount = countBacktickRun(source, cursor, end);
     let safeCut = Math.min(capEnd, start + maxBudgetChars - tickCount);
@@ -673,12 +685,12 @@ const sliceCodeSpanSafePrefix = (
       safeCut -= 1;
     }
     if (safeCut <= cursor + tickCount) {
-      return source.slice(start, cursor);
+      return { slice: source.slice(start, cursor), clipped: true };
     }
-    return `${source.slice(start, safeCut)}${'`'.repeat(tickCount)}`;
+    return { slice: `${source.slice(start, safeCut)}${'`'.repeat(tickCount)}`, clipped: true };
   }
 
-  return source.slice(start, safeCapEnd);
+  return { slice: source.slice(start, safeCapEnd), clipped: safeCapEnd < end };
 };
 
 /** Splits a bounded line into alternating `text` and `code` segments in O(n) time. */
@@ -750,8 +762,10 @@ const cleanCandidateLineRange = (
   source: string,
   rawStart: number,
   rawEnd: number,
-  maxBudgetChars: number
-): { preview: string | null; cleanedChars: number } => {
+  maxBudgetChars: number,
+  options: { perLineCap?: number; truncate?: boolean } = {}
+): { preview: string | null; cleanedChars: number; clipped: boolean } => {
+  const { perLineCap = STREAMING_THOUGHT_PREVIEW_INLINE_CLEANUP_CAP, truncate = true } = options;
   let start = trimHorizontalStart(source, rawStart, rawEnd);
   let end = trimHorizontalEnd(source, start, rawEnd);
   if (
@@ -761,7 +775,7 @@ const cleanCandidateLineRange = (
     hasUnclosedLeadingBoldRange(source, start, end) ||
     isEmptyLinkOnlyRange(source, start, end)
   ) {
-    return { preview: null, cleanedChars: 0 };
+    return { preview: null, cleanedChars: 0, clipped: false };
   }
 
   const placeholderProbe = source.slice(start, Math.min(end, start + PREFIX_PROBE_CHARS));
@@ -775,7 +789,7 @@ const cleanCandidateLineRange = (
       hasUnclosedLeadingBoldRange(source, start, end) ||
       isEmptyLinkOnlyRange(source, start, end)
     ) {
-      return { preview: null, cleanedChars: 0 };
+      return { preview: null, cleanedChars: 0, clipped: false };
     }
   }
 
@@ -796,13 +810,19 @@ const cleanCandidateLineRange = (
     hasUnclosedLeadingBoldRange(source, start, end) ||
     isEmptyLinkOnlyRange(source, start, end)
   ) {
-    return { preview: null, cleanedChars: 0 };
+    return { preview: null, cleanedChars: 0, clipped: false };
   }
 
-  const boundedSlice = sliceCodeSpanSafePrefix(source, start, end, maxBudgetChars);
+  const { slice: boundedSlice, clipped } = sliceCodeSpanSafePrefix(
+    source,
+    start,
+    end,
+    maxBudgetChars,
+    perLineCap
+  );
   const cleanedChars = boundedSlice.length;
   if (cleanedChars === 0) {
-    return { preview: null, cleanedChars: 0 };
+    return { preview: null, cleanedChars: 0, clipped };
   }
 
   const linksResolved = replaceMarkdownLinks(boundedSlice);
@@ -821,15 +841,16 @@ const cleanCandidateLineRange = (
     .trim();
 
   if (!text) {
-    return { preview: null, cleanedChars };
+    return { preview: null, cleanedChars, clipped };
   }
 
   text = text.replace(AGY_PLACEHOLDER_PREFIX_RE, '').trim();
   if (!text || isStreamingAgyPlaceholderPrefix(text)) {
-    return { preview: null, cleanedChars };
+    return { preview: null, cleanedChars, clipped };
   }
 
-  return { preview: truncatePreview(text), cleanedChars };
+  const preview = truncate ? truncatePreview(text) : clipped ? appendClippedEllipsis(text) : text;
+  return { preview, cleanedChars, clipped };
 };
 
 /**
@@ -1195,6 +1216,94 @@ export const stripAgyPlaceholderFromMarkdown = (rawText: string): string => {
 
 export const extractStreamingThoughtPreviewFromText = (rawText: string): string | null =>
   inspectStreamingThoughtPreview(rawText).preview;
+
+/**
+ * Scans `rawText` in the same O(n) forward index pass, then collects ALL valid
+ * cleaned lines of the latest valid paragraph (preserving multi-sentence content
+ * and natural line breaks without 140-char first-sentence, 260-char preview, or
+ * 1024-char per-line truncation), bounded by `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS`
+ * and `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES`.
+ */
+export const inspectLatestThoughtParagraph = (
+  rawText: string
+): StreamingThoughtPreviewInspection => {
+  if (!rawText) {
+    return { preview: null, cleanedLineCount: 0, cleanedCharCount: 0 };
+  }
+
+  const lines = scanThoughtCandidateLines(rawText);
+  let cleanedLineCount = 0;
+  let cleanedCharCount = 0;
+  let groupEnd = lines.length;
+
+  while (groupEnd > 0) {
+    const currentParagraphId = lines[groupEnd - 1]!.paragraphId;
+    let groupStart = groupEnd - 1;
+    while (groupStart > 0 && lines[groupStart - 1]!.paragraphId === currentParagraphId) {
+      groupStart -= 1;
+    }
+
+    const paragraphLines: string[] = [];
+    let truncatedMidParagraph = false;
+
+    for (let index = groupStart; index < groupEnd; index += 1) {
+      const remainingChars = STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS - cleanedCharCount;
+      if (cleanedLineCount >= STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES || remainingChars <= 0) {
+        if (paragraphLines.length > 0) {
+          truncatedMidParagraph = true;
+          break;
+        }
+        return { preview: null, cleanedLineCount, cleanedCharCount };
+      }
+
+      const candidate = lines[index]!;
+      const source = candidate.text ?? rawText;
+      const result = cleanCandidateLineRange(
+        source,
+        candidate.start,
+        candidate.end,
+        remainingChars,
+        {
+          perLineCap: STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS,
+          truncate: false,
+        }
+      );
+      if (result.cleanedChars > 0) {
+        cleanedLineCount += 1;
+        cleanedCharCount += result.cleanedChars;
+      }
+      if (result.preview !== null) {
+        paragraphLines.push(result.preview);
+      }
+      if (result.clipped) {
+        truncatedMidParagraph = true;
+        break;
+      }
+    }
+
+    if (paragraphLines.length > 0) {
+      if (truncatedMidParagraph) {
+        const lastIdx = paragraphLines.length - 1;
+        const lastLine = paragraphLines[lastIdx]!;
+        if (!lastLine.endsWith('…')) {
+          paragraphLines[lastIdx] = `${lastLine.trimEnd()}…`;
+        }
+      }
+      return {
+        preview: paragraphLines.join('\n'),
+        cleanedLineCount,
+        cleanedCharCount,
+      };
+    }
+
+    groupEnd = groupStart;
+  }
+
+  return { preview: null, cleanedLineCount, cleanedCharCount };
+};
+
+export const extractLatestThoughtParagraphFromText = (rawText: string): string | null =>
+  inspectLatestThoughtParagraph(rawText).preview;
 
 /**
  * Scans an activity group's entries backwards and returns the preview of the most

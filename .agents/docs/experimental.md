@@ -138,37 +138,59 @@ folding (#2353). Applies uniformly across providers; turning the switch off
 retains the upstream two-layer disclosure and legacy behavior verbatim
 ([decision](../notes/implemented/feature/2026-11-21-streaming-thought-preview.md)).
 
-- **Collapsed live header (at most 2 lines, `conversation.railInset`).**
-  Transparent typography with no card fill or border. Line 1 (`13px`,
-  `.agent-shimmer` while live, disabled in Low-stimulus mode) shows
-  `Running <target> (<duration>)` when a non-background tool is `in_progress`,
-  else `Thinking · <first sentence> (<duration>)` from the latest valid thought,
-  else `Thinking… (<duration>)` when only the Antigravity placeholder has
-  arrived. Line 2 (`12px` muted, single-line truncated, never a third line)
-  retains the last valid thought excerpt while a tool runs, shows compact tool
-  counts while thinking after completed/background tools, and omits itself when
-  no tools have run yet.
+- **Collapsed live header (fixed two-tier layout on `conversation.railInset`).**
+  Transparent typography with no card fill or border whose two tiers never swap
+  positions:
+  - Row 1 (`13px`, single-line `nowrap`, outer `.agent-shimmer` wrapper while
+    live, disabled in Low-stimulus mode) always owns status, completed/background
+    tool counts, and elapsed duration—never thought text:
+    `Thinking (<duration>)` or `Thinking · <toolCounts> (<duration>)` while
+    thinking (including placeholder-only starts, without jumping between
+    `Thinking…` and `Thinking`), and `Running <target> (<duration>)` or
+    `Running <target> · <toolCounts> (<duration>)` while a non-background tool
+    is `in_progress`. Status verbs and `(<duration>)` keep `flexShrink: 0`;
+    `<target>` shrinks (`flex: 0 2 auto`) ahead of `<toolCounts>`
+    (`flex: 0 1 auto`) with single-line ellipsis so narrow 390px viewports never
+    squeeze `(<duration>)` out.
+  - Row 2 (`12px` muted `secondaryLabel`, natural multi-line `pre-line` wrapping
+    with `overflow-wrap: anywhere` and no `line-clamp`) appears only when
+    `isLive && !expanded` and a valid thought exists (after stripping
+    Antigravity's placeholder). It renders the full latest valid thought
+    paragraph—preserving multiple sentences and natural line breaks without
+    140-char, 260-char, or 1024-char per-line truncation—and retains the
+    previous valid paragraph while tools execute or placeholder/unclosed `**`
+    chunks stream. Expanding the directory or finishing the turn collapses Row 2
+    automatically.
 - **Single-level expanded directory.** One click on the live header or the
-  finished native `Worked for <duration>` header opens flat sibling rows
-  directly without an intermediate `ActivityGroupHeader`. Valid thoughts start
-  collapsed to one-line first-sentence excerpts (with Antigravity's placeholder
-  stripped and an `Expand all thoughts / Collapse all thoughts` toggle when more
-  than one valid thought exists); consecutive completed non-background `read`
-  tools cluster into one expandable row keyed by the first tool's stable
-  identity (so streaming a 3rd read keeps the cluster open); standalone `read`
-  and `edit` rows with outputs/diffs keep an independent clickable file name to
-  open the source file while whole-row click toggles the detail sheet; other
-  tools expand their detail sheet on whole-row click (no "View output" badge),
-  with a neutral historical `BG` micro-badge derived strictly from persisted
+  finished native `Worked for <duration>` header (omitting header duration on
+  mobile, where the footer owns it) opens flat sibling rows directly without an
+  intermediate `ActivityGroupHeader`. Valid thoughts start collapsed to one-line
+  first-sentence excerpts (with Antigravity's placeholder stripped and an
+  `Expand all thoughts / Collapse all thoughts` toggle when more than one valid
+  thought exists); consecutive completed non-background `read` tools cluster
+  into one expandable row keyed by the first tool's stable identity (so
+  streaming a 3rd read keeps the cluster open); standalone `read` and `edit`
+  rows with outputs/diffs keep an independent clickable file name to open the
+  source file while whole-row click toggles the detail sheet; other tools expand
+  their detail sheet on whole-row click (no "View output" badge), with a neutral
+  historical `BG` micro-badge derived strictly from persisted
   `tool_call.backgroundTaskId` (never presence). Per-session expand memory
   (`sessionId` + `messageId`, isolating forked turns), placeholder-aligned
   thought search indexing (`stripAgyPlaceholderFromMarkdown`), and `#2353`
   folding all remain intact.
-- **Extraction and anti-flicker.** Reuses the single O(n) forward pass from
-  `streaming-thought-preview.ts` (cross-paragraph HTML comments, unclosed
-  leading `**` heading checks, bounded 1024-char inline Markdown cleanup,
-  placeholder stripping, and 1500 ms / 4000 ms Low-stimulus hold throttling)
-  with dot-safe first-sentence extraction (`view.tsx`, `v2.1` preserved).
+- **Extraction, dynamic height, and anti-flicker.** Reuses the single O(n)
+  forward pass in `streaming-thought-preview.ts` (continuous cross-paragraph
+  HTML comments, unclosed leading `**` heading checks, placeholder stripping,
+  and 1500 ms / 4000 ms Low-stimulus hold throttling). Collapsed Row 2 uses
+  `extractLatestThoughtParagraphFromText` / `extractLatestCompactThoughtParagraph`
+  bounded by `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_CHARS` (8,192 chars) and
+  `STREAMING_THOUGHT_PREVIEW_MAX_CLEANED_LINES` (32 lines), while expanded
+  directory rows retain dot-safe first-sentence extraction (`view.tsx`, `v2.1`
+  preserved). `EngineConversationScroller`'s row `ResizeObserver` updates
+  subsequent row offsets and preserves `follow` mode as Row 2 grows/shrinks,
+  and `ScrollController.preserveDisclosure` marks the toggled header row dirty
+  so shrinking a live multi-line header on expand re-measures in the click
+  commit before mobile reveal checks run.
 - **Code.** `packages/components/src/components/ai-gui/streaming-thought-preview.ts`,
   `packages/components/src/components/ai-gui/compact-native-directory.ts`,
   `packages/components/src/components/ai-gui/compact-native-directory-row.tsx`,

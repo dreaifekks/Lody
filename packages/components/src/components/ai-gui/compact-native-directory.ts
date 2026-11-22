@@ -9,6 +9,7 @@ import {
 import {
   extractFirstThoughtPreviewFromText,
   extractLatestStreamingThoughtPreview,
+  extractLatestThoughtParagraphFromText,
   stripAgyPlaceholderFromMarkdown,
 } from './streaming-thought-preview';
 import { formatToolCommand } from './tool-call-command';
@@ -130,6 +131,28 @@ export const extractLatestCompactThoughtSentence = (
   return sentence || null;
 };
 
+/**
+ * Scans an activity group's entries backwards and returns the full cleaned latest
+ * valid paragraph from the most recent substantive `thought` entry, falling back
+ * to earlier thoughts in the same group when the newest chunk is only a placeholder,
+ * HTML comment, formatting-only line, or unclosed streaming bold heading.
+ */
+export const extractLatestCompactThoughtParagraph = (
+  entries: readonly AssistantActivityRenderItem[]
+): string | null => {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.content.type !== 'thought') {
+      continue;
+    }
+    const paragraph = extractLatestThoughtParagraphFromText(entry.content.text);
+    if (paragraph !== null) {
+      return paragraph;
+    }
+  }
+  return null;
+};
+
 export const getCompactToolCategory = (toolCall: ToolCallMessage): CompactToolCategory => {
   switch (toolCall.kind) {
     case 'read':
@@ -247,8 +270,8 @@ export const findActiveNonBackgroundTool = (
 };
 
 /**
- * Counts completed non-background tools and backgrounded tools for Line 2 of
- * the collapsed streaming header while thinking.
+ * Counts completed non-background tools and backgrounded tools for Row 1 of
+ * the live Option C header (persisted while thinking and while tools run).
  */
 export const summarizeCompactTools = (
   entries: readonly AssistantActivityRenderItem[]
