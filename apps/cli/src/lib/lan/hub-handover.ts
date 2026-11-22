@@ -38,6 +38,8 @@ export const LAN_HUB_HANDOVER_FILES = [
   'apns.json',
   'apns-key.p8',
   'push-devices.json',
+  'env.json',
+  'mcp-auth.enc',
   'term.json',
 ] as const;
 

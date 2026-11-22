@@ -63,6 +63,7 @@ import type { LocalUsageLedger } from '@/lib/usage/local-usage-ledger';
 import { readLanCredentialsEnv } from '@lody/shared/node/lan-credentials';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { openLanCopy, type LanCopyRequest } from '@/lib/lan/lan-copy';
+import { LanMcpAuthentication } from '@/lib/lan/lan-mcp-auth';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
   startLocalLoroDataPlaneServer,
@@ -1604,6 +1605,20 @@ export class LodyFleet {
                   );
                   return hub ? readLanCredentialsEnv(hub.id) : {};
                 },
+                createMcpAuthentication: () =>
+                  new LanMcpAuthentication({
+                    userId: workspaceCloudPort.identity.userId,
+                    resolveHub: () =>
+                      this.lan?.hubs.find(
+                        (candidate) => getLanHubWorkspaceId(candidate.id) === workspace.id
+                      ) ?? null,
+                    lanEnv: () => {
+                      const hub = this.lan?.hubs.find(
+                        (candidate) => getLanHubWorkspaceId(candidate.id) === workspace.id
+                      );
+                      return hub ? readLanCredentialsEnv(hub.id) : {};
+                    },
+                  }),
                 askLanMemberDirect: async (machineId, request) => {
                   const forwarded = await this.forwardLanRpc({
                     workspaceId: workspace.id,

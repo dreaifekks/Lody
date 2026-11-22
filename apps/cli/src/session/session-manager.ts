@@ -30,6 +30,7 @@ import { EventEmitter } from 'eventemitter3';
 import os from 'os';
 import { randomUUID } from 'node:crypto';
 import { McpAuthenticationLegacy } from '@/mcp/authentication/legacy';
+import type { McpAuthenticationPort } from '@/lib/lan/lan-mcp-auth';
 
 import {
   SessionId,
@@ -419,7 +420,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private readonly sessionSandboxFactory: SessionSandboxFactory;
   private readonly cloudPort: CloudPort;
   private readonly lanEnv: (() => Readonly<Record<string, string>>) | undefined;
-  readonly mcpAuthentication: McpAuthenticationLegacy;
+  readonly mcpAuthentication: McpAuthenticationPort;
   // Rebalance requests are serialized because the per-session limit is derived from a
   // shared machine-wide budget. This avoids create/exit races briefly applying stale
   // shares of the 90% execution-plane budget. See docs/exec-sandbox.md.
@@ -442,6 +443,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       cloudPort: CloudPort;
       /** The environment variables the workspace's LAN keeps for MCP servers; see `loadSessionMcpCatalog`. */
       lanEnv?: () => Readonly<Record<string, string>>;
+      /** Replaces local keyring-backed MCP authentication (used by LAN workspaces for hub-hosted custody). */
+      mcpAuthentication?: McpAuthenticationPort;
     }
   ) {
     super();
@@ -454,11 +457,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     this.cloudPort = options.cloudPort;
     this.lanEnv = options.lanEnv;
-    this.mcpAuthentication = new McpAuthenticationLegacy({
-      machineId,
-      workspaceId,
-      userId: options.cloudPort.identity.userId,
-    });
+    this.mcpAuthentication =
+      options.mcpAuthentication ??
+      new McpAuthenticationLegacy({
+        machineId,
+        workspaceId,
+        userId: options.cloudPort.identity.userId,
+      });
     this.sessionSandboxFactory =
       options.sessionSandboxFactory ?? createSessionSandboxFactory({ logger: this.logger });
   }

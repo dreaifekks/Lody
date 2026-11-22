@@ -8,6 +8,7 @@ import type {
 } from '@lody/shared';
 import { loadSessionMcpCatalog, loadSessionWorkspaceSettings } from './session-mcp-resolver';
 import { WorkspaceSyncUnavailableError } from '@/lib/command-runtime';
+import { McpAuthenticationError } from '@/mcp/authentication/service';
 
 const workspaceId = 'workspace-1' as WorkspaceId;
 const sessionId = 'session-1' as SessionId;
@@ -206,5 +207,49 @@ describe('LAN MCP environment', () => {
     });
     // Read at the start, so a variable set since the daemon started counts.
     expect(lanEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs sanitized MCP authentication prepare failures with server id/name and never logs secrets', async () => {
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const selectAuthFailure = await loadSessionMcpCatalog({
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
+      workspaceId,
+      sessionId,
+      selectedIds: [selectedId],
+      logger: { debug, warn },
+      env: { NODE_BIN: 'node', ENTRYPOINT: 'server.js' },
+      prepare: async () => {
+        throw new McpAuthenticationError({ reason: 'storage_unavailable' });
+      },
+    });
+    expect(selectAuthFailure(undefined).servers).toEqual([]);
+    expect(selectAuthFailure(undefined).problems).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain(selectedId);
+    expect(warn.mock.calls[0]?.[0]).toContain('filesystem');
+    expect(warn.mock.calls[0]?.[0]).toContain('storage_unavailable');
+
+    const secret = 'Bearer sk-super-secret-value-never-log';
+    const debugOnly = vi.fn();
+    const selectSecretError = await loadSessionMcpCatalog({
+      repo: { openFlockDoc: vi.fn(async () => ({ flock: catalogFlock })) },
+      workspaceId,
+      sessionId,
+      selectedIds: [selectedId],
+      logger: { debug: debugOnly },
+      env: { NODE_BIN: 'node', ENTRYPOINT: 'server.js' },
+      prepare: async () => {
+        throw new Error(`Failed with ${secret}`);
+      },
+    });
+    expect(selectSecretError(undefined).servers).toEqual([]);
+    expect(debugOnly).toHaveBeenCalledTimes(1);
+    const logged = String(debugOnly.mock.calls[0]?.[0] ?? '');
+    expect(logged).toContain(selectedId);
+    expect(logged).toContain('filesystem');
+    expect(logged).toContain('Error');
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain('sk-super-secret');
   });
 });

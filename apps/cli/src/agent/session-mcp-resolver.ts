@@ -35,7 +35,7 @@ export type LoadSessionMcpCatalogInput = {
   workspaceId: WorkspaceId;
   sessionId: SessionId;
   selectedIds: readonly McpServerId[];
-  logger: { debug(message: string): void };
+  logger: { debug(message: string): void; warn?(message: string): void };
   env?: Readonly<Record<string, string | undefined>>;
   /**
    * The environment variables the workspace's LAN keeps for MCP servers, read
@@ -50,6 +50,33 @@ export type LoadSessionMcpCatalogInput = {
 };
 
 const EMPTY_SELECTION: SessionMcpCatalogSelector = () => ({ servers: [], problems: [] });
+
+const KNOWN_MCP_AUTH_REASONS = new Set([
+  'oauth_required',
+  'client_required',
+  'unsupported',
+  'expired',
+  'cancelled',
+  'connection_failed',
+  'storage_unavailable',
+]);
+
+/** Extracts a safe diagnostic code/reason without echoing raw error messages or credentials. */
+function sanitizePrepareFailure(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const candidate = error as { reason?: unknown; code?: unknown; name?: unknown };
+    if (typeof candidate.reason === 'string' && KNOWN_MCP_AUTH_REASONS.has(candidate.reason)) {
+      return candidate.reason;
+    }
+    if (typeof candidate.code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(candidate.code)) {
+      return candidate.code;
+    }
+    if (typeof candidate.name === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(candidate.name)) {
+      return candidate.name;
+    }
+  }
+  return 'unknown_error';
+}
 
 /**
  * Loads the workspace MCP catalog for an ACP session start.
@@ -109,8 +136,13 @@ export const loadSessionMcpCatalog = async (
       if (!entry || !resolved) continue;
       try {
         prepared.set(id, await input.prepare(entry, resolved));
-      } catch {
+      } catch (error) {
         failed.add(id);
+        const log = logger.warn ?? logger.debug;
+        log.call(
+          logger,
+          `[${sessionId}] MCP authentication preparation failed for ${entry.name} (${entry.id}): ${sanitizePrepareFailure(error)}`
+        );
       }
     }
     return (agentCapabilities) => {

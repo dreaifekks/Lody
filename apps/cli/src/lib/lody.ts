@@ -42,6 +42,7 @@ import type { MessageHandlerConfig } from './message-handler';
 import { assertRetainedE2eeModeAllowsOpen } from '@/lib/e2ee/retained-binding';
 import { encryptedRuntimeCloudPort } from '@/lib/e2ee/runtime-cloud-port';
 import type { DaemonWorkspaceAccess } from '@/lib/session-command-environment';
+import type { McpAuthenticationPort } from '@/lib/lan/lan-mcp-auth';
 
 const BUILTIN_AGENT_CONFIG_INITIAL_RETRY_DELAY_MS = 10_000;
 const BUILTIN_AGENT_CONFIG_MAX_RETRY_DELAY_MS = 5 * 60_000;
@@ -117,6 +118,8 @@ interface LodyOptions {
   boardFiles?: MessageHandlerConfig['boardFiles'];
   /** The environment variables the LAN keeps for the MCP servers of this workspace. */
   lanEnv?: () => Readonly<Record<string, string>>;
+  /** Factory for LAN hub-hosted MCP authentication injected into SessionManager. */
+  createMcpAuthentication?: () => McpAuthenticationPort;
   readWorkspaceAccess?: () => DaemonWorkspaceAccess;
   cloudPort: CloudPort;
   /** A verified encrypted owner promoted in place by local pairing activation. `create`
@@ -385,7 +388,13 @@ export class Lody {
           this.machineId,
           this.workspaceId,
           documentManager,
-          { cloudPort: options.cloudPort, ...(options.lanEnv ? { lanEnv: options.lanEnv } : {}) }
+          {
+            cloudPort: options.cloudPort,
+            ...(options.lanEnv ? { lanEnv: options.lanEnv } : {}),
+            ...(options.createMcpAuthentication
+              ? { mcpAuthentication: options.createMcpAuthentication() }
+              : {}),
+          }
         ),
       workspaceDocument: documentManager,
       memoryPressure: options.memoryPressure,

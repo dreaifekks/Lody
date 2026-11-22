@@ -20,6 +20,8 @@ import { LAN_HUB_TIME_PATH } from '@lody/shared/lan-hub';
 import { createApnsSender, readApnsConfig, type ApnsSender } from './apns';
 import { createLanHubGitHub, type LanHubGitHub } from './hub-github';
 import { createLanHubCredentialRoutes, type LanHubCredentialRoutes } from './hub-credentials';
+import { createLanHubMcpAuth, type LanHubMcpAuth } from './hub-mcp-auth';
+import type { McpAuthenticationIO } from '@/mcp/authentication/io';
 import {
   LAN_HUB_HANDOVER_ABORT_PATH,
   LAN_HUB_HANDOVER_COMPLETE_PATH,
@@ -104,6 +106,10 @@ export type LanHubServerOptions = {
   sharePort?: number | null;
   /** Replaces the reader page a build carries beside its bundle. */
   shareReaderAssets?: () => LanShareReaderAssets | null;
+  /** Replaces MCP OAuth IO; hub token refresh is tested without live OAuth servers. */
+  mcpAuthIo?: McpAuthenticationIO;
+  /** Clock in epoch ms for MCP auth timestamps and expiry checks. */
+  now?: () => number;
   log?: (line: string) => void;
 };
 
@@ -479,6 +485,7 @@ function createGate(options: {
   push: LanHubPush;
   github: LanHubGitHub;
   credentials: LanHubCredentialRoutes;
+  mcpAuth: LanHubMcpAuth;
   shares: LanHubShares;
 }): http.RequestListener {
   const expectedAuthorization = Buffer.from(`Bearer ${options.token}`);
@@ -523,6 +530,10 @@ function createGate(options: {
     }
     if (options.credentials.handles(request.url)) {
       void options.credentials.handle(request, response);
+      return;
+    }
+    if (options.mcpAuth.handles(request.url)) {
+      void options.mcpAuth.handle(request, response);
       return;
     }
     if (options.shares.handles(request.url)) {
@@ -674,6 +685,13 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     isServing: () => state.kind === 'serving',
     log: options.log,
   });
+  const mcpAuth = createLanHubMcpAuth({
+    dataDir,
+    token,
+    io: options.mcpAuthIo,
+    now: options.now,
+    log: options.log,
+  });
 
   const close = async (error: Error | null = null): Promise<void> => {
     if (closing) {
@@ -691,6 +709,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     }
     push.close();
     shares.close();
+    mcpAuth.close();
     apns.close();
     if (state.kind === 'serving') {
       await state.upstream.stop();
@@ -793,8 +812,8 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
     await upstream.stop();
     await upstream.exited;
-    // A share being committed lands before its files are read.
-    await shares.idle();
+    // A share or MCP auth write being committed lands before its files are read.
+    await Promise.all([shares.idle(), mcpAuth.idle()]);
     response.writeHead(200, {
       ...corsHeaders(request),
       'Content-Type': 'application/octet-stream',
@@ -961,6 +980,7 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
         devices: () => push.devices(),
         log: options.log,
       }),
+      mcpAuth,
       shares,
     });
     const created = options.tls

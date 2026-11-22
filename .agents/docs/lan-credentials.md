@@ -93,6 +93,47 @@ value:
   member takes as an empty table; a member of an earlier build keeps the rest
   of the copy and ignores the new file.
 
+## Hub-hosted MCP authentication (OAuth and manual)
+
+Local MCP authentication (`authentication: 'local'`) normally stores OAuth
+tokens and manual HTTP/stdio credentials in each machine's OS keyring. On a
+LAN, headless Linux members often lack an unlocked keyring and authorizing each
+machine separately would duplicate OAuth grants and race single-use refresh
+tokens. Instead, LAN workspaces keep MCP authentication centrally on the hub
+(`hub-mcp-auth.ts`) and inject `LanMcpAuthentication` (`lan-mcp-auth.ts`) into
+`SessionManager`:
+
+```text
+ Desktop member (browser) ── OAuth PKCE/DCR + 127.0.0.1/callback ──▶ PUT /lan/mcp-auth/records/:id (AES-256-GCM envelope) ──▶ hub: mcp-auth.enc
+ Any member (incl. Linux) ── POST /lan/mcp-auth/token/:id (AES-256-GCM envelope) ──▶ hub (per-serverId mutex refresh) ──▶ short-lived headers / manual env
+```
+
+- **Encrypted at rest and on the wire**: Two domain-separated 256-bit keys are
+  derived from the hub bearer token with HKDF-SHA256
+  (`lody-lan-hub:mcp-auth-at-rest` and `lody-lan-hub:mcp-auth-wire`). The hub
+  persists `<hubDataDir>/mcp-auth.enc` atomically (`0600` temp file + rename)
+  with AES-256-GCM and explicit AAD; `PUT /lan/mcp-auth/records/:serverId` and
+  `POST /lan/mcp-auth/token/:serverId` carry `{ v: 1, iv, tag, ciphertext }`
+  envelopes bound to route/method/serverId/direction AAD behind the hub's
+  `Bearer <hub.token>` gate.
+- **Single-lock serialized refresh & custody**: Refreshing OAuth tokens runs
+  only on the hub under a per-`serverId` mutex. Concurrent `401` retries carry
+  `failedRevision` so the hub deduplicates them via CAS (`failedRevision <
+  revision`) and rotates a single-use refresh token at most once, persisting
+  atomically before releasing the lock. `refresh_token` and `client_secret`
+  never leave the hub; members hold only short-lived `Authorization` headers (or
+  manual headers/env) in process memory and serve HTTP MCP servers to agents via
+  a local loopback relay (`io.ts`) that passes through MCP `404`/`405` status
+  codes and safe protocol headers with redacted bodies.
+- **Isolation & failover**: Credentials never enter Workspace Flock, Loro
+  Streams, renderer processes (`lan-hub-forward.ts` still forwards `/ds/*` and
+  `/api/time` alone), logs, or agent configs. `GET /lan/mcp-auth/status` returns
+  sanitized metadata only. Both `mcp-auth.enc` and `env.json` are included in
+  `LAN_HUB_HANDOVER_FILES` so handover and standby snapshots transfer them
+  between hub hosts without replicating `mcp-auth.enc` to ordinary members'
+  `/lan/credentials` copies. Members resolve the active hub dynamically on each
+  call, so handover and failover redirect automatically.
+
 ## Credentials on every member
 
 The hub holds four credentials: the GitHub token, the APNs key, the phones
