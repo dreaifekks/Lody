@@ -1,12 +1,15 @@
 export {
   activeBtwArticleContextAtomFamily,
+  btwArticleContextCandidatesAtomFamily,
   btwSessionStateAtomFamily,
   buildBtwArticleContextPayload,
   createInitialBtwSessionState,
   formatBtwFileName,
   openBtwForSessionAtom,
   openBtwWithSelectionAtom,
+  removeBtwArticleContextAtom,
   resolveBtwModelPillLabel,
+  upsertBtwArticleContextAtom,
   type BtwActiveArticleContext,
   type BtwSelectionAttachment,
   type BtwSessionState,
@@ -28,6 +31,7 @@ export {
   type MainConversationStatusKind,
 } from './main-conversation-status';
 export {
+  BTW_ACCENT_TEXT_CLASS,
   BTW_SURFACE_BG_CLASS,
   BtwInfoBarClearButton,
   BtwInfoBarToggle,

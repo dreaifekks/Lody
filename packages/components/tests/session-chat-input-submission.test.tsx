@@ -2169,4 +2169,132 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(onStop).not.toHaveBeenCalled();
     expect(onSendMessage).not.toHaveBeenCalled();
   });
+
+  it('intercepts /btw even when main composer has pending Article annotations or comment refs, preserving them intact', async () => {
+    const sessionId = `btw-with-annotations-${++nextSession}`;
+    const onSendMessage = vi.fn(async () => true);
+    const onBtwCommand = vi.fn();
+    const composerRef = createRef<SessionChatInputAreaHandle>();
+
+    getDefaultStore().set(articleAnnotationsAtom, [
+      {
+        id: 'ann-keep',
+        threadId: sessionId as never,
+        fileSessionId: sessionId as never,
+        path: 'files/btw-drawer/design.md',
+        quote: 'Warm pool cap = 2',
+        comment: 'Confirm eviction order',
+        block: { index: 1, text: 'Warm pool cap = 2' },
+      },
+    ]);
+
+    try {
+      const textarea = await renderComposer({
+        sessionId,
+        composerRef,
+        onSendMessage,
+        overrides: { onBtwCommand },
+      });
+
+      await act(async () => {
+        composerRef.current!.addCommentReference({
+          source: 'lody',
+          path: 'src/app.ts',
+          lineNumber: 12,
+          side: 'additions',
+          commentBody: 'Keep this main comment ref',
+        });
+      });
+      await act(async () => composerRef.current!.setInputText('/btw quick side question'));
+      await submit('keyboard');
+
+      expect(onBtwCommand).toHaveBeenCalledWith('quick side question');
+      expect(onSendMessage).not.toHaveBeenCalled();
+      expect(textarea.value).toBe('');
+
+      // Main Article annotations & comment references must remain untouched and unsent
+      const remainingAnnotations = getDefaultStore().get(articleAnnotationsAtom);
+      expect(remainingAnnotations).toHaveLength(1);
+      expect(remainingAnnotations[0]?.sent).toBeUndefined();
+      expect(container!.textContent).toContain('Keep this main comment ref');
+    } finally {
+      getDefaultStore().set(articleAnnotationsAtom, []);
+    }
+  });
+
+  it('routes Article "Send comments" to the main conversation even when /btw is open with an unsent draft', async () => {
+    const sessionId = `btw-open-article-send-${++nextSession}`;
+    const submissions: SessionInputBlock[][] = [];
+    const onSendMessage = vi.fn(async (blocks: SessionInputBlock[]) => {
+      submissions.push(blocks);
+      return true;
+    });
+    const onBtwSend = vi.fn();
+    const onBtwClose = vi.fn();
+    const composerRef = createRef<SessionChatInputAreaHandle>();
+
+    getDefaultStore().set(articleAnnotationsAtom, [
+      {
+        id: 'ann-main-only',
+        threadId: sessionId as never,
+        fileSessionId: sessionId as never,
+        path: 'files/btw-drawer/design.md',
+        quote: 'Single-icon toggle',
+        comment: 'Ship this to main conversation',
+        block: { index: 2, text: 'Single-icon toggle' },
+      },
+    ]);
+
+    try {
+      // Seed main draft before opening `/btw`
+      setSessionChatInputTextDraft(sessionId as SessionMeta['id'], 'Main draft note');
+
+      const textarea = await renderComposer({
+        sessionId,
+        composerRef,
+        onSendMessage,
+        overrides: {
+          btwMode: {
+            isOpen: true,
+            isStreaming: false,
+            modelLabel: 'Hydrogen · Low',
+            articleFileName: 'design.md',
+            pendingSelection: null,
+            onSend: onBtwSend,
+            onCancel: vi.fn(),
+            onClose: onBtwClose,
+          },
+        },
+      });
+
+      // Type an unsent `/btw` draft while drawer is expanded
+      await act(async () => {
+        textarea.edit('Unsent btw draft that must NOT be sent');
+      });
+
+      // Trigger external Article "Send comments" request
+      await act(async () => {
+        getDefaultStore().set(articleAnnotationSendRequestAtom, {
+          threadId: sessionId as never,
+          seq: Date.now(),
+        });
+      });
+
+      expect(onBtwSend).not.toHaveBeenCalled();
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+      expect(submissions).toHaveLength(1);
+      const sentText = submissions[0]
+        ?.filter((b): b is Extract<SessionInputBlock, { type: 'text' }> => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+      expect(sentText).toContain('Main draft note');
+      expect(sentText).toContain('Ship this to main conversation');
+      expect(sentText).not.toContain('Unsent btw draft');
+      expect(onBtwClose).toHaveBeenCalledTimes(1);
+      // Article annotation was marked sent
+      expect(getDefaultStore().get(articleAnnotationsAtom)[0]?.sent).toBeDefined();
+    } finally {
+      getDefaultStore().set(articleAnnotationsAtom, []);
+    }
+  });
 });

@@ -685,7 +685,7 @@ export function ContextChip({
   ) : undefined;
 
   const summary = (
-    <span className="flex min-w-0 items-center gap-2 font-normal">
+    <span className="flex min-w-0 items-center gap-1.5 font-normal @[420px]:gap-2">
       {projectName ? (
         <span className="min-w-0 shrink-[2] truncate text-muted-foreground">{projectName}</span>
       ) : null}

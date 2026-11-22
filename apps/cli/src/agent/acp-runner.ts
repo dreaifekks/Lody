@@ -134,6 +134,7 @@ export type CreateAcpClientOptions = {
    */
   terminalEnabled?: boolean;
   readOnlyFs?: boolean;
+  disableReadTextFile?: boolean;
   disableBuiltinMcp?: boolean;
   discoverAuthenticationMethods?: boolean;
   workspaceId?: WorkspaceId;
@@ -182,6 +183,7 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     launcher: options.launcher,
     terminalEnabled: options.terminalEnabled,
     readOnlyFs: options.readOnlyFs,
+    disableReadTextFile: options.disableReadTextFile,
     disableBuiltinMcp: options.disableBuiltinMcp,
     discoverAuthenticationMethods: options.discoverAuthenticationMethods,
     onStartupStage: options.onStartupStage,
@@ -328,6 +330,8 @@ export type StartLocalAcpAgentOptions = {
   terminalEnabled?: boolean;
   /** Disable ACP filesystem writes (`writeTextFile`). */
   readOnlyFs?: boolean;
+  /** Disable ACP filesystem reads (`readTextFile`). */
+  disableReadTextFile?: boolean;
   /** Omit the built-in Lody MCP server from ACP session startup. */
   disableBuiltinMcp?: boolean;
   /** Bypass the shared `AcpSessionStartGate` when the caller enforces its own bounded gate. */
@@ -960,6 +964,7 @@ async function startLocalAcpProtocol<T>(
         launcher,
         terminalEnabled: options.terminalEnabled,
         readOnlyFs: options.readOnlyFs,
+        disableReadTextFile: options.disableReadTextFile,
         disableBuiltinMcp: options.disableBuiltinMcp,
         discoverAuthenticationMethods: options.discoverAuthenticationMethods,
         onUsageUpdate: options.onUsageUpdate,

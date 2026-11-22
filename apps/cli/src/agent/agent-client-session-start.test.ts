@@ -1318,4 +1318,58 @@ describe('AgentClient readOnlyFs and disableBuiltinMcp', () => {
       await rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('advertises readTextFile: false and rejects absolute-path reads when disableReadTextFile is enabled', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'lody-agent-client-textonly-'));
+    const outsideDir = await mkdtemp(join(tmpdir(), 'lody-agent-client-outside-'));
+    try {
+      const secretFile = join(outsideDir, 'secret.txt');
+      await writeFile(secretFile, 'should-never-be-read', 'utf8');
+
+      let advertisedFs: { readTextFile?: boolean; writeTextFile?: boolean } | undefined;
+      connectionMocks.initialize.mockImplementationOnce(async ({ clientCapabilities }) => {
+        advertisedFs = clientCapabilities?.fs;
+        return { agentCapabilities: {} };
+      });
+      connectionMocks.newSession.mockResolvedValueOnce({ sessionId: 'acp-text-only-1' });
+
+      const client = new AgentClient({
+        logger: createLogger(),
+        sessionId: 'session-text-only-1' as SessionId,
+        workspaceId: 'ws-1' as WorkspaceId,
+        machineId: 'machine-1' as MachineId,
+        terminalManager: {} as never,
+        terminalEnabled: false,
+        readOnlyFs: true,
+        disableReadTextFile: true,
+        disableBuiltinMcp: true,
+        onUpdateMessage: vi.fn(),
+        onRequestPermission: vi.fn(),
+      });
+
+      await client.startSession({} as never, tmpDir);
+
+      expect(advertisedFs).toEqual({
+        readTextFile: false,
+        writeTextFile: false,
+      });
+
+      await expect(
+        client.readTextFile?.({
+          sessionId: 'acp-text-only-1',
+          path: secretFile,
+        })
+      ).rejects.toThrow(/text-only/i);
+      await expect(
+        client.writeTextFile?.({
+          sessionId: 'acp-text-only-1',
+          path: join(tmpDir, 'blocked.txt'),
+          content: 'blocked',
+        })
+      ).rejects.toThrow(/read-only/i);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -586,6 +586,7 @@ export interface SessionChatInputAreaProps {
     readonly onClearPendingSelection?: () => void;
     readonly onSend: (question: string) => void | Promise<void>;
     readonly onCancel: () => void;
+    readonly onClose?: () => void;
   };
   /** Intercepts `/btw <question>` typed in the main composer without writing to main history. */
   onBtwCommand?: (question: string) => void;
@@ -1952,9 +1953,10 @@ export const SessionChatInputArea = memo(
     );
 
     const sendMessage = useCallback(
-      async (options?: SessionSendMessageOptions) => {
+      async (options?: SessionSendMessageOptions, target: 'auto' | 'main' = 'auto') => {
         if (!isVisible) return;
-        if (btwMode?.isOpen) {
+        const routeToMain = target === 'main';
+        if (btwMode?.isOpen && !routeToMain) {
           if (isArchived || isMachineRemoved || btwMode.isStreaming) return;
           const rawValue = textareaRef.current ? getComposerText(textareaRef.current) : btwInput;
           const trimmedBtw = rawValue.trim();
@@ -2029,7 +2031,11 @@ export const SessionChatInputArea = memo(
           );
           return;
         }
-        const currentValue = textareaRef.current ? getComposerText(textareaRef.current) : userInput;
+        // When an external trigger (e.g. Article "Send comments") targets the main
+        // conversation while `/btw` is expanded, `textareaRef` holds the unsent `/btw`
+        // draft rather than the main draft, so read `userInput` directly.
+        const currentValue =
+          !btwMode?.isOpen && textareaRef.current ? getComposerText(textareaRef.current) : userInput;
         // One pass: pasted placeholders, `$skill`, `@session:`, and the mentions
         // that need no rewrite all resolve against the same original text, and
         // the spans record where each landed.
@@ -2039,17 +2045,10 @@ export const SessionChatInputArea = memo(
           pastedTextDrafts: currentPastedTextDrafts,
         });
         const trimmedPrompt = expandedPrompt.text.trim();
-        if (
-          onBtwCommand &&
-          !scheduled.at &&
-          pendingImages.length === 0 &&
-          pendingFiles.length === 0 &&
-          commentReferencesRef.current.length === 0 &&
-          visualAnnotationReferencesRef.current.length === 0 &&
-          articleAnnotations.length === 0
-        ) {
+        if (onBtwCommand && !scheduled.at && !routeToMain) {
           const parsedBtw = parseBtwSlashCommand(trimmedPrompt);
           if (parsedBtw.matched) {
+            // Clear only the typed `/btw …` text; preserve main attachments & annotations.
             clearInput();
             onBtwCommand(parsedBtw.question);
             return;
@@ -2222,6 +2221,9 @@ export const SessionChatInputArea = memo(
             }
             if (formattedAnnotations)
               markArticleAnnotationsSent(formattedAnnotations.carried, Date.now());
+            if (routeToMain && btwMode?.isOpen) {
+              btwMode.onClose?.();
+            }
           }
         } finally {
           submission.finish({ dismissKeyboard: accepted && usesMobileKeyboardAction });
@@ -2302,7 +2304,7 @@ export const SessionChatInputArea = memo(
     useEffect(() => {
       if (articleSendRequest === handledArticleSendRequest.current) return;
       handledArticleSendRequest.current = articleSendRequest;
-      if (articleSendRequest?.threadId === session.id) void sendMessage();
+      if (articleSendRequest?.threadId === session.id) void sendMessage(undefined, 'main');
     }, [articleSendRequest, sendMessage, session.id]);
 
     const hasDraft =
@@ -2990,7 +2992,9 @@ export const SessionChatInputArea = memo(
           {!isBtwOpen && mcpDefaultsFailed && onRetryMcpDefaults ? (
             <McpDefaultsRecovery
               onRetry={onRetryMcpDefaults}
-              onSendWithoutMcp={() => void sendMessage({ mcpServerIds: [], skipMcpOnce: true })}
+              onSendWithoutMcp={() =>
+                void sendMessage({ mcpServerIds: [], skipMcpOnce: true }, 'main')
+              }
               disabled={submissionPending || isArchived || isMachineRemoved}
             />
           ) : null}

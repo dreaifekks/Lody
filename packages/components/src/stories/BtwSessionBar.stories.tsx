@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
 import { MessagesSquare } from 'lucide-react';
 import { fn } from 'storybook/test';
 import { Tooltip } from '@lody/ui/tooltip';
+import { ConversationColumn } from '@/components/shared/conversation-column';
 import { SessionInfoBar } from '@/components/sessions/session-info-bar';
 import type { SessionMachineInfo } from '@/components/sessions/session-machine-info';
 import {
@@ -17,6 +18,7 @@ import {
   type MainConversationStatus,
 } from '@/components/sessions/btw';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/theme-provider';
 
 const DEMO_MACHINE: SessionMachineInfo = {
   machineId: 'machine-story-dev' as SessionMachineInfo['machineId'],
@@ -77,39 +79,41 @@ function SharedComposerPreview({
   readonly onClearSelection?: () => void;
 }) {
   return (
-    <div className={cn('px-3 pb-3', isBtw ? BTW_SURFACE_BG_CLASS : 'bg-background')}>
-      <div
-        className={cn(
-          'flex flex-col gap-2 rounded-2xl border bg-[hsl(var(--composer))] px-3 py-2.5 shadow-xs dark:bg-input/90',
-          isBtw
-            ? 'border-primary/40 dark:border-primary/40'
-            : 'border-foreground/[0.10] dark:border-input-border/70'
-        )}
-      >
-        {isBtw && pendingSelection ? (
-          <BtwPendingSelectionChip selection={pendingSelection} onRemove={onClearSelection} />
-        ) : null}
-        <div className="min-h-[38px] text-sm text-muted-foreground/75">
-          {isBtw ? '顺便问一句…' : '输入消息，或 /btw …'}
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          {isBtw ? (
-            <BtwComposerFooter modelLabel={modelLabel} articleFileName={articleFileName} />
-          ) : (
-            <span className="inline-flex items-center rounded-md bg-foreground/[0.06] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/[0.07]">
-              Neon · High
-            </span>
+    <div className={cn('pb-3', isBtw ? BTW_SURFACE_BG_CLASS : 'bg-background')}>
+      <ConversationColumn>
+        <div
+          className={cn(
+            'flex flex-col gap-2 rounded-2xl border bg-[hsl(var(--composer))] px-3 py-2.5 shadow-xs dark:bg-input/90',
+            isBtw
+              ? 'border-primary/40 dark:border-primary/40'
+              : 'border-foreground/[0.10] dark:border-input-border/70'
           )}
-          <span
-            className={cn(
-              'inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold',
-              isBtw ? 'bg-primary text-primary-foreground' : 'bg-foreground text-background'
+        >
+          {isBtw && pendingSelection ? (
+            <BtwPendingSelectionChip selection={pendingSelection} onRemove={onClearSelection} />
+          ) : null}
+          <div className="min-h-[38px] text-sm text-foreground/70 dark:text-muted-foreground">
+            {isBtw ? '顺便问一句…' : '输入消息，或 /btw …'}
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            {isBtw ? (
+              <BtwComposerFooter modelLabel={modelLabel} articleFileName={articleFileName} />
+            ) : (
+              <span className="inline-flex items-center rounded-md bg-foreground/[0.06] px-2 py-0.5 text-[11px] text-foreground/75 dark:bg-white/[0.07] dark:text-muted-foreground">
+                Neon · High
+              </span>
             )}
-          >
-            ↑
-          </span>
+            <span
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                isBtw ? 'bg-primary text-primary-foreground' : 'bg-foreground text-background'
+              )}
+            >
+              ↑
+            </span>
+          </div>
         </div>
-      </div>
+      </ConversationColumn>
     </div>
   );
 }
@@ -124,7 +128,6 @@ type BtwBarScenarioProps = {
   readonly showStream?: boolean;
   readonly showPendingSelection?: boolean;
   readonly width?: number;
-  readonly dark?: boolean;
   readonly articleFileName?: string | null;
 };
 
@@ -138,7 +141,6 @@ function BtwPanelScenario({
   showStream = true,
   showPendingSelection = false,
   width = 440,
-  dark = false,
   articleFileName = 'design.md',
 }: BtwBarScenarioProps) {
   const [readOnly, setReadOnly] = useState(readOnlyTools);
@@ -150,11 +152,8 @@ function BtwPanelScenario({
   return (
     <Tooltip.Provider>
       <div
-        className={cn(
-          dark && 'dark dark-scope',
-          'overflow-hidden rounded-xl border border-border bg-background text-foreground shadow-sm'
-        )}
-        style={{ width }}
+        className="w-full max-w-[440px] overflow-hidden rounded-xl border border-border bg-background text-foreground shadow-sm"
+        style={{ width: `min(${width}px, calc(100vw - 32px))`, maxWidth: `${width}px` }}
       >
         {showStream ? (
           <div className="relative h-[320px] w-full overflow-hidden">
@@ -234,7 +233,7 @@ export const MainViewInfoBarStates: Story = {
   },
   render: () => (
     <Tooltip.Provider>
-      <div className="flex w-[560px] max-w-full flex-col gap-4">
+      <div className="flex w-[min(560px,calc(100vw-32px))] max-w-full flex-col gap-4">
         {(
           [
             { label: '/btw 空闲', isBtwStreaming: false, hasBtwUnread: false, btwTurnCount: 0 },
@@ -287,7 +286,7 @@ export const ExpandedMainStatusMatrix: Story = {
   },
   render: () => (
     <Tooltip.Provider>
-      <div className="flex w-[560px] max-w-full flex-col gap-4">
+      <div className="flex w-[min(560px,calc(100vw-32px))] max-w-full flex-col gap-4">
         {(
           [
             {
@@ -331,10 +330,10 @@ export const ExpandedMainStatusMatrix: Story = {
 
 /** 440px narrow Article right column — light theme, main running + pending selection chip. */
 export const ArticleNarrowLight: Story = {
+  globals: { theme: 'light' },
   args: {
     isOpen: true,
     width: 440,
-    dark: false,
     showPendingSelection: true,
     mainStatus: { kind: 'working', tooltip: '返回主对话 · Running read_file (3)' },
   },
@@ -342,10 +341,10 @@ export const ArticleNarrowLight: Story = {
 
 /** 440px narrow Article right column — dark theme, main waiting approval (`Hand`) + read-only enabled. */
 export const ArticleNarrowDarkWaitingApproval: Story = {
+  globals: { theme: 'dark' },
   args: {
     isOpen: true,
     width: 440,
-    dark: true,
     readOnlyTools: true,
     showPendingSelection: true,
     mainStatus: { kind: 'waiting', tooltip: '返回主对话 · 等待审批' },
@@ -354,9 +353,14 @@ export const ArticleNarrowDarkWaitingApproval: Story = {
 
 /** Interactive toggle between Main and `/btw` across all 5 main statuses at 440px width. */
 function InteractiveBtwHarness() {
+  const { previewTheme } = useTheme();
   const [isOpen, setIsOpen] = useState(true);
   const [statusKind, setStatusKind] = useState<MainConversationStatus['kind']>('working');
   const [dark, setDark] = useState(false);
+
+  useEffect(() => {
+    previewTheme(dark ? 'dark' : 'light');
+  }, [dark, previewTheme]);
 
   const statusMap: Record<MainConversationStatus['kind'], MainConversationStatus> = {
     working: { kind: 'working', tooltip: '返回主对话 · Running read_file (3)' },
@@ -398,12 +402,10 @@ function InteractiveBtwHarness() {
         </button>
       </div>
       <BtwPanelScenario
-        key={dark ? 'dark' : 'light'}
         isOpen={isOpen}
         mainStatus={statusMap[statusKind]}
         showPendingSelection
         width={440}
-        dark={dark}
       />
     </div>
   );

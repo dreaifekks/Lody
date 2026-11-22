@@ -85,9 +85,10 @@ import { SessionFileBinaryPreview } from './session-file-binary-preview';
 import { SessionFileCsvPreview } from './session-file-csv-preview';
 import { DocumentSelectionSurface } from './document-selection-surface';
 import {
-  activeBtwArticleContextAtomFamily,
   buildBtwArticleContextPayload,
   openBtwWithSelectionAtom,
+  removeBtwArticleContextAtom,
+  upsertBtwArticleContextAtom,
 } from './btw';
 import { locateMarkdownSelection, type DocumentSelection } from '@/lib/document-selection';
 import { ArticleAnnotationMarkers } from '../boards/article-annotation-markers';
@@ -1774,9 +1775,8 @@ function SessionFileContentViewImpl({
   const btwArticleOwnerId = useId();
   const btwTargetSessionId = (article?.annotationThreadId ?? sessionId) as SessionId;
   const openBtwWithSelection = useSetAtom(openBtwWithSelectionAtom);
-  const setActiveBtwArticleContext = useSetAtom(
-    activeBtwArticleContextAtomFamily(btwTargetSessionId)
-  );
+  const upsertBtwArticleContext = useSetAtom(upsertBtwArticleContextAtom);
+  const removeBtwArticleContext = useSetAtom(removeBtwArticleContextAtom);
   const btwLoadedText =
     data.status === 'ready' && data.snapshot.kind === 'text'
       ? (latestEditorTextRef.current ?? data.snapshot.text)
@@ -1792,24 +1792,19 @@ function SessionFileContentViewImpl({
       priority,
     });
     if (!payload) return undefined;
-    setActiveBtwArticleContext((current) => {
-      if (current && (current.priority ?? 0) > priority && current.ownerId !== btwArticleOwnerId) {
-        return current;
-      }
-      return payload;
-    });
+    upsertBtwArticleContext({ sessionId: btwTargetSessionId, payload });
     return () => {
-      setActiveBtwArticleContext((current) =>
-        current?.ownerId === btwArticleOwnerId ? null : current
-      );
+      removeBtwArticleContext({ sessionId: btwTargetSessionId, ownerId: btwArticleOwnerId });
     };
   }, [
     btwArticleOwnerId,
     btwLoadedText,
+    btwTargetSessionId,
     isActiveSurface,
     isArticle,
     normalizedPath,
-    setActiveBtwArticleContext,
+    removeBtwArticleContext,
+    upsertBtwArticleContext,
   ]);
 
   const handleAskBtwSelection = useCallback(

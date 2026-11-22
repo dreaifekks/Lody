@@ -17,7 +17,9 @@ import {
   buildBtwArticleContextPayload,
   openBtwForSessionAtom,
   openBtwWithSelectionAtom,
+  removeBtwArticleContextAtom,
   resolveBtwModelPillLabel,
+  upsertBtwArticleContextAtom,
 } from '../src/components/sessions/btw/btw-atoms';
 import {
   useBtwController,
@@ -409,5 +411,228 @@ describe('useBtwController and btw-atoms', () => {
     });
     expect(ev2.defaultPrevented).toBe(true);
     expect(store.get(btwSessionStateAtomFamily(SESSION_ID)).isOpen).toBe(false);
+  });
+
+  it('settles streaming state on unmount so remounting the same session can ask immediately', async () => {
+    const store = createStore();
+    const sessionId = 'session-btw-unmount-1' as SessionId;
+    const calls: Array<{
+      machineId: MachineId;
+      params: SessionBtwRequest;
+      onProgress?: (progress: SessionBtwProgress) => void;
+      signal?: AbortSignal;
+    }> = [];
+    const pendingAsk = createDeferred<SessionBtwResponse | null>();
+
+    const requestSessionBtw = vi.fn(
+      (
+        machineId: MachineId,
+        params: SessionBtwRequest,
+        options?: {
+          onProgress?: (progress: SessionBtwProgress) => void;
+          signal?: AbortSignal;
+        }
+      ) => {
+        calls.push({
+          machineId,
+          params,
+          onProgress: options?.onProgress,
+          signal: options?.signal,
+        });
+        if (
+          params.action === 'ask' &&
+          calls.filter((c) => c.params.action === 'ask').length === 1
+        ) {
+          return pendingAsk.promise;
+        }
+        return Promise.resolve({ btwId: params.btwId, text: 'reopened-ok' });
+      }
+    );
+
+    store.set(runtimeAtom, { requestSessionBtw } as unknown as WorkspaceRuntime);
+
+    let latest!: BtwController;
+    function Harness() {
+      latest = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'antigravity',
+        isVisible: true,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+
+    let ask1!: Promise<void>;
+    act(() => {
+      ask1 = latest.ask('Long question');
+    });
+    const btwId = calls[0]!.params.btwId;
+    act(() => {
+      calls[0]?.onProgress?.({ btwId, kind: 'delta', delta: 'Partial before unmount' });
+    });
+    expect(latest.state.isStreaming).toBe(true);
+
+    // Unmount while still streaming
+    act(() => {
+      root.unmount();
+    });
+
+    expect(calls[0]?.signal?.aborted).toBe(true);
+    expect(calls.at(-1)).toMatchObject({
+      machineId: MACHINE_ID,
+      params: { action: 'close', sessionId, btwId },
+    });
+
+    // Atom must synchronously settle to isStreaming=false with partial text committed
+    const settled = store.get(btwSessionStateAtomFamily(sessionId));
+    expect(settled.isStreaming).toBe(false);
+    expect(settled.streamingText).toBe('');
+    expect(settled.turns.at(-1)).toMatchObject({
+      role: 'assistant',
+      text: 'Partial before unmount',
+      cancelled: true,
+    });
+
+    // Late resolution of abandoned promise must be ignored
+    await act(async () => {
+      pendingAsk.resolve({ btwId, text: 'late-stale-text' });
+      await ask1;
+    });
+
+    // Remounting the same session immediately permits a fresh question
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness />
+        </Provider>
+      );
+    });
+    expect(latest.state.isStreaming).toBe(false);
+    await act(async () => {
+      await latest.ask('Follow-up after reopen');
+    });
+    expect(latest.state.isStreaming).toBe(false);
+    expect(latest.state.turns.at(-1)?.text).toBe('reopened-ok');
+  });
+
+  it('closes the original session/machine/btwId and settles the origin atom when sessionId prop switches', async () => {
+    const store = createStore();
+    const sessionA = 'session-btw-switch-a' as SessionId;
+    const sessionB = 'session-btw-switch-b' as SessionId;
+    const machineA = 'machine-switch-a' as MachineId;
+    const machineB = 'machine-switch-b' as MachineId;
+
+    const calls: Array<{ machineId: MachineId; params: SessionBtwRequest }> = [];
+    const pendingAskA = createDeferred<SessionBtwResponse | null>();
+
+    const requestSessionBtw = vi.fn((machineId: MachineId, params: SessionBtwRequest) => {
+      calls.push({ machineId, params });
+      if (params.action === 'ask') return pendingAskA.promise;
+      return Promise.resolve({ btwId: params.btwId, text: '' });
+    });
+
+    store.set(runtimeAtom, { requestSessionBtw } as unknown as WorkspaceRuntime);
+
+    let latest!: BtwController;
+    function Harness({ sid, mid }: { sid: SessionId; mid: MachineId }) {
+      latest = useBtwController({
+        sessionId: sid,
+        machineId: mid,
+        agentType: 'claude',
+        isVisible: true,
+      });
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness sid={sessionA} mid={machineA} />
+        </Provider>
+      );
+    });
+
+    let askA!: Promise<void>;
+    act(() => {
+      askA = latest.ask('Question on A');
+    });
+    const btwIdA = calls[0]!.params.btwId;
+    expect(store.get(btwSessionStateAtomFamily(sessionA)).isStreaming).toBe(true);
+
+    // Switch same hook instance to sessionB / machineB while sessionA is still streaming
+    act(() => {
+      root.render(
+        <Provider store={store}>
+          <Harness sid={sessionB} mid={machineB} />
+        </Provider>
+      );
+    });
+
+    // Close RPC MUST target original (machineA, sessionA, btwIdA), NOT (machineB, btwIdB)
+    expect(calls.at(-1)).toEqual({
+      machineId: machineA,
+      params: { action: 'close', sessionId: sessionA, btwId: btwIdA },
+    });
+    expect(store.get(btwSessionStateAtomFamily(sessionA)).isStreaming).toBe(false);
+    expect(store.get(btwSessionStateAtomFamily(sessionB)).isStreaming).toBe(false);
+
+    await act(async () => {
+      pendingAskA.resolve({ btwId: btwIdA, text: 'stale' });
+      await askA;
+    });
+  });
+
+  it('restores underlying File Viewer context automatically when a higher-priority Article closes', () => {
+    const store = createStore();
+    const sessionId = 'session-btw-context-stack' as SessionId;
+
+    // File Viewer mounts with priority 1
+    store.set(upsertBtwArticleContextAtom, {
+      sessionId,
+      payload: {
+        path: 'src/viewer-file.ts',
+        excerpt: 'export const viewer = 1;',
+        ownerId: 'viewer-1',
+        priority: 1,
+      },
+    });
+    expect(store.get(activeBtwArticleContextAtomFamily(sessionId))?.path).toBe(
+      'src/viewer-file.ts'
+    );
+
+    // Article opens on top with priority 2 -> becomes active
+    store.set(upsertBtwArticleContextAtom, {
+      sessionId,
+      payload: {
+        path: 'files/btw-drawer/design.md',
+        excerpt: '# Design Doc',
+        ownerId: 'article-1',
+        priority: 2,
+      },
+    });
+    expect(store.get(activeBtwArticleContextAtomFamily(sessionId))?.path).toBe(
+      'files/btw-drawer/design.md'
+    );
+
+    // Closing Article removes only ownerId='article-1' -> seamlessly restores File Viewer!
+    store.set(removeBtwArticleContextAtom, { sessionId, ownerId: 'article-1' });
+    expect(store.get(activeBtwArticleContextAtomFamily(sessionId))).toMatchObject({
+      path: 'src/viewer-file.ts',
+      ownerId: 'viewer-1',
+      priority: 1,
+    });
+
+    // Closing File Viewer clears context to null
+    store.set(removeBtwArticleContextAtom, { sessionId, ownerId: 'viewer-1' });
+    expect(store.get(activeBtwArticleContextAtomFamily(sessionId))).toBeNull();
   });
 });

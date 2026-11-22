@@ -64,36 +64,51 @@ type FakeAgentInstance = {
   readonly prompts: string[];
   readonly setConfigCalls: Array<{ key: string; value: unknown }>;
   readonly cancelCalls: ACPSessionId[];
+  pendingPromptCompletion: Promise<void> | null;
   emitChunk: (text: string) => void;
 };
 
 const createHarness = (overrides?: {
+  agentType?: string;
   maxActive?: number;
   idleTtlMs?: number;
   sweepIntervalMs?: number;
   deltaThrottleMs?: number;
   maxConcurrentStarts?: number;
+  configTimeoutMs?: number;
+  configOptions?: () => SessionConfigOption[];
   onStart?: (
     instance: FakeAgentInstance,
     options: StartLocalAcpAgentOptions
   ) => Promise<void> | void;
+  onSetConfigOption?: (
+    instance: FakeAgentInstance,
+    key: string,
+    value: unknown
+  ) => Promise<SessionConfigOption[] | undefined>;
   onPrompt?: (
     instance: FakeAgentInstance,
     text: string,
     signal?: AbortSignal
   ) => Promise<{ stopReason: string }>;
+  onShutdown?: (instance: FakeAgentInstance) => Promise<void> | void;
 }) => {
   const agents: FakeAgentInstance[] = [];
   const shutdownIds: string[] = [];
   const isolationModes: boolean[] = [];
+  const isolationWorkdirs: Array<string | null | undefined> = [];
   let seq = 0;
 
   const prepareIsolation = vi.fn(
     async (options: PrepareBtwIsolationOptions): Promise<PreparedBtwIsolation> => {
       isolationModes.push(options.readOnlyTools);
+      isolationWorkdirs.push(options.sessionWorkdir);
       const cleanup = vi.fn();
+      const usedSessionWorkdir = Boolean(options.readOnlyTools && options.sessionWorkdir);
       return {
-        workdir: options.readOnlyTools ? '/session/repo' : `/tmp/lody-btw-empty-${seq + 1}`,
+        workdir: usedSessionWorkdir ? options.sessionWorkdir! : `/tmp/lody-btw-empty-${seq + 1}`,
+        effectiveReadOnlyTools: options.readOnlyTools,
+        usedSessionWorkdir,
         env: { LODY_BTW_AGENT: '1' },
         envTransform: (env) => env,
         onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
@@ -108,7 +123,7 @@ const createHarness = (overrides?: {
           waitForTerminalExit: async () => ({ exitCode: null }),
           killTerminal: async () => {},
         },
-        tempDirs: options.readOnlyTools ? [] : [`/tmp/lody-btw-empty-${seq + 1}`],
+        tempDirs: usedSessionWorkdir ? [] : [`/tmp/lody-btw-empty-${seq + 1}`],
         cleanup,
       };
     }
@@ -146,6 +161,7 @@ const createHarness = (overrides?: {
       prompts,
       setConfigCalls,
       cancelCalls,
+      pendingPromptCompletion: null,
       emitChunk,
     };
     agents.push(instance);
@@ -157,16 +173,25 @@ const createHarness = (overrides?: {
     // Emit an out-of-turn banner chunk during startup to prove it is ignored.
     emitChunk('STARTUP_BANNER_SHOULD_NOT_LEAK');
 
-    let configOptions = makeAntigravityConfigOptions();
+    let configOptions = overrides?.configOptions
+      ? overrides.configOptions()
+      : makeAntigravityConfigOptions();
     const client = {
+      get pendingPromptCompletion(): Promise<void> | null {
+        return instance.pendingPromptCompletion;
+      },
       setSessionConfigOption: vi.fn(async (_sid: ACPSessionId, key: string, value: unknown) => {
         setConfigCalls.push({ key, value });
+        if (overrides?.onSetConfigOption) {
+          return await overrides.onSetConfigOption(instance, key, value);
+        }
         configOptions = configOptions.map((opt) =>
           opt.id === key ? ({ ...opt, currentValue: value } as SessionConfigOption) : opt
         );
         return configOptions;
       }),
       unstable_setSessionModel: vi.fn(async () => {}),
+      setSessionMode: vi.fn(async () => {}),
       prompt: vi.fn(
         async (
           _sid: ACPSessionId,
@@ -205,14 +230,19 @@ const createHarness = (overrides?: {
 
   const shutdownAgent = vi.fn(async (opts: { agentProcess: ChildProcess }) => {
     const match = agents.find((a) => a.process === opts.agentProcess);
-    if (match) shutdownIds.push(match.id);
+    if (match) {
+      shutdownIds.push(match.id);
+      if (overrides?.onShutdown) {
+        await overrides.onShutdown(match);
+      }
+    }
   });
 
   const service = new BtwService({
     logger: silentLogger,
     resolveSessionTarget: async () => ({
       cliType: 'builtin',
-      agentType: 'antigravity',
+      agentType: overrides?.agentType ?? 'antigravity',
       sessionWorkdir: '/session/repo',
       env: {},
     }),
@@ -222,6 +252,7 @@ const createHarness = (overrides?: {
     sweepIntervalMs: overrides?.sweepIntervalMs,
     deltaThrottleMs: overrides?.deltaThrottleMs,
     maxConcurrentStarts: overrides?.maxConcurrentStarts,
+    configTimeoutMs: overrides?.configTimeoutMs,
     prepareIsolation,
     startAgent,
     shutdownAgent,
@@ -232,6 +263,7 @@ const createHarness = (overrides?: {
     agents,
     shutdownIds,
     isolationModes,
+    isolationWorkdirs,
     prepareIsolation,
     startAgent,
     shutdownAgent,
@@ -288,6 +320,7 @@ describe('BtwService', () => {
     expect(activeInstance.startOptions).toMatchObject({
       terminalEnabled: false,
       readOnlyFs: true,
+      disableReadTextFile: true,
       disableBuiltinMcp: true,
       skipStartGate: true,
     });
@@ -629,5 +662,351 @@ describe('BtwService', () => {
     expect(harness.shutdownIds).toContain('agent-3');
     expect(harness.agents[2]!.cleanupSpy).toHaveBeenCalledTimes(1);
     expect(harness.service.activeHandleCount).toBe(0);
+  });
+
+  it('degrades unsupported providers (e.g. pi) to text-only empty workdir even when readOnlyTools=true', async () => {
+    const harness = createHarness({
+      agentType: 'pi',
+      deltaThrottleMs: 0,
+      configOptions: () => [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'pi-fast',
+          options: [{ value: 'pi-fast', name: 'Pi Fast' }],
+        },
+      ],
+    });
+
+    const response = await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-pi',
+      btwId: 'btw-pi',
+      question: 'Check repo',
+      readOnlyTools: true,
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.readOnlyTools).toBe(false);
+    expect(harness.isolationModes).toEqual([false]);
+    expect(harness.isolationWorkdirs).toEqual([null]);
+    expect(harness.agents[0]!.startOptions).toMatchObject({
+      readOnlyFs: true,
+      disableReadTextFile: true,
+      terminalEnabled: false,
+      disableBuiltinMcp: true,
+    });
+    expect(harness.agents[0]!.startOptions.workdir).not.toBe('/session/repo');
+
+    await harness.service.dispose();
+  });
+
+  it('refuses to run inside real worktree if a supported provider fails to confirm native read-only mode', async () => {
+    const harness = createHarness({
+      agentType: 'antigravity',
+      deltaThrottleMs: 0,
+      onSetConfigOption: async (_instance, key) => {
+        if (key === 'mode') {
+          throw new Error('mode switch rejected');
+        }
+        return undefined;
+      },
+    });
+
+    const response = await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-ro-fail',
+      btwId: 'btw-ro-fail',
+      question: 'Inspect files',
+      readOnlyTools: true,
+    });
+
+    expect(response.error).toMatch(/read-only mode/i);
+    expect(harness.shutdownIds).toEqual(['agent-1']);
+    expect(harness.agents[0]!.cleanupSpy).toHaveBeenCalledTimes(1);
+    expect(harness.agents[0]!.prompts).toHaveLength(0);
+    expect(harness.service.activeHandleCount).toBe(0);
+
+    await harness.service.dispose();
+  });
+
+  it('does not start a replacement process when cancel/close arrives during readOnlyTools switch teardown', async () => {
+    let releaseTeardown!: () => void;
+    let teardownStarted = false;
+
+    const harness = createHarness({
+      deltaThrottleMs: 0,
+      onShutdown: async (instance) => {
+        if (instance.id === 'agent-1') {
+          teardownStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseTeardown = resolve;
+          });
+        }
+      },
+    });
+
+    // Establish warm handle in text-only mode
+    const first = await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-switch',
+      question: 'Initial',
+      readOnlyTools: false,
+    });
+    expect(first.text).toBe('reply:agent-1:1');
+    expect(harness.startAgent).toHaveBeenCalledTimes(1);
+
+    // Start toggling to readOnlyTools=true -> enters async teardown of agent-1
+    const switchAsk = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-switch',
+      question: 'Inspect code',
+      readOnlyTools: true,
+    });
+    await vi.waitFor(() => expect(teardownStarted).toBe(true));
+
+    // User cancels and closes drawer while old handle is still tearing down
+    const cancelPromise = harness.service.handleRequest({
+      action: 'cancel',
+      sessionId: 'sess-1',
+      btwId: 'btw-switch',
+    });
+    const closePromise = harness.service.handleRequest({
+      action: 'close',
+      sessionId: 'sess-1',
+      btwId: 'btw-switch',
+    });
+
+    releaseTeardown();
+
+    const [switchResp, cancelResp] = await Promise.all([switchAsk, cancelPromise, closePromise]);
+    expect(cancelResp.cancelled).toBe(true);
+    expect(switchResp.cancelled).toBe(true);
+    expect(switchResp.text).toBe('');
+    expect(harness.startAgent).toHaveBeenCalledTimes(1);
+    expect(harness.service.activeHandleCount).toBe(0);
+
+    await harness.service.dispose();
+  });
+
+  it('evicts a cancelled handle whose raw ACP prompt is still pending so late chunks never contaminate the next turn', async () => {
+    let resolveRawPrompt1!: () => void;
+
+    const harness = createHarness({
+      deltaThrottleMs: 0,
+      onPrompt: async (instance, text, signal) => {
+        if (instance.id === 'agent-1' && text.includes('first-question')) {
+          instance.emitChunk('turn1-start');
+          // Mirror real AgentClient: local abort rejects prompt() while pendingPromptCompletion stays pending.
+          instance.pendingPromptCompletion = new Promise<void>((resolve) => {
+            resolveRawPrompt1 = () => {
+              instance.pendingPromptCompletion = null;
+              resolve();
+            };
+          });
+          await new Promise<void>((_, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('Agent prompt aborted')), {
+              once: true,
+            });
+          });
+        }
+        instance.emitChunk('turn2-clean');
+        return { stopReason: 'end_turn' };
+      },
+    });
+
+    const ask1 = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-late',
+      question: 'first-question',
+    });
+    await vi.waitFor(() => expect(harness.agents[0]?.prompts).toHaveLength(1));
+
+    await harness.service.handleRequest({
+      action: 'cancel',
+      sessionId: 'sess-1',
+      btwId: 'btw-late',
+    });
+    const res1 = await ask1;
+    expect(res1.cancelled).toBe(true);
+    expect(res1.text).toBe('turn1-start');
+
+    // Immediately follow up while raw ACP prompt 1 is still unresolved
+    const ask2Promise = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-late',
+      question: 'second-question',
+      priorTurns: [
+        { role: 'user', text: 'first-question' },
+        { role: 'assistant', text: 'turn1-start' },
+      ],
+    });
+
+    // Late frame from agent-1 arrives after second ask has begun
+    harness.agents[0]!.emitChunk('LATE_TURN1_LEAK');
+
+    const res2 = await ask2Promise;
+    expect(res2.text).toBe('turn2-clean');
+    expect(res2.text).not.toContain('LATE_TURN1_LEAK');
+    expect(harness.startAgent).toHaveBeenCalledTimes(2);
+    expect(harness.shutdownIds).toContain('agent-1');
+    expect(harness.agents[1]!.prompts[0]).toContain('first-question');
+
+    resolveRawPrompt1();
+    await harness.service.dispose();
+  });
+
+  it('aborts hung config RPC immediately on close, dispose, and bounded timeout while freeing slots and temp dirs', async () => {
+    vi.useFakeTimers();
+    let enteredConfig = 0;
+
+    const harness = createHarness({
+      maxActive: 2,
+      maxConcurrentStarts: 2,
+      configTimeoutMs: 5_000,
+      deltaThrottleMs: 0,
+      onSetConfigOption: async () => {
+        enteredConfig += 1;
+        // Hang forever unless aborted/timed out
+        return await new Promise<never>(() => {});
+      },
+    });
+
+    // Case 1: close() immediately aborts hung config RPC and cleans up process + temp dir
+    const ask1 = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-hang-close',
+      question: 'q1',
+    });
+    await vi.waitFor(() => expect(enteredConfig).toBe(1));
+
+    const closeRes = await harness.service.handleRequest({
+      action: 'close',
+      sessionId: 'sess-1',
+      btwId: 'btw-hang-close',
+    });
+    expect(closeRes.error).toBeUndefined();
+    const res1 = await ask1;
+    expect(res1.cancelled).toBe(true);
+    expect(harness.shutdownIds).toEqual(['agent-1']);
+    expect(harness.agents[0]!.cleanupSpy).toHaveBeenCalledTimes(1);
+    expect(harness.service.activeHandleCount).toBe(0);
+    expect(harness.service.reservedSlotCount).toBe(0);
+
+    // Case 2: bounded config timeout aborts hung config RPC and releases slot
+    const ask2 = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-hang-timeout',
+      question: 'q2',
+    });
+    await vi.waitFor(() => expect(enteredConfig).toBe(2));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const res2 = await ask2;
+    expect(res2.error).toMatch(/timed out/i);
+    expect(harness.shutdownIds).toEqual(['agent-1', 'agent-2']);
+    expect(harness.agents[1]!.cleanupSpy).toHaveBeenCalledTimes(1);
+    expect(harness.service.activeHandleCount).toBe(0);
+    expect(harness.service.reservedSlotCount).toBe(0);
+
+    // Case 3: dispose() does not hang on an in-flight hung config RPC
+    const ask3 = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-hang-dispose',
+      question: 'q3',
+    });
+    await vi.waitFor(() => expect(enteredConfig).toBe(3));
+    await harness.service.dispose();
+    await ask3;
+    expect(harness.shutdownIds).toEqual(['agent-1', 'agent-2', 'agent-3']);
+    expect(harness.agents[2]!.cleanupSpy).toHaveBeenCalledTimes(1);
+    expect(harness.service.activeHandleCount).toBe(0);
+    expect(harness.service.reservedSlotCount).toBe(0);
+  });
+
+  it('strictly enforces maxActive=2 under concurrent cold starts when 1 warm handle already exists', async () => {
+    const startReleases: Array<() => void> = [];
+    let peakCommittedSlots = 0;
+
+    const harness = createHarness({
+      maxActive: 2,
+      maxConcurrentStarts: 2,
+      deltaThrottleMs: 0,
+      onStart: async (instance) => {
+        if (instance.id === 'agent-1') return;
+        await new Promise<void>((resolve) => {
+          startReleases.push(resolve);
+        });
+      },
+    });
+
+    const recordPeak = () => {
+      peakCommittedSlots = Math.max(
+        peakCommittedSlots,
+        harness.service.activeHandleCount + harness.service.reservedSlotCount
+      );
+    };
+
+    // Seed 1 warm idle handle (btw-a)
+    await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-a',
+      question: 'warm',
+    });
+    expect(harness.service.activeHandleCount).toBe(1);
+
+    // Launch 2 concurrent cold starts (btw-b & btw-c) at the exact same tick
+    const pB = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-b',
+      question: 'cold-b',
+    });
+    const pC = harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-c',
+      question: 'cold-c',
+    });
+
+    await vi.waitFor(() => expect(startReleases).toHaveLength(2));
+    recordPeak();
+    // btw-a must have been evicted before btw-c reserved the 2nd slot
+    expect(harness.shutdownIds).toEqual(['agent-1']);
+    expect(harness.service.activeHandleCount).toBe(0);
+    expect(harness.service.reservedSlotCount).toBe(2);
+
+    // While both slots are reserved, a 3rd concurrent cold start must be rejected without spawning
+    const pD = await harness.service.handleRequest({
+      action: 'ask',
+      sessionId: 'sess-1',
+      btwId: 'btw-d',
+      question: 'overflow',
+    });
+    expect(pD.error).toMatch(/too many concurrent/i);
+    recordPeak();
+
+    // Release both cold starts -> activeHandleCount lands at exactly 2 (never 3!)
+    startReleases.shift()!();
+    startReleases.shift()!();
+    const [resB, resC] = await Promise.all([pB, pC]);
+    recordPeak();
+
+    expect(resB.error).toBeUndefined();
+    expect(resC.error).toBeUndefined();
+    expect(harness.service.activeHandleCount).toBe(2);
+    expect(harness.service.reservedSlotCount).toBe(0);
+    expect(peakCommittedSlots).toBeLessThanOrEqual(2);
+
+    await harness.service.dispose();
   });
 });

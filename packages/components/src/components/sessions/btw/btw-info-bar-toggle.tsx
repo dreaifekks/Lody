@@ -10,6 +10,14 @@ export const BTW_SURFACE_BG_CLASS =
 export const BTW_SURFACE_BG_OVERRIDE_CLASS =
   '!bg-[color-mix(in_srgb,hsl(var(--primary))_3.5%,hsl(var(--background)))] dark:!bg-[color-mix(in_srgb,hsl(var(--primary))_5%,hsl(var(--background)))]';
 
+/**
+ * High-contrast primary accent text for small `/btw` chips and pills on tinted
+ * light surfaces (WCAG AA >= 4.5:1 in Lody Light) while keeping native `text-primary`
+ * in dark themes.
+ */
+export const BTW_ACCENT_TEXT_CLASS =
+  'text-[color-mix(in_srgb,hsl(var(--primary))_60%,hsl(var(--foreground)))] dark:text-primary';
+
 export type BtwInfoBarToggleProps = {
   readonly isOpen: boolean;
   readonly isBtwStreaming: boolean;

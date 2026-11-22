@@ -32,7 +32,16 @@ export const BTW_CODEX_CONFIG_OVERLAY = {
     include_instructions: false,
     bundled: { enabled: false },
   },
+  features: {
+    hooks: false,
+    plugins: false,
+  },
 } as const;
+
+export type CodexDisabledTableOverrides = {
+  readonly mcpServerNames?: readonly string[];
+  readonly pluginNames?: readonly string[];
+};
 
 const ANTIGRAVITY_AUTH_FILES = [
   path.join('antigravity-cli', 'antigravity-oauth-token'),
@@ -55,23 +64,196 @@ const isClaudeAgent = (agentType: string): boolean => {
   return normalized === 'claude' || /^claude(?:[-_]|$)/.test(normalized);
 };
 
+/**
+ * Only providers that natively enforce a read-only mode (`antigravity` `plan`,
+ * `claude` `plan`/`dontAsk`, `codex` `read-only`) may receive the real session
+ * worktree `cwd` when `readOnlyTools === true`. Providers whose native editing
+ * or shell tools bypass ACP fs/terminal (such as built-in `pi`) or unverified
+ * custom providers must stay on an empty temporary workdir in text-only mode.
+ */
+export function supportsBtwNativeReadOnlyTools(agentType: string): boolean {
+  return isAntigravityAgent(agentType) || isClaudeAgent(agentType) || isCodexAgent(agentType);
+}
+
 const STRIPPED_CODEX_TOML_ROOTS = new Set(['plugins', 'hooks', 'mcp_servers']);
 
-const extractTomlRootSegment = (rawHeader: string): string | null => {
-  const trimmed = rawHeader.trim();
-  if (!trimmed) return null;
-  let segment = '';
-  const firstChar = trimmed[0];
-  if (firstChar === '"' || firstChar === "'") {
-    const endQuote = trimmed.indexOf(firstChar, 1);
-    if (endQuote <= 1) return null;
-    segment = trimmed.slice(1, endQuote);
-  } else {
-    const dotIndex = trimmed.indexOf('.');
-    segment = (dotIndex === -1 ? trimmed : trimmed.slice(0, dotIndex)).trim();
+const parseTomlKeySegments = (rawKeyPath: string): string[] => {
+  const segments: string[] = [];
+  let i = 0;
+  const len = rawKeyPath.length;
+  while (i < len) {
+    while (i < len && (rawKeyPath[i] === ' ' || rawKeyPath[i] === '\t' || rawKeyPath[i] === '.')) {
+      i += 1;
+    }
+    if (i >= len) break;
+    const ch = rawKeyPath[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      i += 1;
+      let segment = '';
+      while (i < len && rawKeyPath[i] !== quote) {
+        if (quote === '"' && rawKeyPath[i] === '\\' && i + 1 < len) {
+          i += 1;
+        }
+        segment += rawKeyPath[i]!;
+        i += 1;
+      }
+      if (i < len && rawKeyPath[i] === quote) {
+        i += 1;
+      }
+      segments.push(segment);
+    } else {
+      const start = i;
+      while (i < len && rawKeyPath[i] !== '.' && rawKeyPath[i] !== ' ' && rawKeyPath[i] !== '\t') {
+        i += 1;
+      }
+      const segment = rawKeyPath.slice(start, i).trim();
+      if (segment) segments.push(segment);
+    }
   }
-  return segment.toLowerCase();
+  return segments;
 };
+
+const extractTomlRootSegment = (rawHeader: string): string | null => {
+  const first = parseTomlKeySegments(rawHeader)[0];
+  return first ? first.toLowerCase() : null;
+};
+
+const extractInlineTableTopKeys = (rawValue: string): string[] => {
+  const trimmed = rawValue.trim();
+  if (!trimmed.startsWith('{')) return [];
+  const keys: string[] = [];
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  let tokenStart = -1;
+
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i]!;
+    if (inQuote !== null) {
+      if (inQuote === '"' && ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (depth === 1 && tokenStart === -1) {
+        tokenStart = i;
+      }
+      inQuote = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      if (depth === 1) {
+        tokenStart = i + 1;
+      }
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth <= 0) break;
+      continue;
+    }
+    if (depth === 1 && ch === '=' && tokenStart !== -1) {
+      const keySlice = trimmed.slice(tokenStart, i).trim();
+      const firstSegment = parseTomlKeySegments(keySlice)[0];
+      if (firstSegment) keys.push(firstSegment);
+      tokenStart = -1;
+      continue;
+    }
+    if (depth === 1 && ch === ',') {
+      tokenStart = i + 1;
+    }
+  }
+  return keys;
+};
+
+/**
+ * Extracts configured `[mcp_servers.<name>]` and `[plugins.<name>]` entry names
+ * from a Codex `config.toml` so they can be explicitly disabled via `CODEX_CONFIG` /
+ * `LODY_CODEX_PROFILE_CONFIG` overrides when `CODEX_HOME` cannot be redirected
+ * (e.g. legacy keyring profiles) or when a real repo `.codex/config.toml` exists.
+ */
+export function extractCodexDisabledTableOverrides(raw: string): {
+  readonly mcpServerNames: string[];
+  readonly pluginNames: string[];
+} {
+  const mcpServers = new Set<string>();
+  const plugins = new Set<string>();
+  const lines = raw.split(/\r?\n/);
+  let currentSection: 'root' | 'mcp_servers' | 'plugins' | 'other' = 'root';
+  let multilineQuote: '"""' | "'''" | null = null;
+
+  const recordName = (root: string, name: string | undefined) => {
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    if (root === 'mcp_servers') mcpServers.add(trimmed);
+    else if (root === 'plugins') plugins.add(trimmed);
+  };
+
+  for (const line of lines) {
+    if (multilineQuote !== null) {
+      if (countUnescapedDelimiter(line, multilineQuote) % 2 === 1) {
+        multilineQuote = null;
+      }
+      continue;
+    }
+
+    const headerMatch = /^\s*\[\[?\s*(.+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+    if (headerMatch) {
+      const segments = parseTomlKeySegments(headerMatch[1] ?? '');
+      const root = segments[0]?.toLowerCase() ?? '';
+      if (root === 'mcp_servers') {
+        currentSection = segments.length === 1 ? 'mcp_servers' : 'other';
+        recordName('mcp_servers', segments[1]);
+      } else if (root === 'plugins') {
+        currentSection = segments.length === 1 ? 'plugins' : 'other';
+        recordName('plugins', segments[1]);
+      } else {
+        currentSection = 'other';
+      }
+      continue;
+    }
+
+    const eqIndex = line.indexOf('=');
+    if (eqIndex > 0) {
+      const lhs = line.slice(0, eqIndex).trim();
+      const rhs = line.slice(eqIndex + 1).trim();
+      if (lhs && !lhs.startsWith('#')) {
+        const segments = parseTomlKeySegments(lhs);
+        if (currentSection === 'root') {
+          const root = segments[0]?.toLowerCase() ?? '';
+          if (root === 'mcp_servers' || root === 'plugins') {
+            if (segments[1]) {
+              recordName(root, segments[1]);
+            } else {
+              for (const inlineKey of extractInlineTableTopKeys(rhs)) {
+                recordName(root, inlineKey);
+              }
+            }
+          }
+        } else if (currentSection === 'mcp_servers' || currentSection === 'plugins') {
+          recordName(currentSection, segments[0]);
+        }
+      }
+    }
+
+    if (countUnescapedDelimiter(line, '"""') % 2 === 1) {
+      multilineQuote = '"""';
+    } else if (countUnescapedDelimiter(line, "'''") % 2 === 1) {
+      multilineQuote = "'''";
+    }
+  }
+
+  return {
+    mcpServerNames: [...mcpServers],
+    pluginNames: [...plugins],
+  };
+}
 
 const countUnescapedDelimiter = (line: string, delimiter: '"""' | "'''"): number => {
   let count = 0;
@@ -225,25 +407,73 @@ export function sanitizeBtwEnv(
   return next;
 }
 
-export function mergeBtwCodexConfigEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  let existing: Record<string, unknown> = {};
-  if (env.CODEX_CONFIG) {
-    try {
-      const parsed: unknown = JSON.parse(env.CODEX_CONFIG);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        existing = parsed as Record<string, unknown>;
-      }
-    } catch {
-      existing = {};
-    }
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const parseJsonObject = (raw: string | undefined): Record<string, unknown> => {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
-  return {
-    ...env,
-    CODEX_CONFIG: JSON.stringify({
-      ...existing,
-      ...BTW_CODEX_CONFIG_OVERLAY,
-    }),
+};
+
+const buildMergedCodexConfigObject = (
+  existing: Record<string, unknown>,
+  extraDisableOverrides?: CodexDisabledTableOverrides
+): Record<string, unknown> => {
+  const existingFeatures = isPlainObject(existing.features) ? existing.features : {};
+  const merged: Record<string, unknown> = {
+    ...existing,
+    ...BTW_CODEX_CONFIG_OVERLAY,
+    features: {
+      ...existingFeatures,
+      ...BTW_CODEX_CONFIG_OVERLAY.features,
+    },
   };
+
+  if (extraDisableOverrides?.mcpServerNames && extraDisableOverrides.mcpServerNames.length > 0) {
+    const existingMcp = isPlainObject(existing.mcp_servers) ? existing.mcp_servers : {};
+    const disabledMcp: Record<string, unknown> = { ...existingMcp };
+    for (const name of extraDisableOverrides.mcpServerNames) {
+      disabledMcp[name] = { enabled: false };
+    }
+    merged.mcp_servers = disabledMcp;
+  }
+
+  if (extraDisableOverrides?.pluginNames && extraDisableOverrides.pluginNames.length > 0) {
+    const existingPlugins = isPlainObject(existing.plugins) ? existing.plugins : {};
+    const disabledPlugins: Record<string, unknown> = { ...existingPlugins };
+    for (const name of extraDisableOverrides.pluginNames) {
+      disabledPlugins[name] = { enabled: false };
+    }
+    merged.plugins = disabledPlugins;
+  }
+
+  return merged;
+};
+
+export function mergeBtwCodexConfigEnv(
+  env: NodeJS.ProcessEnv,
+  extraDisableOverrides?: CodexDisabledTableOverrides
+): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = {
+    ...env,
+    CODEX_CONFIG: JSON.stringify(
+      buildMergedCodexConfigObject(parseJsonObject(env.CODEX_CONFIG), extraDisableOverrides)
+    ),
+  };
+  if (env.LODY_CODEX_PROFILE_CONFIG) {
+    next.LODY_CODEX_PROFILE_CONFIG = JSON.stringify(
+      buildMergedCodexConfigObject(
+        parseJsonObject(env.LODY_CODEX_PROFILE_CONFIG),
+        extraDisableOverrides
+      )
+    );
+  }
+  return next;
 }
 
 const FORBIDDEN_PERMISSION_KINDS = new Set([
@@ -423,6 +653,43 @@ const copyPrivateFileIfPresent = (sourcePath: string, destinationPath: string): 
   return true;
 };
 
+const symlinkPrivateFileIfPresent = (sourcePath: string, destinationPath: string): boolean => {
+  let targetPath: string;
+  try {
+    const stat = fs.statSync(sourcePath);
+    if (!stat.isFile()) {
+      return false;
+    }
+    targetPath = fs.realpathSync(sourcePath);
+  } catch {
+    return false;
+  }
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+  fs.symlinkSync(targetPath, destinationPath, 'file');
+  return true;
+};
+
+const readCodexDisabledOverridesFromFile = (
+  configPath: string,
+  logger: Logger
+): { readonly mcpServerNames: string[]; readonly pluginNames: string[] } => {
+  try {
+    if (!fs.existsSync(configPath)) {
+      return { mcpServerNames: [], pluginNames: [] };
+    }
+    const stat = fs.statSync(configPath);
+    if (!stat.isFile()) {
+      return { mcpServerNames: [], pluginNames: [] };
+    }
+    return extractCodexDisabledTableOverrides(fs.readFileSync(configPath, 'utf8'));
+  } catch (error) {
+    logger.debug(
+      `[btw] Failed to inspect Codex config.toml at ${configPath}: ${formatErrorMessage(error)}`
+    );
+    return { mcpServerNames: [], pluginNames: [] };
+  }
+};
+
 const isExistingDirectory = (candidate: string | null | undefined): candidate is string => {
   if (!candidate?.trim()) return false;
   try {
@@ -469,6 +736,10 @@ export type PrepareBtwIsolationOptions = {
 
 export type PreparedBtwIsolation = {
   readonly workdir: string;
+  /** True only when read-only tools were requested AND supported natively by this provider. */
+  readonly effectiveReadOnlyTools: boolean;
+  /** True only when `workdir` is the real session worktree rather than a temporary empty dir. */
+  readonly usedSessionWorkdir: boolean;
   readonly env: NodeJS.ProcessEnv;
   readonly envTransform: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   readonly launchArgFilter?: (args: readonly string[]) => string[];
@@ -508,9 +779,13 @@ export async function prepareBtwIsolation(
     const providerOverrides: Record<string, string> = {};
     let launchArgFilter: ((args: readonly string[]) => string[]) | undefined;
     const codex = isCodexAgent(options.agentType);
+    const effectiveReadOnlyTools =
+      options.readOnlyTools && supportsBtwNativeReadOnlyTools(options.agentType);
+    const usedSessionWorkdir =
+      effectiveReadOnlyTools && isExistingDirectory(options.sessionWorkdir);
 
     let workdir: string;
-    if (options.readOnlyTools && isExistingDirectory(options.sessionWorkdir)) {
+    if (usedSessionWorkdir && options.sessionWorkdir) {
       workdir = options.sessionWorkdir;
     } else {
       const emptyWorkdir = fs.mkdtempSync(path.join(tmpRoot, 'lody-btw-'));
@@ -523,6 +798,9 @@ export async function prepareBtwIsolation(
       }
       workdir = emptyWorkdir;
     }
+
+    const codexDisabledMcpServers = new Set<string>();
+    const codexDisabledPlugins = new Set<string>();
 
     if (isAntigravityAgent(options.agentType)) {
       const geminiDir = fs.mkdtempSync(path.join(tmpRoot, 'lody-btw-gemini-'));
@@ -539,14 +817,34 @@ export async function prepareBtwIsolation(
       launchArgFilter = (args) => filterAntigravityBtwLaunchArgs(args, geminiDir);
     } else if (codex) {
       if (options.codexProfile?.profile.authStore !== 'keyring') {
-        const codexHome = fs.mkdtempSync(path.join(tmpRoot, 'lody-btw-codex-'));
-        fs.chmodSync(codexHome, 0o700);
-        tempDirs.push(codexHome);
         const sourceCodexHome =
           options.codexProfile?.profile.home ||
           baseEnv.CODEX_HOME?.trim() ||
           path.join(homeDir, '.codex');
-        copyPrivateFileIfPresent(
+        let codexHome: string;
+        if (options.codexProfile) {
+          // Preserve `<CODEX_HOME>/../processes` layout expected by CodexJsonRpcConnection
+          // when LODY_CODEX_PROCESS_TOKEN is set on managed ChatGPT profiles.
+          const codexRoot = fs.mkdtempSync(path.join(tmpRoot, 'lody-btw-codex-'));
+          fs.chmodSync(codexRoot, 0o700);
+          tempDirs.push(codexRoot);
+          codexHome = path.join(codexRoot, 'home');
+          fs.mkdirSync(codexHome, { mode: 0o700 });
+          if (options.codexProfile.profile.profile.mode === 'chatgpt') {
+            fs.symlinkSync(
+              path.resolve(sourceCodexHome, '..', 'processes'),
+              path.join(codexRoot, 'processes'),
+              'dir'
+            );
+          }
+        } else {
+          codexHome = fs.mkdtempSync(path.join(tmpRoot, 'lody-btw-codex-'));
+          fs.chmodSync(codexHome, 0o700);
+          tempDirs.push(codexHome);
+        }
+        // Symlink (never copy) `auth.json` so OAuth refresh rotations write back to the
+        // single authoritative credential file; removing the temp dir unlinks only the symlink.
+        symlinkPrivateFileIfPresent(
           path.join(sourceCodexHome, 'auth.json'),
           path.join(codexHome, 'auth.json')
         );
@@ -569,24 +867,53 @@ export async function prepareBtwIsolation(
           }
         }
         providerOverrides.CODEX_HOME = codexHome;
+      } else {
+        // Legacy keyring profiles derive the native OS keyring account from canonical CODEX_HOME,
+        // so CODEX_HOME must stay on profile.home. Explicitly disable every hook, plugin, and
+        // MCP server configured in profile.home/config.toml via CODEX_CONFIG + LODY_CODEX_PROFILE_CONFIG.
+        const extracted = readCodexDisabledOverridesFromFile(
+          path.join(options.codexProfile.profile.home, 'config.toml'),
+          options.logger
+        );
+        for (const name of extracted.mcpServerNames) codexDisabledMcpServers.add(name);
+        for (const name of extracted.pluginNames) codexDisabledPlugins.add(name);
+      }
+
+      if (usedSessionWorkdir) {
+        const repoExtracted = readCodexDisabledOverridesFromFile(
+          path.join(workdir, '.codex', 'config.toml'),
+          options.logger
+        );
+        for (const name of repoExtracted.mcpServerNames) codexDisabledMcpServers.add(name);
+        for (const name of repoExtracted.pluginNames) codexDisabledPlugins.add(name);
       }
     } else if (isClaudeAgent(options.agentType)) {
       providerOverrides.CLAUDE_CODE_SAFE_MODE = '1';
     }
 
+    const codexExtraDisableOverrides: CodexDisabledTableOverrides | undefined =
+      codexDisabledMcpServers.size > 0 || codexDisabledPlugins.size > 0
+        ? {
+            mcpServerNames: [...codexDisabledMcpServers],
+            pluginNames: [...codexDisabledPlugins],
+          }
+        : undefined;
+
     const envTransform = (childEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
       const sanitized = sanitizeBtwEnv(childEnv, providerOverrides);
-      return codex ? mergeBtwCodexConfigEnv(sanitized) : sanitized;
+      return codex ? mergeBtwCodexConfigEnv(sanitized, codexExtraDisableOverrides) : sanitized;
     };
 
     const env = envTransform(baseEnv);
 
     return {
       workdir,
+      effectiveReadOnlyTools,
+      usedSessionWorkdir,
       env,
       envTransform,
       launchArgFilter,
-      onRequestPermission: createBtwPermissionHandler(options.readOnlyTools),
+      onRequestPermission: createBtwPermissionHandler(effectiveReadOnlyTools),
       terminalManager: createBtwNoopTerminalManager(),
       tempDirs,
       cleanup,

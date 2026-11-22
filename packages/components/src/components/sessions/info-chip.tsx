@@ -210,7 +210,7 @@ export function StageChip({
   const iconBadge = iconOverride ?? (
     <span
       className={cn(
-        'flex h-6 shrink-0 select-none items-center gap-1 px-1',
+        'flex h-6 shrink-0 select-none items-center gap-1 px-0.5 @[420px]:px-1',
         INFO_BAR_TEXT_CLASS,
         textClassName ?? 'text-muted-foreground'
       )}
@@ -232,7 +232,8 @@ export function StageChip({
   );
 
   const summaryClassName = cn(
-    'flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md px-1',
+    'flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md',
+    detail ? 'px-1' : 'px-0.5 @[420px]:px-1',
     INFO_BAR_TEXT_CLASS,
     textClassName ?? 'text-muted-foreground'
   );
@@ -290,7 +291,11 @@ export function StageChip({
   return (
     // No enter animation — the stage remounts on every promotion, so any
     // fade/slide reads as jitter. Content appears instantly.
-    <div role="group" aria-label={label} className="flex min-w-0 flex-1 items-center gap-1">
+    <div
+      role="group"
+      aria-label={label}
+      className="flex min-w-0 flex-1 items-center gap-0.5 @[420px]:gap-1"
+    >
       {iconBadge}
       {leading}
       {summaryNode}

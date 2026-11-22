@@ -6,7 +6,7 @@ import { MarkdownRenderer } from '@/components/ai-gui/markdown-renderer';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import { cn } from '@/lib/utils';
 import { formatBtwFileName, type BtwSelectionAttachment, type BtwTurn } from './btw-atoms';
-import { BTW_SURFACE_BG_CLASS } from './btw-info-bar-toggle';
+import { BTW_ACCENT_TEXT_CLASS, BTW_SURFACE_BG_CLASS } from './btw-info-bar-toggle';
 
 export type BtwStreamViewProps = {
   readonly turns: readonly BtwTurn[];
@@ -82,7 +82,10 @@ export function BtwStreamView({
                   {turn.selection ? (
                     <div
                       data-btw-quote-chip=""
-                      className="max-w-[90%] truncate rounded-md bg-primary/12 px-2 py-0.5 text-[11px] text-primary"
+                      className={cn(
+                        'max-w-[90%] truncate rounded-md bg-primary/12 px-2 py-0.5 text-[11px]',
+                        BTW_ACCENT_TEXT_CLASS
+                      )}
                       title={turn.selection.text}
                     >
                       {formatQuoteExcerpt(turn.selection)}
@@ -134,8 +137,8 @@ export function BtwStreamView({
               className={cn(
                 'inline-flex items-center rounded-[7px] border px-2.5 py-1 text-[11.5px] transition-colors',
                 readOnlyTools
-                  ? 'border-primary/40 bg-primary/12 text-primary'
-                  : 'border-border bg-background/80 text-muted-foreground hover:border-primary/35 hover:bg-primary/10 hover:text-primary'
+                  ? cn('border-primary/40 bg-primary/12', BTW_ACCENT_TEXT_CLASS)
+                  : 'border-border bg-background/80 text-foreground/75 hover:border-primary/35 hover:bg-primary/10 dark:text-muted-foreground dark:hover:text-primary'
               )}
             >
               {readOnlyTools ? '只读工具已开启' : '开启只读查代码'}

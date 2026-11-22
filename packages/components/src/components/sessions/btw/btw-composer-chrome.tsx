@@ -1,5 +1,7 @@
 import { X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { formatBtwFileName, type BtwSelectionAttachment } from './btw-atoms';
+import { BTW_ACCENT_TEXT_CLASS } from './btw-info-bar-toggle';
 
 export function BtwComposerFooter({
   modelLabel,
@@ -12,14 +14,17 @@ export function BtwComposerFooter({
     <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
       <span
         data-btw-model-pill=""
-        className="inline-flex shrink-0 items-center rounded-md bg-primary/12 px-2 py-0.5 text-[11px] font-medium text-primary"
+        className={cn(
+          'inline-flex shrink-0 items-center rounded-md bg-primary/12 px-2 py-0.5 text-[11px] font-medium',
+          BTW_ACCENT_TEXT_CLASS
+        )}
       >
         {modelLabel}
       </span>
       {articleFileName ? (
         <span
           data-btw-article-pill=""
-          className="inline-flex min-w-0 max-w-[11rem] items-center truncate rounded-md bg-foreground/[0.06] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/[0.07]"
+          className="inline-flex min-w-0 max-w-[11rem] items-center truncate rounded-md bg-foreground/[0.06] px-2 py-0.5 text-[11px] text-foreground/75 dark:bg-white/[0.07] dark:text-muted-foreground"
           title={articleFileName}
         >
           {articleFileName}
@@ -41,7 +46,10 @@ export function BtwPendingSelectionChip({
     <div className="flex flex-wrap items-center gap-1.5 pb-1">
       <span
         data-btw-pending-selection=""
-        className="inline-flex max-w-full items-center gap-1 rounded-md bg-primary/12 px-2 py-0.5 text-[11px] text-primary"
+        className={cn(
+          'inline-flex max-w-full items-center gap-1 rounded-md bg-primary/12 px-2 py-0.5 text-[11px]',
+          BTW_ACCENT_TEXT_CLASS
+        )}
         title={selection.text}
       >
         <span className="truncate">{fileName} 选区</span>

@@ -73,9 +73,81 @@ export const btwSessionStateAtomFamily = atomFamily((_sessionId: SessionId) =>
   atom<BtwSessionState>(createInitialBtwSessionState())
 );
 
-/** Currently visible Article or File Viewer text synced for `/btw` context injection. */
-export const activeBtwArticleContextAtomFamily = atomFamily((_sessionId: SessionId) =>
-  atom<BtwActiveArticleContext | null>(null)
+type BtwArticleContextCandidateEntry = {
+  readonly payload: BtwActiveArticleContext;
+  readonly order: number;
+};
+
+let btwArticleContextOrderSeq = 0;
+
+/**
+ * Per-session candidate table of active Article / File Viewer surfaces keyed by `ownerId`.
+ * Keeping all mounted candidates allows closing a higher-priority Article dialog (priority 2)
+ * to fall back seamlessly to an underlying File Viewer (priority 1) without requiring its
+ * effect to re-fire.
+ */
+export const btwArticleContextCandidatesAtomFamily = atomFamily((_sessionId: SessionId) =>
+  atom<Readonly<Record<string, BtwArticleContextCandidateEntry>>>({})
+);
+
+/** Currently effective Article or File Viewer text synced for `/btw` context injection. */
+export const activeBtwArticleContextAtomFamily = atomFamily((sessionId: SessionId) =>
+  atom(
+    (get): BtwActiveArticleContext | null => {
+      const candidates = get(btwArticleContextCandidatesAtomFamily(sessionId));
+      let best: BtwArticleContextCandidateEntry | null = null;
+      for (const entry of Object.values(candidates)) {
+        const entryPriority = entry.payload.priority ?? 0;
+        const bestPriority = best ? (best.payload.priority ?? 0) : Number.NEGATIVE_INFINITY;
+        if (
+          !best ||
+          entryPriority > bestPriority ||
+          (entryPriority === bestPriority && entry.order > best.order)
+        ) {
+          best = entry;
+        }
+      }
+      return best?.payload ?? null;
+    },
+    (_get, set, next: BtwActiveArticleContext | null) => {
+      const candidatesAtom = btwArticleContextCandidatesAtomFamily(sessionId);
+      if (next === null) {
+        set(candidatesAtom, {});
+        return;
+      }
+      const ownerKey = next.ownerId ?? '__default__';
+      set(candidatesAtom, (prev) => ({
+        ...prev,
+        [ownerKey]: { payload: next, order: ++btwArticleContextOrderSeq },
+      }));
+    }
+  )
+);
+
+export const upsertBtwArticleContextAtom = atom(
+  null,
+  (
+    _get,
+    set,
+    input: { readonly sessionId: SessionId; readonly payload: BtwActiveArticleContext }
+  ) => {
+    const ownerKey = input.payload.ownerId ?? '__default__';
+    set(btwArticleContextCandidatesAtomFamily(input.sessionId), (prev) => ({
+      ...prev,
+      [ownerKey]: { payload: input.payload, order: ++btwArticleContextOrderSeq },
+    }));
+  }
+);
+
+export const removeBtwArticleContextAtom = atom(
+  null,
+  (_get, set, input: { readonly sessionId: SessionId; readonly ownerId: string }) => {
+    set(btwArticleContextCandidatesAtomFamily(input.sessionId), (prev) => {
+      if (!(input.ownerId in prev)) return prev;
+      const { [input.ownerId]: _removed, ...rest } = prev;
+      return rest;
+    });
+  }
 );
 
 export function buildBtwArticleContextPayload(input: {

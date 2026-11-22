@@ -569,6 +569,8 @@ export interface AgentClientOptions {
   terminalEnabled?: boolean;
   /** Disable ACP filesystem writes (`clientCapabilities.fs.writeTextFile = false` and reject `writeTextFile`). */
   readOnlyFs?: boolean;
+  /** Disable ACP filesystem reads (`clientCapabilities.fs.readTextFile = false` and reject `readTextFile`). */
+  disableReadTextFile?: boolean;
   /** Omit the built-in Lody MCP server from ACP session startup. */
   disableBuiltinMcp?: boolean;
   /** Capability probe only: discover authentication methods without authenticating. */
@@ -1412,6 +1414,9 @@ export class AgentClient implements acp.Client {
     return {};
   }
   async readTextFile?(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
+    if (this.options.disableReadTextFile) {
+      throw acp.RequestError.invalidRequest(undefined, 'File reads are disabled in text-only mode');
+    }
     // ACP file reads can return large payloads; they are streamed to the UI via notifications,
     this.ensureSessionMatch(params.sessionId as ACPSessionId);
     const resolvedPath = this.resolvePath(params.path);
@@ -2058,7 +2063,7 @@ export class AgentClient implements acp.Client {
               },
               // Advertise file tools so agents can use structured reads/writes instead of shelling out.
               fs: {
-                readTextFile: true,
+                readTextFile: !this.options.disableReadTextFile,
                 writeTextFile: !this.options.readOnlyFs,
               },
               // Form elicitation is how acp-extension-claude >= 0.44.0 surfaces

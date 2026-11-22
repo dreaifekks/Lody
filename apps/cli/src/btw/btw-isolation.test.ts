@@ -8,11 +8,13 @@ import {
   BTW_CODEX_CONFIG_OVERLAY,
   BTW_NMEM_FAIL_CLOSED_ENV,
   createBtwPermissionHandler,
+  extractCodexDisabledTableOverrides,
   filterAntigravityBtwLaunchArgs,
   isReadOnlyBtwPermissionRequest,
   prepareBtwIsolation,
   sanitizeBtwEnv,
   stripCodexConfigToml,
+  supportsBtwNativeReadOnlyTools,
 } from './btw-isolation';
 
 const silentLogger: Logger = {
@@ -234,13 +236,14 @@ describe('btw-isolation', () => {
     }
   });
 
-  it('isolates Codex with temp CODEX_HOME, cleaned config.toml, CODEX_CONFIG overlay, and git init', async () => {
+  it('isolates Codex with temp CODEX_HOME, symlinked auth.json, cleaned config.toml, CODEX_CONFIG overlay, and git init', async () => {
     const root = makeTempRoot();
     const fakeHome = path.join(root, 'home');
     const fakeTmp = path.join(root, 'tmp');
+    const realAuthPath = path.join(fakeHome, '.codex', 'auth.json');
     fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
     fs.mkdirSync(fakeTmp, { recursive: true });
-    fs.writeFileSync(path.join(fakeHome, '.codex', 'auth.json'), '{"token":"synthetic"}');
+    fs.writeFileSync(realAuthPath, '{"token":"synthetic-v1"}');
     fs.writeFileSync(
       path.join(fakeHome, '.codex', 'config.toml'),
       'model = "gpt-6-luna"\n[plugins.nmem]\nenabled = true\n[mcp_servers.x]\ncmd = "x"\n'
@@ -261,8 +264,15 @@ describe('btw-isolation', () => {
     expect(initGitRepo).toHaveBeenCalledWith(isolated.workdir);
     const codexHome = isolated.env.CODEX_HOME!;
     expect(codexHome.startsWith(fakeTmp)).toBe(true);
-    expect(fs.lstatSync(path.join(codexHome, 'auth.json')).isSymbolicLink()).toBe(false);
-    expect(fs.statSync(path.join(codexHome, 'auth.json')).mode & 0o777).toBe(0o600);
+
+    // auth.json MUST be symlinked to the real authoritative file so OAuth token refresh
+    // writes back to the real store and cleanup removes only the symlink.
+    const tmpAuthPath = path.join(codexHome, 'auth.json');
+    expect(fs.lstatSync(tmpAuthPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(tmpAuthPath)).toBe(fs.realpathSync(realAuthPath));
+    fs.writeFileSync(tmpAuthPath, '{"token":"refreshed-v2"}');
+    expect(fs.readFileSync(realAuthPath, 'utf8')).toBe('{"token":"refreshed-v2"}');
+
     const cleanedToml = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
     expect(cleanedToml).toContain('model = "gpt-6-luna"');
     expect(cleanedToml).not.toContain('[plugins.nmem]');
@@ -271,11 +281,17 @@ describe('btw-isolation', () => {
     const codexConfig = JSON.parse(isolated.env.CODEX_CONFIG!);
     expect(codexConfig).toMatchObject(BTW_CODEX_CONFIG_OVERLAY);
 
-    // Overlay merges on top of existing CODEX_CONFIG in envTransform
+    // Overlay merges on top of existing CODEX_CONFIG and LODY_CODEX_PROFILE_CONFIG in envTransform
     const withExisting = isolated.envTransform({
-      CODEX_CONFIG: JSON.stringify({ model_provider: 'lody' }),
+      CODEX_CONFIG: JSON.stringify({ model_provider: 'lody', features: { fast_mode: true } }),
+      LODY_CODEX_PROFILE_CONFIG: JSON.stringify({ model_provider: 'lody' }),
     });
     expect(JSON.parse(withExisting.CODEX_CONFIG!)).toMatchObject({
+      model_provider: 'lody',
+      ...BTW_CODEX_CONFIG_OVERLAY,
+      features: { fast_mode: true, hooks: false, plugins: false },
+    });
+    expect(JSON.parse(withExisting.LODY_CODEX_PROFILE_CONFIG!)).toMatchObject({
       model_provider: 'lody',
       ...BTW_CODEX_CONFIG_OVERLAY,
     });
@@ -283,6 +299,184 @@ describe('btw-isolation', () => {
     isolated.cleanup();
     expect(fs.existsSync(codexHome)).toBe(false);
     expect(fs.existsSync(isolated.workdir)).toBe(false);
+    // Authoritative auth.json survives cleanup with the refreshed token intact!
+    expect(fs.existsSync(realAuthPath)).toBe(true);
+    expect(fs.readFileSync(realAuthPath, 'utf8')).toBe('{"token":"refreshed-v2"}');
+  });
+
+  it('preserves managed file-backed Codex profile auth.json and processes directory via symlinks', async () => {
+    const root = makeTempRoot();
+    const profileDir = path.join(root, 'codex-profiles', 'prof-1');
+    const profileHome = path.join(profileDir, 'home');
+    const profileProcesses = path.join(profileDir, 'processes');
+    const fakeTmp = path.join(root, 'tmp');
+    fs.mkdirSync(profileHome, { recursive: true });
+    fs.mkdirSync(profileProcesses, { recursive: true });
+    fs.mkdirSync(fakeTmp, { recursive: true });
+    fs.writeFileSync(path.join(profileHome, 'auth.json'), '{"refresh_token":"orig"}');
+    fs.writeFileSync(path.join(profileProcesses, 'tok.json'), '{"version":1,"token":"tok"}');
+    fs.writeFileSync(
+      path.join(profileHome, 'config.toml'),
+      'model = "gpt-6-luna"\n[hooks]\nSessionStart = []\n[mcp_servers.nmem]\ncommand = "nmem"\n'
+    );
+
+    const isolated = await prepareBtwIsolation({
+      cliType: 'builtin',
+      agentType: 'codex',
+      readOnlyTools: false,
+      baseEnv: {},
+      codexProfile: {
+        profile: {
+          workspaceId: 'ws-1',
+          machineId: 'm-1',
+          configId: 'cfg-1',
+          profile: { mode: 'chatgpt', profileId: 'prof-1' } as never,
+          home: profileHome,
+          authStore: 'codex-default',
+        },
+      },
+      logger: silentLogger,
+      tmpDir: fakeTmp,
+      initGitRepo: vi.fn(async () => true),
+    });
+
+    const codexHome = isolated.env.CODEX_HOME!;
+    expect(codexHome.startsWith(fakeTmp)).toBe(true);
+    expect(fs.lstatSync(path.join(codexHome, 'auth.json')).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(path.join(codexHome, 'auth.json'))).toBe(
+      fs.realpathSync(path.join(profileHome, 'auth.json'))
+    );
+    const linkedProcesses = path.join(codexHome, '..', 'processes');
+    expect(fs.lstatSync(linkedProcesses).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(linkedProcesses, 'tok.json'), 'utf8')).toContain('"tok"');
+    const cleaned = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+    expect(cleaned).not.toContain('[hooks]');
+    expect(cleaned).not.toContain('[mcp_servers.nmem]');
+
+    isolated.cleanup();
+    expect(fs.existsSync(path.join(profileHome, 'auth.json'))).toBe(true);
+    expect(fs.existsSync(path.join(profileProcesses, 'tok.json'))).toBe(true);
+  });
+
+  it('keeps legacy keyring Codex CODEX_HOME intact while disabling hooks, plugins, and MCP servers via config overrides', async () => {
+    const root = makeTempRoot();
+    const profileHome = path.join(root, 'codex-profiles', 'legacy-keyring', 'home');
+    const fakeTmp = path.join(root, 'tmp');
+    fs.mkdirSync(profileHome, { recursive: true });
+    fs.mkdirSync(fakeTmp, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileHome, 'config.toml'),
+      [
+        'model = "gpt-6.2-astra"',
+        '[hooks]',
+        'SessionStart = [{ hooks = [{ type = "command", command = "nmem" }] }]',
+        '[plugins.nowledge-mem]',
+        'enabled = true',
+        '[mcp_servers.nmem]',
+        'command = "nmem"',
+        '[mcp_servers."my.dotted-mcp"]',
+        'url = "http://127.0.0.1:9999"',
+      ].join('\n')
+    );
+
+    expect(
+      extractCodexDisabledTableOverrides(
+        fs.readFileSync(path.join(profileHome, 'config.toml'), 'utf8')
+      )
+    ).toEqual({
+      mcpServerNames: ['nmem', 'my.dotted-mcp'],
+      pluginNames: ['nowledge-mem'],
+    });
+
+    const isolated = await prepareBtwIsolation({
+      cliType: 'builtin',
+      agentType: 'codex',
+      readOnlyTools: false,
+      baseEnv: {
+        CODEX_HOME: profileHome,
+        CODEX_CONFIG: JSON.stringify({
+          cli_auth_credentials_store: 'keyring',
+          forced_login_method: 'chatgpt',
+        }),
+        LODY_CODEX_PROFILE_CONFIG: JSON.stringify({
+          cli_auth_credentials_store: 'keyring',
+          forced_login_method: 'chatgpt',
+        }),
+      },
+      codexProfile: {
+        profile: {
+          workspaceId: 'ws-1',
+          machineId: 'm-1',
+          configId: 'cfg-1',
+          profile: { mode: 'chatgpt', profileId: 'legacy-keyring' } as never,
+          home: profileHome,
+          authStore: 'keyring',
+        },
+      },
+      logger: silentLogger,
+      tmpDir: fakeTmp,
+      initGitRepo: vi.fn(async () => true),
+    });
+
+    // Must keep original CODEX_HOME so OS keyring account resolution still succeeds.
+    expect(isolated.env.CODEX_HOME).toBe(profileHome);
+
+    for (const key of ['CODEX_CONFIG', 'LODY_CODEX_PROFILE_CONFIG'] as const) {
+      const parsed = JSON.parse(isolated.env[key]!);
+      expect(parsed).toMatchObject({
+        cli_auth_credentials_store: 'keyring',
+        forced_login_method: 'chatgpt',
+        features: { hooks: false, plugins: false },
+        mcp_servers: {
+          nmem: { enabled: false },
+          'my.dotted-mcp': { enabled: false },
+        },
+        plugins: {
+          'nowledge-mem': { enabled: false },
+        },
+      });
+    }
+
+    isolated.cleanup();
+    expect(fs.existsSync(profileHome)).toBe(true);
+  });
+
+  it('never hands real session workdir to providers without native read-only enforcement (e.g. pi)', async () => {
+    const root = makeTempRoot();
+    const fakeTmp = path.join(root, 'tmp');
+    const sessionWorkdir = path.join(root, 'repo');
+    fs.mkdirSync(fakeTmp, { recursive: true });
+    fs.mkdirSync(sessionWorkdir, { recursive: true });
+
+    expect(supportsBtwNativeReadOnlyTools('antigravity')).toBe(true);
+    expect(supportsBtwNativeReadOnlyTools('antigravity-acp')).toBe(true);
+    expect(supportsBtwNativeReadOnlyTools('claude')).toBe(true);
+    expect(supportsBtwNativeReadOnlyTools('codex')).toBe(true);
+    expect(supportsBtwNativeReadOnlyTools('pi')).toBe(false);
+    expect(supportsBtwNativeReadOnlyTools('custom-agent')).toBe(false);
+
+    const piIsolation = await prepareBtwIsolation({
+      cliType: 'builtin',
+      agentType: 'pi',
+      readOnlyTools: true,
+      sessionWorkdir,
+      baseEnv: {},
+      logger: silentLogger,
+      tmpDir: fakeTmp,
+    });
+
+    expect(piIsolation.effectiveReadOnlyTools).toBe(false);
+    expect(piIsolation.usedSessionWorkdir).toBe(false);
+    expect(piIsolation.workdir).not.toBe(sessionWorkdir);
+    expect(piIsolation.workdir.startsWith(fakeTmp)).toBe(true);
+    // Permission handler must fail closed (cancel even read requests).
+    const readReq = makePermissionRequest({ kind: 'read', title: 'Read src/app.ts' });
+    expect(await piIsolation.onRequestPermission('r1', readReq)).toEqual({
+      outcome: { outcome: 'cancelled' },
+    });
+
+    piIsolation.cleanup();
+    expect(fs.existsSync(sessionWorkdir)).toBe(true);
   });
 
   it('sets CLAUDE_CODE_SAFE_MODE=1 for Claude and switches cwd only in readOnlyTools mode', async () => {

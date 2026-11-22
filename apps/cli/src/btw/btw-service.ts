@@ -29,13 +29,15 @@ import { extractTextFromAgentResponse } from '@/agent/response-utils';
 import { formatErrorMessage } from '@/utils/format-error';
 import type { Logger } from '@/utils/logger';
 import { buildBtwFollowUpPrompt, buildBtwInitialPrompt } from './btw-context';
-import { prepareBtwIsolation } from './btw-isolation';
+import { prepareBtwIsolation, supportsBtwNativeReadOnlyTools } from './btw-isolation';
 
 export const DEFAULT_BTW_MAX_ACTIVE = 2;
 export const DEFAULT_BTW_IDLE_TTL_MS = 4 * 60_000;
 export const DEFAULT_BTW_SWEEP_INTERVAL_MS = 60_000;
 export const DEFAULT_BTW_DELTA_THROTTLE_MS = 90;
 export const DEFAULT_BTW_MAX_CONCURRENT_STARTS = 2;
+export const DEFAULT_BTW_CONFIG_TIMEOUT_MS = 15_000;
+const ABORTED_START_CLOSE_SESSION_TIMEOUT_MS = 500;
 
 export type BtwSessionLaunchTarget = {
   readonly cliType: AgentConfigCliType;
@@ -62,6 +64,7 @@ export type BtwServiceDeps = {
   readonly sweepIntervalMs?: number;
   readonly deltaThrottleMs?: number;
   readonly maxConcurrentStarts?: number;
+  readonly configTimeoutMs?: number;
   readonly now?: () => number;
   /** Test seams. */
   readonly prepareIsolation?: typeof prepareBtwIsolation;
@@ -124,7 +127,14 @@ class AbortableSemaphore {
   }
 }
 
+type PendingAskState = {
+  readonly abortController: AbortController;
+  cancelled: boolean;
+  readonly done: Promise<void>;
+};
+
 type ActiveTurnState = {
+  readonly token: symbol;
   readonly abortController: AbortController;
   cancelled: boolean;
   readonly done: Promise<void>;
@@ -143,17 +153,14 @@ type BtwHandle = {
   readonly modelLabel?: string;
   readonly cleanupIsolation: () => void;
   readonly onChunkRef: { current: ((text: string) => void) | null };
+  activeTurnToken: symbol | null;
   lastUsedAt: number;
   lastArticleContext?: SessionBtwArticleContext;
   turnCount: number;
   activeTurn: ActiveTurnState | null;
+  dirty: boolean;
   disposed: boolean;
   destroyPromise?: Promise<void>;
-};
-
-type StartingHandleState = {
-  readonly abortController: AbortController;
-  readonly done: Promise<void>;
 };
 
 type SessionConfigSelectEntry = Extract<SessionConfigOption, { type: 'select' }>['options'][number];
@@ -187,6 +194,99 @@ const extractAgentTextChunk = (notification: AcpSessionNotification): string | n
   return content.text;
 };
 
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  const abortError = () => signal.reason ?? new DOMException('Aborted', 'AbortError');
+  if (signal.aborted) {
+    // Prevent an unhandled rejection if the abandoned promise later fails.
+    promise.catch(() => {});
+    return Promise.reject(abortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(abortError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+const isNativeReadOnlyModeValue = (agentType: string, rawValue: string | undefined): boolean => {
+  if (!rawValue) return false;
+  const normalizedAgent = agentType.trim().toLowerCase();
+  const normalizedValue = rawValue
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
+  if (normalizedAgent === 'antigravity' || normalizedAgent === 'antigravity-acp') {
+    return normalizedValue === 'plan';
+  }
+  if (normalizedAgent === 'claude' || /^claude(?:[-_]|$)/.test(normalizedAgent)) {
+    return (
+      normalizedValue === 'plan' || normalizedValue === 'dontask' || normalizedValue === 'dont-ask'
+    );
+  }
+  if (normalizedAgent === 'codex' || /^codex(?:[-_]|$)/.test(normalizedAgent)) {
+    return normalizedValue === 'read-only' || normalizedValue === 'readonly';
+  }
+  return false;
+};
+
+type LegacySessionModeState = {
+  readonly currentModeId?: string | null;
+  readonly availableModes?: ReadonlyArray<{
+    readonly id: string;
+    readonly name?: string | null;
+  }> | null;
+};
+
+const readLegacySessionModeState = (
+  sessionResponse: unknown
+): LegacySessionModeState | undefined => {
+  if (!sessionResponse || typeof sessionResponse !== 'object') return undefined;
+  const modes = (sessionResponse as { modes?: unknown }).modes;
+  if (!modes || typeof modes !== 'object') return undefined;
+  return modes as LegacySessionModeState;
+};
+
+const pickLegacyNativeReadOnlyModeId = (
+  agentType: string,
+  legacyModes: LegacySessionModeState | undefined
+): string | undefined => {
+  const available = legacyModes?.availableModes ?? [];
+  if (available.length === 0) return undefined;
+  const normalizedAgent = agentType.trim().toLowerCase();
+  if (normalizedAgent === 'claude' || /^claude(?:[-_]|$)/.test(normalizedAgent)) {
+    const plan = available.find((m) => m.id.trim().toLowerCase() === 'plan');
+    if (plan) return plan.id;
+    const dontAsk = available.find((m) => {
+      const normalized = m.id
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_]+/g, '-');
+      return normalized === 'dontask' || normalized === 'dont-ask';
+    });
+    if (dontAsk) return dontAsk.id;
+    return undefined;
+  }
+  return available.find((m) => isNativeReadOnlyModeValue(agentType, m.id))?.id;
+};
+
 async function applyBtwFastConfigOptions(options: {
   readonly cliType: AgentConfigCliType;
   readonly agentType: AgentType;
@@ -195,13 +295,18 @@ async function applyBtwFastConfigOptions(options: {
   readonly sessionResponse: unknown;
   readonly signal: AbortSignal;
   readonly logger: Logger;
-}): Promise<{ readonly modelId?: string; readonly modelLabel?: string }> {
+}): Promise<{
+  readonly modelId?: string;
+  readonly modelLabel?: string;
+  readonly nativeReadOnlyConfirmed: boolean;
+}> {
   const responseRecord = options.sessionResponse as {
     configOptions?: SessionConfigOption[] | null;
   };
   let rawConfigOptions = responseRecord.configOptions ?? [];
   let normalizedOptions = normalizeConfigOptions(rawConfigOptions) ?? [];
   const legacyModels = readLegacySessionModelState(options.sessionResponse);
+  const legacyModes = readLegacySessionModeState(options.sessionResponse);
 
   const initialPick = pickBtwFastConfigOptions({
     cliType: options.cliType,
@@ -225,10 +330,9 @@ async function applyBtwFastConfigOptions(options: {
     const targetModel = initialPick.configOptionValues[modelKey];
     if (modelOption && canApplyOptionValue(modelOption, targetModel)) {
       try {
-        const updated = await options.client.setSessionConfigOption(
-          options.acpSessionId,
-          modelKey,
-          targetModel
+        const updated = await raceWithAbort(
+          options.client.setSessionConfigOption(options.acpSessionId, modelKey, targetModel),
+          options.signal
         );
         if (updated) {
           rawConfigOptions = updated;
@@ -238,6 +342,7 @@ async function applyBtwFastConfigOptions(options: {
           activeModelId = targetModel;
         }
       } catch (error) {
+        if (options.signal.aborted) throw error;
         options.logger.debug(
           `[btw] Failed to apply fast model ${modelKey}=${String(targetModel)}: ${formatErrorMessage(error)}`
         );
@@ -248,9 +353,13 @@ async function applyBtwFastConfigOptions(options: {
       legacyModels?.availableModels.some((entry) => entry.modelId === targetModel)
     ) {
       try {
-        await options.client.unstable_setSessionModel(options.acpSessionId, targetModel);
+        await raceWithAbort(
+          options.client.unstable_setSessionModel(options.acpSessionId, targetModel),
+          options.signal
+        );
         activeModelId = targetModel;
       } catch (error) {
+        if (options.signal.aborted) throw error;
         options.logger.debug(
           `[btw] Failed to apply legacy fast model ${targetModel}: ${formatErrorMessage(error)}`
         );
@@ -273,6 +382,10 @@ async function applyBtwFastConfigOptions(options: {
   });
 
   let appliedEffortValue: string | undefined;
+  let appliedModeValue: string | undefined;
+  let appliedPlanModeBoolean = false;
+  let sawConfigModeOption = false;
+
   for (const [key, value] of Object.entries(refreshedPick.configOptionValues)) {
     if (key === modelKey) continue;
     options.signal.throwIfAborted();
@@ -280,8 +393,19 @@ async function applyBtwFastConfigOptions(options: {
     if (!currentOpt || !canApplyOptionValue(currentOpt, value)) {
       continue;
     }
+    const isModeSelect =
+      currentOpt.type === 'select' &&
+      (currentOpt.category === 'mode' ||
+        currentOpt.category === '_permission' ||
+        key.trim().toLowerCase() === 'mode');
+    if (isModeSelect || (currentOpt.type === 'boolean' && key === 'plan_mode')) {
+      sawConfigModeOption = true;
+    }
     try {
-      const updated = await options.client.setSessionConfigOption(options.acpSessionId, key, value);
+      const updated = await raceWithAbort(
+        options.client.setSessionConfigOption(options.acpSessionId, key, value),
+        options.signal
+      );
       if (updated) {
         rawConfigOptions = updated;
         normalizedOptions = normalizeConfigOptions(updated) ?? normalizedOptions;
@@ -295,10 +419,44 @@ async function applyBtwFastConfigOptions(options: {
       ) {
         appliedEffortValue = value;
       }
+      if (isModeSelect && typeof value === 'string') {
+        appliedModeValue = value;
+      }
+      if (currentOpt.type === 'boolean' && key === 'plan_mode' && value === true) {
+        appliedPlanModeBoolean = true;
+      }
     } catch (error) {
+      if (options.signal.aborted) throw error;
       options.logger.debug(
         `[btw] Failed to apply config option ${key}=${String(value)}: ${formatErrorMessage(error)}`
       );
+    }
+  }
+
+  // Step 3: Legacy `sessionResponse.modes` fallback when the provider advertises modes
+  // outside `configOptions` (e.g. Antigravity legacy mode negotiation).
+  let appliedLegacyModeId = legacyModes?.currentModeId ?? undefined;
+  if (!sawConfigModeOption && legacyModes) {
+    const targetLegacyMode = pickLegacyNativeReadOnlyModeId(options.agentType, legacyModes);
+    if (targetLegacyMode) {
+      if (
+        appliedLegacyModeId !== targetLegacyMode &&
+        typeof options.client.setSessionMode === 'function'
+      ) {
+        options.signal.throwIfAborted();
+        try {
+          await raceWithAbort(
+            options.client.setSessionMode(options.acpSessionId, targetLegacyMode),
+            options.signal
+          );
+          appliedLegacyModeId = targetLegacyMode;
+        } catch (error) {
+          if (options.signal.aborted) throw error;
+          options.logger.debug(
+            `[btw] Failed to apply legacy session mode ${targetLegacyMode}: ${formatErrorMessage(error)}`
+          );
+        }
+      }
     }
   }
 
@@ -331,9 +489,29 @@ async function applyBtwFastConfigOptions(options: {
   );
   const modelLabel = formatBtwModelLabel(resolvedModelId, resolvedModelName, resolvedEffortOption);
 
+  const finalModeOpt = normalizedOptions.find(
+    (opt) =>
+      opt.type === 'select' &&
+      (opt.category === 'mode' ||
+        opt.category === '_permission' ||
+        opt.id.trim().toLowerCase() === 'mode')
+  );
+  const finalPlanModeOpt = normalizedOptions.find(
+    (opt) => opt.type === 'boolean' && opt.id === 'plan_mode'
+  );
+  const resolvedModeValue =
+    appliedModeValue ??
+    (typeof finalModeOpt?.currentValue === 'string' ? finalModeOpt.currentValue : undefined);
+  const nativeReadOnlyConfirmed =
+    appliedPlanModeBoolean ||
+    finalPlanModeOpt?.currentValue === true ||
+    isNativeReadOnlyModeValue(options.agentType, resolvedModeValue) ||
+    isNativeReadOnlyModeValue(options.agentType, appliedLegacyModeId);
+
   return {
     ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
     ...(modelLabel ? { modelLabel } : {}),
+    nativeReadOnlyConfirmed,
   };
 }
 
@@ -346,12 +524,15 @@ async function applyBtwFastConfigOptions(options: {
  */
 export class BtwService {
   private readonly handles = new Map<string, BtwHandle>();
-  private readonly starting = new Map<string, StartingHandleState>();
+  private readonly pendingAsks = new Map<string, PendingAskState>();
+  private readonly reservedSlots = new Set<string>();
+  private readonly pendingTeardowns = new Map<string, Set<Promise<void>>>();
   private readonly startGate: AbortableSemaphore;
   private readonly maxActive: number;
   private readonly idleTtlMs: number;
   private readonly sweepIntervalMs: number;
   private readonly deltaThrottleMs: number;
+  private readonly configTimeoutMs: number;
   private readonly now: () => number;
   private readonly prepareIsolationImpl: typeof prepareBtwIsolation;
   private readonly startAgentImpl: typeof startLocalAcpAgent;
@@ -371,6 +552,10 @@ export class BtwService {
       0,
       Math.floor(deps.deltaThrottleMs ?? DEFAULT_BTW_DELTA_THROTTLE_MS)
     );
+    this.configTimeoutMs = Math.max(
+      1,
+      Math.floor(deps.configTimeoutMs ?? DEFAULT_BTW_CONFIG_TIMEOUT_MS)
+    );
     this.now = deps.now ?? Date.now;
     this.startGate = new AbortableSemaphore(
       deps.maxConcurrentStarts ?? DEFAULT_BTW_MAX_CONCURRENT_STARTS
@@ -383,6 +568,11 @@ export class BtwService {
   /** Number of warm handles currently pooled (diagnostic / test helper). */
   get activeHandleCount(): number {
     return this.handles.size;
+  }
+
+  /** Number of pool slots currently reserved for in-flight cold starts (diagnostic / test helper). */
+  get reservedSlotCount(): number {
+    return this.reservedSlots.size;
   }
 
   async handleRequest(
@@ -431,111 +621,180 @@ export class BtwService {
     }
 
     const sessionId = request.sessionId as SessionId;
-    const readOnlyTools = request.readOnlyTools === true;
+    const requestedReadOnlyTools = request.readOnlyTools === true;
     const btwId = request.btwId;
 
-    let handle = this.handles.get(btwId);
-    let isFreshHandle = false;
-
-    // If an existing handle has a different readOnlyTools mode or sessionId, tear it down
-    // and rebuild a cleanly isolated process (re-injecting priorTurns below).
-    if (handle && (handle.readOnlyTools !== readOnlyTools || handle.sessionId !== sessionId)) {
-      await this.destroyHandle(handle);
-      handle = undefined;
-    }
-
-    // If a previous turn on the same handle was just cancelled, let it settle cleanly
-    // before prompting again. If it is still actively running, reject overlapping asks.
-    if (handle?.activeTurn) {
-      if (handle.activeTurn.cancelled) {
-        await handle.activeTurn.done.catch(() => {});
-      } else {
-        return {
-          btwId,
-          text: '',
-          readOnlyTools: handle.readOnlyTools,
-          error: 'A /btw request is already in progress for this drawer.',
-        };
-      }
-      if (handle.disposed || this.handles.get(btwId) !== handle) {
-        handle = undefined;
-      }
-    }
-
-    if (!handle) {
-      if (this.starting.has(btwId)) {
-        return {
-          btwId,
-          text: '',
-          error: 'A /btw session is already starting for this drawer.',
-        };
-      }
-      onProgress?.({ btwId, kind: 'status', status: 'starting' });
-      const created = await this.createWarmHandle({
+    // Synchronously check for an overlapping non-cancelled ask BEFORE any await,
+    // and register our ask cancellation state immediately so `cancel`/`close` during
+    // old-handle teardown (e.g. toggling `readOnlyTools`) aborts this ask instead of
+    // letting a brand-new process start after teardown finishes.
+    const previousAsk = this.pendingAsks.get(btwId);
+    if (previousAsk && !previousAsk.cancelled) {
+      const existingHandle = this.handles.get(btwId);
+      return {
         btwId,
-        sessionId,
-        readOnlyTools,
-      });
-      if (created.cancelled) {
-        return {
-          btwId,
-          text: '',
-          cancelled: true,
-          readOnlyTools,
-        };
-      }
-      handle = created.handle;
-      isFreshHandle = true;
+        text: '',
+        ...(existingHandle ? { readOnlyTools: existingHandle.readOnlyTools } : {}),
+        error: 'A /btw request is already in progress for this drawer.',
+      };
     }
 
-    handle.lastUsedAt = this.now();
-
-    const turnAbort = new AbortController();
-    const onShutdown = () => turnAbort.abort(new DOMException('BtwService disposed', 'AbortError'));
+    const askAbort = new AbortController();
+    const onShutdown = () => askAbort.abort(new DOMException('BtwService disposed', 'AbortError'));
     this.shutdownController.signal.addEventListener('abort', onShutdown, { once: true });
 
-    let resolveDone!: () => void;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
+    let resolveAskDone!: () => void;
+    const askDone = new Promise<void>((resolve) => {
+      resolveAskDone = resolve;
     });
-    const turnState: ActiveTurnState = {
-      abortController: turnAbort,
+    const askState: PendingAskState = {
+      abortController: askAbort,
       cancelled: false,
-      done,
+      done: askDone,
     };
-    handle.activeTurn = turnState;
+    this.pendingAsks.set(btwId, askState);
 
-    let fullText = '';
-    let pendingDelta = '';
-    let emittedFirstDelta = false;
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const flushPendingDelta = (): void => {
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      if (!pendingDelta) return;
-      const delta = pendingDelta;
-      pendingDelta = '';
-      onProgress?.({
-        btwId,
-        kind: 'delta',
-        delta,
-        ...(handle.modelId ? { modelId: handle.modelId } : {}),
-        ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
-      });
-    };
+    const isAskAborted = () => askState.cancelled || askAbort.signal.aborted || this.disposed;
 
     try {
-      let promptText: string;
-      if (isFreshHandle || handle.turnCount === 0) {
-        const mainHistoryText = await this.deps.readMainHistoryTail(sessionId).catch((error) => {
-          this.deps.logger.debug(
-            `[btw:${btwId}] Failed to read main history tail for ${sessionId}: ${formatErrorMessage(error)}`
-          );
-          return '';
+      // If a previous ask was just cancelled, wait for its finally block to settle first.
+      if (previousAsk) {
+        await previousAsk.done.catch(() => {});
+        if (isAskAborted()) {
+          return {
+            btwId,
+            text: '',
+            cancelled: true,
+            readOnlyTools: requestedReadOnlyTools,
+          };
+        }
+      }
+
+      let handle = this.handles.get(btwId);
+      let isFreshHandle = false;
+
+      // Wait for any cancelled turn on the pooled handle before deciding reuse vs rebuild.
+      if (handle?.activeTurn) {
+        if (handle.activeTurn.cancelled) {
+          await handle.activeTurn.done.catch(() => {});
+        } else {
+          return {
+            btwId,
+            text: '',
+            readOnlyTools: handle.readOnlyTools,
+            error: 'A /btw request is already in progress for this drawer.',
+          };
+        }
+        if (isAskAborted()) {
+          return {
+            btwId,
+            text: '',
+            cancelled: true,
+            readOnlyTools: requestedReadOnlyTools,
+          };
+        }
+        if (handle.disposed || this.handles.get(btwId) !== handle) {
+          handle = undefined;
+        }
+      }
+
+      // Tear down the pooled handle if mode/session changed, or if a prior cancelled
+      // prompt left the underlying ACP turn unfinished (dirty handle).
+      if (handle) {
+        const expectedReadOnlyForHandle = supportsBtwNativeReadOnlyTools(handle.agentType)
+          ? requestedReadOnlyTools
+          : false;
+        const hasPendingRawPrompt = handle.client.pendingPromptCompletion != null;
+        if (
+          handle.dirty ||
+          hasPendingRawPrompt ||
+          handle.readOnlyTools !== expectedReadOnlyForHandle ||
+          handle.sessionId !== sessionId
+        ) {
+          await this.destroyHandle(handle);
+          handle = undefined;
+        }
+        if (isAskAborted()) {
+          return {
+            btwId,
+            text: '',
+            cancelled: true,
+            readOnlyTools: requestedReadOnlyTools,
+          };
+        }
+      }
+
+      if (!handle) {
+        onProgress?.({ btwId, kind: 'status', status: 'starting' });
+        const created = await this.createWarmHandle({
+          btwId,
+          sessionId,
+          readOnlyTools: requestedReadOnlyTools,
+          signal: askAbort.signal,
         });
+        if (created.cancelled || isAskAborted()) {
+          if (!created.cancelled) {
+            await this.destroyHandle(created.handle);
+          }
+          return {
+            btwId,
+            text: '',
+            cancelled: true,
+            readOnlyTools: created.cancelled
+              ? requestedReadOnlyTools
+              : created.handle.readOnlyTools,
+          };
+        }
+        handle = created.handle;
+        isFreshHandle = true;
+      }
+
+      handle.lastUsedAt = this.now();
+
+      const turnToken = Symbol('btw-turn');
+      const turnAbort = new AbortController();
+      const onAskAbortForTurn = () => {
+        turnState.cancelled = true;
+        turnAbort.abort(askAbort.signal.reason ?? new DOMException('Cancelled', 'AbortError'));
+      };
+      askAbort.signal.addEventListener('abort', onAskAbortForTurn, { once: true });
+
+      let resolveTurnDone!: () => void;
+      const turnDone = new Promise<void>((resolve) => {
+        resolveTurnDone = resolve;
+      });
+      const turnState: ActiveTurnState = {
+        token: turnToken,
+        abortController: turnAbort,
+        cancelled: isAskAborted(),
+        done: turnDone,
+      };
+      handle.activeTurn = turnState;
+      handle.activeTurnToken = turnToken;
+
+      let fullText = '';
+      let pendingDelta = '';
+      let emittedFirstDelta = false;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPendingDelta = (): void => {
+        if (flushTimer !== null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        if (!pendingDelta) return;
+        const delta = pendingDelta;
+        pendingDelta = '';
+        onProgress?.({
+          btwId,
+          kind: 'delta',
+          delta,
+          ...(handle.modelId ? { modelId: handle.modelId } : {}),
+          ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
+        });
+      };
+
+      try {
         if (turnState.cancelled || handle.disposed || this.disposed) {
           return {
             btwId,
@@ -546,109 +805,162 @@ export class BtwService {
             readOnlyTools: handle.readOnlyTools,
           };
         }
-        promptText = buildBtwInitialPrompt({
-          question,
-          mainHistoryText,
-          articleContext: request.articleContext,
-          readOnlyTools,
-          priorTurns: request.priorTurns,
-        });
-      } else {
-        promptText = buildBtwFollowUpPrompt({
-          question,
-          articleContext: request.articleContext,
-          previousArticleContext: handle.lastArticleContext,
-        });
-      }
 
-      onProgress?.({
-        btwId,
-        kind: 'status',
-        status: 'streaming',
-        ...(handle.modelId ? { modelId: handle.modelId } : {}),
-        ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
-      });
+        let promptText: string;
+        if (isFreshHandle || handle.turnCount === 0) {
+          const mainHistoryText = await this.deps.readMainHistoryTail(sessionId).catch((error) => {
+            this.deps.logger.debug(
+              `[btw:${btwId}] Failed to read main history tail for ${sessionId}: ${formatErrorMessage(error)}`
+            );
+            return '';
+          });
+          if (turnState.cancelled || handle.disposed || this.disposed) {
+            return {
+              btwId,
+              text: '',
+              cancelled: true,
+              ...(handle.modelId ? { modelId: handle.modelId } : {}),
+              ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
+              readOnlyTools: handle.readOnlyTools,
+            };
+          }
+          promptText = buildBtwInitialPrompt({
+            question,
+            mainHistoryText,
+            articleContext: request.articleContext,
+            readOnlyTools: handle.readOnlyTools,
+            priorTurns: request.priorTurns,
+          });
+        } else {
+          promptText = buildBtwFollowUpPrompt({
+            question,
+            articleContext: request.articleContext,
+            previousArticleContext: handle.lastArticleContext,
+          });
+        }
 
-      handle.onChunkRef.current = (chunk: string) => {
-        if (!chunk || turnState.cancelled || handle.disposed) return;
-        fullText += chunk;
-        pendingDelta += chunk;
-        if (!emittedFirstDelta) {
-          emittedFirstDelta = true;
-          flushPendingDelta();
-          return;
-        }
-        if (this.deltaThrottleMs === 0) {
-          flushPendingDelta();
-          return;
-        }
-        if (flushTimer === null) {
-          flushTimer = setTimeout(() => {
-            flushTimer = null;
+        onProgress?.({
+          btwId,
+          kind: 'status',
+          status: 'streaming',
+          ...(handle.modelId ? { modelId: handle.modelId } : {}),
+          ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
+        });
+
+        handle.onChunkRef.current = (chunk: string) => {
+          if (
+            !chunk ||
+            handle.activeTurnToken !== turnToken ||
+            turnState.cancelled ||
+            handle.disposed
+          ) {
+            return;
+          }
+          fullText += chunk;
+          pendingDelta += chunk;
+          if (!emittedFirstDelta) {
+            emittedFirstDelta = true;
             flushPendingDelta();
-          }, this.deltaThrottleMs);
-          flushTimer.unref?.();
+            return;
+          }
+          if (this.deltaThrottleMs === 0) {
+            flushPendingDelta();
+            return;
+          }
+          if (flushTimer === null) {
+            flushTimer = setTimeout(() => {
+              flushTimer = null;
+              flushPendingDelta();
+            }, this.deltaThrottleMs);
+            flushTimer.unref?.();
+          }
+        };
+
+        const promptBlocks: ContentBlock[] = [{ type: 'text', text: promptText }];
+        const response = await handle.client.prompt(handle.acpSessionId, promptBlocks, {
+          signal: turnAbort.signal,
+        });
+
+        if (!fullText && !turnState.cancelled) {
+          const fallbackText = extractTextFromAgentResponse(response);
+          if (fallbackText) {
+            fullText = fallbackText;
+            pendingDelta += fallbackText;
+          }
         }
-      };
 
-      const promptBlocks: ContentBlock[] = [{ type: 'text', text: promptText }];
-      const response = await handle.client.prompt(handle.acpSessionId, promptBlocks, {
-        signal: turnAbort.signal,
-      });
-
-      if (!fullText && !turnState.cancelled) {
-        const fallbackText = extractTextFromAgentResponse(response);
-        if (fallbackText) {
-          fullText = fallbackText;
-          pendingDelta += fallbackText;
+        flushPendingDelta();
+        handle.turnCount += 1;
+        if (request.articleContext) {
+          handle.lastArticleContext = request.articleContext;
         }
-      }
 
-      flushPendingDelta();
-      handle.turnCount += 1;
-      if (request.articleContext) {
-        handle.lastArticleContext = request.articleContext;
-      }
-
-      return {
-        btwId,
-        text: fullText,
-        ...(turnState.cancelled ? { cancelled: true } : {}),
-        ...(handle.modelId ? { modelId: handle.modelId } : {}),
-        ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
-        readOnlyTools: handle.readOnlyTools,
-      };
-    } catch (error) {
-      flushPendingDelta();
-      if (turnState.cancelled || handle.disposed || this.disposed) {
         return {
           btwId,
           text: fullText,
-          cancelled: true,
+          ...(turnState.cancelled ? { cancelled: true } : {}),
           ...(handle.modelId ? { modelId: handle.modelId } : {}),
           ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
           readOnlyTools: handle.readOnlyTools,
         };
+      } catch (error) {
+        flushPendingDelta();
+        if (turnState.cancelled || handle.disposed || this.disposed) {
+          return {
+            btwId,
+            text: fullText,
+            cancelled: true,
+            ...(handle.modelId ? { modelId: handle.modelId } : {}),
+            ...(handle.modelLabel ? { modelLabel: handle.modelLabel } : {}),
+            readOnlyTools: handle.readOnlyTools,
+          };
+        }
+        // Do not retain a broken handle after a transport/agent error; next ask will start fresh.
+        void this.destroyHandle(handle).catch((destroyErr) => {
+          this.deps.logger.debug(
+            `[btw:${btwId}] Cleanup after prompt error failed: ${formatErrorMessage(destroyErr)}`
+          );
+        });
+        throw error;
+      } finally {
+        if (flushTimer !== null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        handle.onChunkRef.current = null;
+        if (handle.activeTurnToken === turnToken) {
+          handle.activeTurnToken = null;
+        }
+        if (handle.activeTurn === turnState) {
+          handle.activeTurn = null;
+        }
+        handle.lastUsedAt = this.now();
+        askAbort.signal.removeEventListener('abort', onAskAbortForTurn);
+
+        // If this turn was cancelled while the underlying ACP prompt has not yet settled,
+        // late chunks from the cancelled turn could otherwise contaminate the next ask.
+        // Mark the handle dirty and evict/destroy it immediately so any follow-up spawns
+        // a clean process with `priorTurns`.
+        if (
+          turnState.cancelled &&
+          !handle.disposed &&
+          handle.client.pendingPromptCompletion != null
+        ) {
+          handle.dirty = true;
+          void this.destroyHandle(handle).catch((destroyErr) => {
+            this.deps.logger.debug(
+              `[btw:${btwId}] Cleanup after cancelled dirty turn failed: ${formatErrorMessage(destroyErr)}`
+            );
+          });
+        }
+        resolveTurnDone();
       }
-      // Do not retain a broken handle after a transport/agent error; next ask will start fresh.
-      void this.destroyHandle(handle).catch((destroyErr) => {
-        this.deps.logger.debug(
-          `[btw:${btwId}] Cleanup after prompt error failed: ${formatErrorMessage(destroyErr)}`
-        );
-      });
-      throw error;
     } finally {
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      handle.onChunkRef.current = null;
-      if (handle.activeTurn === turnState) {
-        handle.activeTurn = null;
-      }
-      handle.lastUsedAt = this.now();
       this.shutdownController.signal.removeEventListener('abort', onShutdown);
-      resolveDone();
+      if (this.pendingAsks.get(btwId) === askState) {
+        this.pendingAsks.delete(btwId);
+      }
+      resolveAskDone();
     }
   }
 
@@ -656,22 +968,8 @@ export class BtwService {
     readonly btwId: string;
     readonly sessionId: SessionId;
     readonly readOnlyTools: boolean;
+    readonly signal: AbortSignal;
   }): Promise<{ cancelled: true } | { cancelled: false; handle: BtwHandle }> {
-    const startController = new AbortController();
-    const onShutdown = () =>
-      startController.abort(new DOMException('BtwService disposed', 'AbortError'));
-    this.shutdownController.signal.addEventListener('abort', onShutdown, { once: true });
-
-    let resolveStartDone!: () => void;
-    const startDone = new Promise<void>((resolve) => {
-      resolveStartDone = resolve;
-    });
-    const startingState: StartingHandleState = {
-      abortController: startController,
-      done: startDone,
-    };
-    this.starting.set(input.btwId, startingState);
-
     let isolationCleanup: (() => void) | undefined;
     let startedAgent:
       | {
@@ -680,30 +978,81 @@ export class BtwService {
           acpSessionId: ACPSessionId;
         }
       | undefined;
+    let startedAgentCleanupPromise: Promise<void> | null = null;
+    let configTimer: ReturnType<typeof setTimeout> | null = null;
+    let detachConfigAbortListeners: (() => void) | undefined;
+
+    const cleanupStartedAgentOnce = (fastClose: boolean): Promise<void> => {
+      if (!startedAgent) {
+        if (isolationCleanup) {
+          const cleanupIso = isolationCleanup;
+          isolationCleanup = undefined;
+          cleanupIso();
+        }
+        return Promise.resolve();
+      }
+      if (!startedAgentCleanupPromise) {
+        const toShutdown = startedAgent;
+        startedAgent = undefined;
+        const cleanupIso = isolationCleanup;
+        isolationCleanup = undefined;
+        startedAgentCleanupPromise = this.shutdownAgentImpl({
+          agentProcess: toShutdown.agentProcess,
+          client: toShutdown.client,
+          acpSessionId: toShutdown.acpSessionId,
+          logger: this.deps.logger,
+          sessionLabel: `btw:${input.btwId}`,
+          ...(fastClose ? { closeSessionTimeoutMs: ABORTED_START_CLOSE_SESSION_TIMEOUT_MS } : {}),
+        })
+          .catch((shutdownError) => {
+            this.deps.logger.debug(
+              `[btw:${input.btwId}] Cleanup after aborted/timed-out start failed: ${formatErrorMessage(shutdownError)}`
+            );
+          })
+          .finally(() => {
+            cleanupIso?.();
+          });
+        this.trackPendingTeardown(input.btwId, startedAgentCleanupPromise);
+      }
+      return startedAgentCleanupPromise;
+    };
+
+    let hasSlotReservation = false;
 
     try {
-      await this.startGate.acquire(startController.signal);
+      // Reserve pool capacity BEFORE waiting on the startup concurrency gate so
+      // requests that exceed `maxActive` (with no idle handle to evict) fail fast
+      // instead of blocking behind in-flight cold starts.
+      input.signal.throwIfAborted();
+      await this.reservePoolSlot(input.btwId, input.signal);
+      hasSlotReservation = true;
+
+      await this.startGate.acquire(input.signal);
       try {
-        startController.signal.throwIfAborted();
-        await this.ensurePoolCapacity(input.btwId);
-        startController.signal.throwIfAborted();
+        input.signal.throwIfAborted();
 
         const target = await this.deps.resolveSessionTarget(input.sessionId, {
           includeWorkdir: input.readOnlyTools,
         });
-        startController.signal.throwIfAborted();
+        input.signal.throwIfAborted();
 
+        const effectiveReadOnlyTools =
+          input.readOnlyTools && supportsBtwNativeReadOnlyTools(target.agentType);
         const isolation = await this.prepareIsolationImpl({
           cliType: target.cliType,
           agentType: target.agentType,
-          readOnlyTools: input.readOnlyTools,
-          sessionWorkdir: target.sessionWorkdir,
+          readOnlyTools: effectiveReadOnlyTools,
+          sessionWorkdir: effectiveReadOnlyTools ? target.sessionWorkdir : null,
           baseEnv: target.env ?? process.env,
           codexProfile: target.codexProfile,
           logger: this.deps.logger,
         });
         isolationCleanup = isolation.cleanup;
-        startController.signal.throwIfAborted();
+        const finalReadOnlyTools =
+          effectiveReadOnlyTools && (isolation.effectiveReadOnlyTools ?? effectiveReadOnlyTools);
+        const usedSessionWorkdir =
+          finalReadOnlyTools && (isolation.usedSessionWorkdir ?? Boolean(target.sessionWorkdir));
+        input.signal.throwIfAborted();
 
         const onChunkRef: { current: ((text: string) => void) | null } = { current: null };
         const started = await this.startAgentImpl({
@@ -723,9 +1072,10 @@ export class BtwService {
           terminalManager: isolation.terminalManager,
           terminalEnabled: false,
           readOnlyFs: true,
+          disableReadTextFile: !finalReadOnlyTools,
           disableBuiltinMcp: true,
           skipStartGate: true,
-          signal: startController.signal,
+          signal: input.signal,
           onUpdateMessage: (notification) => {
             const chunk = extractAgentTextChunk(notification);
             if (chunk) {
@@ -741,30 +1091,69 @@ export class BtwService {
           acpSessionId: started.acpSessionId,
         };
 
+        // Immediately bind cancel/close/dispose and a bounded config timeout to process
+        // termination so a hung config RPC (`setSessionConfigOption` / `setSessionMode`)
+        // can never wedge close(), dispose(), or startup slots.
+        const configAbortController = new AbortController();
+        const onOuterAbort = () => {
+          configAbortController.abort(
+            input.signal.reason ?? new DOMException('Aborted', 'AbortError')
+          );
+        };
+        const onConfigAbort = () => {
+          void cleanupStartedAgentOnce(true);
+        };
+        input.signal.addEventListener('abort', onOuterAbort, { once: true });
+        configAbortController.signal.addEventListener('abort', onConfigAbort, { once: true });
+        configTimer = setTimeout(() => {
+          configTimer = null;
+          configAbortController.abort(
+            new Error(`Timed out configuring /btw session after ${this.configTimeoutMs}ms.`)
+          );
+        }, this.configTimeoutMs);
+        configTimer.unref?.();
+
+        detachConfigAbortListeners = () => {
+          if (configTimer !== null) {
+            clearTimeout(configTimer);
+            configTimer = null;
+          }
+          input.signal.removeEventListener('abort', onOuterAbort);
+          configAbortController.signal.removeEventListener('abort', onConfigAbort);
+        };
+
+        if (input.signal.aborted || this.disposed) {
+          onOuterAbort();
+          throw input.signal.reason ?? new DOMException('Aborted', 'AbortError');
+        }
+
         const appliedConfig = await applyBtwFastConfigOptions({
           cliType: target.cliType,
           agentType: target.agentType,
           client: started.client,
           acpSessionId: started.acpSessionId,
           sessionResponse: started.sessionResponse,
-          signal: startController.signal,
+          signal: configAbortController.signal,
           logger: this.deps.logger,
         });
 
-        if (this.disposed || startController.signal.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
+        if (this.disposed || input.signal.aborted || configAbortController.signal.aborted) {
+          throw configAbortController.signal.reason ?? new DOMException('Aborted', 'AbortError');
         }
 
-        // Re-check pool cap in case another concurrent cold start landed while we initialized.
-        await this.ensurePoolCapacity(input.btwId);
-        if (this.disposed || startController.signal.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
+        if (usedSessionWorkdir && !appliedConfig.nativeReadOnlyConfirmed) {
+          throw new Error(
+            `Read-only tool mode requires a provider-native read-only mode, which could not be confirmed for ${target.agentType}.`
+          );
         }
+
+        detachConfigAbortListeners();
+        detachConfigAbortListeners = undefined;
 
         const handle: BtwHandle = {
           btwId: input.btwId,
           sessionId: input.sessionId,
-          readOnlyTools: input.readOnlyTools,
+          readOnlyTools: finalReadOnlyTools,
           cliType: target.cliType,
           agentType: target.agentType,
           agentProcess: started.agentProcess,
@@ -774,9 +1163,11 @@ export class BtwService {
           modelLabel: appliedConfig.modelLabel,
           cleanupIsolation: isolation.cleanup,
           onChunkRef,
+          activeTurnToken: null,
           lastUsedAt: this.now(),
           turnCount: 0,
           activeTurn: null,
+          dirty: false,
           disposed: false,
         };
 
@@ -790,6 +1181,10 @@ export class BtwService {
           handle.cleanupIsolation();
         });
 
+        // Atomically convert our pool reservation into the live pooled handle so
+        // `this.handles.size + this.reservedSlots.size <= this.maxActive` holds at all times.
+        this.reservedSlots.delete(input.btwId);
+        hasSlotReservation = false;
         this.handles.set(input.btwId, handle);
         this.ensureSweepTimer();
         // Ownership transferred to the handle.
@@ -801,36 +1196,40 @@ export class BtwService {
         this.startGate.release();
       }
     } catch (error) {
-      if (startedAgent) {
-        await this.shutdownAgentImpl({
-          agentProcess: startedAgent.agentProcess,
-          client: startedAgent.client,
-          acpSessionId: startedAgent.acpSessionId,
-          logger: this.deps.logger,
-          sessionLabel: `btw:${input.btwId}`,
-        }).catch((shutdownError) => {
-          this.deps.logger.debug(
-            `[btw:${input.btwId}] Cleanup after aborted start failed: ${formatErrorMessage(shutdownError)}`
-          );
-        });
-      }
-      isolationCleanup?.();
+      detachConfigAbortListeners?.();
+      detachConfigAbortListeners = undefined;
+      await cleanupStartedAgentOnce(true);
 
-      if (startController.signal.aborted && !this.disposed) {
+      if (input.signal.aborted && !this.disposed) {
         return { cancelled: true };
       }
       throw error;
     } finally {
-      this.shutdownController.signal.removeEventListener('abort', onShutdown);
-      if (this.starting.get(input.btwId) === startingState) {
-        this.starting.delete(input.btwId);
+      detachConfigAbortListeners?.();
+      if (hasSlotReservation) {
+        this.reservedSlots.delete(input.btwId);
       }
-      resolveStartDone();
     }
   }
 
-  private async ensurePoolCapacity(incomingBtwId: string): Promise<void> {
-    while (this.handles.size >= this.maxActive) {
+  /**
+   * Synchronously reserves one pool slot so concurrent cold starts can never
+   * push `this.handles.size + this.reservedSlots.size` above `this.maxActive`.
+   */
+  private async reservePoolSlot(incomingBtwId: string, signal: AbortSignal): Promise<void> {
+    while (true) {
+      signal.throwIfAborted();
+      if (this.disposed) {
+        throw new DOMException('BtwService disposed', 'AbortError');
+      }
+      if (this.reservedSlots.has(incomingBtwId)) {
+        return;
+      }
+      if (this.handles.size + this.reservedSlots.size < this.maxActive) {
+        this.reservedSlots.add(incomingBtwId);
+        return;
+      }
+
       let oldestIdle: BtwHandle | undefined;
       for (const candidate of this.handles.values()) {
         if (candidate.btwId === incomingBtwId) continue;
@@ -842,18 +1241,34 @@ export class BtwService {
       if (!oldestIdle) {
         throw new Error('Too many concurrent /btw requests active; try again once one finishes.');
       }
+
       this.deps.logger.debug(
         `[btw] Evicting LRU idle handle ${oldestIdle.btwId} (pool limit=${this.maxActive})`
       );
-      await this.destroyHandle(oldestIdle);
+      // `destroyHandle` synchronously removes `oldestIdle` from `this.handles`, so
+      // claiming `incomingBtwId` in `this.reservedSlots` right away keeps the total
+      // committed slots `<= maxActive` across the async teardown boundary.
+      const eviction = this.destroyHandle(oldestIdle);
+      this.reservedSlots.add(incomingBtwId);
+      try {
+        await eviction;
+        signal.throwIfAborted();
+        if (this.disposed) {
+          throw new DOMException('BtwService disposed', 'AbortError');
+        }
+        return;
+      } catch (error) {
+        this.reservedSlots.delete(incomingBtwId);
+        throw error;
+      }
     }
   }
 
   private async cancel(btwId: string): Promise<SessionBtwResponse> {
-    const startingState = this.starting.get(btwId);
-    if (startingState) {
-      startingState.abortController.abort(new DOMException('Cancelled by user', 'AbortError'));
-      return { btwId, text: '', cancelled: true };
+    const pendingAsk = this.pendingAsks.get(btwId);
+    if (pendingAsk) {
+      pendingAsk.cancelled = true;
+      pendingAsk.abortController.abort(new DOMException('Cancelled by user', 'AbortError'));
     }
 
     const handle = this.handles.get(btwId);
@@ -885,10 +1300,11 @@ export class BtwService {
   }
 
   private async close(btwId: string): Promise<SessionBtwResponse> {
-    const startingState = this.starting.get(btwId);
-    if (startingState) {
-      startingState.abortController.abort(new DOMException('Closed by user', 'AbortError'));
-      await startingState.done.catch(() => {});
+    const pendingAsk = this.pendingAsks.get(btwId);
+    if (pendingAsk) {
+      pendingAsk.cancelled = true;
+      pendingAsk.abortController.abort(new DOMException('Closed by user', 'AbortError'));
+      await pendingAsk.done.catch(() => {});
     }
 
     const handle = this.handles.get(btwId);
@@ -896,7 +1312,30 @@ export class BtwService {
       await this.destroyHandle(handle);
     }
 
+    const teardowns = this.pendingTeardowns.get(btwId);
+    if (teardowns && teardowns.size > 0) {
+      await Promise.allSettled([...teardowns]);
+    }
+
     return { btwId, text: '' };
+  }
+
+  private trackPendingTeardown(btwId: string, promise: Promise<void>): void {
+    let set = this.pendingTeardowns.get(btwId);
+    if (!set) {
+      set = new Set();
+      this.pendingTeardowns.set(btwId, set);
+    }
+    set.add(promise);
+    const release = () => {
+      const current = this.pendingTeardowns.get(btwId);
+      if (!current) return;
+      current.delete(promise);
+      if (current.size === 0) {
+        this.pendingTeardowns.delete(btwId);
+      }
+    };
+    void promise.then(release, release);
   }
 
   private destroyHandle(handle: BtwHandle): Promise<void> {
@@ -904,6 +1343,8 @@ export class BtwService {
       return handle.destroyPromise;
     }
     handle.disposed = true;
+    handle.activeTurnToken = null;
+    handle.onChunkRef.current = null;
     if (this.handles.get(handle.btwId) === handle) {
       this.handles.delete(handle.btwId);
       this.stopSweepIfEmpty();
@@ -934,6 +1375,7 @@ export class BtwService {
     })();
 
     handle.destroyPromise = teardown;
+    this.trackPendingTeardown(handle.btwId, teardown);
     return teardown;
   }
 
@@ -978,7 +1420,8 @@ export class BtwService {
       this.sweepTimer = null;
     }
 
-    const inFlightStarts = [...this.starting.values()].map((entry) => {
+    const inFlightAsks = [...this.pendingAsks.values()].map((entry) => {
+      entry.cancelled = true;
       entry.abortController.abort(new DOMException('BtwService disposed', 'AbortError'));
       return entry.done;
     });
@@ -986,8 +1429,13 @@ export class BtwService {
     this.handles.clear();
 
     await Promise.allSettled([
-      ...inFlightStarts,
+      ...inFlightAsks,
       ...activeHandles.map((handle) => this.destroyHandle(handle)),
     ]);
+
+    const remainingTeardowns = [...this.pendingTeardowns.values()].flatMap((set) => [...set]);
+    if (remainingTeardowns.length > 0) {
+      await Promise.allSettled(remainingTeardowns);
+    }
   }
 }

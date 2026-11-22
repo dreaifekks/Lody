@@ -13,8 +13,8 @@ import {
   type SessionBtwProgress,
   type SessionId,
 } from '@lody/shared';
-import { useAtom, useAtomValue } from 'jotai';
-import { runtimeAtom } from '@/atoms/runtime';
+import { useAtom, useAtomValue, useStore } from 'jotai';
+import { runtimeAtom, type WorkspaceRuntime } from '@/atoms/runtime';
 import {
   activeBtwArticleContextAtomFamily,
   btwSessionStateAtomFamily,
@@ -95,6 +95,39 @@ export type BtwController = {
   readonly clearPendingSelection: () => void;
 };
 
+type ActiveBackendTarget = {
+  readonly sessionId: SessionId;
+  readonly btwId: string;
+  readonly machineId: MachineId;
+  readonly runtime: WorkspaceRuntime;
+};
+
+function finalizeCancelledStreamingState(
+  current: BtwSessionState,
+  expectedBtwId?: string
+): BtwSessionState {
+  if (expectedBtwId && current.btwId !== expectedBtwId) return current;
+  if (!current.isStreaming) return current;
+  const partial = current.streamingText;
+  const nextTurns = partial
+    ? [
+        ...current.turns,
+        {
+          id: createTurnId(),
+          role: 'assistant' as const,
+          text: partial,
+          cancelled: true,
+        },
+      ]
+    : current.turns;
+  return {
+    ...current,
+    turns: nextTurns,
+    streamingText: '',
+    isStreaming: false,
+  };
+}
+
 export function useBtwController({
   sessionId,
   machineId,
@@ -103,12 +136,11 @@ export function useBtwController({
   scopeElementRef,
   onFocusComposer,
 }: UseBtwControllerOptions): BtwController {
+  const store = useStore();
   const [state, setState] = useAtom(btwSessionStateAtomFamily(sessionId));
   const activeArticleContext = useAtomValue(activeBtwArticleContextAtomFamily(sessionId));
   const runtime = useAtomValue(runtimeAtom);
 
-  const stateRef = useRef(state);
-  stateRef.current = state;
   const activeArticleRef = useRef(activeArticleContext);
   activeArticleRef.current = activeArticleContext;
   const runtimeRef = useRef(runtime);
@@ -120,7 +152,7 @@ export function useBtwController({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeRequestSeqRef = useRef(0);
-  const hasStartedBackendRef = useRef(false);
+  const activeBackendTargetRef = useRef<ActiveBackendTarget | null>(null);
   const lastSessionIdRef = useRef(sessionId);
   const lastHandledFocusSeqRef = useRef(state.focusRequestSeq);
   if (lastSessionIdRef.current !== sessionId) {
@@ -172,37 +204,15 @@ export function useBtwController({
     abortControllerRef.current = null;
     controller?.abort();
 
-    const snapshot = stateRef.current;
-    setState((current) => {
-      if (!current.isStreaming) return current;
-      const partial = current.streamingText;
-      const nextTurns = partial
-        ? [
-            ...current.turns,
-            {
-              id: createTurnId(),
-              role: 'assistant' as const,
-              text: partial,
-              cancelled: true,
-            },
-          ]
-        : current.turns;
-      return {
-        ...current,
-        turns: nextTurns,
-        streamingText: '',
-        isStreaming: false,
-      };
-    });
+    setState((current) => finalizeCancelledStreamingState(current));
 
-    const activeRuntime = runtimeRef.current;
-    const activeMachineId = machineIdRef.current;
-    if (activeRuntime && activeMachineId && hasStartedBackendRef.current) {
-      void activeRuntime
-        .requestSessionBtw(activeMachineId, {
+    const target = activeBackendTargetRef.current;
+    if (target && target.sessionId === sessionId) {
+      void target.runtime
+        .requestSessionBtw(target.machineId, {
           action: 'cancel',
-          sessionId,
-          btwId: snapshot.btwId,
+          sessionId: target.sessionId,
+          btwId: target.btwId,
         })
         .catch(() => undefined);
     }
@@ -214,20 +224,20 @@ export function useBtwController({
     abortControllerRef.current = null;
     controller?.abort();
 
-    const oldBtwId = stateRef.current.btwId;
-    const shouldCloseBackend = hasStartedBackendRef.current;
-    hasStartedBackendRef.current = false;
+    const target = activeBackendTargetRef.current;
+    const matchedTarget = target?.sessionId === sessionId ? target : null;
+    if (matchedTarget) {
+      activeBackendTargetRef.current = null;
+    }
 
     setState(createInitialBtwSessionState());
 
-    const activeRuntime = runtimeRef.current;
-    const activeMachineId = machineIdRef.current;
-    if (activeRuntime && activeMachineId && shouldCloseBackend) {
-      void activeRuntime
-        .requestSessionBtw(activeMachineId, {
+    if (matchedTarget) {
+      void matchedTarget.runtime
+        .requestSessionBtw(matchedTarget.machineId, {
           action: 'close',
-          sessionId,
-          btwId: oldBtwId,
+          sessionId: matchedTarget.sessionId,
+          btwId: matchedTarget.btwId,
         })
         .catch(() => undefined);
     }
@@ -258,7 +268,9 @@ export function useBtwController({
         cancel();
       }
 
-      const snapshot = stateRef.current;
+      const originSessionId = sessionId;
+      const originAtom = btwSessionStateAtomFamily(originSessionId);
+      const snapshot = store.get(originAtom);
       const btwId = snapshot.btwId;
       const readOnlyTools = snapshot.readOnlyTools;
       const pendingSelection = snapshot.pendingSelection;
@@ -272,7 +284,7 @@ export function useBtwController({
         ...(pendingSelection ? { selection: pendingSelection } : {}),
       };
 
-      setState((current) => ({
+      store.set(originAtom, (current) => ({
         ...current,
         isOpen: true,
         hasUnread: false,
@@ -287,14 +299,19 @@ export function useBtwController({
       const requestSeq = ++activeRequestSeqRef.current;
       const controller = new AbortController();
       abortControllerRef.current = controller;
-      hasStartedBackendRef.current = true;
+      activeBackendTargetRef.current = {
+        sessionId: originSessionId,
+        btwId,
+        machineId: activeMachineId,
+        runtime: activeRuntime,
+      };
 
       try {
         const response = await activeRuntime.requestSessionBtw(
           activeMachineId,
           {
             action: 'ask',
-            sessionId,
+            sessionId: originSessionId,
             btwId,
             question,
             ...(articleContext ? { articleContext } : {}),
@@ -306,7 +323,7 @@ export function useBtwController({
             onProgress: (progress: SessionBtwProgress) => {
               if (activeRequestSeqRef.current !== requestSeq) return;
               if (progress.btwId !== btwId) return;
-              setState((current) => {
+              store.set(originAtom, (current) => {
                 if (current.btwId !== btwId) return current;
                 const nextModelId = progress.modelId ?? current.modelId;
                 const nextModelLabel = progress.modelLabel ?? current.modelLabel;
@@ -337,23 +354,12 @@ export function useBtwController({
           abortControllerRef.current = null;
         }
 
-        setState((current) => {
+        store.set(originAtom, (current) => {
           if (current.btwId !== btwId) return current;
 
           if (!response) {
             if (controller.signal.aborted) {
-              const partial = current.streamingText;
-              return {
-                ...current,
-                turns: partial
-                  ? [
-                      ...current.turns,
-                      { id: createTurnId(), role: 'assistant', text: partial, cancelled: true },
-                    ]
-                  : current.turns,
-                streamingText: '',
-                isStreaming: false,
-              };
+              return finalizeCancelledStreamingState(current, btwId);
             }
             return {
               ...current,
@@ -365,12 +371,17 @@ export function useBtwController({
 
           const nextModelId = response.modelId ?? current.modelId;
           const nextModelLabel = response.modelLabel ?? current.modelLabel;
+          const nextReadOnlyTools =
+            typeof response.readOnlyTools === 'boolean'
+              ? response.readOnlyTools
+              : current.readOnlyTools;
 
           if (response.error) {
             return {
               ...current,
               modelId: nextModelId,
               modelLabel: nextModelLabel,
+              readOnlyTools: nextReadOnlyTools,
               streamingText: '',
               isStreaming: false,
               error: response.error,
@@ -395,6 +406,7 @@ export function useBtwController({
             ...current,
             modelId: nextModelId,
             modelLabel: nextModelLabel,
+            readOnlyTools: nextReadOnlyTools,
             turns: nextTurns,
             streamingText: '',
             isStreaming: false,
@@ -406,21 +418,10 @@ export function useBtwController({
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
         }
-        setState((current) => {
+        store.set(originAtom, (current) => {
           if (current.btwId !== btwId) return current;
           if (controller.signal.aborted) {
-            const partial = current.streamingText;
-            return {
-              ...current,
-              turns: partial
-                ? [
-                    ...current.turns,
-                    { id: createTurnId(), role: 'assistant', text: partial, cancelled: true },
-                  ]
-                : current.turns,
-              streamingText: '',
-              isStreaming: false,
-            };
+            return finalizeCancelledStreamingState(current, btwId);
           }
           return {
             ...current,
@@ -431,7 +432,7 @@ export function useBtwController({
         });
       }
     },
-    [cancel, open, sessionId, setState]
+    [cancel, open, sessionId, setState, store]
   );
 
   // Focus the shared composer whenever `/btw` is opened via icon, shortcut, or selection.
@@ -484,29 +485,38 @@ export function useBtwController({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [close, isVisible, scopeElementRef, state.isOpen]);
 
-  // Clean up warm backend process on unmount or session switch if `/btw` was started.
+  // Clean up warm backend process and settle any in-flight stream on unmount or session switch.
   useEffect(() => {
+    const originSessionId = sessionId;
     return () => {
       activeRequestSeqRef.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
 
-      if (!hasStartedBackendRef.current) return;
-      hasStartedBackendRef.current = false;
-      const activeRuntime = runtimeRef.current;
-      const activeMachineId = machineIdRef.current;
-      const btwId = stateRef.current.btwId;
-      if (activeRuntime && activeMachineId) {
-        void activeRuntime
-          .requestSessionBtw(activeMachineId, {
+      const target = activeBackendTargetRef.current;
+      const matchedTarget = target?.sessionId === originSessionId ? target : null;
+      if (matchedTarget) {
+        activeBackendTargetRef.current = null;
+      }
+
+      // Synchronously settle `isStreaming` on the origin session's Jotai atom (preserving
+      // any partial streamed text as a cancelled turn) so remounting the same session
+      // never stays stuck in "streaming" state.
+      store.set(btwSessionStateAtomFamily(originSessionId), (current) =>
+        finalizeCancelledStreamingState(current)
+      );
+
+      if (matchedTarget) {
+        void matchedTarget.runtime
+          .requestSessionBtw(matchedTarget.machineId, {
             action: 'close',
-            sessionId,
-            btwId,
+            sessionId: matchedTarget.sessionId,
+            btwId: matchedTarget.btwId,
           })
           .catch(() => undefined);
       }
     };
-  }, [sessionId]);
+  }, [sessionId, store]);
 
   const modelPillLabel = useMemo(
     () =>
