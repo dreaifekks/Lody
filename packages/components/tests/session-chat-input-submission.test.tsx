@@ -2095,6 +2095,41 @@ describe('SessionChatInputArea submission feedback', () => {
     expect(textarea.value).toBe('');
   });
 
+  it('blocks /btw <question> from main composer while side-panel /btw is streaming, preserving draft, while bare /btw still focuses', async () => {
+    const onSendMessage = vi.fn(async () => true);
+    const onBtwCommand = vi.fn();
+    const composerRef = createRef<SessionChatInputAreaHandle>();
+    const textarea = await renderComposer({
+      composerRef,
+      onSendMessage,
+      overrides: {
+        onBtwCommand,
+        btwMode: {
+          isOpen: false,
+          isStreaming: true,
+          modelLabel: 'Hydrogen · Low',
+          pendingSelection: null,
+          onClearPendingSelection: vi.fn(),
+          onSend: vi.fn(),
+          onCancel: vi.fn(),
+        },
+      },
+    });
+
+    await act(async () => composerRef.current!.setInputText('/btw second question'));
+    await submit('keyboard');
+
+    expect(onBtwCommand).not.toHaveBeenCalled();
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('/btw second question');
+
+    // Bare `/btw` still focuses/opens without aborting the active stream
+    await act(async () => composerRef.current!.setInputText('/btw'));
+    await submit('keyboard');
+    expect(onBtwCommand).toHaveBeenCalledWith('');
+    expect(textarea.value).toBe('');
+  });
+
   it('renders /btw composer chrome, routes send to btwMode, and cancels only /btw without stopping main', async () => {
     const onSendMessage = vi.fn(async () => true);
     const onStop = vi.fn();

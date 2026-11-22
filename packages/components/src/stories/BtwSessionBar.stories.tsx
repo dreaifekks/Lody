@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
 import type { SessionId } from '@lody/shared';
-import { Provider, useAtom } from 'jotai';
+import { Provider, useAtom, useSetAtom } from 'jotai';
 import { ArrowUp, Files, MessagesSquare, PanelRight } from 'lucide-react';
 import { fn } from 'storybook/test';
 import { Button } from '@lody/ui/button';
@@ -598,6 +598,32 @@ function DesktopAdaptiveScenarioInner({
   const canClear = isBtwOpen && (turns.length > 0 || isStreaming);
   const completedTurnCount = turns.filter((turn) => turn.role === 'user').length;
 
+  useEffect(() => {
+    if (!isBtwOpen) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Escape' ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.keyCode === 229
+      ) {
+        return;
+      }
+      if (
+        document.querySelector(
+          '[role="dialog"], [role="alertdialog"], [role="menu"]:not([hidden]), [role="listbox"]:not([hidden])'
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setIsBtwOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isBtwOpen]);
+
   const handleSendBtw = (question: string) => {
     setTurns((prev) => [
       ...prev,
@@ -616,9 +642,11 @@ function DesktopAdaptiveScenarioInner({
     setSelection(null);
   };
 
+  const setBtwDraft = useSetAtom(btwDraftAtomFamily(DESKTOP_STORY_SESSION_ID));
   const handleClear = () => {
     setTurns([]);
     setSelection(null);
+    setBtwDraft('');
     setIsStreaming(false);
     setIsBtwOpen(false);
   };

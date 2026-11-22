@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -999,5 +999,130 @@ describe('useBtwController and btw-atoms', () => {
     });
     expect(latest.state.isOpen).toBe(false);
     expect(store.get(btwDraftAtomFamily(sessionId))).toBe('');
+  });
+
+  it('closes only the focused session /btw when two visible surfaces both have /btw open', () => {
+    const store = createStore();
+    const coordinatorId = 'session-btw-coord-esc' as SessionId;
+    const threadId = 'session-btw-thread-esc' as SessionId;
+    const coordScopeRef = { current: null as HTMLDivElement | null };
+    const threadScopeRef = { current: null as HTMLDivElement | null };
+
+    function Surface({
+      sessionId,
+      scopeRef,
+      testId,
+    }: {
+      readonly sessionId: SessionId;
+      readonly scopeRef: { current: HTMLDivElement | null };
+      readonly testId: string;
+    }) {
+      const btw = useBtwController({
+        sessionId,
+        machineId: MACHINE_ID,
+        agentType: 'antigravity',
+        isVisible: true,
+        scopeElementRef: scopeRef,
+      });
+      return (
+        <div>
+          <div ref={scopeRef} data-btw-open-surface={btw.state.isOpen ? 'true' : undefined}>
+            <textarea data-testid={testId} />
+          </div>
+        </div>
+      );
+    }
+
+    act(() => {
+      store.set(openBtwForSessionAtom, coordinatorId);
+      store.set(openBtwForSessionAtom, threadId);
+      root.render(
+        <Provider store={store}>
+          <Surface sessionId={coordinatorId} scopeRef={coordScopeRef} testId="coord-input" />
+          <Surface sessionId={threadId} scopeRef={threadScopeRef} testId="thread-input" />
+        </Provider>
+      );
+    });
+
+    const threadInput = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="thread-input"]'
+    )!;
+    threadInput.focus();
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => {
+      threadInput.dispatchEvent(ev);
+    });
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(store.get(btwSessionStateAtomFamily(threadId)).isOpen).toBe(false);
+    expect(store.get(btwSessionStateAtomFamily(coordinatorId)).isOpen).toBe(true);
+  });
+
+  it('preserves pre-mount openBtwWithSelectionAtom and focuses composer under StrictMode, while real unmount closes', () => {
+    const store = createStore();
+    const sessionId = 'session-btw-strict-premount' as SessionId;
+    const onFocusComposer = vi.fn();
+    const scheduledFrames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const originalRaf = window.requestAnimationFrame;
+    const originalCancelRaf = window.cancelAnimationFrame;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      const id = nextFrameId++;
+      scheduledFrames.set(id, cb);
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      scheduledFrames.delete(id);
+    }) as typeof window.cancelAnimationFrame;
+
+    try {
+      store.set(openBtwWithSelectionAtom, {
+        sessionId,
+        selection: { path: 'docs/strict.md', text: 'strict quote' },
+      });
+
+      let latest!: BtwController;
+      function Harness() {
+        latest = useBtwController({
+          sessionId,
+          machineId: MACHINE_ID,
+          agentType: 'antigravity',
+          isVisible: true,
+          onFocusComposer,
+        });
+        return null;
+      }
+
+      act(() => {
+        root.render(
+          <StrictMode>
+            <Provider store={store}>
+              <Harness />
+            </Provider>
+          </StrictMode>
+        );
+      });
+
+      // Flush surviving rAF after StrictMode replay
+      act(() => {
+        for (const cb of Array.from(scheduledFrames.values())) {
+          cb(0);
+        }
+        scheduledFrames.clear();
+      });
+
+      expect(latest.state.isOpen).toBe(true);
+      expect(latest.state.pendingSelection?.text).toBe('strict quote');
+      expect(onFocusComposer).toHaveBeenCalledTimes(1);
+
+      // Real unmount still synchronously resets isOpen to false
+      act(() => {
+        root.unmount();
+      });
+      expect(store.get(btwSessionStateAtomFamily(sessionId)).isOpen).toBe(false);
+    } finally {
+      window.requestAnimationFrame = originalRaf;
+      window.cancelAnimationFrame = originalCancelRaf;
+    }
   });
 });

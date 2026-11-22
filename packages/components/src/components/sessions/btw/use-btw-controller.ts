@@ -154,6 +154,10 @@ export function useBtwController({
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeRequestSeqRef = useRef(0);
   const activeBackendTargetRef = useRef<ActiveBackendTarget | null>(null);
+  const strictModeReopenRef = useRef<{
+    readonly sessionId: SessionId;
+    readonly focusRequestSeq: number;
+  } | null>(null);
   const lastSessionIdRef = useRef(sessionId);
   const lastHandledFocusSeqRef = useRef(state.isOpen ? 0 : state.focusRequestSeq);
   if (lastSessionIdRef.current !== sessionId) {
@@ -464,8 +468,9 @@ export function useBtwController({
   useEffect(() => {
     if (!isVisible || !state.isOpen) return undefined;
     if (state.focusRequestSeq <= lastHandledFocusSeqRef.current) return undefined;
-    lastHandledFocusSeqRef.current = state.focusRequestSeq;
+    const requestedSeq = state.focusRequestSeq;
     const frame = requestAnimationFrame(() => {
+      lastHandledFocusSeqRef.current = requestedSeq;
       onFocusComposerRef.current?.();
     });
     return () => cancelAnimationFrame(frame);
@@ -502,6 +507,10 @@ export function useBtwController({
       }
       const scopeRoot = scopeElementRef?.current?.parentElement ?? scopeElementRef?.current ?? null;
       if (scopeRoot) {
+        const focusedOpenBtwSurface = targetEl?.closest('[data-btw-open-surface="true"]');
+        if (focusedOpenBtwSurface && !scopeRoot.contains(focusedOpenBtwSurface)) {
+          return;
+        }
         const targetDialog = targetEl?.closest('[role="dialog"], [role="alertdialog"]');
         if (targetDialog && !targetDialog.contains(scopeRoot)) {
           return;
@@ -525,6 +534,16 @@ export function useBtwController({
   // conversation while preserving in-memory `/btw` turns and unread state.
   useEffect(() => {
     const originSessionId = sessionId;
+    const pendingStrictModeReopen = strictModeReopenRef.current;
+    strictModeReopenRef.current = null;
+    if (pendingStrictModeReopen && pendingStrictModeReopen.sessionId === originSessionId) {
+      store.set(btwSessionStateAtomFamily(originSessionId), (current) =>
+        !current.isOpen && current.focusRequestSeq === pendingStrictModeReopen.focusRequestSeq
+          ? { ...current, isOpen: true }
+          : current
+      );
+    }
+
     return () => {
       activeRequestSeqRef.current += 1;
       abortControllerRef.current?.abort();
@@ -538,8 +557,17 @@ export function useBtwController({
 
       // Synchronously settle `isStreaming` and close `isOpen` on the origin
       // session's Jotai atom (preserving turns, `btwId`, `hasUnread`, and any
-      // partial streamed text as a cancelled turn).
+      // partial streamed text as a cancelled turn). Record the closed open state
+      // on the instance ref so a StrictMode mount-cleanup-mount replay on the
+      // same instance restores pre-mount explicit opens while real unmounts and
+      // session switches remain closed.
       store.set(btwSessionStateAtomFamily(originSessionId), (current) => {
+        if (current.isOpen) {
+          strictModeReopenRef.current = {
+            sessionId: originSessionId,
+            focusRequestSeq: current.focusRequestSeq,
+          };
+        }
         const settled = finalizeCancelledStreamingState(current);
         return settled.isOpen ? { ...settled, isOpen: false } : settled;
       });

@@ -8671,7 +8671,11 @@ const SessionDetail = ({
               aria-hidden={!isActive}
             >
               <SessionChatSurface
-                {...getSharedChatSurfaceProps(tabSession, isActive)}
+                {...getSharedChatSurfaceProps(
+                  tabSession,
+                  isActive,
+                  isActive && !(isCompactDesktop && isSidebarVisible)
+                )}
                 {...pageChatFileLinks}
                 allowBtwSidePanel={
                   !isSidebarVisible &&

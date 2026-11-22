@@ -2041,6 +2041,9 @@ export const SessionChatInputArea = memo(
         if (onBtwCommand && !scheduled.at && !routeToMain) {
           const parsedBtw = parseBtwSlashCommand(trimmedPrompt);
           if (parsedBtw.matched) {
+            if (parsedBtw.question && btwMode?.isStreaming) {
+              return;
+            }
             // Clear only the typed `/btw …` text; preserve main attachments & annotations.
             clearInput();
             onBtwCommand(parsedBtw.question);

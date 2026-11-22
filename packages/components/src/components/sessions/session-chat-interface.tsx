@@ -7495,6 +7495,7 @@ export const SessionChatInterface = memo(
     }, []);
     const btwSidePanelComposerRef = useRef<ComposerInputElement | null>(null);
     const btwSidePanelFocusedRef = useRef(false);
+    const btwOverlayFocusedRef = useRef(false);
     const btwContainerWidth = useBtwContainerWidth(
       btwLayoutRoot,
       allowBtwSidePanel && !isMobile && isVisible && !hideMessageArea
@@ -7525,31 +7526,45 @@ export const SessionChatInterface = memo(
     const isBtwActive = btw.state.isOpen && session.isArchived !== true;
     const isBtwSidePanelActive = isBtwActive && btwPresentationMode === 'side-panel';
     const isBtwOverlayActive = isBtwActive && btwPresentationMode === 'overlay';
+    const isBtwOverlayActiveRef = useRef(isBtwOverlayActive);
+    isBtwOverlayActiveRef.current = isBtwOverlayActive;
     const hideComposerForPermission = shouldReplaceComposerWithPermission && !isBtwOverlayActive;
     const prevBtwPresentationModeRef = useRef(btwPresentationMode);
     useLayoutEffect(() => {
       const prevMode = prevBtwPresentationModeRef.current;
       prevBtwPresentationModeRef.current = btwPresentationMode;
       const hadSidePanelFocus = btwSidePanelFocusedRef.current;
+      const hadOverlayFocus = btwOverlayFocusedRef.current;
       if (!isBtwSidePanelActive) {
         btwSidePanelFocusedRef.current = false;
       }
+      if (!isBtwOverlayActive) {
+        btwOverlayFocusedRef.current = false;
+      }
       if (!isBtwActive || !isVisible || prevMode === btwPresentationMode) return undefined;
       const active = document.activeElement;
+      const activeDroppedToDocument =
+        !active || active === document.body || active === document.documentElement;
       const wasInSidePanel =
-        prevMode === 'side-panel' &&
-        hadSidePanelFocus &&
-        (!active || active === document.body || active === document.documentElement);
+        prevMode === 'side-panel' && hadSidePanelFocus && activeDroppedToDocument;
       const wasInOverlay =
         prevMode === 'overlay' &&
-        active instanceof Element &&
-        active.closest('[data-btw-composer-active="true"]') !== null;
+        hadOverlayFocus &&
+        (activeDroppedToDocument ||
+          (active instanceof Element && active.closest('[data-lody-composer-input]') !== null));
       if (!wasInSidePanel && !wasInOverlay) return undefined;
       const frame = requestAnimationFrame(() => {
         focusBtwComposer();
       });
       return () => cancelAnimationFrame(frame);
-    }, [btwPresentationMode, focusBtwComposer, isBtwActive, isBtwSidePanelActive, isVisible]);
+    }, [
+      btwPresentationMode,
+      focusBtwComposer,
+      isBtwActive,
+      isBtwOverlayActive,
+      isBtwSidePanelActive,
+      isVisible,
+    ]);
     const wasMainActiveInBtwRef = useRef(false);
     const [mainCompletedInBtw, setMainCompletedInBtw] = useState(false);
     useEffect(() => {
@@ -8049,6 +8064,7 @@ export const SessionChatInterface = memo(
                 <div
                   ref={setBtwLayoutRootNode}
                   data-btw-layout-mode={btwPresentationMode}
+                  data-btw-open-surface={isBtwActive ? 'true' : undefined}
                   className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
                 >
                   <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -8499,6 +8515,19 @@ export const SessionChatInterface = memo(
                               styles.composerContents,
                               shareSelection.active && styles.composerHidden
                             )}
+                            onFocusCapture={() => {
+                              if (isBtwOverlayActiveRef.current) {
+                                btwOverlayFocusedRef.current = true;
+                              }
+                            }}
+                            onBlurCapture={(event) => {
+                              if (
+                                event.currentTarget.isConnected &&
+                                !event.currentTarget.contains(event.relatedTarget as Node | null)
+                              ) {
+                                btwOverlayFocusedRef.current = false;
+                              }
+                            }}
                           >
                             {hideComposerForPermission ? null : (
                               <SessionChatInputArea

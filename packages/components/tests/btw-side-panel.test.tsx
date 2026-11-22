@@ -313,12 +313,22 @@ describe('btw-layout & BtwSidePanel', () => {
     });
     expect(store.get(btwSidePanelWidthPxAtom)).toBe(BTW_SIDE_PANEL_DEFAULT_WIDTH_PX);
 
-    // Streaming switches primary action to cancel button; canClear=false hides clear button
+    // Streaming switches primary action to cancel button; canClear=false with empty draft hides clear button
     renderPanel({ isStreaming: true, canClear: false });
     expect(container.querySelector('[data-btw-clear]')).toBeNull();
     const cancelBtn = container.querySelector<HTMLButtonElement>('button[aria-label="停止 /btw"]');
     expect(cancelBtn).not.toBeNull();
     act(() => cancelBtn!.click());
     expect(onCancel).toHaveBeenCalledTimes(1);
+
+    // Non-empty unsent draft reveals clear button even when canClear is false
+    act(() => {
+      store.set(btwDraftAtomFamily(SESSION_ID), 'unsent side draft');
+    });
+    expect(container.querySelector('[data-btw-clear]')).not.toBeNull();
+    act(() => {
+      store.set(btwDraftAtomFamily(SESSION_ID), '   ');
+    });
+    expect(container.querySelector('[data-btw-clear]')).toBeNull();
   });
 });

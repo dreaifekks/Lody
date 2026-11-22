@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -9,7 +10,7 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SessionId } from '@lody/shared';
-import { useAtom } from 'jotai';
+import { atom, useAtom, useAtomValue } from 'jotai';
 import { ArrowUp, MessageCircleDashed, Trash2, X } from 'lucide-react';
 import { Button } from '@lody/ui/button';
 import { Tooltip } from '@lody/ui/tooltip';
@@ -38,6 +39,46 @@ const RESIZE_KEYBOARD_STEP_PX = 24;
 
 const HEADER_ICON_BUTTON_CLASS =
   'inline-flex h-6 w-6 shrink-0 select-none items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-muted-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+
+/**
+ * Isolated clear button leaf: also reveals when an unsent `/btw` draft exists
+ * without causing the header or stream to re-render on each keystroke.
+ */
+const BtwSidePanelClearButton = memo(function BtwSidePanelClearButton({
+  sessionId,
+  canClear,
+  onClear,
+}: {
+  readonly sessionId: SessionId;
+  readonly canClear: boolean;
+  readonly onClear: () => void;
+}) {
+  const hasDraftAtom = useMemo(
+    () => atom((get) => get(btwDraftAtomFamily(sessionId)).trim().length > 0),
+    [sessionId]
+  );
+  const hasDraft = useAtomValue(hasDraftAtom);
+  if (!canClear && !hasDraft) return null;
+
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        render={
+          <button
+            type="button"
+            data-btw-clear=""
+            aria-label="清空 /btw"
+            onClick={onClear}
+            className={HEADER_ICON_BUTTON_CLASS}
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          </button>
+        }
+      />
+      <Tooltip.Content side="bottom">清空 /btw</Tooltip.Content>
+    </Tooltip.Root>
+  );
+});
 
 type BtwSidePanelComposerProps = {
   readonly sessionId: SessionId;
@@ -382,24 +423,7 @@ export function BtwSidePanel({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {canClear ? (
-            <Tooltip.Root>
-              <Tooltip.Trigger
-                render={
-                  <button
-                    type="button"
-                    data-btw-clear=""
-                    aria-label="清空 /btw"
-                    onClick={onClear}
-                    className={HEADER_ICON_BUTTON_CLASS}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  </button>
-                }
-              />
-              <Tooltip.Content side="bottom">清空 /btw</Tooltip.Content>
-            </Tooltip.Root>
-          ) : null}
+          <BtwSidePanelClearButton sessionId={sessionId} canClear={canClear} onClear={onClear} />
           <Tooltip.Root>
             <Tooltip.Trigger
               render={
