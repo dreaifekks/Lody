@@ -821,16 +821,33 @@ export async function startLanHubServer(options: LanHubServerOptions): Promise<L
     );
     timer.unref?.();
     state = { kind: 'handing-over', timer };
+    const isActiveHandover = () => state.kind === 'handing-over' && state.timer === timer;
     mcpAuth.beginHandover();
     options.log?.('[handover] A new host asked for this LAN; stopping the Streams server.');
     await upstream.stop();
     await upstream.exited;
+    if (!isActiveHandover() || response.destroyed) {
+      if (!response.headersSent && !response.destroyed) {
+        sendJson(request, response, 409, { error: 'handover_aborted' });
+      }
+      return;
+    }
     try {
       // A share or MCP auth write being committed lands before its files are read.
       await Promise.all([shares.idle(), mcpAuth.idle()]);
     } catch (error) {
-      sendJson(request, response, 500, { error: 'handover_idle_failed' });
-      await resume(`preparing files failed: ${error instanceof Error ? error.name : 'error'}`);
+      if (!response.headersSent && !response.destroyed) {
+        sendJson(request, response, 500, { error: 'handover_idle_failed' });
+      }
+      if (isActiveHandover()) {
+        await resume(`preparing files failed: ${error instanceof Error ? error.name : 'error'}`);
+      }
+      return;
+    }
+    if (!isActiveHandover() || response.destroyed) {
+      if (!response.headersSent && !response.destroyed) {
+        sendJson(request, response, 409, { error: 'handover_aborted' });
+      }
       return;
     }
     response.writeHead(200, {

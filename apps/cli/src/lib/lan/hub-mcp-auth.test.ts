@@ -562,6 +562,11 @@ describe('LAN hub centralized MCP authentication', () => {
       };
     };
 
+    await putRecord('srv-healthy-manual', {
+      target: HTTP_TARGET,
+      settings: { mode: 'manual', bearerToken: 'healthy-manual-secret' },
+    });
+
     const realWriteFileSync = fs.writeFileSync.bind(fs);
     let failWrites = true;
     const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((...args) => {
@@ -585,6 +590,13 @@ describe('LAN hub centralized MCP authentication', () => {
     expect(refreshCalls).toBe(1);
     expect(usedRefreshTokens).toEqual(['rt-1-single-use']);
 
+    // Unrelated already-persisted server remains readable even while srv-enospc has a pending persist
+    const healthyManual = await requestToken('srv-healthy-manual', { target: HTTP_TARGET });
+    expect(healthyManual.status).toBe(200);
+    expect(healthyManual.decrypted?.headers).toEqual({
+      authorization: 'Bearer healthy-manual-secret',
+    });
+
     // While disk is still full, retrying MUST NOT re-call upstream with dead rt-1-single-use
     const failed2 = await requestToken('srv-enospc', {
       target: HTTP_TARGET,
@@ -595,8 +607,11 @@ describe('LAN hub centralized MCP authentication', () => {
     expect(failed2.raw).toEqual({ error: 'storage_unavailable' });
     expect(refreshCalls).toBe(1);
 
-    // Disk recovers -> next request flushes pendingPersist and returns already-rotated at-2-rotated
+    // Disk recovers -> graceful close() flushes dirty rt-2-fresh even without another token request
     failWrites = false;
+    writeSpy.mockRestore();
+    await hub.close();
+    hub = await startHub();
     const recovered = await requestToken('srv-enospc', {
       target: HTTP_TARGET,
       forceRefresh: true,
@@ -607,14 +622,11 @@ describe('LAN hub centralized MCP authentication', () => {
       mode: 'oauth',
       headers: { authorization: 'Bearer at-2-rotated' },
       expiresAt: nowMs + 3_600_000,
-      revision: 2,
+      revision: 3,
     });
     expect(refreshCalls).toBe(1);
-    writeSpy.mockRestore();
 
-    // Restart hub and verify rt-2-fresh was flushed to disk cleanly
-    await hub.close();
-    hub = await startHub();
+    // Next expiry rotates using persisted rt-2-fresh (never rt-1-single-use)
     nowMs += 3_580_000;
     const nextRotate = await requestToken('srv-enospc', { target: HTTP_TARGET });
     expect(nextRotate.status).toBe(200);
@@ -714,6 +726,43 @@ describe('LAN hub centralized MCP authentication', () => {
       );
       expect(resumedResult.status).toBe(200);
       expect(mcpAuth.hasRecords()).toBe(true);
+
+      // A stalled PUT body times out cleanly with 408 instead of blocking idle() indefinitely
+      vi.useFakeTimers();
+      try {
+        const timedMcpAuth = createLanHubMcpAuth({
+          dataDir: unitDir,
+          token: hub.token,
+          now: () => nowMs,
+          bodyTimeoutMs: 50,
+        });
+        const stalledStream = new PassThrough();
+        const stalledReq = Object.assign(stalledStream, {
+          method: 'PUT',
+          url: `${LAN_HUB_MCP_AUTH_RECORDS_PREFIX}srv-stalled`,
+        }) as unknown as IncomingMessage;
+        const stalledResult = { status: 0, body: '' };
+        const stalledRes = {
+          headersSent: false,
+          destroyed: false,
+          writeHead: (status: number) => {
+            stalledRes.headersSent = true;
+            stalledResult.status = status;
+          },
+          end: (chunk?: string) => {
+            stalledResult.body = chunk ?? '';
+          },
+        } as unknown as ServerResponse;
+        const stalledDone = timedMcpAuth.handle(stalledReq, stalledRes);
+        await vi.advanceTimersByTimeAsync(60);
+        await stalledDone;
+        expect(stalledResult.status).toBe(408);
+        expect(JSON.parse(stalledResult.body)).toEqual({ error: 'request_timeout' });
+        timedMcpAuth.close();
+      } finally {
+        vi.useRealTimers();
+      }
+
       mcpAuth.close();
     } finally {
       fs.rmSync(unitDir, { recursive: true, force: true });

@@ -53,6 +53,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SERVER_ID_LENGTH = 256;
 const REFRESH_SKEW_MS = 30_000;
 const REFRESH_TIMEOUT_MS = 30_000;
+const BODY_READ_TIMEOUT_MS = 30_000;
 
 const StoredEntrySchema = z
   .object({
@@ -91,6 +92,7 @@ export type LanHubMcpAuthOptions = {
   token: string;
   io?: McpAuthenticationIO;
   now?: () => number;
+  bodyTimeoutMs?: number;
   log?: (line: string) => void;
 };
 
@@ -118,15 +120,45 @@ function sendJson(
   response.end(JSON.stringify(body));
 }
 
-async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
+async function readJsonBody(
+  request: http.IncomingMessage,
+  timeoutMs: number,
+  signal: AbortSignal
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of request) {
-    const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += part.length;
-    if (bytes > MAX_BODY_BYTES) throw new HttpError(413, 'body_too_large');
-    chunks.push(part);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    request.destroy();
+  }, timeoutMs);
+  timer.unref?.();
+  const onAbort = () => {
+    request.destroy();
+  };
+  if (signal.aborted) {
+    clearTimeout(timer);
+    throw new HttpError(503, 'moving');
   }
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    for await (const chunk of request) {
+      const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += part.length;
+      if (bytes > MAX_BODY_BYTES) throw new HttpError(413, 'body_too_large');
+      chunks.push(part);
+    }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (timedOut) throw new HttpError(408, 'request_timeout');
+    if (signal.aborted) throw new HttpError(503, 'moving');
+    throw new HttpError(400, 'invalid_json');
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
+  if (timedOut) throw new HttpError(408, 'request_timeout');
+  if (signal.aborted) throw new HttpError(503, 'moving');
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
   } catch {
@@ -249,6 +281,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
   const atRestAad = mcpAuthAtRestAad();
   const io = options.io ?? makeMcpAuthenticationIO();
   const now = options.now ?? Date.now;
+  const bodyTimeoutMs = options.bodyTimeoutMs ?? BODY_READ_TIMEOUT_MS;
   const filePath = path.join(options.dataDir, LAN_MCP_AUTH_FILE_NAME);
   const shutdown = new AbortController();
 
@@ -257,9 +290,9 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
   const serverLocks = new Map<string, Promise<void>>();
   const activeOps = new Set<Promise<unknown>>();
   const idleWaiters = new Set<() => void>();
+  const dirtyServers = new Set<string>();
   let nextRevision = 1;
   let storageCorrupted = false;
-  let pendingPersist = false;
   let draining = false;
   let inFlightRequests = 0;
 
@@ -330,11 +363,12 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     }
   };
 
-  const flushPendingPersist = (context: string): void => {
-    if (!pendingPersist) return;
+  const flushPendingPersist = (context: string, serverId?: string): void => {
+    if (dirtyServers.size === 0) return;
+    if (serverId !== undefined && !dirtyServers.has(serverId)) return;
     try {
       persistSnapshot(records, nextRevision);
-      pendingPersist = false;
+      dirtyServers.clear();
     } catch (error) {
       options.log?.(
         `[mcp-auth] retry persist failed (${context}): ${error instanceof Error ? error.name : 'error'}`
@@ -393,7 +427,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     response: http.ServerResponse
   ): Promise<void> => {
     ensureStorageHealthy();
-    const rawBody = await readJsonBody(request);
+    const rawBody = await readJsonBody(request, bodyTimeoutMs, shutdown.signal);
     let record: McpStoredAuthentication;
     try {
       const decrypted = decryptLanMcpAuthJson(
@@ -435,7 +469,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
       }
       records.set(serverId, entry);
       nextRevision = revision + 1;
-      pendingPersist = false;
+      dirtyServers.clear();
       refreshErrors.delete(serverId);
       options.log?.(
         `[mcp-auth] saved ${entry.record.settings.mode} credentials for ${serverId} (rev ${revision})`
@@ -466,10 +500,10 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           throw new HttpError(500, 'storage_unavailable');
         }
         records.delete(serverId);
-        pendingPersist = false;
+        dirtyServers.clear();
         options.log?.(`[mcp-auth] removed credentials for ${serverId}`);
-      } else if (pendingPersist) {
-        flushPendingPersist(`DELETE ${serverId}`);
+      } else if (dirtyServers.has(serverId)) {
+        flushPendingPersist(`DELETE ${serverId}`, serverId);
       }
       refreshErrors.delete(serverId);
       return existed;
@@ -483,7 +517,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     response: http.ServerResponse
   ): Promise<void> => {
     ensureStorageHealthy();
-    const rawBody = await readJsonBody(request);
+    const rawBody = await readJsonBody(request, bodyTimeoutMs, shutdown.signal);
     let configRequest: z.infer<typeof LanMcpAuthAuthorizeConfigRequestSchema>;
     try {
       const decrypted = decryptLanMcpAuthJson(
@@ -533,7 +567,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
     response: http.ServerResponse
   ): Promise<void> => {
     ensureStorageHealthy();
-    const rawBody = await readJsonBody(request);
+    const rawBody = await readJsonBody(request, bodyTimeoutMs, shutdown.signal);
     let tokenRequest: z.infer<typeof LanMcpAuthTokenRequestSchema>;
     try {
       const decrypted = decryptLanMcpAuthJson(wireKey, mcpAuthTokenRequestAad(serverId), rawBody);
@@ -560,7 +594,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           if (!hasRecordCredentials(entry.record)) {
             throw new HttpError(409, 'manual_required');
           }
-          flushPendingPersist(`token ${serverId}`);
+          flushPendingPersist(`token ${serverId}`, serverId);
           const manual = buildManualCredentials(entry.record);
           return LanMcpAuthTokenResponseSchema.parse({
             mode: 'manual',
@@ -659,9 +693,9 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           entry = nextEntry;
           try {
             persistSnapshot(records, nextRevision);
-            pendingPersist = false;
+            dirtyServers.clear();
           } catch (error) {
-            pendingPersist = true;
+            dirtyServers.add(serverId);
             options.log?.(
               `[mcp-auth] failed to persist rotated OAuth token for ${serverId}: ${error instanceof Error ? error.name : 'error'}`
             );
@@ -669,7 +703,7 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           }
           options.log?.(`[mcp-auth] refreshed OAuth token for ${serverId} (rev ${revision})`);
         } else {
-          flushPendingPersist(`token ${serverId}`);
+          flushPendingPersist(`token ${serverId}`, serverId);
         }
 
         return LanMcpAuthTokenResponseSchema.parse({
@@ -771,14 +805,24 @@ export function createLanHubMcpAuth(options: LanHubMcpAuthOptions): LanHubMcpAut
           });
         }
       }
-      if (pendingPersist && !storageCorrupted) {
+      if (dirtyServers.size > 0 && !storageCorrupted) {
         persistSnapshot(records, nextRevision);
-        pendingPersist = false;
+        dirtyServers.clear();
       }
     },
     close: () => {
       draining = true;
       shutdown.abort();
+      if (dirtyServers.size > 0 && !storageCorrupted) {
+        try {
+          persistSnapshot(records, nextRevision);
+          dirtyServers.clear();
+        } catch (error) {
+          options.log?.(
+            `[mcp-auth] close persist failed: ${error instanceof Error ? error.name : 'error'}`
+          );
+        }
+      }
     },
   };
 }

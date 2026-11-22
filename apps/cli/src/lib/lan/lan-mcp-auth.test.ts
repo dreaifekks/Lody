@@ -68,6 +68,7 @@ function createFakeOAuthWorld() {
   let nextRemoteResponses: Array<() => Response> = [];
   let failRefreshWithInvalidGrant = false;
   let requirePreconfiguredClient = false;
+  let currentIssuer = 'https://issuer.example';
 
   const oauthFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
@@ -76,18 +77,18 @@ function createFakeOAuthWorld() {
     if (url.pathname.includes('oauth-protected-resource')) {
       return Response.json({
         resource: 'https://resource.example/mcp',
-        authorization_servers: ['https://issuer.example'],
+        authorization_servers: [currentIssuer],
         scopes_supported: ['tools'],
       });
     }
     if (url.pathname.includes('oauth-authorization-server')) {
       return Response.json({
-        issuer: 'https://issuer.example',
-        authorization_endpoint: 'https://issuer.example/authorize',
-        token_endpoint: 'https://issuer.example/token',
+        issuer: currentIssuer,
+        authorization_endpoint: `${currentIssuer}/authorize`,
+        token_endpoint: `${currentIssuer}/token`,
         ...(requirePreconfiguredClient
           ? {}
-          : { registration_endpoint: 'https://issuer.example/register' }),
+          : { registration_endpoint: `${currentIssuer}/register` }),
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
@@ -97,7 +98,8 @@ function createFakeOAuthWorld() {
     if (url.pathname === '/register') {
       return Response.json({
         ...JSON.parse(String(init?.body)),
-        client_id: 'dcr-client-id',
+        client_id:
+          currentIssuer === 'https://issuer.example' ? 'dcr-client-id' : 'dcr-client-id-new',
       });
     }
     if (url.pathname === '/token') {
@@ -139,6 +141,47 @@ function createFakeOAuthWorld() {
     }
     const next = nextRemoteResponses.shift();
     if (next) return next();
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : 'GET')
+    ).toUpperCase();
+    if (method === 'GET') {
+      return new Response(null, { status: 405 });
+    }
+    const rawBody =
+      seenRemoteBodies.at(-1) || (input instanceof Request ? await input.clone().text() : '');
+    try {
+      const parsed = JSON.parse(rawBody) as {
+        id?: unknown;
+        method?: string;
+        params?: { protocolVersion?: string };
+      };
+      if (parsed.method === 'server/discover') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: parsed.id,
+          error: { code: -32601, message: 'Method not found' },
+        });
+      }
+      if (parsed.method === 'initialize') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: parsed.id,
+          result: {
+            protocolVersion: parsed.params?.protocolVersion ?? '2025-03-26',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'srv', version: '1.0.0' },
+          },
+        });
+      }
+      if (parsed.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      if (parsed.method === 'tools/list') {
+        return Response.json({ jsonrpc: '2.0', id: parsed.id, result: { tools: [] } });
+      }
+    } catch {
+      // fall through to generic JSON-RPC response
+    }
     return Response.json({ jsonrpc: '2.0', id: 1, result: { ok: true } });
   };
 
@@ -253,6 +296,9 @@ function createFakeOAuthWorld() {
     },
     setRequirePreconfiguredClient: (value: boolean) => {
       requirePreconfiguredClient = value;
+    },
+    setIssuer: (issuer: string) => {
+      currentIssuer = issuer;
     },
     makeMemberIo,
   };
@@ -790,6 +836,48 @@ describe('LanMcpAuthentication member integration', () => {
             mode: 'oauth',
           });
         });
+
+        // If the MCP server later migrates to a new OAuth issuer with DCR enabled,
+        // re-authorizing drops the stale DCR client instead of failing issuer check
+        world.setRequirePreconfiguredClient(false);
+        await desktop2.request({
+          machineId: 'm2',
+          workspaceId: 'ws-lan',
+          method: 'mcp/authentication',
+          params: { requesterUserId: 'lan-user', action: 'signout', server: HTTP_ENTRY },
+        });
+        const waitingDcr1 = await desktop2.request({
+          machineId: 'm2',
+          workspaceId: 'ws-lan',
+          method: 'mcp/authentication',
+          params: { requesterUserId: 'lan-user', action: 'authorize', server: HTTP_ENTRY },
+        });
+        expect(waitingDcr1.authorizationUrl).toContain('client_id=dcr-client-id');
+        await desktop2Io.waitForCallbackReady();
+        desktop2Io.resolveCallback({ code: 'synthetic-auth-code' });
+        await vi.waitFor(async () => {
+          expect(await desktop2.status(HTTP_ENTRY)).toMatchObject({ status: 'authorized' });
+        });
+
+        world.setIssuer('https://new-issuer.example');
+        const waitingDcr2 = await desktop2.request({
+          machineId: 'm2',
+          workspaceId: 'ws-lan',
+          method: 'mcp/authentication',
+          params: { requesterUserId: 'lan-user', action: 'authorize', server: HTTP_ENTRY },
+        });
+        expect(waitingDcr2.status).toBe('waiting');
+        expect(waitingDcr2.authorizationUrl).toContain('https://new-issuer.example/authorize');
+        expect(waitingDcr2.authorizationUrl).toContain('client_id=dcr-client-id-new');
+        await desktop2Io.waitForCallbackReady();
+        desktop2Io.resolveCallback({ code: 'synthetic-auth-code' });
+        await vi.waitFor(async () => {
+          expect(await desktop2.status(HTTP_ENTRY)).toMatchObject({
+            status: 'authorized',
+            hasCredentials: true,
+            mode: 'oauth',
+          });
+        });
       } finally {
         await desktop2.close();
       }
@@ -847,6 +935,34 @@ describe('LanMcpAuthentication member integration', () => {
         hasCredentials: true,
         mode: 'manual',
       });
+      world.queueRemoteResponse(
+        () =>
+          new Response(null, {
+            status: 401,
+            headers: {
+              'WWW-Authenticate':
+                'Bearer resource_metadata="https://resource.example/.well-known/oauth-protected-resource/mcp"',
+            },
+          })
+      );
+      await expect(memberB.listTools(HTTP_ENTRY, 'lan-user')).rejects.toThrow();
+      expect(await memberB.status(HTTP_ENTRY)).toEqual({
+        type: 'mcp/authentication',
+        status: 'required',
+        hasCredentials: false,
+        reason: 'oauth_required',
+      });
+
+      // If the same credential revision succeeds on a subsequent listTools call, clear the stale challenge
+      await memberB.listTools(HTTP_ENTRY, 'lan-user');
+      expect(await memberB.status(HTTP_ENTRY)).toEqual({
+        type: 'mcp/authentication',
+        status: 'authorized',
+        hasCredentials: true,
+        mode: 'manual',
+      });
+
+      // Trigger 401 OAuth challenge again, then verify advancing Hub revision also clears it
       world.queueRemoteResponse(
         () =>
           new Response(null, {

@@ -725,7 +725,6 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
           ...(authorizeConfig?.clientId ? { clientId: authorizeConfig.clientId } : {}),
           ...(authorizeConfig?.clientSecret ? { clientSecret: authorizeConfig.clientSecret } : {}),
         },
-        ...(authorizeConfig?.client ? { client: authorizeConfig.client } : {}),
       };
 
       const controller = new AbortController();
@@ -776,10 +775,22 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
           ) {
             throw new McpAuthenticationError({ reason: 'client_required' });
           }
+          const discoveredIssuer =
+            discovery.authorizationServerMetadata.issuer ??
+            discovery.authorizationServerUrl?.toString();
+          const reusableClient =
+            authorizeConfig?.client &&
+            discoveredIssuer !== undefined &&
+            authorizeConfig.client.issuer === discoveredIssuer
+              ? authorizeConfig.client
+              : undefined;
+          const authorizeRecord: McpStoredAuthentication = reusableClient
+            ? { ...staged, client: reusableClient }
+            : staged;
           let started: Awaited<ReturnType<McpAuthenticationIO['authorize']>>;
           try {
             started = await raceAbort(
-              this.io.authorize(staged, {
+              this.io.authorize(authorizeRecord, {
                 url,
                 state,
                 redirectUrl: endpoint.redirectUrl,
@@ -991,7 +1002,13 @@ export class LanMcpAuthentication implements McpAuthenticationPort {
   }
 
   private connected(server: WorkspaceMcpServerMeta): void {
-    if (server.connection?.authentication === 'local') return;
+    if (server.connection?.authentication === 'local') {
+      const local = this.localStates.get(server.id);
+      if (local && local.target === targetOf(server)) {
+        this.localStates.delete(server.id);
+      }
+      return;
+    }
     const references =
       server.connection?.transport === 'http' &&
       Boolean(
