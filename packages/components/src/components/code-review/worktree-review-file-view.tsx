@@ -53,6 +53,8 @@ export interface WorktreeReviewFileViewProps {
   readonly onSelectCaller: (caller: CodeNavCallerItem) => void;
   readonly onTraceCallerFurther: (caller: CodeNavCallerItem) => void;
   readonly onOpenInIde: (filePath: string, line?: number, column?: number) => void;
+  readonly onLineCountChange?: (lineCount: number) => void;
+  readonly onCodeElementRef?: (node: HTMLElement | null) => void;
 }
 
 function splitPathParts(filePath: string): { dir: string; name: string } {
@@ -141,6 +143,8 @@ export function WorktreeReviewFileView({
   onSelectCaller,
   onTraceCallerFurther,
   onOpenInIde,
+  onLineCountChange,
+  onCodeElementRef,
 }: WorktreeReviewFileViewProps) {
   const resolvedTheme = useResolvedTheme();
   const activeDiffThemeName = useActiveVSCodeDiffThemeName();
@@ -345,10 +349,17 @@ export function WorktreeReviewFileView({
 
   const { dir, name } = splitPathParts(filePath);
 
+  useEffect(() => {
+    onLineCountChange?.(fileState.status === 'ready' ? fileState.lineCount : 0);
+  }, [fileState, onLineCountChange]);
+
   return (
     <div data-worktree-review-file-view={filePath}>
-      <section className="overflow-hidden rounded-[10px] border border-foreground/[0.12] bg-background dark:border-border">
-        <div className="flex items-center justify-between gap-2 border-b border-border bg-[color-mix(in_oklab,hsl(var(--foreground))_4%,hsl(var(--background)))] px-3 py-2">
+      <section className="rounded-[10px] border border-foreground/[0.12] bg-background dark:border-border">
+        <div
+          data-file-view-sticky-header=""
+          className="sticky top-0 z-20 flex items-center justify-between gap-2 rounded-t-[9px] border-b border-border bg-[color-mix(in_oklab,hsl(var(--foreground))_4%,hsl(var(--background)))] px-3 py-2 shadow-[0_2px_8px_-4px_rgba(0,0,0,0.14)] dark:shadow-[0_2px_10px_-4px_rgba(0,0,0,0.5)]"
+        >
           <div
             className="min-w-0 truncate font-mono text-[12px] font-medium text-foreground"
             title={`${filePath}:${line}`}
@@ -381,7 +392,8 @@ export function WorktreeReviewFileView({
         </div>
 
         <div
-          className="lody-pierre-diff w-full bg-background text-[0.8rem]"
+          ref={onCodeElementRef}
+          className="lody-pierre-diff w-full overflow-x-auto rounded-b-[9px] bg-background text-[0.8rem]"
           style={pierreHostStyle}
         >
           {fileState.status === 'loading' ? (

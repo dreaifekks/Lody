@@ -22,9 +22,11 @@ import { useSessionOpenInIde } from './use-session-open-in-ide';
 import {
   WorktreeReviewDiffView,
   type WorktreeReviewDiffTokenClick,
+  type WorktreeReviewResolvedFileStats,
 } from './worktree-review-diff-view';
 import { WorktreeReviewFileTree } from './worktree-review-file-tree';
 import { WorktreeReviewFileView, type WorktreeReviewReadFileFn } from './worktree-review-file-view';
+import { WorktreeReviewMinimap, extractFileDiffHunkMarks } from './worktree-review-minimap';
 import {
   createInitialReviewNavStack,
   extractTokenIdentifier,
@@ -88,6 +90,8 @@ export interface WorktreeReviewWorkspaceProps {
   readonly ideOverride?: WorktreeReviewIdeOverride;
   readonly initialNavStack?: WorktreeReviewNavStack;
   readonly initialPopover?: WorktreeReviewTokenPopoverState | null;
+  readonly initialExpandedPaths?: ReadonlySet<string>;
+  readonly initialTreeTooltipRowKey?: string | null;
 }
 
 function getBasename(filePath: string): string {
@@ -127,6 +131,8 @@ export function WorktreeReviewWorkspace({
   ideOverride,
   initialNavStack,
   initialPopover = null,
+  initialExpandedPaths,
+  initialTreeTooltipRowKey = null,
 }: WorktreeReviewWorkspaceProps) {
   const threadControl = useContext(ArticleDialogThreadContext);
 
@@ -134,6 +140,10 @@ export function WorktreeReviewWorkspace({
   // by the global `allChangesDiffScopeAtom`.
   const [scope] = useState<CodeCollabAllChangesScope>('branch');
   const [diffScrollNode, setDiffScrollNode] = useState<HTMLDivElement | null>(null);
+  const [fileScrollNode, setFileScrollNode] = useState<HTMLDivElement | null>(null);
+  const [fileViewLineCount, setFileViewLineCount] = useState(0);
+  const [minimapLayoutVersion, setMinimapLayoutVersion] = useState(0);
+  const fileViewCodeRef = useRef<HTMLElement | null>(null);
   const [priorityFilePath, setPriorityFilePath] = useState<string | null>(focusFilePath);
 
   useEffect(() => {
@@ -307,31 +317,32 @@ export function WorktreeReviewWorkspace({
   }, [outlineFiles]);
 
   // Line stats resolved from DiffViewer parsed metadata (or fixture overrides).
-  const [statsByPath, setStatsByPath] = useState<
-    Map<string, { additions: number; deletions: number; firstLine: number }>
-  >(() => {
-    const map = new Map<string, { additions: number; deletions: number; firstLine: number }>();
-    if (diffDataOverride?.statsByPath) {
-      for (const [path, stat] of Object.entries(diffDataOverride.statsByPath)) {
-        map.set(path, {
-          additions: stat.additions,
-          deletions: stat.deletions,
-          firstLine: stat.firstLine ?? 1,
-        });
+  const [statsByPath, setStatsByPath] = useState<Map<string, WorktreeReviewResolvedFileStats>>(
+    () => {
+      const map = new Map<string, WorktreeReviewResolvedFileStats>();
+      if (diffDataOverride?.statsByPath) {
+        for (const [path, stat] of Object.entries(diffDataOverride.statsByPath)) {
+          map.set(path, {
+            additions: stat.additions,
+            deletions: stat.deletions,
+            firstLine: stat.firstLine ?? 1,
+          });
+        }
       }
+      return map;
     }
-    return map;
-  });
+  );
 
   const handleStatsResolved = useCallback(
-    (filePath: string, next: { additions: number; deletions: number; firstLine: number }) => {
+    (filePath: string, next: WorktreeReviewResolvedFileStats) => {
       setStatsByPath((prev) => {
         const cur = prev.get(filePath);
         if (
           cur &&
           cur.additions === next.additions &&
           cur.deletions === next.deletions &&
-          cur.firstLine === next.firstLine
+          cur.firstLine === next.firstLine &&
+          cur.hunkMarks === next.hunkMarks
         ) {
           return prev;
         }
@@ -363,9 +374,15 @@ export function WorktreeReviewWorkspace({
             !cur ||
             cur.additions !== additions ||
             cur.deletions !== deletions ||
-            cur.firstLine !== firstLine
+            cur.firstLine !== firstLine ||
+            !cur.hunkMarks
           ) {
-            copy.set(path, { additions, deletions, firstLine });
+            copy.set(path, {
+              additions,
+              deletions,
+              firstLine,
+              hunkMarks: extractFileDiffHunkMarks(data.fileDiff),
+            });
             changed = true;
           }
         }
@@ -419,7 +436,7 @@ export function WorktreeReviewWorkspace({
     setNavStack((prev) => updateDiffFrameTarget(prev, activeFilePath, line));
   }, [activeFilePath, outlineByPath, statsByPath]);
 
-  // Card DOM elements for smooth scroll from the File Tree.
+  // Card DOM elements for smooth scroll from the File Tree and minimap measurement.
   const cardRefs = useRef(new Map<string, HTMLElement>());
   const registerCardRef = useCallback(
     (filePath: string, node: HTMLElement | null) => {
@@ -431,6 +448,17 @@ export function WorktreeReviewWorkspace({
     },
     [diffDataOverride, liveDiffData.viewport]
   );
+  const getCardElement = useCallback(
+    (filePath: string) => cardRefs.current.get(filePath) ?? null,
+    []
+  );
+  const getFileCodeElement = useCallback(() => fileViewCodeRef.current, []);
+  const handleFileCodeElementRef = useCallback((node: HTMLElement | null) => {
+    fileViewCodeRef.current = node;
+  }, []);
+  const bumpMinimapLayout = useCallback(() => {
+    setMinimapLayoutVersion((prev) => prev + 1);
+  }, []);
 
   const scrollToFileCard = useCallback((filePath: string) => {
     const scroll = () => {
@@ -1002,6 +1030,7 @@ export function WorktreeReviewWorkspace({
             onToggleShowSymbols={() => setShowTreeSymbols((prev) => !prev)}
             onSelectFile={handleSelectTreeFile}
             onSelectSymbol={handleSelectTreeSymbol}
+            initialTooltipRowKey={initialTreeTooltipRowKey}
           />
         ) : null}
 
@@ -1011,11 +1040,11 @@ export function WorktreeReviewWorkspace({
               aria-hidden="true"
               data-review-tree-backdrop=""
               onClick={() => setTreeOpen(false)}
-              className="absolute inset-0 z-20 bg-black/25"
+              className="absolute inset-0 z-30 bg-black/25"
             />
             <div
               data-review-tree-overlay=""
-              className="absolute inset-y-0 left-0 z-30 flex w-[248px] max-w-[85%] shadow-xl"
+              className="absolute inset-y-0 left-0 z-40 flex w-[248px] max-w-[85%] shadow-xl"
             >
               <WorktreeReviewFileTree
                 tree={treeModel}
@@ -1026,13 +1055,14 @@ export function WorktreeReviewWorkspace({
                 onToggleShowSymbols={() => setShowTreeSymbols((prev) => !prev)}
                 onSelectFile={handleSelectTreeFile}
                 onSelectSymbol={handleSelectTreeSymbol}
+                initialTooltipRowKey={initialTreeTooltipRowKey}
                 className="w-full"
               />
             </div>
           </>
         ) : null}
 
-        <div className="relative min-h-0 min-w-0 flex flex-col">
+        <div className="relative isolate flex min-h-0 min-w-0 flex-1">
           {/* Diff scroll container stays mounted and keeps its scroll offset & expanded functions alive */}
           <div
             ref={setDiffScrollNode}
@@ -1049,6 +1079,7 @@ export function WorktreeReviewWorkspace({
               outlineByPath={outlineByPath}
               statsByPath={statsByPath}
               openByPath={openByPath}
+              initialExpandedPaths={initialExpandedPaths}
               onOpenChange={handleCardOpenChange}
               loading={!diffDataOverride && !providerUnavailableMessage && !liveDiffData.batchReady}
               emptyMessage={emptyMessage}
@@ -1058,37 +1089,68 @@ export function WorktreeReviewWorkspace({
               onOpenInIde={(filePath, line) => openWorktreeInIde(filePath, line)}
               onCardRef={registerCardRef}
               onStatsResolved={handleStatsResolved}
+              onLayoutChange={bumpMinimapLayout}
             />
           </div>
 
+          {topFrame.kind === 'diff' && emptyMessage === null ? (
+            <WorktreeReviewMinimap
+              mode="diff"
+              scrollContainer={diffScrollNode}
+              filePaths={filePaths}
+              getCardElement={getCardElement}
+              statsByPath={statsByPath}
+              openByPath={openByPath}
+              layoutVersion={minimapLayoutVersion}
+            />
+          ) : null}
+
           {/* Traced read-only file view (`@pierre/diffs` `<File>`, zero Monaco) */}
           {topFrame.kind === 'file' ? (
-            <div
-              role="region"
-              aria-label={topFrame.filePath}
-              data-review-file-scroll=""
-              className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-3.5"
-            >
-              <WorktreeReviewFileView
+            <>
+              <div
+                ref={setFileScrollNode}
+                role="region"
+                aria-label={topFrame.filePath}
+                data-review-file-scroll=""
+                className="scrollbar-pro min-h-0 flex-1 overflow-y-auto px-[18px] pb-7 pt-3.5"
+              >
+                <WorktreeReviewFileView
+                  filePath={topFrame.filePath}
+                  line={topFrame.line}
+                  endLine={topFrame.endLine}
+                  fileProvider={fileProvider}
+                  readFileOverride={readFileOverride}
+                  callers={topFrame.callers}
+                  callersLoading={topFrame.callersLoading}
+                  codeNavSupported={codeNav.supported}
+                  canOpenInIde={canOpenInIde}
+                  onBackToDiff={() => {
+                    handleClosePopover();
+                    setNavStack((prev) => popReviewStackTo(prev, 0));
+                  }}
+                  onTokenClick={handleFileTokenClick}
+                  onSelectCaller={handleSelectCaller}
+                  onTraceCallerFurther={handleTraceCallerFurther}
+                  onOpenInIde={(filePath, line, column) =>
+                    openWorktreeInIde(filePath, line, column)
+                  }
+                  onLineCountChange={setFileViewLineCount}
+                  onCodeElementRef={handleFileCodeElementRef}
+                />
+              </div>
+              <WorktreeReviewMinimap
+                mode="file"
+                scrollContainer={fileScrollNode}
                 filePath={topFrame.filePath}
-                line={topFrame.line}
-                endLine={topFrame.endLine}
-                fileProvider={fileProvider}
-                readFileOverride={readFileOverride}
-                callers={topFrame.callers}
-                callersLoading={topFrame.callersLoading}
-                codeNavSupported={codeNav.supported}
-                canOpenInIde={canOpenInIde}
-                onBackToDiff={() => {
-                  handleClosePopover();
-                  setNavStack((prev) => popReviewStackTo(prev, 0));
+                totalLines={fileViewLineCount}
+                selectedLines={{
+                  start: Math.max(1, topFrame.line),
+                  end: Math.max(topFrame.line, topFrame.endLine ?? topFrame.line),
                 }}
-                onTokenClick={handleFileTokenClick}
-                onSelectCaller={handleSelectCaller}
-                onTraceCallerFurther={handleTraceCallerFurther}
-                onOpenInIde={(filePath, line, column) => openWorktreeInIde(filePath, line, column)}
+                getCodeElement={getFileCodeElement}
               />
-            </div>
+            </>
           ) : null}
         </div>
       </div>

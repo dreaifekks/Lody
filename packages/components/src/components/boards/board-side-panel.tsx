@@ -66,7 +66,6 @@ import type { FileTarget } from '@/lib/document-link-open';
 import { isBoardArticlePath } from './board-article-dialog';
 import { BoardNotesEditor } from './board-notes-panel';
 import { CreateBoardDialog } from './create-board-dialog';
-import { sessionSupportsWorktreeReview } from '../code-review/worktree-review-open-context';
 import {
   boardThreadStatus,
   buildBoardRows,
@@ -132,7 +131,6 @@ export function boardThreadItems(
       parentTitle: parent ? parent.title || context.untitled : undefined,
       archived: session.isArchived === true,
       branchName: session.branchName,
-      hasWorktreeOrProject: sessionSupportsWorktreeReview(session),
       openedBySessionId: session.openedBySessionId,
       openedByRowSessionId: session.openedByRootSessionId,
       unread: sessionHasUnreadMessages(session),

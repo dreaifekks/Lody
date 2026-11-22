@@ -7,6 +7,11 @@ export {
 } from './worktree-review-workspace';
 export {
   WorktreeReviewFileTree,
+  TREE_TOOLTIP_DELAY_MS,
+  computeTreeTooltipCoords,
+  type TreeTooltipAnchorRect,
+  type TreeTooltipBounds,
+  type TreeTooltipCoords,
   type WorktreeReviewFileTreeProps,
 } from './worktree-review-file-tree';
 export {
@@ -15,7 +20,33 @@ export {
   REVIEW_INTERACTIVE_TOKEN_UNSAFE_CSS,
   type WorktreeReviewDiffTokenClick,
   type WorktreeReviewDiffViewProps,
+  type WorktreeReviewResolvedFileStats,
 } from './worktree-review-diff-view';
+export {
+  WorktreeReviewMinimap,
+  computeFileLineRangeMarker,
+  computeScrollTopFromPointer,
+  computeViewportThumb,
+  extractFileDiffHunkMarks,
+  type MinimapDiffFileStats,
+  type MinimapDiffHunkMark,
+  type MinimapThumbGeometry,
+  type WorktreeReviewMinimapProps,
+} from './worktree-review-minimap';
+export {
+  DEFAULT_FOLD_CHANGE_MARGIN_LINES,
+  DEFAULT_MIN_FOLD_SPAN_LINES,
+  buildFoldedLinesUnsafeCSS,
+  collectDiffChangedNewLines,
+  findFoldableBlocksInRange,
+  formatFoldBlockLabel,
+  scanBracketBlocks,
+  splitSourceLines,
+  type FindFoldableBlocksOptions,
+  type FoldableBlockKind,
+  type FoldableCodeBlock,
+  type ScannedBracketBlock,
+} from './worktree-review-code-folding';
 export {
   WorktreeReviewFileView,
   type WorktreeReviewFileViewProps,

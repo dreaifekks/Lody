@@ -2,19 +2,11 @@ import { BoardThreadBreadcrumb } from './board-thread-breadcrumb';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from '@lody/ui/tokens/colors.stylex';
 import { radius, space, text } from '@lody/ui/tokens/scales.stylex';
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
-  CircleSlash,
-  GitCompareArrows,
-} from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, CircleSlash } from 'lucide-react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { memo, useContext, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { BoardSessionStatus, SessionId } from '@lody/shared';
-import { WorktreeReviewOpenContext } from '../code-review/worktree-review-open-context';
+import type { BoardSessionStatus } from '@lody/shared';
 import {
   sidebarCollapsedOpenedBySessionsAtom,
   toggleSidebarCollapsedOpenedBySessionAtom,
@@ -59,8 +51,6 @@ export interface BoardThreadItem {
   depth?: number;
   archived?: boolean;
   branchName?: string;
-  /** True when the thread is bound to a local/GitHub project or worktree and can be reviewed. */
-  hasWorktreeOrProject?: boolean;
   openedBySessionId?: string;
   openedByRowSessionId?: string;
 }
@@ -211,19 +201,6 @@ const styles = stylex.create({
   count: { fontWeight: 400, color: colors.tertiaryLabel },
   indent: (depth: number) => ({ paddingInlineStart: `${depth * 18}px` }),
   time: { fontSize: text.footnoteSize, color: colors.tertiaryLabel, whiteSpace: 'nowrap' },
-  reviewButton: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '20px',
-    height: '20px',
-    borderWidth: 0,
-    borderRadius: radius.small,
-    backgroundColor: { default: 'transparent', ':hover': colors.hoverFill },
-    color: { default: colors.tertiaryLabel, ':hover': colors.label },
-    cursor: 'pointer',
-    flexShrink: 0,
-  },
   danger: { color: colors.destructive },
   quiet: { color: colors.tertiaryLabel },
   completed: { color: colors.secondaryLabel },
@@ -324,9 +301,6 @@ const BoardThreadRow = memo(function BoardThreadRow({
 } & FamilyDisclosure) {
   const { t } = useTranslation();
   const labels = useSidebarSessionMenuLabels();
-  const openWorktreeReview = useContext(WorktreeReviewOpenContext);
-  const canReviewDiff =
-    Boolean(openWorktreeReview) && thread.hasWorktreeOrProject === true && thread.archived !== true;
   const item = useMemo(
     () => ({
       id: thread.id,
@@ -376,22 +350,6 @@ const BoardThreadRow = memo(function BoardThreadRow({
         detailLine={thread.summary ?? thread.detail}
         restIcon={
           <>
-            {canReviewDiff ? (
-              <button
-                type="button"
-                data-board-thread-review={thread.id}
-                aria-label={t('sessions.review.openDialog', 'Open review window')}
-                title={t('sessions.review.openDialog', 'Open review window')}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openWorktreeReview?.({ sessionId: thread.id as SessionId });
-                }}
-                {...stylex.props(styles.reviewButton)}
-              >
-                <GitCompareArrows size={13} aria-hidden="true" />
-              </button>
-            ) : null}
             <BoardThreadStatusMark
               sessionId={thread.id}
               status={thread.status}

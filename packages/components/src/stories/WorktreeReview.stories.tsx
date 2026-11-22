@@ -29,6 +29,109 @@ import type { WorktreeReviewTokenPopoverState } from '@/components/code-review/w
 const DEMO_SESSION_ID = 'story-review-session' as SessionId;
 const DEMO_MACHINE_ID = 'story-review-machine' as MachineId;
 
+const LONG_COORDINATOR_LINES_BASE = [
+  'export interface SessionReplayPolicy {',
+  '  readonly maxRetries: number;',
+  '  readonly flushIntervalMs: number;',
+  '  readonly preserveProjectDefaults: boolean;',
+  '  readonly includeSubagentReceipts: boolean;',
+  '  readonly emitSyntheticTimelineMarkers: boolean;',
+  '}',
+  '',
+  'export class SessionExecutionCoordinator {',
+  '  constructor(private readonly workspaceId: string) {}',
+  '',
+  '  async reconcileMultiClientSessionTranscripts(sessionId: string, revision: number) {',
+  '    const defaultPolicy: SessionReplayPolicy = {',
+  '      maxRetries: 4,',
+  '      flushIntervalMs: 250,',
+  '      preserveProjectDefaults: true,',
+  '      includeSubagentReceipts: true,',
+  '      emitSyntheticTimelineMarkers: false,',
+  '    };',
+  '',
+  '    const diagnosticsConfig = {',
+  '      workspaceId: this.workspaceId,',
+  '      sessionId,',
+  '      revision,',
+  '      captureTimings: true,',
+  '      includeTransportCounters: true,',
+  '      redactSecrets: true,',
+  '      maxPayloadBytes: 65536,',
+  '      channel: "lan-sync",',
+  '      tags: ["worktree-review", "replay"],',
+  '      policy: defaultPolicy,',
+  '    };',
+  '',
+  '    const orderedStages = [',
+  '      "hydrate-snapshot",',
+  '      "verify-replica-clock",',
+  '      "merge-pending-turns",',
+  '      "reconcile-mcp-catalog",',
+  '      "flush-acked-receipts",',
+  '      "compact-local-index",',
+  '      "notify-attached-clients",',
+  '    ];',
+  '',
+  '    let appliedCount = 0;',
+  '    for (const stage of orderedStages) {',
+  '      if (!stage) continue;',
+  '      appliedCount += 1;',
+  '    }',
+  '',
+  '    const mode = revision > 0 ? "session/load" : "session/init";',
+  '    const summary = {',
+  '      mode,',
+  '      appliedCount,',
+  '    };',
+  '',
+  '    const auditEnvelope = {',
+  '      version: 2,',
+  '      source: "coordinator",',
+  '      workspaceId: this.workspaceId,',
+  '      sessionId,',
+  '      revision,',
+  '      stageCount: orderedStages.length,',
+  '      diagnostics: diagnosticsConfig,',
+  '      policy: defaultPolicy,',
+  '      emittedAt: 1700000000000,',
+  '    };',
+  '',
+  '    if (auditEnvelope.stageCount === 0) {',
+  '      return {',
+  '        ok: false,',
+  '        mode: summary.mode,',
+  '        appliedCount: 0,',
+  '        diagnostics: diagnosticsConfig,',
+  '        envelope: auditEnvelope,',
+  '      };',
+  '    }',
+  '',
+  '    return {',
+  '      ok: true,',
+  '      mode: summary.mode,',
+  '      appliedCount: summary.appliedCount,',
+  '      envelope: auditEnvelope,',
+  '    };',
+  '  }',
+  '}',
+  '',
+];
+
+const LONG_COORDINATOR_OLD = LONG_COORDINATOR_LINES_BASE.join('\n');
+const LONG_COORDINATOR_NEW = LONG_COORDINATOR_LINES_BASE.map((line, index) => {
+  if (index === 49) {
+    return '    const mode = revision > 0 ? "session/resume" : "session/init";';
+  }
+  if (index === 52) {
+    return '      appliedCount,\n      preserveDefaults: defaultPolicy.preserveProjectDefaults,';
+  }
+  return line;
+}).join('\n');
+
+const LONG_COORDINATOR_PATH =
+  'apps/cli/src/orchestration/worktree-session-execution-coordinator.ts';
+
 const MCP_RESOLVER_OLD = `import type { WorkspaceMcpServerMeta } from '@lody/shared';
 import { resolveSessionMcpServers } from '@lody/shared';
 
@@ -439,6 +542,7 @@ const CODEX_PROFILE_RUNTIME_FILE = [
 ].join('\n');
 
 const SYNTHETIC_FILES: Record<string, string> = {
+  [LONG_COORDINATOR_PATH]: LONG_COORDINATOR_NEW,
   'apps/cli/src/agent/session-mcp-resolver.ts': MCP_RESOLVER_NEW,
   'apps/cli/src/agent/acp-capabilities.ts': CAPABILITIES_NEW,
   'apps/cli/src/agent/agent-client.ts': AGENT_CLIENT_NEW,
@@ -452,6 +556,7 @@ const SYNTHETIC_FILES: Record<string, string> = {
 const SYNTHETIC_DIFF_DATA: WorktreeReviewDiffDataOverride = {
   base: '00a63444b91234',
   filePaths: [
+    LONG_COORDINATOR_PATH,
     'apps/cli/src/agent/session-mcp-resolver.ts',
     'apps/cli/src/agent/acp-capabilities.ts',
     'apps/cli/src/agent/agent-client.ts',
@@ -459,6 +564,11 @@ const SYNTHETIC_DIFF_DATA: WorktreeReviewDiffDataOverride = {
     'packages/components/src/components/ai-gui/streaming-thought-preview.ts',
   ],
   resolvedByPath: {
+    [LONG_COORDINATOR_PATH]: {
+      status: 'ready',
+      oldSnapshot: { kind: 'text', text: LONG_COORDINATOR_OLD },
+      newSnapshot: { kind: 'text', text: LONG_COORDINATOR_NEW },
+    },
     'apps/cli/src/agent/session-mcp-resolver.ts': {
       status: 'ready',
       oldSnapshot: { kind: 'text', text: MCP_RESOLVER_OLD },
@@ -486,6 +596,7 @@ const SYNTHETIC_DIFF_DATA: WorktreeReviewDiffDataOverride = {
     },
   },
   statsByPath: {
+    [LONG_COORDINATOR_PATH]: { additions: 2, deletions: 1, firstLine: 50 },
     'apps/cli/src/agent/session-mcp-resolver.ts': { additions: 5, deletions: 1, firstLine: 19 },
     'apps/cli/src/agent/acp-capabilities.ts': { additions: 1, deletions: 1, firstLine: 8 },
     'apps/cli/src/agent/agent-client.ts': { additions: 5, deletions: 1, firstLine: 11 },
@@ -508,6 +619,32 @@ const SYNTHETIC_OUTLINE: CodeNavDiffOutlineOk = {
   action: 'diff-outline',
   headSha: 'cb716bebb',
   files: [
+    {
+      path: LONG_COORDINATOR_PATH,
+      symbols: [
+        {
+          name: 'reconcileMultiClientSessionTranscripts',
+          kind: 'method',
+          containerName: 'SessionExecutionCoordinator',
+          startLine: 12,
+          endLine: 85,
+          hunkCount: 1,
+        },
+      ],
+      hunks: [
+        {
+          startLine: 50,
+          endLine: 55,
+          enclosing: {
+            name: 'reconcileMultiClientSessionTranscripts',
+            kind: 'method',
+            containerName: 'SessionExecutionCoordinator',
+            startLine: 12,
+            endLine: 85,
+          },
+        },
+      ],
+    },
     {
       path: 'apps/cli/src/agent/session-mcp-resolver.ts',
       symbols: [
@@ -870,9 +1007,15 @@ function findRenderedTokenAnchor(
 function StoryFrame({
   initialNavStack,
   initialPopover = null,
+  initialExpandedFilePaths,
+  initialTreeTooltipRowKey = null,
+  initialDiffScrollTop = 0,
 }: {
   readonly initialNavStack?: WorktreeReviewNavStack;
   readonly initialPopover?: WorktreeReviewTokenPopoverState | null;
+  readonly initialExpandedFilePaths?: readonly string[];
+  readonly initialTreeTooltipRowKey?: string | null;
+  readonly initialDiffScrollTop?: number;
 }) {
   const threadHost = useMemo(() => createRelocatableHost(), []);
   const [panel, setPanel] = useState<HTMLElement | null>(null);
@@ -881,6 +1024,10 @@ function StoryFrame({
   );
   const onOpenIde = useMemo(() => fn(), []);
   const onClose = useMemo(() => fn(), []);
+  const initialExpandedPaths = useMemo(
+    () => (initialExpandedFilePaths ? new Set(initialExpandedFilePaths) : undefined),
+    [initialExpandedFilePaths]
+  );
 
   // Align preset story popovers onto the actual rendered Shadow DOM token so
   // the popover tracks the real `close` identifier across viewport sizes.
@@ -922,6 +1069,35 @@ function StoryFrame({
     };
   }, [initialPopover, panel]);
 
+  // Optionally scroll the diff viewport once expanded content finishes rendering
+  // so sticky file+function headers and shifted minimap thumbs are directly visible.
+  useEffect(() => {
+    if (!initialDiffScrollTop || !panel) return undefined;
+    let cancelled = false;
+    let attempts = 0;
+    let rafId = 0;
+    const applyScroll = () => {
+      if (cancelled) return;
+      const scroller = panel.querySelector<HTMLElement>('[data-review-diff-scroll]');
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + initialDiffScrollTop) {
+        scroller.scrollTop = initialDiffScrollTop;
+        scroller.dispatchEvent(new Event('scroll'));
+        return;
+      }
+      attempts += 1;
+      if (attempts < 45 && typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(applyScroll);
+      }
+    };
+    applyScroll();
+    return () => {
+      cancelled = true;
+      if (rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [initialDiffScrollTop, panel]);
+
   return (
     <div className="h-screen w-screen bg-[hsl(var(--sidebar-background))]">
       {createPortal(<SyntheticThreadChatPane />, threadHost.node)}
@@ -949,6 +1125,8 @@ function StoryFrame({
               }}
               initialNavStack={initialNavStack}
               initialPopover={resolvedPopover}
+              initialExpandedPaths={initialExpandedPaths}
+              initialTreeTooltipRowKey={initialTreeTooltipRowKey}
               onClose={onClose}
             />
           </PopupContainerProvider>
@@ -971,6 +1149,20 @@ type Story = StoryObj<typeof meta>;
 
 export const DiffWithFileTree: Story = {
   args: {},
+};
+
+export const ExpandedLongFunctionWithFolding: Story = {
+  args: {
+    initialExpandedFilePaths: [LONG_COORDINATOR_PATH],
+  },
+};
+
+export const StickyHeaderMinimapAndTreeTooltip: Story = {
+  args: {
+    initialExpandedFilePaths: [LONG_COORDINATOR_PATH],
+    initialDiffScrollTop: 180,
+    initialTreeTooltipRowKey: `sym:${LONG_COORDINATOR_PATH}:12:SessionExecutionCoordinator.reconcileMultiClientSessionTranscripts`,
+  },
 };
 
 const TRACED_NAV_STACK: WorktreeReviewNavStack = pushReviewFileFrame(
