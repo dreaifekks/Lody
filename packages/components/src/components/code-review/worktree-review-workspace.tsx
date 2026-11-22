@@ -820,6 +820,7 @@ export function WorktreeReviewWorkspace({
     formatShortRef(diffBase) ||
     session?.title?.trim() ||
     'worktree';
+  const showBranchPill = !isCompactHeader && !(isNarrowLayout && navStack.length > 1);
 
   const topIdeFilePath = topFrame.filePath ?? activeFilePath;
   const topIdeLine = topFrame.line;
@@ -886,7 +887,7 @@ export function WorktreeReviewWorkspace({
             <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
 
-          {!isCompactHeader ? (
+          {showBranchPill ? (
             <span
               data-review-branch-pill=""
               className="inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-[6px] bg-foreground/[0.06] px-2 py-0.5 font-mono text-[11.5px] text-foreground/85"

@@ -5846,6 +5846,8 @@ const SessionDetail = ({
   const resolveBtwCommandTargetSessionId = () =>
     articleThreadId ??
     articleTabId ??
+    reviewThreadId ??
+    reviewTabId ??
     (boardThreadCommandTarget() ? boardThreadId : activeSessionTabId);
   useCommand({
     id: 'session.toggleBtw',
