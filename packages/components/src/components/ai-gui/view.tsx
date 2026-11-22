@@ -198,6 +198,7 @@ import {
   type AssistantActivitySummary,
   type AssistantToolCallRenderItem,
   type AssistantTurnRenderBlock,
+  type AssistantTurnRenderSegment,
 } from './assistant-turn-render-blocks';
 import { SubagentTaskPanel, collectSubagentTasks, type SubagentTask } from './subagent-task-panel';
 import { isRunning as isSubagentTaskRunning } from './subagent-task-state';
@@ -354,6 +355,7 @@ import {
 } from './background-task-status-row';
 import {
   buildCompactDirectoryEntries,
+  isBackgroundedToolCall,
   type CompactDirectoryEntry,
 } from './compact-native-directory';
 import {
@@ -426,6 +428,7 @@ interface BubbleExpandState {
 }
 export type SelectionTurnLayout = {
   finished: boolean;
+  backgroundTaskMode?: SessionBackgroundTaskStatus['mode'] | null;
   expandState: BubbleExpandState;
   activeSearchBlockId: string | null;
 };
@@ -519,6 +522,7 @@ type AssistantVirtualContent =
       expanded: boolean;
       isLive: boolean;
       isTurnFinished: boolean;
+      showLiveDuration?: boolean;
       durationMs: number | null;
       entries: readonly AssistantActivityRenderItem[];
     }
@@ -556,6 +560,8 @@ type AssistantVirtualContent =
       /** The turn is the conversation's last one and has not ended, so an
        *  available streaming copy action stays visibly active. */
       isLive: boolean;
+      /** Suppresses finished timestamp/duration/fork while background wakeup work streams. */
+      suppressFinishedMetadata?: boolean;
     };
 
 type AssistantChatVirtualRow = {
@@ -1217,18 +1223,20 @@ const shouldRenderAssistantFooter = ({
   fileDiffs,
   assistantActions,
   showDuration,
+  suppressFinishedMetadata = false,
 }: {
   message: SessionHistoryParsed;
   renderEntries: readonly AssistantMessageRenderItem[];
   fileDiffs: readonly AssistantEditedFileEntry[];
   assistantActions?: AssistantMessageAction[];
   showDuration: boolean;
+  suppressFinishedMetadata?: boolean;
 }): boolean => {
   if ((assistantActions?.length ?? 0) > 0) return true;
   // The run config (model, mode, options) is recorded when the turn opens, so
   // its info button is available while the reply is still streaming.
   if (hasAssistantTurnConfigInfo(message)) return true;
-  if (message.finished !== true) return false;
+  if (message.finished !== true || suppressFinishedMetadata) return false;
   const visibleContentItems = renderEntries.map((entry) => entry.content);
   return (
     getTextContentFromMessageItems(visibleContentItems).trim().length > 0 ||
@@ -1306,8 +1314,78 @@ type AssistantTurnRowsCacheEntry = {
   surfaceKey: AgentSurfaceKey;
   nextIsUser: boolean;
   compactNativeEnabled: boolean;
+  backgroundTaskStatusMode: SessionBackgroundTaskStatus['mode'] | null;
+  prevUserCanceled: boolean;
 };
 const assistantTurnRowsCache = new WeakMap<SessionMessageItem, AssistantTurnRowsCacheEntry>();
+
+const hasTrailingInterruptionNotice = (items: readonly MessageContent[]): boolean => {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const entry = items[index];
+    if (!entry) continue;
+    if (entry.type === 'system_notice') {
+      if (entry.name !== 'chat_failed') continue;
+      const reason = (entry.meta as { reason?: unknown } | undefined)?.reason;
+      return (
+        reason === 'acp_request_cancelled' ||
+        reason === 'daemon_restart' ||
+        reason === 'agent_disconnected'
+      );
+    }
+    return false;
+  }
+  return false;
+};
+
+const isOwningUserTurnCanceled = (
+  items: readonly ChatStreamItem[],
+  assistantPosition: number,
+  userTurnId: string | undefined
+): boolean => {
+  for (let index = assistantPosition - 1; index >= 0; index -= 1) {
+    const entry = items[index];
+    if (!entry) continue;
+    if (entry.type === 'message') {
+      if (entry.message.role === 'user') {
+        if (!userTurnId || entry.message.id === userTurnId) {
+          return entry.message.status === 'canceled';
+        }
+      } else if (!userTurnId && entry.message.role === 'assistant') {
+        return false;
+      }
+    } else if (entry.type === 'placeholder') {
+      if (entry.row.role === 'user') {
+        if (!userTurnId || entry.row.id === userTurnId) {
+          return entry.row.status === 'canceled';
+        }
+      } else if (!userTurnId && entry.row.role === 'assistant') {
+        return false;
+      }
+    }
+  }
+  return false;
+};
+
+const segmentHasNonCommentaryFinalContent = (
+  blocks: readonly AssistantTurnRenderBlock[],
+  segment: Pick<AssistantTurnRenderSegment, 'blockRange' | 'workBlockKeys'>
+): boolean => {
+  for (let index = segment.blockRange[0]; index < segment.blockRange[1]; index += 1) {
+    const block = blocks[index];
+    if (!block || segment.workBlockKeys.has(block.key)) continue;
+    if (block.kind === 'content') {
+      if (block.entry.content.type === 'system_notice') continue;
+      if (
+        block.entry.content.type === 'text' &&
+        block.entry.content.messagePhase === 'commentary'
+      ) {
+        continue;
+      }
+    }
+    return true;
+  }
+  return false;
+};
 
 // Exported for tests only (chat-virtual-rows-identity.test.ts).
 export const buildChatVirtualRows = ({
@@ -1323,6 +1401,7 @@ export const buildChatVirtualRows = ({
   selectionLayouts,
   surfaceKey = '',
   compactNativeEnabled = false,
+  backgroundTaskStatusMode = null,
 }: {
   /** Experimental tool calls rendered as their own surface; see `agent-surfaces`. */
   surfaceKey?: AgentSurfaceKey;
@@ -1337,6 +1416,7 @@ export const buildChatVirtualRows = ({
   copyContextAvailable?: boolean;
   groupCreatedSessions?: boolean;
   compactNativeEnabled?: boolean;
+  backgroundTaskStatusMode?: SessionBackgroundTaskStatus['mode'] | null;
 }): ChatVirtualRow[] => {
   const rows: ChatVirtualRow[] = [];
 
@@ -1414,6 +1494,13 @@ export const buildChatVirtualRows = ({
     const selectionSearchBlockId = selectionLayout
       ? selectionLayout.activeSearchBlockId
       : activeSearchBlockId;
+    const prevUserCanceled = isOwningUserTurnCanceled(items, position, message.userTurnId);
+    const turnBackgroundMode =
+      selectionLayout !== undefined
+        ? (selectionLayout.backgroundTaskMode ?? null)
+        : isLastAssistantMessage
+          ? backgroundTaskStatusMode
+          : null;
     const cachedRows = assistantTurnRowsCache.get(item);
     if (
       cachedRows &&
@@ -1427,7 +1514,9 @@ export const buildChatVirtualRows = ({
       cachedRows.surfaceKey === surfaceKey &&
       cachedRows.nextIsUser === nextIsUser &&
       cachedRows.expansionVersion === expansionVersion &&
-      cachedRows.compactNativeEnabled === compactNativeEnabled
+      cachedRows.compactNativeEnabled === compactNativeEnabled &&
+      cachedRows.backgroundTaskStatusMode === turnBackgroundMode &&
+      cachedRows.prevUserCanceled === prevUserCanceled
     ) {
       rows.push(...cachedRows.rows);
       continue;
@@ -1553,7 +1642,10 @@ export const buildChatVirtualRows = ({
       });
     };
 
+    const turnInterrupted = hasTrailingInterruptionNotice(message.items) || prevUserCanceled;
     let anySegmentUsesWorkedGroup = false;
+    let suppressFinishedFooter =
+      compactNativeEnabled && isTurnFinished && turnBackgroundMode === 'wakeup' && !turnInterrupted;
     for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
       const segment = segments[segmentIndex];
       if (!segment) continue;
@@ -1562,7 +1654,9 @@ export const buildChatVirtualRows = ({
       const segmentSubagentTasks = isLastSegment ? subagentTasks : EMPTY_SUBAGENT_TASKS;
       const hasRunningSubagentTasks = segmentSubagentTasks.some(isSubagentTaskRunning);
 
-      const hasVisibleFinalContent = segmentHasVisibleFinalContent(blocks, segment);
+      const hasVisibleFinalContent =
+        segmentHasVisibleFinalContent(blocks, segment) &&
+        !(isTurnFinished && turnInterrupted && !segmentHasNonCommentaryFinalContent(blocks, segment));
       const shouldUseWorkedGroup =
         (segment.workBlockKeys.size > 0 || (isTurnFinished && segmentSubagentTasks.length > 0)) &&
         (!isTurnFinished || hasVisibleFinalContent);
@@ -1594,14 +1688,16 @@ export const buildChatVirtualRows = ({
         (isWorkedSearchExpanded ||
           (cachedState.expandedWorkedGroups[segment.key] ??
             (compactNativeEnabled ? false : !isTurnFinished)));
-      anySegmentUsesWorkedGroup ||= shouldUseWorkedGroup && isTurnFinished;
 
       const isCompactLive = !isTurnFinished && typeof message.endedAt !== 'number';
+      const isBackgroundCompactCandidate =
+        compactNativeEnabled && isTurnFinished && turnBackgroundMode !== null && !turnInterrupted;
 
       const appendCompactDirectoryRows = (
         target: AssistantChatVirtualRow[],
         dirEntries: readonly CompactDirectoryEntry[],
-        isWorkedDetail: boolean
+        isWorkedDetail: boolean,
+        runKey: string = segment.key
       ) => {
         const lastIndex = dirEntries.length - 1;
         dirEntries.forEach((dirEntry, entryIdx) => {
@@ -1612,13 +1708,13 @@ export const buildChatVirtualRows = ({
               thoughtSearchOpen || (cachedState.expandedByIndex[dirEntry.itemIndex] ?? false);
             target.push({
               type: 'assistant',
-              key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+              key: `assistant:${message.id}:${runKey}:compact:${dirEntry.id}`,
               messageIndex,
               itemIndex: dirEntry.itemIndex,
               item,
               content: {
                 kind: 'compact_dir_entry',
-                segmentKey: segment.key,
+                segmentKey: runKey,
                 entry: dirEntry,
                 expanded: entryExpanded,
                 isLastEntry: entryIdx === lastIndex,
@@ -1632,13 +1728,13 @@ export const buildChatVirtualRows = ({
             const entryExpanded = cachedExpansion[dirEntry.id] ?? false;
             target.push({
               type: 'assistant',
-              key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+              key: `assistant:${message.id}:${runKey}:compact:${dirEntry.id}`,
               messageIndex,
               itemIndex: dirEntry.firstItemIndex,
               item,
               content: {
                 kind: 'compact_dir_entry',
-                segmentKey: segment.key,
+                segmentKey: runKey,
                 entry: dirEntry,
                 expanded: entryExpanded,
                 isLastEntry: entryIdx === lastIndex,
@@ -1651,13 +1747,13 @@ export const buildChatVirtualRows = ({
           const entryExpanded = cachedState.expandedByIndex[dirEntry.itemIndex] ?? false;
           target.push({
             type: 'assistant',
-            key: `assistant:${message.id}:${segment.key}:compact:${dirEntry.id}`,
+            key: `assistant:${message.id}:${runKey}:compact:${dirEntry.id}`,
             messageIndex,
             itemIndex: dirEntry.itemIndex,
             item,
             content: {
               kind: 'compact_dir_entry',
-              segmentKey: segment.key,
+              segmentKey: runKey,
               entry: dirEntry,
               expanded: entryExpanded,
               isLastEntry: entryIdx === lastIndex,
@@ -1667,6 +1763,250 @@ export const buildChatVirtualRows = ({
           });
         });
       };
+
+      // Option C (compact-native) segmented live/background-active layout:
+      // While a foreground turn is streaming OR a finished turn's background task is
+      // actively waking up / continuing on this turn, partition activity groups by
+      // visible intermediate prose (including live Codex `commentary`, spanning
+      // independent `system_notice` rows) so:
+      // - Preceding work stays collapsed above intermediate prose ("Finished working");
+      // - Intermediate progress prose remains visible in chronological position;
+      // - Trailing work renders below as a live two-tier Option C header instead of
+      //   inverting above prose or exploding flat when late tools follow progress text.
+      if (compactNativeEnabled && (isCompactLive || isBackgroundCompactCandidate)) {
+        const isCompactWorkBlock = (
+          block: AssistantTurnRenderBlock
+        ): block is Extract<AssistantTurnRenderBlock, { kind: 'activity_group' }> =>
+          block.kind === 'activity_group';
+        const isSystemNoticeBlock = (block: AssistantTurnRenderBlock): boolean =>
+          block.kind === 'content' && block.entry.content.type === 'system_notice';
+        const isVisibleNonNoticeBlock = (block: AssistantTurnRenderBlock): boolean =>
+          !isCompactWorkBlock(block) && !isSystemNoticeBlock(block);
+
+        type CompactWorkRun = {
+          runKey: string;
+          blockIndexes: number[];
+          activityEntries: AssistantActivityRenderItem[];
+          searchEntries: { itemIndex: number }[];
+          hasFollowingVisibleContent: boolean;
+        };
+        const workRuns: CompactWorkRun[] = [];
+        const workBlockIndexSet = new Set<number>();
+        let cursor = segmentStart;
+        while (cursor < segmentEnd) {
+          const startBlock = blocks[cursor];
+          if (!startBlock || !isCompactWorkBlock(startBlock)) {
+            cursor += 1;
+            continue;
+          }
+          const blockIndexes: number[] = [];
+          const activityEntries: AssistantActivityRenderItem[] = [];
+          const searchEntries: { itemIndex: number }[] = [];
+          while (cursor < segmentEnd) {
+            const candidate = blocks[cursor];
+            if (!candidate) break;
+            if (isSystemNoticeBlock(candidate)) {
+              cursor += 1;
+              continue;
+            }
+            if (!isCompactWorkBlock(candidate)) break;
+            blockIndexes.push(cursor);
+            workBlockIndexSet.add(cursor);
+            activityEntries.push(...candidate.entries);
+            searchEntries.push(...candidate.entries);
+            cursor += 1;
+          }
+          let hasFollowingVisibleContent = false;
+          for (let probe = cursor; probe < segmentEnd; probe += 1) {
+            const following = blocks[probe];
+            if (following && isVisibleNonNoticeBlock(following)) {
+              hasFollowingVisibleContent = true;
+              break;
+            }
+          }
+          const runKey =
+            workRuns.length === 0 ? segment.key : `${segment.key}:run:${startBlock.key}`;
+          workRuns.push({
+            runKey,
+            blockIndexes,
+            activityEntries,
+            searchEntries,
+            hasFollowingVisibleContent,
+          });
+        }
+
+        const lastWorkRun = workRuns[workRuns.length - 1];
+        const hasTrailingWorkRun = lastWorkRun ? !lastWorkRun.hasFollowingVisibleContent : false;
+        const hasPrecedingVisibleContent =
+          lastWorkRun !== undefined &&
+          blocks
+            .slice(segmentStart, lastWorkRun.blockIndexes[0] ?? segmentStart)
+            .some((block) => block !== undefined && isVisibleNonNoticeBlock(block));
+        const trailingRunOwnsBackgroundTask =
+          lastWorkRun?.activityEntries.some(
+            (entry) => entry.content.type === 'tool_call' && isBackgroundedToolCall(entry.content)
+          ) ?? false;
+        const shouldUseSegmentedBackground =
+          isBackgroundCompactCandidate &&
+          workRuns.length > 0 &&
+          (turnBackgroundMode === 'wakeup' ||
+            (hasTrailingWorkRun &&
+              (workRuns.length > 1 ||
+                hasPrecedingVisibleContent ||
+                trailingRunOwnsBackgroundTask)));
+
+        if (workRuns.length > 0 && (isCompactLive || shouldUseSegmentedBackground)) {
+          if (isLastSegment) {
+            const lastRun = workRuns[workRuns.length - 1]!;
+            for (let itemIndex = 0; itemIndex < message.items.length; itemIndex += 1) {
+              if (message.items[itemIndex]?.type === 'subagent_task') {
+                lastRun.searchEntries.push({ itemIndex });
+              }
+            }
+          }
+          if (shouldUseSegmentedBackground) {
+            suppressFinishedFooter = true;
+          }
+
+          const runByStartIndex = new Map<number, { run: CompactWorkRun; runIndex: number }>();
+          workRuns.forEach((run, runIndex) => {
+            const startIdx = run.blockIndexes[0];
+            if (startIdx !== undefined) {
+              runByStartIndex.set(startIdx, { run, runIndex });
+            }
+          });
+
+          let lastRunExpanded = false;
+          const deferredExpandedRunBlocks = new Map<
+            number,
+            { runKey: string; entries: CompactDirectoryEntry[] }
+          >();
+          for (let blockIndex = segmentStart; blockIndex < segmentEnd; blockIndex += 1) {
+            const block = blocks[blockIndex];
+            if (!block) continue;
+            const runInfo = runByStartIndex.get(blockIndex);
+            if (runInfo) {
+              const { run, runIndex } = runInfo;
+              const isLastRun = runIndex === workRuns.length - 1;
+              const isRunLive =
+                isLastSegment &&
+                isLastRun &&
+                !run.hasFollowingVisibleContent &&
+                (isCompactLive || turnBackgroundMode === 'wakeup');
+              const isRunSettledFinished = shouldUseSegmentedBackground
+                ? !isLastRun || run.hasFollowingVisibleContent
+                : !isLastRun;
+              const isRunSearchExpanded = assistantGroupHasActiveSearch(
+                message.id,
+                run.searchEntries,
+                selectionSearchBlockId
+              );
+              const isRunExpanded =
+                isRunSearchExpanded || (cachedState.expandedWorkedGroups[run.runKey] ?? false);
+              if (isLastRun) {
+                lastRunExpanded = isRunExpanded;
+              }
+
+              const compactEntriesByBlock = new Map<number, CompactDirectoryEntry[]>();
+              const thoughtItemIndexes: number[] = [];
+              if (isRunExpanded) {
+                for (const idx of run.blockIndexes) {
+                  const runBlock = blocks[idx];
+                  if (runBlock?.kind !== 'activity_group') continue;
+                  const built = buildCompactDirectoryEntries(runBlock.entries, {
+                    isLive: isRunLive,
+                  });
+                  compactEntriesByBlock.set(idx, built);
+                  for (const dirEntry of built) {
+                    if (dirEntry.kind === 'thought' && !dirEntry.isPlaceholderOnly) {
+                      thoughtItemIndexes.push(dirEntry.itemIndex);
+                    }
+                  }
+                }
+              }
+
+              assistantRows.push({
+                type: 'assistant',
+                key: `assistant:${message.id}:${run.runKey}:worked-header`,
+                messageIndex,
+                item,
+                content: {
+                  kind: 'compact_work_header',
+                  segmentKey: run.runKey,
+                  expanded: isRunExpanded,
+                  isLive: isRunLive,
+                  isTurnFinished: isRunSettledFinished,
+                  showLiveDuration: !shouldUseSegmentedBackground,
+                  durationMs: null,
+                  entries: run.activityEntries,
+                },
+                isLastRowForMessage: false,
+              });
+              if (isRunExpanded && thoughtItemIndexes.length > 1) {
+                assistantRows.push({
+                  type: 'assistant',
+                  key: `assistant:${message.id}:${run.runKey}:compact-toolbar`,
+                  messageIndex,
+                  item,
+                  content: {
+                    kind: 'compact_dir_toolbar',
+                    segmentKey: run.runKey,
+                    thoughtItemIndexes,
+                    allThoughtsExpanded: thoughtItemIndexes.every(
+                      (itemIndex) =>
+                        selectionSearchBlockId === getThoughtSearchBlockId(message.id, itemIndex) ||
+                        cachedState.expandedByIndex[itemIndex] === true
+                    ),
+                  },
+                  isWorkedDetail: true,
+                  isLastRowForMessage: false,
+                });
+              }
+              if (isRunExpanded) {
+                // Emit this starting block's entries now and defer any later blocks of the
+                // same run (e.g. after an interleaved system_notice) so chronological row
+                // order stays [A, notice, B] instead of jumping to [A, B, notice].
+                for (const idx of run.blockIndexes) {
+                  const entriesForBlock = compactEntriesByBlock.get(idx);
+                  if (!entriesForBlock) continue;
+                  if (idx === blockIndex) {
+                    appendCompactDirectoryRows(assistantRows, entriesForBlock, true, run.runKey);
+                  } else {
+                    deferredExpandedRunBlocks.set(idx, {
+                      runKey: run.runKey,
+                      entries: entriesForBlock,
+                    });
+                  }
+                }
+              }
+              continue;
+            }
+            if (workBlockIndexSet.has(blockIndex)) {
+              const deferred = deferredExpandedRunBlocks.get(blockIndex);
+              if (deferred) {
+                appendCompactDirectoryRows(assistantRows, deferred.entries, true, deferred.runKey);
+              }
+              continue;
+            }
+            appendBlockRows(assistantRows, block, blockIndex, false);
+          }
+
+          if (
+            shouldUseSegmentedBackground &&
+            lastRunExpanded &&
+            segmentSubagentTasks.length > 0 &&
+            !hasRunningSubagentTasks
+          ) {
+            appendSubagentTasksRow(assistantRows, true);
+          }
+          if ((!isTurnFinished && segmentSubagentTasks.length > 0) || hasRunningSubagentTasks) {
+            appendSubagentTasksRow(assistantRows, false);
+          }
+          continue;
+        }
+      }
+
+      anySegmentUsesWorkedGroup ||= shouldUseWorkedGroup && isTurnFinished;
 
       if (!shouldUseWorkedGroup) {
         if (compactNativeEnabled) {
@@ -1911,6 +2251,7 @@ export const buildChatVirtualRows = ({
         fileDiffs,
         assistantActions: scopedAssistantActions,
         showDuration: showDurationInFooter,
+        suppressFinishedMetadata: suppressFinishedFooter,
       })
     ) {
       assistantRows.push({
@@ -1922,6 +2263,7 @@ export const buildChatVirtualRows = ({
           kind: 'footer',
           showDuration: showDurationInFooter,
           isLive: isLastAssistantMessage && message.finished !== true,
+          ...(suppressFinishedFooter ? { suppressFinishedMetadata: true } : {}),
         },
         isLastRowForMessage: false,
       });
@@ -1946,6 +2288,8 @@ export const buildChatVirtualRows = ({
       surfaceKey,
       nextIsUser,
       compactNativeEnabled,
+      backgroundTaskStatusMode: turnBackgroundMode,
+      prevUserCanceled,
     });
     rows.push(...assistantRows);
   }
@@ -2328,6 +2672,7 @@ export const SessionChatStreamView = forwardRef<
     const surfaceKey = useAtomValue(agentSurfaceKeyAtom);
     const streamingThoughtPreviewEnabled = useAtomValue(streamingThoughtPreviewFeatureEnabledAtom);
     const selectionLayouts = selectionLayoutsRef.current;
+    const backgroundTaskStatusMode = backgroundTaskStatus?.mode ?? null;
     const virtualRows = useMemo(() => {
       // Expansion lives in the module cache so virtualized child rows retain
       // their state after unmounting; this counter is its React invalidation
@@ -2345,6 +2690,7 @@ export const SessionChatStreamView = forwardRef<
         surfaceKey,
         groupCreatedSessions: messageSelection === null,
         compactNativeEnabled: streamingThoughtPreviewEnabled,
+        backgroundTaskStatusMode,
       });
       if (!localUserMessages?.length) return rows;
       const local = new Map(localUserMessages.map((message) => [message.id, message]));
@@ -2385,12 +2731,18 @@ export const SessionChatStreamView = forwardRef<
       lastAssistantMessageId,
       messageFileDiffEntriesByTurn,
       streamingThoughtPreviewEnabled,
+      backgroundTaskStatusMode,
     ]);
     // While work is in progress, a live turn whose bottom (past its footer) is
     // a collapsed activity group (or Option C compact work header/directory) carries
     // the status itself: that label shimmers and no separate status row is added below it.
     const liveGroupHeaderRowKey = useMemo(() => {
-      if (!agentActivityLabel || agentActivityTone === 'warning') return null;
+      if (
+        (!agentActivityLabel && backgroundTaskStatusMode !== 'wakeup') ||
+        agentActivityTone === 'warning'
+      ) {
+        return null;
+      }
       let trailingTurnMessageId: string | null = null;
       for (let index = virtualRows.length - 1; index >= 0; index -= 1) {
         const row = virtualRows[index];
@@ -2400,8 +2752,19 @@ export const SessionChatStreamView = forwardRef<
         } else if (row.item.message.id !== trailingTurnMessageId) {
           return null;
         }
-        if (row.item.message.finished === true) return null;
-        if (row.content.kind === 'footer' || row.content.kind === 'subagent_tasks') continue;
+        const allowWakeupHeader =
+          streamingThoughtPreviewEnabled &&
+          backgroundTaskStatusMode === 'wakeup' &&
+          row.item.message.id === lastAssistantMessageId;
+        if (row.item.message.finished === true && !allowWakeupHeader) return null;
+        if (
+          row.content.kind === 'footer' ||
+          row.content.kind === 'subagent_tasks' ||
+          (row.content.kind === 'content' &&
+            row.content.block.entry.content.type === 'system_notice')
+        ) {
+          continue;
+        }
         if (
           streamingThoughtPreviewEnabled &&
           (row.content.kind === 'compact_dir_entry' || row.content.kind === 'compact_dir_toolbar')
@@ -2412,6 +2775,7 @@ export const SessionChatStreamView = forwardRef<
           return row.key;
         }
         if (
+          row.item.message.finished !== true &&
           agentActivityShimmer &&
           row.content.kind === 'activity_group_header' &&
           !row.content.expanded
@@ -2425,6 +2789,8 @@ export const SessionChatStreamView = forwardRef<
       agentActivityLabel,
       agentActivityShimmer,
       agentActivityTone,
+      backgroundTaskStatusMode,
+      lastAssistantMessageId,
       streamingThoughtPreviewEnabled,
       virtualRows,
     ]);
@@ -2659,6 +3025,8 @@ export const SessionChatStreamView = forwardRef<
         if (item?.type !== 'message') return undefined;
         const layout = {
           finished: item.message.finished === true,
+          backgroundTaskMode:
+            id === lastAssistantMessageId ? backgroundTaskStatusMode : null,
           expandState: getExpandState(item.sessionId, id),
           activeSearchBlockId,
         };
@@ -6243,6 +6611,7 @@ export const AssistantTurnFooter = ({
   onFileDiffClick,
   showDuration,
   isLive = false,
+  suppressFinishedMetadata = false,
   isTurnHovered,
   isLatestTurn = false,
   onFork,
@@ -6258,6 +6627,8 @@ export const AssistantTurnFooter = ({
   showDuration: boolean;
   /** This turn is the live one: its duration slot counts up. */
   isLive?: boolean;
+  /** Suppresses finished timestamp/duration/fork while background wakeup work streams. */
+  suppressFinishedMetadata?: boolean;
   isTurnHovered: boolean;
   /** The conversation's newest assistant turn: on mobile its actions rest visible. */
   isLatestTurn?: boolean;
@@ -6285,7 +6656,7 @@ export const AssistantTurnFooter = ({
   const durationMs = resolveSessionHistoryDurationMs(message);
   const durationLabel =
     durationMs === null ? '' : formatDurationCompact(durationMs, durationUnitLabels);
-  const showFinishedMetadata = message.finished === true;
+  const showFinishedMetadata = message.finished === true && !suppressFinishedMetadata;
   const showStreamingContextCopy = !showFinishedMetadata && !!copyContext;
   /* Mobile: no completion timestamp — model meta + Worked-for already carry
      enough chrome; the stamp only adds a second clock under the answer. */
@@ -6605,6 +6976,7 @@ const areAssistantVirtualContentsEqual = (
         a.expanded === b.expanded &&
         a.isLive === b.isLive &&
         a.isTurnFinished === b.isTurnFinished &&
+        a.showLiveDuration === b.showLiveDuration &&
         a.durationMs === b.durationMs &&
         a.entries.length === b.entries.length &&
         a.entries.every((entry, idx) => entry.content === b.entries[idx]?.content)
@@ -6669,7 +7041,12 @@ const areAssistantVirtualContentsEqual = (
          for this flag, and skipping the re-render would leave its counter
          running next to the new turn's — exactly the one-row bound the flag
          exists to enforce. */
-      return b.kind === 'footer' && a.showDuration === b.showDuration && a.isLive === b.isLive;
+      return (
+        b.kind === 'footer' &&
+        a.showDuration === b.showDuration &&
+        a.isLive === b.isLive &&
+        a.suppressFinishedMetadata === b.suppressFinishedMetadata
+      );
     default:
       return false;
   }
@@ -6798,6 +7175,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
             expanded={content.expanded}
             isLive={content.isLive}
             isTurnFinished={content.isTurnFinished}
+            showLiveDuration={content.showLiveDuration}
             shimmer={shimmerGroupHeader}
             onExpandedChange={(expanded) =>
               onWorkedGroupExpandedChange(message.id, content.segmentKey, expanded)
@@ -6940,6 +7318,7 @@ const AssistantChatItem = memo(function AssistantChatItem({
               onFileDiffClick={onFileDiffClick}
               showDuration={content.showDuration}
               isLive={content.isLive}
+              suppressFinishedMetadata={content.suppressFinishedMetadata}
               isTurnHovered={isTurnHovered}
               isLatestTurn={isLatestTurn}
               onFork={onFork}

@@ -177,7 +177,19 @@ retains the upstream two-layer disclosure and legacy behavior verbatim
   source file while whole-row click toggles the detail sheet; other tools expand
   their detail sheet on whole-row click (no "View output" badge), with a neutral
   historical `BG` micro-badge derived strictly from persisted
-  `tool_call.backgroundTaskId` (never presence). Per-session expand memory
+  `tool_call.backgroundTaskId` (never presence). While a foreground turn streams
+  or a finished turn's authoritative native background task remains active
+  (`waiting` / `wakeup`), Option C segments work blocks around visible
+  intermediate progress prose: preceding work stays collapsed (`Finished
+  working`), intermediate prose stays visible in chronological order, and
+  trailing follow-up thoughts/tools render below as an independent live two-tier
+  header (omitting wall-clock duration and suppressing premature finished footer
+  metadata during background wakeups, and holding a collapsed `Working` header
+  if the wakeup re-enters silent waiting). Settling with a final answer and no
+  active background task merges everything back under one `#2353` `Worked for
+  <duration>` header, while genuinely interrupted turns with no answer (or late
+  post-turn work streams without authoritative background presence) remain
+  expanded. Per-session expand memory
   (`sessionId` + `messageId`, isolating forked turns), placeholder-aligned
   thought search indexing (`stripAgyPlaceholderFromMarkdown`), and `#2353`
   folding all remain intact.

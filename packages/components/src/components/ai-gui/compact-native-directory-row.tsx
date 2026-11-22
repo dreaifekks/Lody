@@ -382,6 +382,7 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
   expanded,
   isLive,
   isTurnFinished = !isLive,
+  showLiveDuration = true,
   durationMs,
   shimmer = false,
   onExpandedChange,
@@ -393,6 +394,8 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
   /** True while this work segment is the trailing active phase (before final prose starts). */
   isLive: boolean;
   isTurnFinished?: boolean;
+  /** False during background wakeup late streams where wall-clock includes idle wait time. */
+  showLiveDuration?: boolean;
   durationMs: number | null;
   shimmer?: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -483,7 +486,7 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
                       </span>
                     </>
                   ) : null}
-                  <CompactLiveDuration message={message} />
+                  {showLiveDuration ? <CompactLiveDuration message={message} /> : null}
                 </>
               ) : (
                 <>
@@ -503,7 +506,7 @@ export const CompactWorkHeaderRow = memo(function CompactWorkHeaderRow({
                       </span>
                     </>
                   ) : null}
-                  <CompactLiveDuration message={message} />
+                  {showLiveDuration ? <CompactLiveDuration message={message} /> : null}
                 </>
               )
             ) : (

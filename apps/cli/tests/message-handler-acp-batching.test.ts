@@ -1539,12 +1539,9 @@ describe('MessageHandler ACP batching', () => {
     }
   });
 
-  it.each([
-    { reportsSessionActivity: true, restartsClock: true },
-    { reportsSessionActivity: false, restartsClock: false },
-  ])(
-    'post-turn output restarts the GC idle clock only for activity-reporting agents (%o)',
-    async ({ reportsSessionActivity, restartsClock }) => {
+  it.each([{ reportsSessionActivity: true }, { reportsSessionActivity: false }])(
+    'live post-turn model/tool output restarts the GC idle clock regardless of reportsSessionActivity (%o), while passive metadata does not',
+    async ({ reportsSessionActivity }) => {
       const sessionId = 'late-output-activity' as SessionId;
       const { repo, handler, sessionManagerMock } = await createHandlerHarness([sessionId]);
       sessionManagerMock.getSession.mockImplementation(
@@ -1559,6 +1556,36 @@ describe('MessageHandler ACP batching', () => {
         sessionId,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } },
       });
+      const thought = (value: string): AcpSessionNotification => ({
+        sessionId,
+        update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: value } },
+      });
+      const toolStart = (toolCallId: string): AcpSessionNotification => ({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId,
+          title: 'Run follow-up',
+          kind: 'execute',
+          status: 'in_progress',
+        },
+      });
+      const toolDone = (toolCallId: string): AcpSessionNotification => ({
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          status: 'completed',
+        },
+      });
+      const titleInfo = (title: string): AcpSessionNotification => ({
+        sessionId,
+        update: { sessionUpdate: 'session_info_update', title },
+      });
+      const commandsInfo: AcpSessionNotification = {
+        sessionId,
+        update: { sessionUpdate: 'available_commands_update', availableCommands: [] },
+      };
 
       try {
         const turnId = host.beginConversationTurn(sessionId);
@@ -1568,11 +1595,30 @@ describe('MessageHandler ACP batching', () => {
         host.enqueueACPUpdate(sessionId, text('during the turn'));
         expect(handler.getLastActivity(sessionId)).toBe(beforeOutput);
         await host.finalizeACPState(sessionId, turnId);
+        const afterFinalize = handler.getLastActivity(sessionId);
 
-        // Claude was woken later by a finished background shell.
-        await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+        // Passive metadata after end_turn must not extend the GC idle clock.
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, titleInfo('Late title'));
+        host.enqueueACPUpdate(sessionId, commandsInfo);
+        expect(handler.getLastActivity(sessionId)).toBe(afterFinalize);
+
+        // Live post-turn wakeup events (tool_call_update, thought, tool_call, message) all touch GC.
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, toolDone('bg-cmd-1'));
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, thought('Analyzing background command result.'));
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        host.enqueueACPUpdate(sessionId, toolStart('followup-cmd-2'));
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
+
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
         host.enqueueACPUpdate(sessionId, text('after the background task'));
-        expect(handler.getLastActivity(sessionId)).toBe(restartsClock ? Date.now() : beforeOutput);
+        expect(handler.getLastActivity(sessionId)).toBe(Date.now());
       } finally {
         await destroyRepoOnRealTimers(repo);
       }

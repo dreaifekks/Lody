@@ -17,8 +17,8 @@ background tasks. The agent now reports a new Core level,
 `_lody/session/activity_update`, which says whether it is running and how
 many background tasks are live. GC never cleans a session whose agent is
 running, spares one that only waits on background tasks for up to 24 hours,
-and treats output after a turn as activity. Agents that do not report the
-level keep the old rules unchanged. Pending `ScheduleWakeup` and cron jobs that have no live task are
+and treats live post-turn model/tool output as activity for all agents. Agents that do not report the
+level still keep the standard idle GC timeout when silent. Pending `ScheduleWakeup` and cron jobs that have no live task are
 still not protected.
 
 ## Problem
@@ -59,14 +59,18 @@ to GC:
    until its idle time reaches `nativeBackgroundMaxIdleMs` (24 hours,
    `LODY_SESSION_GC_NATIVE_BACKGROUND_MAX_IDLE_MS`). Memory-pressure eviction
    may still reclaim it.
-3. **Output after a turn counts as activity, for these agents only.**
-   `MessageHandler.enqueueACPUpdate` calls `touchSession` when an update is
-   routed to a finalized turn and the agent reports `sessionActivity`. That
-   output comes from a model turn woken by a background task, a wakeup or a
-   cron, so the idle clock restarts when that work ends rather than at the
-   last user turn. Output inside a turn still does not touch: the turn already
-   protects the session. An agent without the level keeps the old rule that
-   only user actions and turn ends count, so its GC behavior does not change.
+3. **Live post-turn model/tool output counts as activity.**
+   `MessageHandler.enqueueACPUpdate` calls `touchSession` when live post-turn
+   model/tool output (`agent_message_chunk`, `agent_thought_chunk`, `tool_call`,
+   `tool_call_update`, `subagent_event`, `plan`, `plan_update`, `plan_removed`)
+   is routed to a finalized turn, regardless of whether the agent advertises
+   Core `sessionActivity`. That output comes from a model turn woken by a
+   finished background task, timer, or cron, so the idle clock restarts while
+   live post-turn output is streaming (preventing idle GC from killing an agent
+   such as `agy 1.5.10+` mid-wakeup). Output inside an active turn still does
+   not touch (the active turn already protects the session), and passive
+   metadata updates (`session_info_update`, `available_commands_update`, etc.)
+   do not extend idle lifetime.
 
 ## Completion signals
 
@@ -79,10 +83,7 @@ later activity time. If the process ends first (idle GC after its 24-hour cap,
 memory pressure, a crash, or ACP child exit without `Session.terminate`), the
 conversation gets a `nativeWorkInterrupted` notice before completion is flushed,
 the Session is still marked unread, and the user is alerted to an `unknown` result
-(`native_work_interrupted`) instead of a success. When Antigravity's monitor hits
-its 24-hour cap with pending work or tears down on `closeSession`/disconnect, its
-unsettled work is preserved for the interruption check rather than flipped to
-normal idle while still releasing GC. If GC destroyed the Turn's `SessionDocument`
+(`native_work_interrupted`) instead of a success. If GC destroyed the Turn's `SessionDocument`
 at termination, completion re-acquires the live document unless the Session was
 archived or deleted. A newer Turn, Stop, archive, or delete withdraws the wait so
 intentional teardown publishes no stale interruption.
@@ -120,10 +121,10 @@ cancellation attention is unchanged and never waits.
 - A pending `ScheduleWakeup` or cron job with no live task is not covered. It
   is still lost if no output arrives for 20 minutes. Whether the SDK lists
   pending wakeups in `background_tasks_changed` was not verified.
-- The level needs a Claude adapter release that advertises `sessionActivity`
+- The level needs an adapter release that advertises `sessionActivity`
   and a Core release that defines it. Older adapters and other providers report
-  nothing and keep exactly the old GC behavior, including late output not
-  counting as activity.
+  nothing and keep the standard 20-minute silent idle GC timeout, though live
+  post-turn model/tool output still restarts the idle clock while streaming.
 - Added 2026-11-17 ([#2797](https://github.com/LodyAI/Lody/issues/2797)): the
   DeepSeek Harness adapter also reports the level, from native `agent/status` and
   the root session's live jobs. It used to force `quiet` job completion and reject
@@ -148,5 +149,5 @@ cancellation attention is unchanged and never waits.
 - CLI: GC tests cover `running`, `background` below and above the ceiling, the
   clean after tasks are gone, and pressure eviction. AgentClient tests cover
   capability gating and ACP session matching. A MessageHandler test checks that
-  post-turn output resets the idle clock for an agent reporting the level and
-  leaves it unchanged for one that does not; it fails when the touch is removed.
+  live post-turn model/tool output resets the idle clock regardless of
+  `reportsSessionActivity()` while passive metadata updates leave it unchanged.

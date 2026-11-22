@@ -5658,11 +5658,23 @@ export class MessageHandler {
     }
     if (target.source === 'finalized_turn') {
       // Output inside a turn never touches the session: the turn keeps it from
-      // GC. Output after the turn means the model was woken by a finished
-      // background task, a ScheduleWakeup or a cron, so the idle timer restarts
-      // from it. Only agents that report `sessionActivity` get this; the others
-      // keep the old rule that only user actions and turn ends count.
-      if (this.sessionManager.getSession(sessionId)?.agentClient?.reportsSessionActivity()) {
+      // GC. Live model/tool output after a turn (e.g. a wakeup from a finished
+      // background task, timer, or cron) restarts the idle clock regardless of
+      // whether the agent advertises Core `sessionActivity`, so an agent that
+      // streams post-turn wakeup work is not reaped mid-output. Passive
+      // metadata updates (`session_info_update`, `available_commands_update`,
+      // etc.) do not extend idle lifetime.
+      const sessionUpdate = update.update.sessionUpdate;
+      if (
+        sessionUpdate === 'agent_message_chunk' ||
+        sessionUpdate === 'agent_thought_chunk' ||
+        sessionUpdate === 'tool_call' ||
+        sessionUpdate === 'tool_call_update' ||
+        sessionUpdate === 'subagent_event' ||
+        sessionUpdate === 'plan' ||
+        sessionUpdate === 'plan_update' ||
+        sessionUpdate === 'plan_removed'
+      ) {
         this.touchSession(sessionId);
       }
       this.captureACPUpdateInvariant(

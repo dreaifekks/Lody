@@ -3,7 +3,7 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import { unified } from 'unified';
-import { stripAgyPlaceholderFromMarkdown } from '@/components/ai-gui/streaming-thought-preview';
+import { stripAgyPlaceholderFromMarkdown } from '../components/ai-gui/streaming-thought-preview';
 
 /**
  * In-conversation search indexes PROSE ONLY: what the user typed and what the

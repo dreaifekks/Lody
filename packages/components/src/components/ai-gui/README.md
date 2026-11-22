@@ -196,10 +196,24 @@ the reasoning behind those rules.
   keeping an independent clickable file link on standalone `read`/`edit` rows
   with details, expanding tool sheets on row click with no "View output" badge,
   and tagging persisted `backgroundTaskId` commands with a neutral historical
-  `BG` micro-badge). Reuses the single-pass O(n) thought scanner, 1500 ms /
-  4000 ms Low-stimulus hold throttling, `#2353` folding, per-session expand
-  memory, placeholder-aligned search-hit auto-expand, and scroll-engine
-  `ResizeObserver` / `preserveDisclosure` re-measurement. Presentation only;
+  `BG` micro-badge). During live turns and post-turn native background wakeups
+  from authoritative Core `sessionActivity` (`backgroundTaskStatusMode` `'wakeup'`,
+  or `'waiting'` when the turn owns post-prose follow-up work or a persisted
+  `backgroundTaskId` tool),
+  activity groups are segmented chronologically around all visible non-notice
+  prose (including live Codex `commentary`, while spanning independent
+  `system_notice` rows without splitting work runs or stripping shimmer):
+  preceding runs collapse as `Finished working` (per-run key), intermediate
+  prose stays visible in place, and the trailing work run renders as a live
+  two-tier compact header (omitting wall-clock elapsed duration during
+  background wakeups and suppressing premature finished footer metadata across
+  the turn while `wakeup` is active); settled turns return to single-group
+  `#2353` folding while genuinely interrupted or cancelled turns with no final
+  text stay expanded. Reuses the single-pass
+  O(n) thought scanner, 1500 ms / 4000 ms Low-stimulus hold throttling, `#2353`
+  folding, per-session expand memory, placeholder-aligned search-hit
+  auto-expand, and scroll-engine `ResizeObserver` / `preserveDisclosure`
+  re-measurement. Presentation only;
   [decision](../../../../../.agents/notes/implemented/feature/2026-11-21-streaming-thought-preview.md).
 - `background-task-status-row.tsx` renders the always-on, non-expandable
   post-answer status row when a finished turn has live

@@ -220,4 +220,100 @@ describe('Thought visibility', () => {
     expect(visibleContents(buildChatVirtualRows(args))).toEqual([]);
     expect(headers(buildChatVirtualRows(args))).toHaveLength(1);
   });
+
+  it('reuses earlier turn rows when backgroundTaskStatusMode changes on the latest compact-native turn', () => {
+    const earlier = wrap(
+      makeMessage('earlier-bg', 'assistant', [thought, toolCall(), text('Earlier answer')], true)
+    );
+    const latest = wrap(
+      makeMessage(
+        'latest-bg',
+        'assistant',
+        [thought, toolCall(), text('Progress update'), nextThought, toolCall()],
+        true
+      )
+    );
+    const waiting = buildChatVirtualRows({
+      items: [earlier, latest],
+      lastAssistantMessageId: 'latest-bg',
+      expansionVersion: 0,
+      compactNativeEnabled: true,
+      backgroundTaskStatusMode: 'waiting',
+    });
+    const wakeup = buildChatVirtualRows({
+      items: [earlier, latest],
+      lastAssistantMessageId: 'latest-bg',
+      expansionVersion: 0,
+      compactNativeEnabled: true,
+      backgroundTaskStatusMode: 'wakeup',
+    });
+
+    const earlierWaiting = waiting.filter(
+      (row) => row.type === 'assistant' && row.item.message.id === 'earlier-bg'
+    );
+    const earlierWakeup = wakeup.filter(
+      (row) => row.type === 'assistant' && row.item.message.id === 'earlier-bg'
+    );
+    expect(earlierWakeup.length).toBeGreaterThan(0);
+    expect(earlierWakeup.every((row, idx) => row === earlierWaiting[idx])).toBe(true);
+
+    const latestWakeupHeaders = wakeup.filter(
+      (row) =>
+        row.type === 'assistant' &&
+        row.item.message.id === 'latest-bg' &&
+        row.content.kind === 'compact_work_header'
+    );
+    expect(latestWakeupHeaders).toHaveLength(2);
+    expect(
+      latestWakeupHeaders[1]?.type === 'assistant' && latestWakeupHeaders[1].content
+    ).toMatchObject({
+      kind: 'compact_work_header',
+      isLive: true,
+      showLiveDuration: false,
+    });
+  });
+
+  it('resolves canceled owning user turn by userTurnId across placeholders and filtered turnIndex gaps', () => {
+    const placeholderUser: ChatStreamItem = {
+      type: 'placeholder',
+      sessionId,
+      turnIndex: 10,
+      row: {
+        id: 'user-canceled-10',
+        role: 'user',
+        timestamp: '2026-07-03T00:00:00.000Z',
+        status: 'canceled',
+      },
+    };
+    const canceledFollowup: ChatStreamItem = {
+      type: 'message',
+      sessionId,
+      turnIndex: 11,
+      message: {
+        ...makeMessage(
+          'assistant-canceled-11',
+          'assistant',
+          [thought, toolCall(), text('Mid-turn note'), nextThought, toolCall()],
+          true
+        ),
+        userTurnId: 'user-canceled-10',
+      },
+    };
+
+    const rows = buildChatVirtualRows({
+      items: [placeholderUser, canceledFollowup],
+      lastAssistantMessageId: 'assistant-canceled-11',
+      expansionVersion: 0,
+      compactNativeEnabled: true,
+      backgroundTaskStatusMode: 'waiting',
+    });
+
+    // Even with turnIndex gap (10/11 in a 2-element array) and placeholder user row,
+    // the canceled turn must stay expanded instead of collapsing under session-level waiting.
+    const assistantRows = rows.filter(
+      (row) => row.type === 'assistant' && row.item.message.id === 'assistant-canceled-11'
+    );
+    expect(assistantRows.some((row) => row.content.kind === 'compact_work_header')).toBe(false);
+    expect(assistantRows.some((row) => row.content.kind === 'compact_dir_entry')).toBe(true);
+  });
 });

@@ -530,6 +530,90 @@ export const FinishedWithBackgroundWakeup: Story = {
   },
 };
 
+const midTurnSegmentedItems: MessageContent[] = [
+  {
+    type: 'thought',
+    text: 'Checking signing credentials convention and Docker buildx availability across machines.',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'seg-read-1',
+    kind: 'read',
+    title: 'Read mac/script/package_macos.sh',
+    locations: [{ path: 'mac/script/package_macos.sh' }],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'seg-run-1',
+    kind: 'execute',
+    title: 'Run docker --version && docker buildx version',
+    status: 'completed',
+  },
+  {
+    type: 'text',
+    text: 'Found the 5 signing/notarization secret names (`MACOS_SIGNING_P12`, `APPLE_API_KEY_P8_BASE64`, etc.) and confirmed Docker buildx is available locally; verifying the macOS SDK target before generating the Dockerfile and Release CI.',
+  },
+  {
+    type: 'thought',
+    text: 'The deployment target update yielded a clean build on macOS.\nNext step is to execute the packaging script on mini and prepare the Docker smoke test.',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'seg-edit-1',
+    kind: 'edit',
+    title: 'Edit write_ci_docker.sh',
+    locations: [{ path: 'write_ci_docker.sh' }],
+    status: 'completed',
+  },
+  {
+    type: 'tool_call',
+    toolCallId: 'seg-run-2',
+    kind: 'execute',
+    title: "Run lody-lan lan shell mini 'bash -s' < write_ci_docker.sh",
+    status: 'in_progress',
+  },
+];
+
+export const LiveMidTurnProseSegmented: Story = {
+  args: {
+    turnId: 'preview-live-mid-turn-segmented',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    items: midTurnSegmentedItems,
+  },
+};
+
+export const BackgroundWakeupLateStream: Story = {
+  args: {
+    turnId: 'preview-bg-wakeup-late-stream',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    finished: true,
+    endedAt: Date.parse('2026-11-21T02:02:58.000Z'),
+    agentActivityLabel: 'Working',
+    agentActivityShimmer: true,
+    backgroundTaskStatus: { mode: 'wakeup', taskCount: 1 },
+    items: midTurnSegmentedItems,
+  },
+};
+
+export const BackgroundWakeupLateStreamMobile: Story = {
+  args: {
+    turnId: 'preview-bg-wakeup-late-stream-mobile',
+    experimentalEnabled: true,
+    thoughtPreviewEnabled: true,
+    finished: true,
+    endedAt: Date.parse('2026-11-21T02:02:58.000Z'),
+    agentActivityLabel: 'Working',
+    agentActivityShimmer: true,
+    backgroundTaskStatus: { mode: 'wakeup', taskCount: 1 },
+    containerWidth: 390,
+    forceMobile: true,
+    items: midTurnSegmentedItems,
+  },
+};
+
 export const LiveLowStimulus: Story = {
   args: {
     turnId: 'preview-low-stimulus',

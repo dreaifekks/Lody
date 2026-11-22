@@ -298,6 +298,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
       backgroundTaskStatus?: SessionBackgroundTaskStatus | null;
       activeSearchBlockId?: string | null;
       onFilePathClick?: (filePath: string) => void;
+      onFork?: () => void;
     } = {}
   ) => {
     const targetSessionId = options.sessionId ?? sessionId;
@@ -327,7 +328,7 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
       await act(async () => notify());
       const lastAssistant = [...nextHistory]
         .reverse()
-        .find((entry): entry is { id: string; role: string } => {
+        .find((entry): entry is { id: string; role: string; finished?: boolean } => {
           return (
             typeof entry === 'object' &&
             entry !== null &&
@@ -342,12 +343,15 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
         conversationView: view,
         renderMessageRow: () => null,
         lastAssistantMessageId: lastAssistant?.id ?? 'assistant-1',
+        lastCompletedAssistantMessageId:
+          lastAssistant?.finished === true ? lastAssistant.id : undefined,
         agentActivityLabel:
           options.agentActivityLabel === undefined ? 'Working' : options.agentActivityLabel,
         agentActivityTone: options.agentActivityTone ?? 'primary',
         agentActivityShimmer: options.agentActivityShimmer,
         backgroundTaskStatus: currentBgStatus,
         onFilePathClick: options.onFilePathClick,
+        onForkLastAssistant: options.onFork,
       });
       const activeSearchBlockId = options.activeSearchBlockId ?? null;
       const wrapped =
@@ -1501,13 +1505,15 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     expect(bgRow!.querySelector('[data-background-task-detail]')).toBeNull();
     expect(bgRow!.querySelector('[data-background-task-static]')).not.toBeNull();
 
-    // Wakeup pulse shows "Handling background task" with shimmer.
+    // Wakeup pulse shows "Handling background task" with shimmer, while preserving
+    // upstream finished footer actions when Option C (thoughtPreview) is disabled.
     await rerenderHistory(finishedWithBgTool, { mode: 'wakeup', taskCount: 1 });
     const wakeupRow = container.querySelector<HTMLElement>(
       '[data-background-task-status-row="wakeup"]'
     );
     expect(wakeupRow?.textContent).toBe('Handling background task');
     expect(wakeupRow?.querySelector('.agent-shimmer')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
 
     // Without count: renders generic "Background task running".
     await rerenderHistory(
@@ -1594,5 +1600,709 @@ describe('SessionChatStreamView streaming thought preview integration', () => {
     await act(async () => store.set(experimentalFeaturesEnabledAtom, false));
     expect(store.get(streamingThoughtPreviewFeatureEnabledAtom)).toBe(false);
     expect(store.get(streamingThoughtPreviewExperimentEnabledAtom)).toBe(true);
+  });
+
+  it('segments mid-turn progress prose above a live trailing Option C panel in a foreground turn and merges cleanly on finish', async () => {
+    const turnId = nextAssistantId();
+    const midTurnItems = [
+      { type: 'thought', text: 'Inspecting notarization history and build scripts.' },
+      makeToolCall('package_macos.sh'),
+      {
+        type: 'text',
+        text: 'Found the signing secrets; checking SDK compatibility before writing Dockerfile.',
+      },
+      {
+        type: 'thought',
+        text: 'Creating the local CI script and preparing remote execution on mini.',
+      },
+      {
+        type: 'tool_call',
+        toolCallId: 'edit-script',
+        kind: 'edit',
+        title: 'Edit write_ci_docker.sh',
+        locations: [{ path: 'write_ci_docker.sh' }],
+        status: 'completed',
+      },
+      {
+        type: 'tool_call',
+        toolCallId: 'run-script',
+        kind: 'execute',
+        title: "Run lody-lan lan shell mini 'bash -s' < write_ci_docker.sh",
+        status: 'in_progress',
+      },
+    ];
+
+    const { rerenderHistory } = await renderStream(buildTurnHistory(midTurnItems, { id: turnId }), {
+      agentActivityLabel: 'Working',
+      agentActivityShimmer: true,
+    });
+
+    // Two headers in chronological order: preceding work A ("Finished working") -> visible mid-turn prose -> live panel B.
+    const headers = [...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]')];
+    expect(headers).toHaveLength(2);
+    expect(headers[0]?.getAttribute('data-compact-work-header')).toBe('finished');
+    expect(headers[0]?.textContent).toContain('Finished working');
+    expect(headers[1]?.getAttribute('data-compact-work-header')).toBe('live');
+    expect(headers[1]?.querySelector('[data-compact-status-verb]')?.textContent).toBe('Running');
+    expect(headers[1]?.querySelector('[data-compact-active-target]')?.textContent).toContain(
+      'lody-lan lan shell mini'
+    );
+    // Live panel B counts ONLY B's completed tools (1 edit), not A's earlier read.
+    expect(headers[1]?.querySelector('[data-compact-tool-counts]')?.textContent).toBe(
+      'Edited 1 file'
+    );
+    expect(headers[1]?.querySelector('[data-compact-live-duration]')?.textContent).toBe('(30s)');
+    expect(headers[1]?.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+      'Creating the local CI script and preparing remote execution on mini.'
+    );
+    // Shimmer owns the bottom live panel; no duplicate AgentActivityRow below.
+    expect(headers[1]?.querySelector('.agent-shimmer')).not.toBeNull();
+    expect(container.querySelector('[data-agent-activity-row]')).toBeNull();
+
+    // Mid-turn progress prose stays visible in place between header A and live header B.
+    const fullText = container.textContent ?? '';
+    const idxA = fullText.indexOf('Finished working');
+    const idxProse = fullText.indexOf('Found the signing secrets');
+    const idxB = fullText.indexOf('Creating the local CI script');
+    expect(idxA).toBeGreaterThanOrEqual(0);
+    expect(idxProse).toBeGreaterThan(idxA);
+    expect(idxB).toBeGreaterThan(idxProse);
+
+    // Expanding header A reveals ONLY A's entries while header B stays collapsed live.
+    await act(async () => headers[0]!.click());
+    expect(container.querySelectorAll('[data-compact-thought-row]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-thought-row="0"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-work-header="live"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+      'Creating the local CI script and preparing remote execution on mini.'
+    );
+
+    // Collapse A back and finish the turn with final prose: merges into ONE "Worked for ..." header.
+    await act(async () => headers[0]!.click());
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          ...midTurnItems.slice(0, -1),
+          {
+            type: 'tool_call',
+            toolCallId: 'run-script',
+            kind: 'execute',
+            title: "Run lody-lan lan shell mini 'bash -s' < write_ci_docker.sh",
+            status: 'completed',
+          },
+          { type: 'text', text: 'Docker and macOS DMG workflows are verified.' },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:02:58Z'),
+        }
+      )
+    );
+    const settledHeaders = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]'),
+    ];
+    expect(settledHeaders).toHaveLength(1);
+    expect(settledHeaders[0]?.getAttribute('data-compact-work-header')).toBe('finished');
+    expect(container.textContent).toContain('Docker and macOS DMG workflows are verified.');
+    expect(container.textContent).not.toContain('Found the signing secrets');
+  });
+
+  it('keeps post-end_turn background wakeup late streams folded into a live trailing Option C panel instead of exploding flat', async () => {
+    const turnId = nextAssistantId();
+    const initialEndedAt = Date.parse('2026-11-21T00:02:58Z');
+    const preEndTurnItems = [
+      { type: 'thought', text: 'Preparing release merge and checking disk space.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'bg-release',
+        kind: 'execute',
+        title: 'Run lody-lan lan shell mini release-build',
+        status: 'completed',
+      },
+      {
+        type: 'text',
+        text: 'master merged and v0.2.0 tagged; finishing Release App build in background.',
+      },
+    ];
+    const wakeupLateItems = [
+      ...preEndTurnItems,
+      { type: 'thought', text: 'BUILD succeeded; verifying bundle layout and health endpoint.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'late-zip',
+        kind: 'execute',
+        title: 'Run lody-lan lan cp mini:/tmp/TTSStudio-0.2.0.zip /tmp/',
+        status: 'completed',
+      },
+      {
+        type: 'tool_call',
+        toolCallId: 'late-health',
+        kind: 'execute',
+        title: 'Run curl -s http://127.0.0.1:9880/health',
+        status: 'in_progress',
+      },
+    ];
+
+    // Stage 1: end_turn with background waiting — single Worked-for header + progress prose + waiting row.
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory(preEndTurnItems, { id: turnId, finished: true, endedAt: initialEndedAt }),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: { mode: 'waiting', taskCount: 1 },
+        onFork: () => {},
+      }
+    );
+    expect(container.querySelectorAll('[data-compact-work-header="finished"]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header="finished"]')?.textContent).toContain(
+      'Worked for'
+    );
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).not.toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-background-task-status-row="waiting"]')).not.toBeNull();
+
+    // Stage 1.5: presence flips to wakeup BEFORE late thoughts/tools land in history —
+    // must immediately suppress finished metadata (timestamp, Copy, Fork) and drop stale Worked-for duration.
+    await rerenderHistory(
+      buildTurnHistory(preEndTurnItems, { id: turnId, finished: true, endedAt: initialEndedAt }),
+      { mode: 'wakeup', taskCount: 1 }
+    );
+    expect(container.querySelectorAll('[data-compact-work-header="finished"]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header="finished"]')?.textContent).toContain(
+      'Finished working'
+    );
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums')).toHaveLength(0);
+    expect(container.querySelector('[data-background-task-status-row="wakeup"]')).not.toBeNull();
+
+    // Stage 2: background wakeup appends late thought/tools into the ALREADY finished turn.
+    await rerenderHistory(
+      buildTurnHistory(wakeupLateItems, { id: turnId, finished: true, endedAt: initialEndedAt }),
+      { mode: 'wakeup', taskCount: 1 }
+    );
+
+    // Must NOT explode flat (no uncollapsed directory rows or top-right toolbar).
+    expect(container.querySelector('[data-compact-dir-toolbar]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row]')).toBeNull();
+    expect(container.querySelector('[data-compact-tool-row]')).toBeNull();
+
+    // Header A collapsed above progress prose; trailing wakeup work B is a live 2-tier Option C panel.
+    const headers = [...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]')];
+    expect(headers).toHaveLength(2);
+    expect(headers[0]?.getAttribute('data-compact-work-header')).toBe('finished');
+    expect(headers[0]?.textContent).toContain('Finished working');
+    expect(headers[1]?.getAttribute('data-compact-work-header')).toBe('live');
+    expect(headers[1]?.querySelector('[data-compact-status-verb]')?.textContent).toBe('Running');
+    expect(headers[1]?.querySelector('[data-compact-tool-counts]')?.textContent).toBe(
+      'Ran 1 command'
+    );
+    // Wakeup live panel omits misleading wall-clock duration across idle wait time, keeps shimmer.
+    expect(headers[1]?.querySelector('[data-compact-live-duration]')).toBeNull();
+    expect(headers[1]?.querySelector('.agent-shimmer')).not.toBeNull();
+    expect(headers[1]?.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+      'BUILD succeeded; verifying bundle layout and health endpoint.'
+    );
+    // Progress prose stays visible in place and bottom wakeup row remains visible.
+    expect(container.textContent).toContain('master merged and v0.2.0 tagged');
+    expect(container.querySelector('[data-background-task-status-row="wakeup"]')).not.toBeNull();
+    // Premature finished metadata (Copy response / Fork / endedAt) is suppressed during active wakeup work.
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums')).toHaveLength(0);
+
+    // Stage 2b: wakeup launches another background command and returns to silent waiting — still folded!
+    await rerenderHistory(
+      buildTurnHistory(wakeupLateItems, { id: turnId, finished: true, endedAt: initialEndedAt }),
+      { mode: 'waiting', taskCount: 2 }
+    );
+    expect(container.querySelector('[data-compact-dir-toolbar]')).toBeNull();
+    expect(container.querySelector('[data-compact-tool-row]')).toBeNull();
+    const waitingHeaders = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]'),
+    ];
+    expect(waitingHeaders).toHaveLength(2);
+    expect(waitingHeaders[1]?.getAttribute('data-compact-work-header')).toBe('finished');
+    expect(waitingHeaders[1]?.textContent).toContain('Working');
+    expect(container.querySelector('[data-background-task-status-row="waiting"]')?.textContent).toBe(
+      '2 background tasks running'
+    );
+
+    // Stage 4: final answer arrives and background settles -> collapses cleanly into ONE Worked-for header.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          ...wakeupLateItems.slice(0, -1),
+          {
+            type: 'tool_call',
+            toolCallId: 'late-health',
+            kind: 'execute',
+            title: 'Run curl -s http://127.0.0.1:9880/health',
+            status: 'completed',
+          },
+          { type: 'text', text: 'v0.2.0 release and cleanup are fully complete.' },
+        ],
+        { id: turnId, finished: true, endedAt: initialEndedAt }
+      ),
+      null
+    );
+    expect(container.querySelectorAll('[data-compact-work-header]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header="finished"]')?.textContent).toContain(
+      'Worked for'
+    );
+    expect(container.textContent).toContain('v0.2.0 release and cleanup are fully complete.');
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).not.toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums').length).toBeGreaterThan(0);
+  });
+
+  it('suppresses finished footer on prose-only turns during background wakeup', async () => {
+    const turnId = nextAssistantId();
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory([{ type: 'text', text: 'Started watching build.' }], {
+        id: turnId,
+        finished: true,
+        endedAt: Date.parse('2026-11-21T00:01:00Z'),
+      }),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: { mode: 'wakeup', taskCount: 1 },
+        onFork: () => {},
+      }
+    );
+
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums')).toHaveLength(0);
+    expect(container.querySelector('[data-background-task-status-row="wakeup"]')).not.toBeNull();
+
+    await rerenderHistory(
+      buildTurnHistory([{ type: 'text', text: 'Build finished cleanly.' }], {
+        id: turnId,
+        finished: true,
+        endedAt: Date.parse('2026-11-21T00:01:00Z'),
+      }),
+      null
+    );
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Fork session"]')).not.toBeNull();
+    expect(container.querySelectorAll('span.tabular-nums').length).toBeGreaterThan(0);
+
+    // [prose, lateWork] (single work run after prose, no backgroundTaskId yet) stays folded
+    // when transitioning from wakeup to waiting rather than exploding flat.
+    const proseThenLateWork: MessageContent[] = [
+      { type: 'text', text: 'Started monitoring remote job.' },
+      { type: 'thought', text: 'Checking remote build logs.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'prose-late-cmd',
+        kind: 'execute',
+        title: 'Run ./scripts/check-status.sh',
+        status: 'in_progress',
+      },
+    ];
+    await rerenderHistory(
+      buildTurnHistory(proseThenLateWork, {
+        id: turnId,
+        finished: true,
+        endedAt: Date.parse('2026-11-21T00:01:00Z'),
+      }),
+      { mode: 'waiting', taskCount: 1 }
+    );
+    expect(container.querySelectorAll('[data-compact-work-header]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header]')?.textContent).toContain('Working');
+    expect(container.querySelector('[data-compact-tool-row]')).toBeNull();
+    expect(container.querySelector('[aria-label="Copy response"]')).toBeNull();
+  });
+
+  it('keeps a cancelled follow-up turn expanded even while an earlier turn holds session-level waiting status', async () => {
+    const turnId = nextAssistantId();
+    // Silent cancellation (no chat_failed notice, no final text, no own backgroundTaskId):
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Inspecting files before user pressed Stop.' },
+          {
+            type: 'tool_call',
+            toolCallId: 'cancelled-read',
+            kind: 'read',
+            title: 'Read README.md',
+            status: 'completed',
+          },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:01:00Z'),
+        }
+      ),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: { mode: 'waiting', taskCount: 1 },
+      }
+    );
+
+    expect(container.querySelector('[data-compact-work-header]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="0"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-tool-row="cancelled-read"]')).not.toBeNull();
+    expect(container.querySelector('[data-background-task-status-row="waiting"]')).not.toBeNull();
+
+    // Explicit chat_failed(acp_request_cancelled) after mid-turn prose must also stay expanded.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'First pass.' },
+          { type: 'text', text: 'Interim note.' },
+          { type: 'thought', text: 'Second pass cut off.' },
+          {
+            type: 'system_notice',
+            name: 'chat_failed',
+            meta: { reason: 'acp_request_cancelled' },
+          },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:01:05Z'),
+        }
+      ),
+      { mode: 'waiting', taskCount: 1 }
+    );
+    expect(container.querySelector('[data-compact-work-header]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="0"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="2"]')).not.toBeNull();
+
+    // Disconnected turn ending with Codex commentary + chat_failed must stay expanded
+    // instead of treating commentary as a final answer under Worked-for folding.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Checking config before disconnect.' },
+          {
+            type: 'tool_call',
+            toolCallId: 'before-disconnect-read',
+            kind: 'read',
+            title: 'Read config.json',
+            status: 'completed',
+          },
+          {
+            type: 'text',
+            messagePhase: 'commentary',
+            text: 'Config looks fine; applying update now.',
+          },
+          {
+            type: 'system_notice',
+            name: 'chat_failed',
+            meta: { reason: 'agent_disconnected' },
+          },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:01:10Z'),
+        }
+      ),
+      { mode: 'waiting', taskCount: 1 }
+    );
+    expect(container.querySelector('[data-compact-work-header]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="0"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-tool-row="before-disconnect-read"]')).not.toBeNull();
+  });
+
+  it('spans system notices without splitting live compact work runs, stripping shimmer, or reordering expanded rows', async () => {
+    const turnId = nextAssistantId();
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Checking build targets across platforms.' },
+          {
+            type: 'system_notice',
+            name: 'chat_failed',
+            meta: { reason: 'rate_limit_retry', message: 'Rate limited, retrying' },
+          },
+          {
+            type: 'tool_call',
+            toolCallId: 'after-notice-run',
+            kind: 'execute',
+            title: 'Run pnpm test',
+            status: 'in_progress',
+          },
+        ],
+        { id: turnId }
+      ),
+      { agentActivityLabel: 'Running', agentActivityShimmer: true }
+    );
+
+    // Must remain a SINGLE live panel (no bogus Finished working) with the earlier thought retained.
+    const headers = [...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]')];
+    expect(headers).toHaveLength(1);
+    expect(headers[0]?.getAttribute('data-compact-work-header')).toBe('live');
+    expect(headers[0]?.querySelector('[data-compact-secondary-line]')?.textContent).toBe(
+      'Checking build targets across platforms.'
+    );
+    expect(headers[0]?.querySelector('.agent-shimmer')).not.toBeNull();
+
+    // Expanding the spanned run preserves chronological order: [thought, notice, tool], not [thought, tool, notice].
+    await act(async () => {
+      headers[0]!.click();
+    });
+    const thoughtRow = container.querySelector<HTMLElement>('[data-compact-thought-row="0"]');
+    const toolRow = container.querySelector<HTMLElement>(
+      '[data-compact-tool-row="after-notice-run"]'
+    );
+    const noticeNode = [...container.querySelectorAll<HTMLElement>('*')].find(
+      (el) => el.childElementCount === 0 && el.textContent?.includes('Rate limited, retrying')
+    );
+    expect(thoughtRow).not.toBeNull();
+    expect(noticeNode).toBeInstanceOf(HTMLElement);
+    expect(toolRow).not.toBeNull();
+    expect(
+      thoughtRow!.compareDocumentPosition(noticeNode!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      noticeNode!.compareDocumentPosition(toolRow!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      container.querySelector('[data-compact-work-header="live"] .agent-shimmer')
+    ).not.toBeNull();
+
+    // Trailing system notice at end of live turn must also keep shimmer on the live header.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Running final verification step.' },
+          {
+            type: 'tool_call',
+            toolCallId: 'before-trailing-notice',
+            kind: 'execute',
+            title: 'Run pnpm typecheck',
+            status: 'in_progress',
+          },
+          {
+            type: 'system_notice',
+            name: 'chat_failed',
+            meta: { reason: 'rate_limit_retry', message: 'Rate limited, retrying' },
+          },
+        ],
+        { id: turnId }
+      ),
+      null
+    );
+    const trailingHeaders = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]'),
+    ];
+    expect(trailingHeaders).toHaveLength(1);
+    expect(trailingHeaders[0]?.getAttribute('data-compact-work-header')).toBe('live');
+    expect(trailingHeaders[0]?.querySelector('.agent-shimmer')).not.toBeNull();
+  });
+
+  it('keeps Codex commentary visible to segment live runs and folds it on final_answer completion', async () => {
+    const turnId = nextAssistantId();
+    const liveItems: MessageContent[] = [
+      { type: 'thought', text: 'Reading search index files.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'codex-read',
+        kind: 'read',
+        title: 'Read search-index.ts',
+        status: 'completed',
+      },
+      {
+        type: 'text',
+        messagePhase: 'commentary',
+        text: 'I inspected the search index and am checking the tests next.',
+      },
+      { type: 'thought', text: 'Running targeted test file now.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'codex-test',
+        kind: 'execute',
+        title: 'Run vitest search-index.test.ts',
+        status: 'in_progress',
+      },
+    ];
+
+    const { rerenderHistory } = await renderStream(buildTurnHistory(liveItems, { id: turnId }), {
+      agentActivityLabel: 'Running',
+      agentActivityShimmer: true,
+    });
+
+    const headers = [...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]')];
+    expect(headers).toHaveLength(2);
+    expect(headers[0]?.getAttribute('data-compact-work-header')).toBe('finished');
+    expect(headers[0]?.textContent).toContain('Finished working');
+    expect(headers[1]?.getAttribute('data-compact-work-header')).toBe('live');
+    expect(container.textContent).toContain(
+      'I inspected the search index and am checking the tests next.'
+    );
+
+    // Once final_answer settles, #2353 folds commentary + both work runs into a single Worked-for header.
+    await rerenderHistory(
+      buildTurnHistory(
+        [
+          ...liveItems.slice(0, -1),
+          {
+            type: 'tool_call',
+            toolCallId: 'codex-test',
+            kind: 'execute',
+            title: 'Run vitest search-index.test.ts',
+            status: 'completed',
+          },
+          {
+            type: 'text',
+            messagePhase: 'final_answer',
+            text: 'All search index tests pass.',
+          },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:02:00Z'),
+        }
+      ),
+      null
+    );
+    expect(container.querySelectorAll('[data-compact-work-header]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header="finished"]')?.textContent).toContain(
+      'Worked for'
+    );
+    expect(container.textContent).toContain('All search index tests pass.');
+    expect(container.textContent).not.toContain(
+      'I inspected the search index and am checking the tests next.'
+    );
+  });
+
+  it('keeps a genuinely interrupted finished turn with no background task expanded', async () => {
+    const turnId = nextAssistantId();
+    await renderStream(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Running command before disconnect.' },
+          {
+            type: 'tool_call',
+            toolCallId: 'interrupted-cmd',
+            kind: 'execute',
+            title: 'Run pnpm build',
+            status: 'completed',
+          },
+          { type: 'text', text: 'Progress before disconnect.' },
+          { type: 'thought', text: 'Checking output before crash.' },
+        ],
+        {
+          id: turnId,
+          finished: true,
+          endedAt: Date.parse('2026-11-21T00:01:00Z'),
+        }
+      ),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: null,
+      }
+    );
+
+    // No background task + finished without final text => stays expanded per AGENTS.md invariant.
+    expect(container.querySelector('[data-compact-work-header]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="0"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="3"]')).not.toBeNull();
+    expect(container.textContent).toContain('Progress before disconnect.');
+  });
+
+  it('auto-expands only the matching work run for search hits in segmented live mode', async () => {
+    const turnId = nextAssistantId();
+    await renderStream(
+      buildTurnHistory(
+        [
+          { type: 'thought', text: 'Needle inside first work phase.' },
+          { type: 'text', text: 'Progress update between phases.' },
+          { type: 'thought', text: 'Working on second phase without match.' },
+        ],
+        { id: turnId }
+      ),
+      { activeSearchBlockId: getThoughtSearchBlockId(turnId, 0) }
+    );
+
+    const headers = [...container.querySelectorAll<HTMLButtonElement>('[data-compact-work-header]')];
+    expect(headers).toHaveLength(2);
+    expect(headers[0]?.getAttribute('aria-expanded')).toBe('true');
+    expect(headers[1]?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-compact-thought-body]')?.textContent).toContain(
+      'Needle inside first work phase.'
+    );
+  });
+
+  it('handles post-turn late streams cleanly without backgroundTaskStatus and re-folds once final text arrives', async () => {
+    const turnId = nextAssistantId();
+    const endedAt = Date.parse('2026-11-21T00:02:00Z');
+    const initialItems: MessageContent[] = [
+      { type: 'thought', text: 'Starting long build command.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'agy-bg-cmd',
+        kind: 'execute',
+        title: 'Run pnpm build',
+        status: 'in_progress',
+      },
+      { type: 'text', text: 'Started the build; waiting for completion.' },
+    ];
+
+    const { rerenderHistory } = await renderStream(
+      buildTurnHistory(initialItems, { id: turnId, finished: true, endedAt }),
+      {
+        agentActivityLabel: null,
+        backgroundTaskStatus: null,
+        onFork: () => {},
+      }
+    );
+
+    // Without authoritative backgroundTaskStatus (e.g. Antigravity ACP v1), finished turn folds normally with no background status row.
+    expect(container.querySelectorAll('[data-compact-work-header="finished"]')).toHaveLength(1);
+    expect(container.querySelector('[data-background-task-status-row]')).toBeNull();
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
+
+    // Post-turn late tool completion + follow-up thought arrives without backgroundTaskStatus:
+    // stays safely expanded (no crash, no fake background header/row).
+    const lateWorkItems: MessageContent[] = [
+      initialItems[0]!,
+      {
+        type: 'tool_call',
+        toolCallId: 'agy-bg-cmd',
+        kind: 'execute',
+        title: 'Run pnpm build',
+        status: 'completed',
+      },
+      initialItems[2]!,
+      { type: 'thought', text: 'Build exited cleanly; summarizing artifacts.' },
+      {
+        type: 'tool_call',
+        toolCallId: 'agy-verify',
+        kind: 'execute',
+        title: 'Run ls dist',
+        status: 'completed',
+      },
+    ];
+    await rerenderHistory(
+      buildTurnHistory(lateWorkItems, { id: turnId, finished: true, endedAt }),
+      null
+    );
+    expect(container.querySelector('[data-compact-work-header]')).toBeNull();
+    expect(container.querySelector('[data-background-task-status-row]')).toBeNull();
+    expect(container.querySelector('[data-compact-thought-row="3"]')).not.toBeNull();
+    expect(container.textContent).toContain('Started the build; waiting for completion.');
+
+    // Once the wakeup finishes with final prose, #2353 folds everything back under ONE Worked-for header.
+    await rerenderHistory(
+      buildTurnHistory(
+        [...lateWorkItems, { type: 'text', text: 'Build succeeded and dist artifacts are ready.' }],
+        { id: turnId, finished: true, endedAt }
+      ),
+      null
+    );
+    expect(container.querySelectorAll('[data-compact-work-header]')).toHaveLength(1);
+    expect(container.querySelector('[data-compact-work-header="finished"]')?.textContent).toContain(
+      'Worked for'
+    );
+    expect(container.textContent).toContain('Build succeeded and dist artifacts are ready.');
+    expect(container.querySelector('[aria-label="Copy response"]')).not.toBeNull();
   });
 });

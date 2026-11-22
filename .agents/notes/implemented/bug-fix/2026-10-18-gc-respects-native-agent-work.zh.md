@@ -14,8 +14,8 @@ Claude Code 会自行唤醒模型继续工作。Lody 看不到这些：只有用
 turn 结束才算活动，于是 turn 结束 20 分钟后，GC 会连同后台任务一起杀掉
 agent 进程。现在 agent 会通过新的 Core 通知 `_lody/session/activity_update`
 上报自己是否在运行、以及有多少存活的后台任务。GC 不清理 agent 正在运行的会话；
-只在等后台任务的会话最多保留 24 小时；turn 结束后的输出算作活动。不上报该状态的
-agent 完全沿用原有规则。没有存活任务的待触发 `ScheduleWakeup` 和 cron 仍未受保护。
+只在等后台任务的会话最多保留 24 小时；所有 agent 在 turn 结束后的实时模型/工具输出都算作活动。不上报该状态的
+agent 在静默等待时仍沿用标准空闲 GC 超时。没有存活任务的待触发 `ScheduleWakeup` 和 cron 仍未受保护。
 
 ## 问题
 
@@ -47,16 +47,19 @@ Monitor 任务。因此 GC 会把三种情况当成空闲：
    进程退出后状态随之消失。GC 永不清理或驱逐 `running` 的会话。空闲清扫会保留
    `background` 会话，直到空闲时间达到 `nativeBackgroundMaxIdleMs`（24 小时，
    `LODY_SESSION_GC_NATIVE_BACKGROUND_MAX_IDLE_MS`）。内存压力回收仍可驱逐它。
-3. **turn 结束后的输出算活动，仅限这类 agent。** 当更新被路由到已结束的 turn、
-   且 agent 声明了 `sessionActivity` 时，`MessageHandler.enqueueACPUpdate` 调用
-   `touchSession`。这类输出来自被后台任务、wakeup 或 cron 唤醒的模型 turn，所以
-   空闲计时从这段工作结束时重新开始，而不是从最后一次用户 turn 算起。turn 内的
-   输出仍不更新：turn 本身已经保护了会话。不上报该状态的 agent 沿用"只有用户操作
-   和 turn 结束才算活动"的旧规则，其 GC 行为不变。
+3. **turn 结束后的实时模型/工具输出算活动。** 当实时模型或工具输出
+   （`agent_message_chunk`、`agent_thought_chunk`、`tool_call`、`tool_call_update`、
+   `subagent_event`、`plan`、`plan_update`、`plan_removed`）被路由到已结束的 turn
+   时，无论 agent 是否声明 Core `sessionActivity`，`MessageHandler.enqueueACPUpdate`
+   都会调用 `touchSession`。这类输出来自被后台任务、定时器或 cron 唤醒的模型 turn，
+   因此实时输出期间空闲计时会持续刷新（防止 `agy 1.5.10+` 等在 turn 后实时唤醒输出
+   中途被空闲 GC 回收）。进行中 turn 内的输出仍不更新（turn 本身已保护会话），而
+   纯元信息通知（`session_info_update`、`available_commands_update` 等）不会延长
+   空闲生命周期。
 
 ## 完成信号
 
-2026-11-16 补充，2026-11-17 加固。同一个活动级别也决定一个 Turn 在读者眼里何时算完成。Turn 结束时，如果它的 agent 仍报告 `running` 或 `background`，释放时不再把会话标为未读，也不发成功通知；`SessionExecutionService` 等待这个 agent 实例的生命周期事件（不靠计时器），在 agent 报告空闲后才发布，并使用那之后的活动时间。如果进程先结束（空闲 GC 到 24 小时上限、内存压力、崩溃，或 ACP 子进程未走 `Session.terminate` 直接退出），对话会先写入一条 `nativeWorkInterrupted` 提示再刷写完成状态，会话照样标为未读，用户收到的是“结果未知”（`native_work_interrupted`）提醒而不是成功。Antigravity 监控在达到 24 小时上限仍留有未确认任务、或因 `closeSession`/断连停止时，只放行 GC 而不把未完成工作改写为正常空闲；若 GC 销毁了旧的 `SessionDocument`，发布完成状态会重新获取存活文档（已归档或已删除的会话除外）。会话上开始新的 Turn、点击 Stop、归档或删除会话时都会撤销这次等待，避免主动清理发出误报。
+2026-11-16 补充，2026-11-17 加固。同一个活动级别也决定一个 Turn 在读者眼里何时算完成。Turn 结束时，如果它的 agent 仍报告 `running` 或 `background`，释放时不再把会话标为未读，也不发成功通知；`SessionExecutionService` 等待这个 agent 实例的生命周期事件（不靠计时器），在 agent 报告空闲后才发布，并使用那之后的活动时间。如果进程先结束（空闲 GC 到 24 小时上限、内存压力、崩溃，或 ACP 子进程未走 `Session.terminate` 直接退出），对话会先写入一条 `nativeWorkInterrupted` 提示再刷写完成状态，会话照样标为未读，用户收到的是“结果未知”（`native_work_interrupted`）提醒而不是成功。若 GC 销毁了旧的 `SessionDocument`，发布完成状态会重新获取存活文档（已归档或已删除的会话除外）。会话上开始新的 Turn、点击 Stop、归档或删除会话时都会撤销这次等待，避免主动清理发出误报。
 
 这次等待不算完成簿记：它不持有任何写入，所以不计入 `inspectClientLoss` 和关停排空，否则一个后台开发服务器就能把它们拖住一整天。只有等待之后的发布是受管工作。关停时撤销等待且不发布任何东西；守护进程重启会丢掉等待，所以重启时后台仍在运行的 Turn 不会得到完成信号。不报告该级别的 agent 仍立即完成，与 GC 一致。失败和取消的提醒不变，从不等待。
 
@@ -80,8 +83,9 @@ Monitor 任务。因此 GC 会把三种情况当成空闲：
 - 没有存活任务的待触发 `ScheduleWakeup` 或 cron 不在覆盖范围内：若 20 分钟内没有
   输出，仍会丢失。SDK 是否在 `background_tasks_changed` 中列出待触发的 wakeup
   未经验证。
-- 该状态需要声明 `sessionActivity` 的 Claude 适配器版本，以及定义它的 Core 版本。
-  旧适配器和其他 provider 不上报，GC 行为与之前完全相同，包括迟到输出不算活动。
+- 该状态需要声明 `sessionActivity` 的适配器版本，以及定义它的 Core 版本。
+  旧适配器和其他 provider 不上报，静默时保持标准 20 分钟空闲 GC，但在实时
+  post-turn 模型/工具输出期间仍会刷新空闲计时。
 - 2026-11-17 补充（[#2797](https://github.com/LodyAI/Lody/issues/2797)）：DeepSeek
   Harness 适配器也上报该状态，来源是原生 `agent/status` 和根会话存活的 job。它原先
   强制 `quiet` 的 job 完成投递，并拒绝 prompt 之外的所有根 step，所以空闲时结束的
@@ -101,5 +105,5 @@ Monitor 任务。因此 GC 会把三种情况当成空闲：
   出现，原因是本环境没有用于 `auth status` 的 `claude` 可执行文件。
 - CLI：GC 测试覆盖 `running`、低于和高于上限的 `background`、任务消失后的清理，
   以及内存压力驱逐。AgentClient 测试覆盖能力协商和 ACP 会话匹配。一个
-  MessageHandler 测试检查：对上报该状态的 agent，turn 结束后的输出会重置空闲时间；
-  对不上报的 agent 则不变。去掉 touch 后它失败。
+  MessageHandler 测试检查：无论是否上报 `reportsSessionActivity()`，turn 结束后的实时
+  模型/工具输出都会重置空闲时间，而纯元信息通知不会。

@@ -1,10 +1,4 @@
-import {
-  AntigravitySessionTracker,
-  extractAntigravityBackgroundTaskId,
-  isAntigravityServer,
-  runAntigravityPollLoop,
-  type AntigravityPollTimings,
-} from './antigravity-background';
+import { isAntigravityServer } from './antigravity-background';
 import { readAntigravityPromptUsage } from './antigravity-usage';
 import { getCliNodeExecutable } from '@/lib/managed-daemon-release';
 import { daemonLossObserver } from '@/lib/e2ee/client-loss-observer';
@@ -608,8 +602,6 @@ export interface AgentClientOptions {
   onImageGenerationBegin?(event: ImageGenerationBeginEvent): void;
   onImageGenerationEnd?(event: ImageGenerationEndEvent): void;
   onWriteTextFile?(event: AcpWriteTextFileEvidence): void | Promise<void>;
-  /** Override Antigravity background poll timings (deterministic tests). */
-  antigravityPollTimings?: Partial<AntigravityPollTimings>;
 }
 
 export type NativeAgentWorkState = {
@@ -645,11 +637,7 @@ export class AgentClient implements acp.Client {
   private supportsClose = false;
   private supportsFork = false;
   private supportsForkAtTurn = false;
-  private supportsSessionList = false;
   private agentInfo: acp.Implementation | undefined;
-  /** Synthesizes `sessionActivity` for Antigravity ACP v1; see antigravity-background.ts. */
-  private antigravityTracker: AntigravitySessionTracker | null = null;
-  private antigravityMonitor: AbortController | null = null;
   /** `realpath` of the workdir, negotiated with Antigravity as the ACP `cwd`. */
   private antigravitySessionCwd: string | null = null;
   private lodyExtensionCapabilities: LodyExtensionCapabilities = {};
@@ -993,7 +981,6 @@ export class AgentClient implements acp.Client {
       );
       return;
     }
-    if (this.acpSessionId !== null) this.antigravityTracker?.observeLive(params, Date.now());
     this.lastSessionUpdateAtMs = Date.now();
 
     // Devin publishes subagent internals under `cognition.ai/subagent_context`.
@@ -1089,17 +1076,6 @@ export class AgentClient implements acp.Client {
       const native = z.object({ name: z.string().trim().min(1).max(160) }).safeParse(update);
       if (native.success) {
         nextLody = { ...(nextLody ?? lody), toolName: native.data.name };
-      }
-    }
-
-    if (!(typeof lody?.backgroundTaskId === 'string' && lody.backgroundTaskId.trim().length > 0)) {
-      const trackedIdentity = this.antigravityTracker?.getToolIdentity(update.toolCallId);
-      const backgroundTaskId = extractAntigravityBackgroundTaskId(
-        update as unknown as Record<string, unknown>,
-        trackedIdentity
-      );
-      if (backgroundTaskId !== undefined) {
-        nextLody = { ...(nextLody ?? lody), backgroundTaskId };
       }
     }
 
@@ -1971,11 +1947,8 @@ export class AgentClient implements acp.Client {
     forkSessionTurnId?: string
   ): Promise<acp.NewSessionResponse> {
     this.availableCommands = undefined;
-    this.stopAntigravityMonitor();
-    this.antigravityTracker = null;
     this.antigravitySessionCwd = null;
     this.agentInfo = undefined;
-    this.supportsSessionList = false;
     this.markSubagentsDisconnected();
     this.subagentSnapshots.clear();
     const connection = new acp.ClientSideConnection(() => this, stream);
@@ -2128,7 +2101,6 @@ export class AgentClient implements acp.Client {
     this.supportsClose = !!closeCapability;
     const forkCapability = initResponse.agentCapabilities?.sessionCapabilities?.fork;
     this.supportsFork = !!forkCapability;
-    this.supportsSessionList = Boolean(initResponse.agentCapabilities?.sessionCapabilities?.list);
     const extensionMeta = initResponse.agentCapabilities?._meta as
       | Record<string, unknown>
       | null
@@ -2489,7 +2461,6 @@ export class AgentClient implements acp.Client {
     });
 
     this.acpSessionId = sessionResponse.sessionId;
-    this.initializeAntigravitySession(sessionResponse.sessionId);
     this.devinSubagentTaskIds.clear();
     this.logger.debug(
       `[${this.options.sessionId}] ACP session id set: ${sessionResponse.sessionId}`
@@ -2561,11 +2532,9 @@ export class AgentClient implements acp.Client {
 
   adoptPreparedSession(sessionResponse: acp.NewSessionResponse): void {
     const previousWork = this.getNativeWork();
-    this.stopAntigravityMonitor();
     this.availableCommands = undefined;
     this.applySessionResponseState(sessionResponse);
     this.acpSessionId = sessionResponse.sessionId;
-    this.initializeAntigravitySession(sessionResponse.sessionId, false);
     const currentWork = this.getNativeWork();
     if (!nativeAgentWorkEqual(previousWork, currentWork))
       this.options.onNativeWorkChanged?.(currentWork);
@@ -2755,9 +2724,9 @@ export class AgentClient implements acp.Client {
    * woken by are live. Null when it is idle, reported nothing for the current
    * ACP session, or does not advertise the capability.
    */
-  /** Whether the agent advertised the Core `sessionActivity` level, or Lody synthesizes it. */
+  /** Whether the agent advertised the Core `sessionActivity` level. */
   reportsSessionActivity(): boolean {
-    return this.hasCoreSessionActivityExtension() || this.isAntigravityServer();
+    return this.hasCoreSessionActivityExtension();
   }
 
   private hasCoreSessionActivityExtension(): boolean {
@@ -2768,101 +2737,6 @@ export class AgentClient implements acp.Client {
     return isAntigravityServer({
       agentConfig: this.options.agentConfig,
       agentInfo: this.agentInfo,
-    });
-  }
-
-  private setAntigravityNativeActivity(
-    sessionId: string,
-    state: 'idle' | 'running',
-    backgroundTaskCount: number,
-    emitWorkChange = true
-  ): void {
-    const previous = this.getNativeWork();
-    this.nativeActivity = { version: 1, sessionId, state, backgroundTaskCount };
-    const current = this.getNativeWork();
-    if (emitWorkChange && !nativeAgentWorkEqual(previous, current))
-      this.options.onNativeWorkChanged?.(current);
-  }
-
-  private initializeAntigravitySession(sessionId: string, emitWorkChange = true): void {
-    if (!this.isAntigravityServer() || this.hasCoreSessionActivityExtension()) {
-      this.antigravityTracker = null;
-      return;
-    }
-    this.antigravityTracker = new AntigravitySessionTracker(this.options.antigravityPollTimings);
-    this.setAntigravityNativeActivity(sessionId, 'idle', 0, emitWorkChange);
-  }
-
-  private stopAntigravityMonitor(): void {
-    this.antigravityMonitor?.abort();
-    this.antigravityMonitor = null;
-  }
-
-  /**
-   * agy ends `session/prompt` with `end_turn` while its background work still runs, and
-   * says nothing on stdout about whether that work is pending. Until that work has woken
-   * the model and finished, report `sessionActivity` so idle GC keeps the process. Only
-   * side-effect-free `session/list` is polled; agy 1.5.10 streams the wakeup's output,
-   * which reaches the finished turn like any late update.
-   */
-  private startAntigravityMonitor(sessionId: string): void {
-    const tracker = this.antigravityTracker;
-    const connection = this.connection;
-    const cwd = this.antigravitySessionCwd ?? this.sessionWorkdir;
-    if (!tracker || !connection || !cwd || this.acpSessionId !== sessionId) return;
-    this.stopAntigravityMonitor();
-    const controller = new AbortController();
-    this.antigravityMonitor = controller;
-    const onConnectionAbort = () => controller.abort();
-    connection.signal.addEventListener('abort', onConnectionAbort, { once: true });
-    const isCurrent = () =>
-      !controller.signal.aborted &&
-      this.connection === connection &&
-      this.acpSessionId === sessionId &&
-      this.antigravityTracker === tracker;
-    const acpSessionId = sessionId as unknown as acp.SessionId;
-
-    const step = (nowMs: number): boolean => {
-      if (!isCurrent()) return true;
-      const state = tracker.evaluate(nowMs);
-      this.setAntigravityNativeActivity(
-        sessionId,
-        state.state,
-        state.settled ? 0 : state.backgroundTaskCount
-      );
-      return state.settled;
-    };
-    step(Date.now());
-
-    void runAntigravityPollLoop({
-      listSessionUpdatedAt: this.supportsSessionList
-        ? async (signal) => {
-            let cursor: string | null | undefined;
-            do {
-              if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-              const response = await connection.listSessions({
-                cwd,
-                ...(cursor ? { cursor } : {}),
-              });
-              const match = response.sessions.find((entry) => entry.sessionId === acpSessionId);
-              if (match) return match.updatedAt ?? null;
-              cursor = response.nextCursor;
-            } while (cursor);
-            return null;
-          }
-        : undefined,
-      onActivity: (nowMs) => tracker.noteActivity(nowMs),
-      step,
-      signal: controller.signal,
-      timings: tracker.getTimings(),
-      onError: (error) => {
-        this.logger.debug(
-          `[${this.options.sessionId}] Antigravity background poll error: ${formatErrorMessage(error)}`
-        );
-      },
-    }).finally(() => {
-      connection.signal.removeEventListener('abort', onConnectionAbort);
-      if (this.antigravityMonitor === controller) this.antigravityMonitor = null;
     });
   }
 
@@ -2878,13 +2752,9 @@ export class AgentClient implements acp.Client {
     return backgroundTaskCount > 0 ? { kind: 'background', backgroundTaskCount } : null;
   }
 
-  /** True while native work is active or reached the Antigravity monitor cap unsettled. */
+  /** True while authoritative native work is active. */
   hasUnsettledNativeWork(): boolean {
-    if (this.getNativeWork() !== null) return true;
-    return Boolean(
-      this.antigravityTracker?.hasExpiredPendingWork() &&
-      this.nativeActivity?.sessionId === this.acpSessionId
-    );
+    return this.getNativeWork() !== null;
   }
 
   getNativeActivityObservation(): 'idle' | 'running' | 'background' | 'unknown' {
@@ -2953,12 +2823,6 @@ export class AgentClient implements acp.Client {
       );
       const promptMeta = goalPrompt?._meta ?? options?._meta;
       const antigravityModel = this.isAntigravityServer() ? this.currentModel?.modelId : undefined;
-      const antigravityTracker = this.antigravityTracker;
-      if (antigravityTracker) {
-        this.stopAntigravityMonitor();
-        antigravityTracker.beginTurn();
-        this.setAntigravityNativeActivity(sessionId, 'idle', 0);
-      }
       const usageAccountingId = antigravityModel ? `${sessionId}:scope:${randomUUID()}` : undefined;
       const promptPromise = this.connection?.prompt({
         sessionId,
@@ -2976,20 +2840,6 @@ export class AgentClient implements acp.Client {
       // A local abort does not finish the remote request. Track every raw
       // request, including overlapping prompts used by acknowledged handoff.
       this.trackPendingExecution(promptPromise);
-      if (antigravityTracker) {
-        void promptPromise.then(
-          (result) => {
-            if (
-              this.antigravityTracker === antigravityTracker &&
-              this.acpSessionId === sessionId &&
-              antigravityTracker.turnEnded(result?.stopReason, Date.now())
-            ) {
-              this.startAntigravityMonitor(sessionId);
-            }
-          },
-          () => {}
-        );
-      }
       if (antigravityModel) {
         void promptPromise
           .then((result) => {
@@ -3073,7 +2923,6 @@ export class AgentClient implements acp.Client {
   }
 
   async closeDetachedSession(sessionId: ACPSessionId, timeoutMs: number = 5000): Promise<boolean> {
-    if (sessionId === this.acpSessionId) this.stopAntigravityMonitor();
     if (!this.supportsClose) {
       this.logger.debug(
         `[${this.options.sessionId}] Skipping ACP session close: agent did not advertise session.close`
