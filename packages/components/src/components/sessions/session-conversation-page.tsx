@@ -119,6 +119,8 @@ export interface SessionConversationPageProps {
   headerSlot?: ReactNode;
   subHeaderSlot?: ReactNode;
   hideMessageArea?: boolean;
+  /** Marks the conversation root while `/btw` is open so Escape scopes to the focused surface. */
+  btwOpenSurface?: boolean;
   bodySlot?: ReactNode;
   trailingSlot?: ReactNode;
   children?: ReactNode;
@@ -135,6 +137,7 @@ export function SessionConversationPage({
   headerSlot,
   subHeaderSlot,
   hideMessageArea = false,
+  btwOpenSurface = false,
   bodySlot,
   trailingSlot,
   children,
@@ -145,6 +148,7 @@ export function SessionConversationPage({
 }: SessionConversationPageProps) {
   return (
     <div
+      data-btw-open-surface={btwOpenSurface ? 'true' : undefined}
       className={cn('relative flex flex-col', hideMessageArea ? '' : 'h-full', className)}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}

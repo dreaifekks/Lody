@@ -7979,6 +7979,7 @@ export const SessionChatInterface = memo(
               dropActive={imageDropZone.isActive || sessionMentionOverlay}
               dropKind={sessionMentionOverlay ? 'session-mention' : 'files'}
               hideMessageArea={hideMessageArea}
+              btwOpenSurface={isBtwActive}
               {...pageDropHandlers}
             >
               {!shouldHideHeader &&
@@ -8064,7 +8065,6 @@ export const SessionChatInterface = memo(
                 <div
                   ref={setBtwLayoutRootNode}
                   data-btw-layout-mode={btwPresentationMode}
-                  data-btw-open-surface={isBtwActive ? 'true' : undefined}
                   className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
                 >
                   <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">

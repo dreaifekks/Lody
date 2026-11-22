@@ -1025,8 +1025,11 @@ describe('useBtwController and btw-atoms', () => {
         scopeElementRef: scopeRef,
       });
       return (
-        <div>
-          <div ref={scopeRef} data-btw-open-surface={btw.state.isOpen ? 'true' : undefined}>
+        <div data-btw-open-surface={btw.state.isOpen ? 'true' : undefined}>
+          <button type="button" data-testid={`${testId}-header`}>
+            Back
+          </button>
+          <div ref={scopeRef}>
             <textarea data-testid={testId} />
           </div>
         </div>
@@ -1044,6 +1047,27 @@ describe('useBtwController and btw-atoms', () => {
       );
     });
 
+    // Focus inside thread header (sibling above scopeRef, inside conversation root) closes thread /btw only
+    const threadHeaderBtn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="thread-input-header"]'
+    )!;
+    threadHeaderBtn.focus();
+    const headerEv = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      threadHeaderBtn.dispatchEvent(headerEv);
+    });
+    expect(headerEv.defaultPrevented).toBe(true);
+    expect(store.get(btwSessionStateAtomFamily(threadId)).isOpen).toBe(false);
+    expect(store.get(btwSessionStateAtomFamily(coordinatorId)).isOpen).toBe(true);
+
+    // Reopen thread /btw and focus thread textarea -> still closes thread /btw only
+    act(() => {
+      store.set(openBtwForSessionAtom, threadId);
+    });
     const threadInput = container.querySelector<HTMLTextAreaElement>(
       '[data-testid="thread-input"]'
     )!;
