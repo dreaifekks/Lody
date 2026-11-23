@@ -155,6 +155,7 @@ export type CreateAcpClientOptions = {
   onNativeWorkChanged?(work: import('./agent-client').NativeAgentWork): void;
   onAgentWarning?(warning: AgentSessionWarning): void;
   loadExternalMcpServers?: AgentClientOptions['loadExternalMcpServers'];
+  agyConfigContext?: AgentClientOptions['agyConfigContext'];
   loadBoardId?: AgentClientOptions['loadBoardId'];
   loadLodyAgentTools?: AgentClientOptions['loadLodyAgentTools'];
   loadPromptSuggestionsEnabled?: AgentClientOptions['loadPromptSuggestionsEnabled'];
@@ -199,6 +200,7 @@ export const createAcpClient = async (options: CreateAcpClientOptions) => {
     onNativeWorkChanged: options.onNativeWorkChanged,
     onAgentWarning: options.onAgentWarning,
     loadExternalMcpServers: options.loadExternalMcpServers,
+    agyConfigContext: options.agyConfigContext,
     loadLodyAgentTools: options.loadLodyAgentTools,
     loadBoardId: options.loadBoardId,
     loadPromptSuggestionsEnabled: options.loadPromptSuggestionsEnabled,

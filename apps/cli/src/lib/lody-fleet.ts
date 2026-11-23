@@ -64,6 +64,8 @@ import { readLanCredentialsEnv } from '@lody/shared/node/lan-credentials';
 import type { LanHub } from '@lody/shared/node/lan-hub';
 import { openLanCopy, type LanCopyRequest } from '@/lib/lan/lan-copy';
 import { LanMcpAuthentication } from '@/lib/lan/lan-mcp-auth';
+import { withAgyMcpBudgetProxy } from '@/mcp/agy-external-mcp-proxy';
+import { makeMcpAuthenticationIO } from '@/mcp/authentication/io';
 import { connectPort, openLanTunnel } from '@/lib/lan/lan-tunnel';
 import {
   startLocalLoroDataPlaneServer,
@@ -1608,6 +1610,7 @@ export class LodyFleet {
                 createMcpAuthentication: () =>
                   new LanMcpAuthentication({
                     userId: workspaceCloudPort.identity.userId,
+                    io: withAgyMcpBudgetProxy(makeMcpAuthenticationIO()),
                     resolveHub: () =>
                       this.lan?.hubs.find(
                         (candidate) => getLanHubWorkspaceId(candidate.id) === workspace.id

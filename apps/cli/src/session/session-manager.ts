@@ -30,6 +30,8 @@ import { EventEmitter } from 'eventemitter3';
 import os from 'os';
 import { randomUUID } from 'node:crypto';
 import { McpAuthenticationLegacy } from '@/mcp/authentication/legacy';
+import { makeMcpAuthenticationIO } from '@/mcp/authentication/io';
+import { withAgyMcpBudgetProxy } from '@/mcp/agy-external-mcp-proxy';
 import type { McpAuthenticationPort } from '@/lib/lan/lan-mcp-auth';
 
 import {
@@ -462,6 +464,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         machineId,
         workspaceId,
         userId: options.cloudPort.identity.userId,
+        io: withAgyMcpBudgetProxy(makeMcpAuthenticationIO()),
       });
     this.sessionSandboxFactory =
       options.sessionSandboxFactory ?? createSessionSandboxFactory({ logger: this.logger });

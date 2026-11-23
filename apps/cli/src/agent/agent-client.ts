@@ -58,6 +58,11 @@ import {
 } from '@lody/shared';
 import { getLodyMcpHttpEndpoint } from '@/mcp/lody-mcp-http-server';
 import {
+  applyAgyExternalMcpProxyHeaders,
+  describeAgyExternalBudgetOverflow,
+  type AgyConfigContext,
+} from '@/mcp/agy-external-mcp-proxy';
+import {
   LODY_MCP_BOARD_ID_ENV,
   LODY_MCP_AGENT_TOOLS_ENV,
   LODY_MCP_COMPACT_TOOLS_ENV,
@@ -590,6 +595,8 @@ export interface AgentClientOptions {
    * selector is applied once the agent has advertised its MCP capabilities.
    */
   loadExternalMcpServers?(): Promise<SessionMcpCatalogSelector>;
+  /** Effective agy config directories resolved from the spawned ACP process env/args. */
+  agyConfigContext?: AgyConfigContext;
   /** Current membership, read whenever ACP establishes a Session. */
   loadBoardId?(): Promise<string | undefined>;
   /** The experimental Lody tools the workspace offers, read when the agent starts. */
@@ -835,7 +842,19 @@ export class AgentClient implements acp.Client {
           source: 'configWarning',
         });
       }
-      return [...builtin, ...(external.servers as acp.McpServer[])];
+      const externalServers = this.isAntigravityServer()
+        ? (() => {
+            const budgetWarning = describeAgyExternalBudgetOverflow(external.servers);
+            if (budgetWarning) {
+              this.options.onAgentWarning?.({ message: budgetWarning, source: 'configWarning' });
+            }
+            return applyAgyExternalMcpProxyHeaders(external.servers, {
+              workdir,
+              agyConfigContext: this.options.agyConfigContext,
+            });
+          })()
+        : external.servers;
+      return [...builtin, ...(externalServers as acp.McpServer[])];
     } catch (error) {
       // A second cold result must leave initialization retryable, before any
       // provider session or Prompt can be created with a false empty selection.

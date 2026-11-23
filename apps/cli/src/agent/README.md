@@ -612,12 +612,20 @@ leftover env entry in persisted configs is ignored harmlessly.
   continuity falls back to `antigravitySupportsContextCompaction` for builtin and
   persisted registry Antigravity when no live process runs.
 - MCP tool budget: agy declares every tool of an MCP server the client passes as a
-  native function, smallest first, until a size budget it shares with skills runs out.
+  native function, smallest first, until a size budget it shares with skills runs out
+  (`customization-token-budget: 20000`, estimated at `ceil(len / 3)`).
   A tool that does not fit is neither listed nor callable (`call_mcp_tool` answers
   "not enabled for server"). AgentClient therefore asks the `lody` server for
   [compact listings](../mcp/README.md#command-help) whenever `isAntigravityServer()`
-  holds: commands keep their names and summaries but carry an open input schema, so
-  all of them fit and are listed before most workspace MCP tools.
+  holds, and tags external loopback HTTP MCP servers with `x-lody-mcp-proxy` so the
+  [external MCP budget proxy](../mcp/README.md#local-authorization) adaptively fits each
+  server within a per-server token share (`raw` pass-through preserving full upstream
+  definitions for small servers, `compact` open schemas + `tools_help` for medium servers,
+  or a 2-tool `tools_help` + `tools_call` lazy facade for oversized servers such as
+  Notion). Explicit agy `mcp(...)` `deny` rules are enforced locally in all modes, and
+  per-tool `ask` rules pin their target tools natively (refusing `tools_call` bypass).
+  Non-Antigravity agents never send the header and continue to receive unmodified upstream
+  passthrough.
 - Stored selections: `auto_edit` and `thinking_level` are not in this catalog. Create
   rejects them and continuing turns drop
   them. Session ids from the former server load as empty conversations.

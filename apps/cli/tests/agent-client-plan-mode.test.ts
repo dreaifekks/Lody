@@ -242,6 +242,79 @@ describe('AgentClient plan mode permission restoration', () => {
       }
     });
 
+    it('requests external loopback HTTP MCP budgeting for agy only', async () => {
+      const previousBudget = process.env.LODY_AGY_MCP_EXTERNAL_BUDGET_TOKENS;
+      delete process.env.LODY_AGY_MCP_EXTERNAL_BUDGET_TOKENS;
+      try {
+        const ids = {
+          workspaceId: 'workspace-1' as WorkspaceId,
+          machineId: 'machine-1' as MachineId,
+        };
+        const { client: agy } = createTestClient({
+          ...ids,
+          cliType: 'registry',
+          agentType: 'antigravity-acp',
+        });
+        // @ts-expect-error - set by the initialize response of agy's ACP server
+        agy.agentInfo = { name: 'Antigravity ACP Server', version: '1.5.14' };
+        // @ts-expect-error - set by the Antigravity ACP wrapper
+        agy.agentMcpCapabilities = { http: true };
+
+        const { client: codex } = createTestClient(ids);
+        // @ts-expect-error - set by initialize response
+        codex.agentMcpCapabilities = { http: true };
+
+        const selector = async () => () => ({
+          servers: [
+            {
+              type: 'http' as const,
+              name: 'notion',
+              url: 'http://127.0.0.1:41001/mcp',
+              headers: [{ name: 'Authorization', value: 'Bearer cap-1' }],
+            },
+            {
+              type: 'http' as const,
+              name: 'mail-personal',
+              url: 'http://127.0.0.1:41002/mcp',
+              headers: [{ name: 'Authorization', value: 'Bearer cap-2' }],
+            },
+            {
+              name: 'local-stdio',
+              command: 'node',
+              args: ['mcp.js'],
+              env: [],
+            },
+          ],
+          problems: [],
+        });
+
+        // @ts-expect-error - exercising private MCP server assembler for a focused regression test
+        const agyServers = await agy.buildMcpServers('/tmp/lody-session', selector());
+        const agyNotion = agyServers.find((s: { name?: string }) => s.name === 'notion');
+        const agyMail = agyServers.find((s: { name?: string }) => s.name === 'mail-personal');
+        const agyStdio = agyServers.find((s: { name?: string }) => s.name === 'local-stdio');
+        expect(agyNotion?.headers).toContainEqual({
+          name: 'x-lody-mcp-proxy',
+          value: 'auto;share=2750;server=notion',
+        });
+        expect(agyMail?.headers).toContainEqual({
+          name: 'x-lody-mcp-proxy',
+          value: 'auto;share=2750;server=mail-personal',
+        });
+        expect(agyStdio).not.toHaveProperty('headers');
+
+        // @ts-expect-error - exercising private MCP server assembler for a focused regression test
+        const codexServers = await codex.buildMcpServers('/tmp/lody-session', selector());
+        const codexNotion = codexServers.find((s: { name?: string }) => s.name === 'notion');
+        expect(codexNotion?.headers).not.toContainEqual(
+          expect.objectContaining({ name: 'x-lody-mcp-proxy' })
+        );
+      } finally {
+        if (previousBudget === undefined) delete process.env.LODY_AGY_MCP_EXTERNAL_BUDGET_TOKENS;
+        else process.env.LODY_AGY_MCP_EXTERNAL_BUDGET_TOKENS = previousBudget;
+      }
+    });
+
     it('passes ELECTRON_RUN_AS_NODE through when the embedded Electron CLI is running as Node', () => {
       const previous = process.env.ELECTRON_RUN_AS_NODE;
       process.env.ELECTRON_RUN_AS_NODE = '1';

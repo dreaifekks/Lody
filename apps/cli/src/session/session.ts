@@ -22,6 +22,7 @@ import path from 'path';
 import { Logger } from '@/utils/logger';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import { withAntigravityAcpStream } from '@/agent/antigravity-acp-stream';
+import { resolveAgyConfigContext, type AgyConfigContext } from '@/mcp/agy-external-mcp-proxy';
 import * as fs from 'fs';
 import type { AcpStartupTimeoutOptions, AgentClient } from '@/agent/agent-client';
 import { createAcpClient, prepareAcpProcessEnvironmentLegacy } from '@/agent/acp-runner';
@@ -690,6 +691,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
         | import('../agent/codex-profile-process-usage').CodexProfileProcessUsage
         | undefined;
       let closeBroker: (() => Promise<void>) | undefined;
+      let agyConfigContext: AgyConfigContext | undefined;
       const releaseResources = async () => {
         await closeBroker?.();
         await releaseProfile?.();
@@ -717,6 +719,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
           env: startupEnv,
           workdir: this.getWorkdir(),
         });
+        agyConfigContext = resolveAgyConfigContext(executable.args, startupEnv);
         agentProcessHandle = await this.sandbox.spawn(executable.command, executable.args, {
           cwd: this.getWorkdir(),
           env: startupEnv,
@@ -833,6 +836,7 @@ export class Session extends EventEmitter<SessionEvents> implements ISession {
             cliType: callbacks.cliType,
             agentType: callbacks.agentType,
           },
+          agyConfigContext,
           modelId: this.config.modelId,
           configOptionValues: this.config.configOptionValues,
           launcher,

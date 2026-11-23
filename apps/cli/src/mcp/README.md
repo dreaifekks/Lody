@@ -21,6 +21,16 @@ capability rather than upstream credentials; Linux also verifies socket ownershi
 Unlike the built-in Lody MCP host, this relay preserves upstream GET/SSE streaming.
 It forwards only MCP protocol headers, rejects redirects, bounds requests/queues,
 and sanitizes failures. Session retirement and sign-out close these connections.
+For `agy` sessions only (`isAntigravityServer()`), `AgentClient` attaches the internal
+`x-lody-mcp-proxy` loopback header (never forwarded upstream) so
+[`withAgyMcpBudgetProxy`](agy-external-mcp-proxy.ts) can keep external HTTP MCP tool
+lists inside agy's shared 20k-token customization budget via three adaptive tiers:
+small servers pass through raw verbatim, medium servers advertise compact schemas plus
+a local `tools_help` reader, and oversized servers fold into a 2-tool `tools_help` +
+`tools_call` facade while isolating catalogs per `mcp-session-id`, enforcing agy's
+`mcp(...)` deny/ask rules, preserving OAuth 401 refresh retries and upstream SSE
+streaming, and cleaning up per-lease state on close. Other agents omit the header and
+receive unmodified byte-for-byte passthrough.
 Stdio credentials go only to the selected local process environment. A requester
 change retires an MCP-bearing Session before another user can reuse its processes.
 
