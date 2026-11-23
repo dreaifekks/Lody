@@ -39,7 +39,7 @@ import { useGitHubAvatarUser } from '@/hooks/use-github-avatar';
 import { ScheduledMessageEditDialog } from '../schedules/scheduled-message-edit-dialog';
 import { ScheduledMessageTimeDialog } from '../schedules/scheduled-message-time';
 import { useScheduledMessageContents } from '../schedules/use-scheduled-message-content';
-import { saveScheduledMessage } from '../schedules/scheduled-message-write';
+import { rescheduleScheduledMessageTime } from '../schedules/scheduled-message-write';
 import { windowPreparationAtom } from '@/lib/window-preparation';
 import { conversationCopyRange } from '@/lib/conversation-copy-range';
 import { readConversationCopySource } from '@/lib/conversation-copy-source';
@@ -6096,53 +6096,61 @@ export const SessionChatInterface = memo(
     const applyScheduledTime = useCallback(
       async (at: string) => {
         if (!scheduledTimeEdit || !runtime || !currentUser) return;
-        const { document, item } = scheduledTimeEdit;
+        const { item } = scheduledTimeEdit;
         setScheduledTimeEdit(null);
-        const definition = document.definition;
+        const registryRow = scheduleRegistry.rows.find((r) => r.scheduleId === item.scheduleId);
+        if (
+          !registryRow ||
+          !registryRow.enabled ||
+          registryRow.destination.kind !== 'existing_session' ||
+          registryRow.destination.sessionId !== session.id
+        ) {
+          toast.error(t('scheduledMessage.saveError'));
+          return;
+        }
         try {
-          await saveScheduledMessage({
+          await rescheduleScheduledMessageTime({
             runtime,
             actorId: currentUser.id,
             scheduleId: item.scheduleId,
             activationId: uuidv4(),
             activityId: uuidv4(),
-            create: false,
-            draft: {
-              title: definition.title,
-              machineId: definition.machineId,
-              agent: definition.agent,
-              destination: definition.destination,
-              misfirePolicy: definition.misfirePolicy,
-              overlapPolicy: definition.overlapPolicy,
-              retryPolicy: definition.retryPolicy,
-              prompt: document.prompt,
-              ...(document.message ? { message: document.message } : {}),
-              trigger: { kind: 'once', at },
-            },
+            at,
+            expectedActivationId: registryRow.activationId,
+            expectedUpdatedAt: registryRow.updatedAt,
           });
         } catch {
           toast.error(t('scheduledMessage.saveError'));
         }
       },
-      [currentUser, runtime, scheduledTimeEdit, t]
+      [currentUser, runtime, scheduleRegistry.rows, scheduledTimeEdit, session.id, t]
     );
 
     const cancelScheduledMessage = useCallback(
       async (item: ScheduledQueueItem) => {
         if (!runtime || !currentUser) return false;
+        const registryRow = scheduleRegistry.rows.find((r) => r.scheduleId === item.scheduleId);
         try {
-          await runtime.withScheduleStore(item.scheduleId, () =>
-            new ScheduleRepository(runtime.repo, runtime.workspaceId, {
-              protectedContent: runtime.contentMode === 'e2ee',
-              signDeclaration: runtime.signScheduleDeclaration,
-            }).setEnabled({
-              scheduleId: item.scheduleId,
-              actorId: currentUser.id,
-              enabled: false,
-              now: getServerNow(),
-              activationId: uuidv4(),
-              requestId: uuidv4(),
-            })
+          await runtime.withScheduleStore(
+            item.scheduleId,
+            () =>
+              new ScheduleRepository(runtime.repo, runtime.workspaceId, {
+                protectedContent: runtime.contentMode === 'e2ee',
+                signDeclaration: runtime.signScheduleDeclaration,
+              }).setEnabled({
+                scheduleId: item.scheduleId,
+                actorId: currentUser.id,
+                enabled: false,
+                now: getServerNow(),
+                activationId: uuidv4(),
+                requestId: uuidv4(),
+              }),
+            registryRow
+              ? {
+                  expectedActivationId: registryRow.activationId,
+                  expectedUpdatedAt: registryRow.updatedAt,
+                }
+              : undefined
           );
           return true;
         } catch {
@@ -6150,7 +6158,7 @@ export const SessionChatInterface = memo(
           return false;
         }
       },
-      [currentUser, runtime, t]
+      [currentUser, runtime, scheduleRegistry.rows, t]
     );
 
     const scheduledMessageDisabledReason =
@@ -8497,6 +8505,16 @@ export const SessionChatInterface = memo(
                           {scheduledMessageEdit ? (
                             <ScheduledMessageEditDialog
                               document={scheduledMessageEdit.document}
+                              expectedActivationId={
+                                scheduleRegistry.rows.find(
+                                  (r) => r.scheduleId === scheduledMessageEdit.item.scheduleId
+                                )?.activationId
+                              }
+                              expectedUpdatedAt={
+                                scheduleRegistry.rows.find(
+                                  (r) => r.scheduleId === scheduledMessageEdit.item.scheduleId
+                                )?.updatedAt
+                              }
                               state={
                                 scheduledMessageEdit.item.state === 'failed' ? 'failed' : undefined
                               }

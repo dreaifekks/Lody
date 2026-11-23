@@ -11,6 +11,7 @@ import type {
   ProjectProbeLocalMemberResult,
 } from '@lody/shared';
 import type { PendingSessionSends } from '../lib/session-pending-sends';
+import type { ScheduleWriteOptions } from '../providers/schedule-write-sync';
 import type { SessionSendResources } from '@/lib/session-send-resources';
 import type { LocalFilePreviewResource } from '@lody/shared/local-file-preview';
 import type { SessionData } from '@lody/shared/session-data';
@@ -212,7 +213,7 @@ export type WorkspaceRuntime = {
   withScheduleStore: <T>(
     scheduleId: string,
     fn: (store: ScheduleDocStore) => Promise<T> | T,
-    options?: { create?: boolean }
+    options?: ScheduleWriteOptions
   ) => Promise<T>;
   acquireScheduleStore: (scheduleId: string) => Promise<ScheduleDocStore>;
   releaseScheduleStoreRef: (scheduleId: string) => void;

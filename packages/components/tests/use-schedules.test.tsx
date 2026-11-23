@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ScheduleDocument } from '@lody/shared';
 import type { WorkspaceRuntime } from '../src/atoms/runtime';
 import { activeWorkspaceRuntimeAtom } from '../src/atoms/runtime';
 import { scheduleRegistryAtom } from '../src/atoms/schedules';
-import { useScheduleRegistrySync, useSchedules } from '../src/hooks/use-schedules';
+import {
+  useScheduleDocument,
+  useScheduleRegistrySync,
+  useSchedules,
+} from '../src/hooks/use-schedules';
+import { resolveScheduleDetailView } from '../src/components/schedules/schedules-workspace';
 
 const scope = vi.hoisted(() => ({ workspaceId: 'workspace-a', enabled: true }));
 vi.mock('../src/atoms/runtime', async () => {
@@ -300,4 +306,289 @@ describe('Schedule Registry recovery', () => {
       expect(next.rooms.size).toBe(0);
     }
   );
+});
+
+describe('useScheduleDocument sync freshness', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let store: ReturnType<typeof createStore>;
+
+  const makeDoc = (activationId: string, updatedAt: number, agentConfigId: string): ScheduleDocument =>
+    ({
+      definition: {
+        scheduleId: 'schedule-a',
+        title: 'Home morning',
+        ownerId: 'owner',
+        machineId: 'machine',
+        enabled: true,
+        activationId,
+        activeFrom: updatedAt,
+        createdAt: 1000,
+        updatedAt,
+        createdBy: 'owner',
+        trigger: { kind: 'manual' },
+        misfirePolicy: { kind: 'run_once' },
+        overlapPolicy: 'skip',
+        agent: { agentConfigId },
+        destination: { kind: 'new_session' },
+        retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+      },
+      prompt: `prompt-${activationId}`,
+      timeline: [],
+    }) as ScheduleDocument;
+
+  beforeEach(() => {
+    scope.workspaceId = 'workspace-a';
+    scope.enabled = true;
+    store = createStore();
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('tracks synced=false while cached doc lags Registry and remounts editor on fresh revision', async () => {
+    const firstSynced = deferred();
+    const listeners = new Set<() => void>();
+    let currentDoc: ScheduleDocument | null = makeDoc('old-claude', 1000, 'claude-agent');
+    const releaseRef = vi.fn();
+    const runtime = {
+      workspaceId: 'workspace-a',
+      acquireScheduleStore: vi.fn(async () => ({
+        roomId: 'schedule-schedule-a',
+        firstSynced: firstSynced.promise,
+        getState: () => currentDoc,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        waitUntilSynced: async () => {},
+        dispose: () => {},
+      })),
+      releaseScheduleStoreRef: releaseRef,
+    } as unknown as WorkspaceRuntime;
+
+    const mountedWith: string[] = [];
+    function FakeEditor({ doc, readOnly }: { doc: ScheduleDocument; readOnly: boolean }) {
+      const [captured] = useState(doc.definition.agent.agentConfigId);
+      mountedWith.push(captured);
+      return (
+        <span data-agent={captured} data-readonly={String(readOnly)}>
+          {readOnly ? `${captured}:readonly` : captured}
+        </span>
+      );
+    }
+
+    function DetailHost({
+      rowActivationId,
+      rowUpdatedAt,
+    }: {
+      rowActivationId: string;
+      rowUpdatedAt: number;
+    }) {
+      const detail = useScheduleDocument('schedule-a');
+      const view = resolveScheduleDetailView({
+        workspaceId: 'workspace-a',
+        scheduleId: 'schedule-a',
+        detail,
+        row: { activationId: rowActivationId, updatedAt: rowUpdatedAt },
+      });
+      if (view.kind === 'loading') return <span>loading</span>;
+      if (view.kind === 'missing') return <span>missing</span>;
+      return (
+        <FakeEditor key={view.editorKey} doc={view.document} readOnly={view.staleReadOnly} />
+      );
+    }
+
+    await act(async () => {
+      store.set(activeWorkspaceRuntimeAtom, runtime);
+      root.render(
+        <Provider store={store}>
+          <DetailHost rowActivationId="new-neon" rowUpdatedAt={2000} />
+        </Provider>
+      );
+    });
+
+    // Cached Claude doc is older than Registry's Neon row -> wait instead of mounting stale state.
+    expect(container.textContent).toBe('loading');
+    expect(mountedWith).toEqual([]);
+
+    // firstSynced brings the Neon doc from remote -> editor mounts editable with Neon.
+    await act(async () => {
+      currentDoc = makeDoc('new-neon', 2000, 'neon-agent');
+      listeners.forEach((listener) => listener());
+      firstSynced.resolve();
+    });
+    expect(container.textContent).toBe('neon-agent');
+    expect(mountedWith).toEqual(['neon-agent']);
+
+    // Live remote edit: Registry row arrives before schedule doc -> stays read-only until doc arrives,
+    // then remounts editable onto argon-agent without freezing on neon-agent.
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DetailHost rowActivationId="newer-argon" rowUpdatedAt={3000} />
+        </Provider>
+      );
+    });
+    expect(container.textContent).toBe('neon-agent:readonly');
+
+    await act(async () => {
+      currentDoc = makeDoc('newer-argon', 3000, 'argon-agent');
+      listeners.forEach((listener) => listener());
+    });
+    expect(container.textContent).toBe('argon-agent');
+
+    act(() => root.unmount());
+    expect(releaseRef).toHaveBeenCalledWith('schedule-a');
+    expect(listeners.size).toBe(0);
+  });
+
+  it('falls back to read-only cached view on offline sync timeout and recovers when target revision arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstSynced = deferred();
+      const listeners = new Set<() => void>();
+      let currentDoc: ScheduleDocument | null = makeDoc('old-claude', 1000, 'claude-agent');
+      const runtime = {
+        workspaceId: 'workspace-a',
+        acquireScheduleStore: vi.fn(async () => ({
+          roomId: 'schedule-schedule-a',
+          firstSynced: firstSynced.promise,
+          getState: () => currentDoc,
+          subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          waitUntilSynced: async () => {},
+          dispose: () => {},
+        })),
+        releaseScheduleStoreRef: vi.fn(),
+      } as unknown as WorkspaceRuntime;
+
+      function DetailHost() {
+        const detail = useScheduleDocument('schedule-a', { syncTimeoutMs: 500 });
+        const view = resolveScheduleDetailView({
+          workspaceId: 'workspace-a',
+          scheduleId: 'schedule-a',
+          detail,
+          row: { activationId: 'new-neon', updatedAt: 2000 },
+        });
+        if (view.kind === 'loading') return <span>loading</span>;
+        if (view.kind === 'missing') return <span>missing</span>;
+        return (
+          <span data-key={view.editorKey}>
+            {view.document.definition.agent.agentConfigId}:{view.staleReadOnly ? 'readonly' : 'edit'}
+          </span>
+        );
+      }
+
+      await act(async () => {
+        store.set(activeWorkspaceRuntimeAtom, runtime);
+        root.render(
+          <Provider store={store}>
+            <DetailHost />
+          </Provider>
+        );
+      });
+      expect(container.textContent).toBe('loading');
+
+      // Offline timeout ends the spinner and shows cached doc read-only, keeping subscription alive.
+      await act(async () => vi.advanceTimersByTimeAsync(500));
+      expect(container.textContent).toBe('claude-agent:readonly');
+      expect(listeners.size).toBe(1);
+
+      // Reconnecting later delivers Neon -> editor recovers to editable Neon.
+      await act(async () => {
+        currentDoc = makeDoc('new-neon', 2000, 'neon-agent');
+        listeners.forEach((listener) => listener());
+        firstSynced.resolve();
+      });
+      expect(container.textContent).toBe('neon-agent:edit');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a readable local document in offline state (read-only if stale) when firstSynced rejects and recovers on online', async () => {
+    const firstSynced = deferred();
+    let currentDoc = makeDoc('local-v1', 1000, 'claude-agent');
+    const sync = vi.fn(async () => {
+      currentDoc = makeDoc('remote-v2', 2000, 'neon-agent');
+    });
+    const runtime = {
+      workspaceId: 'workspace-a',
+      repo: { sync },
+      acquireScheduleStore: vi.fn(async () => ({
+        roomId: 'schedule-schedule-a',
+        firstSynced: firstSynced.promise,
+        getState: () => currentDoc,
+        subscribe: () => () => {},
+        waitUntilSynced: async () => {},
+        dispose: () => {},
+      })),
+      releaseScheduleStoreRef: vi.fn(),
+    } as unknown as WorkspaceRuntime;
+
+    let latest: ReturnType<typeof useScheduleDocument> | undefined;
+    function Reader() {
+      latest = useScheduleDocument('schedule-a');
+      return <span>{latest.document?.definition.activationId ?? 'none'}</span>;
+    }
+
+    await act(async () => {
+      store.set(activeWorkspaceRuntimeAtom, runtime);
+      root.render(
+        <Provider store={store}>
+          <Reader />
+        </Provider>
+      );
+    });
+    expect(latest).toMatchObject({ ready: true, syncState: 'syncing' });
+
+    await act(async () => {
+      firstSynced.reject(new Error('offline'));
+    });
+    expect(latest).toMatchObject({ ready: true, syncState: 'offline' });
+    expect(latest?.document?.definition.activationId).toBe('local-v1');
+
+    // Stale cached doc after sync failure stays read-only, while up-to-date cache stays editable.
+    expect(
+      resolveScheduleDetailView({
+        workspaceId: 'workspace-a',
+        scheduleId: 'schedule-a',
+        detail: latest!,
+        row: { activationId: 'remote-v2', updatedAt: 2000 },
+      })
+    ).toMatchObject({ kind: 'ready', staleReadOnly: true });
+    expect(
+      resolveScheduleDetailView({
+        workspaceId: 'workspace-a',
+        scheduleId: 'schedule-a',
+        detail: latest!,
+        row: { activationId: 'local-v1', updatedAt: 1000 },
+      })
+    ).toMatchObject({ kind: 'ready', staleReadOnly: false });
+
+    // Network restoration pulls the doc directly even when initial joinRoom failed.
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+    });
+    expect(sync).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'doc', docIds: ['schedule-schedule-a'] })
+    );
+    expect(latest).toMatchObject({ ready: true, syncState: 'synced' });
+    expect(
+      resolveScheduleDetailView({
+        workspaceId: 'workspace-a',
+        scheduleId: 'schedule-a',
+        detail: latest!,
+        row: { activationId: 'remote-v2', updatedAt: 2000 },
+      })
+    ).toMatchObject({ kind: 'ready', staleReadOnly: false });
+  });
 });

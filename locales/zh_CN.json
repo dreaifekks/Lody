@@ -4959,6 +4959,8 @@
   "schedules.runNow": "立即运行",
   "schedules.delete": "删除",
   "schedules.readOnly": "仅所有者可通过支持定时任务的机器编辑。",
+  "schedules.staleReadOnly": "正在同步最新版本，当前仅可查看本地缓存。同步完成后可继续编辑。",
+  "schedules.staleEditConflict": "此定时任务已在别处更新，请核对最新版本后再保存。",
   "schedules.projectMachine": "请选择目标机器上的项目。",
   "schedules.originalDirectory": "运行将使用项目原始目录，可能与其他 Agent 的工作发生冲突。",
   "schedules.ownedMachine": "请选择你拥有且支持定时任务的机器。",

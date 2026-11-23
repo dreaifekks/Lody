@@ -4959,6 +4959,8 @@
   "schedules.runNow": "Run now",
   "schedules.delete": "Delete",
   "schedules.readOnly": "Only the owner can edit this schedule, using a machine with Schedule support.",
+  "schedules.staleReadOnly": "Showing a cached version while syncing the latest changes. Editing will resume once synced.",
+  "schedules.staleEditConflict": "This schedule was updated elsewhere. Review the latest version before saving.",
   "schedules.projectMachine": "Choose a Project on the selected machine.",
   "schedules.originalDirectory": "Runs share the original directory. Work from other Agents may overlap here.",
   "schedules.ownedMachine": "Choose your own machine with Schedule support.",

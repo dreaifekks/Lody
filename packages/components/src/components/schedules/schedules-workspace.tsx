@@ -55,7 +55,15 @@ import { getAllAgentConfigAtom } from '@/atoms/agents';
 import { mobileHomeReturnTabAtom } from '@/atoms/mobile-home-state';
 import { useResolvedWorkspaceScope } from '@/hooks/use-resolved-workspace-scope';
 import { onlineMachineIdsAtom, lodyPresenceSyncStateAtom } from '@/atoms/presence';
-import { useScheduleDocument, useSchedules } from '@/hooks/use-schedules';
+import {
+  useScheduleDocument,
+  useSchedules,
+  type ScheduleDocumentSyncState,
+} from '@/hooks/use-schedules';
+import {
+  ScheduleEditConflictError,
+  isScheduleRevisionStale,
+} from '../../providers/schedule-write-sync';
 import {
   useAgentRoleAvailability,
   useComposerAgentRoleNames,
@@ -174,6 +182,51 @@ const styles = stylex.create({
   },
   content: { minHeight: 0, flex: '1 1 0%' },
 });
+
+export type ScheduleDetailViewState =
+  | { kind: 'loading' }
+  | { kind: 'missing' }
+  | {
+      kind: 'ready';
+      document: ScheduleDocument;
+      staleReadOnly: boolean;
+      editorKey: string;
+    };
+
+/**
+ * Resolve detail rendering against both the Registry row and the per-schedule
+ * document replica. While initial sync is still in flight for a known-stale
+ * cached copy, show loading; if sync times out or fails offline, render the
+ * cached copy read-only while keeping the room subscription alive for recovery.
+ */
+export function resolveScheduleDetailView(args: {
+  workspaceId?: string | null;
+  scheduleId: string;
+  detail: {
+    document: ScheduleDocument | null;
+    ready: boolean;
+    syncState: ScheduleDocumentSyncState;
+  };
+  row?: Pick<ScheduleRegistryRow, 'activationId' | 'updatedAt'>;
+}): ScheduleDetailViewState {
+  const { workspaceId, scheduleId, detail, row } = args;
+  const stale =
+    !!detail.document &&
+    !!row &&
+    isScheduleRevisionStale(detail.document, row.activationId, row.updatedAt);
+  if (!detail.ready || (stale && detail.syncState === 'syncing')) {
+    return { kind: 'loading' };
+  }
+  if (!detail.document || !row) {
+    return { kind: 'missing' };
+  }
+  return {
+    kind: 'ready',
+    document: detail.document,
+    staleReadOnly: stale,
+    editorKey: `${workspaceId}:${scheduleId}:${detail.document.definition.activationId}`,
+  };
+}
 
 function SupportedSchedulesWorkspace({
   scheduleId,
@@ -318,15 +371,18 @@ function SupportedSchedulesWorkspace({
         throw new Error(
           t('schedules.upgrade', 'Update the target machine’s CLI to edit schedules.')
         );
-      await runtime!.withScheduleStore(row.scheduleId, () =>
-        repository.setEnabled({
-          scheduleId: row.scheduleId,
-          enabled: !row.enabled,
-          actorId: user.id,
-          now: getServerNow(),
-          activationId: uuid(),
-          requestId: uuid(),
-        })
+      await runtime!.withScheduleStore(
+        row.scheduleId,
+        () =>
+          repository.setEnabled({
+            scheduleId: row.scheduleId,
+            enabled: !row.enabled,
+            actorId: user.id,
+            now: getServerNow(),
+            activationId: uuid(),
+            requestId: uuid(),
+          }),
+        { expectedActivationId: row.activationId, expectedUpdatedAt: row.updatedAt }
       );
     };
     // Resuming does not re-ask about the permission mode. The mode is chosen and
@@ -334,15 +390,18 @@ function SupportedSchedulesWorkspace({
     // without reading. Ownership and machine capability are still enforced above.
     void mutate(apply);
   };
-  const requestRun = (id: string) => async () => {
+  const requestRun = (item: ScheduleRegistryRow) => async () => {
     if (!repository || !user) return;
-    await runtime!.withScheduleStore(id, () =>
-      repository.requestRun({
-        scheduleId: id,
-        actorId: user.id,
-        manualRunId: uuid(),
-        now: getServerNow(),
-      })
+    await runtime!.withScheduleStore(
+      item.scheduleId,
+      () =>
+        repository.requestRun({
+          scheduleId: item.scheduleId,
+          actorId: user.id,
+          manualRunId: uuid(),
+          now: getServerNow(),
+        }),
+      { expectedActivationId: item.activationId, expectedUpdatedAt: item.updatedAt }
     );
   };
   const deleteSchedule = (id: string) => async () => {
@@ -352,22 +411,25 @@ function SupportedSchedulesWorkspace({
   };
   const cancelMessage = (row: ScheduleRegistryRow) => async () => {
     if (!repository || !user) return;
-    await runtime!.withScheduleStore(row.scheduleId, () =>
-      repository.setEnabled({
-        scheduleId: row.scheduleId,
-        actorId: user.id,
-        enabled: false,
-        now: getServerNow(),
-        activationId: uuid(),
-        requestId: uuid(),
-      })
+    await runtime!.withScheduleStore(
+      row.scheduleId,
+      () =>
+        repository.setEnabled({
+          scheduleId: row.scheduleId,
+          actorId: user.id,
+          enabled: false,
+          now: getServerNow(),
+          activationId: uuid(),
+          requestId: uuid(),
+        }),
+      { expectedActivationId: row.activationId, expectedUpdatedAt: row.updatedAt }
     );
   };
   // From the list there are no unsaved edits to warn about, so Run starts at
   // once and says so; the open schedule still confirms (its edits may be unsaved).
   const runFromList = (item: ScheduleRegistryRow) =>
     void mutate(async () => {
-      await requestRun(item.scheduleId)();
+      await requestRun(item)();
       toast.success(
         t('schedules.runStarted', 'Run requested for “{{title}}”.', { title: item.title })
       );
@@ -496,7 +558,7 @@ function SupportedSchedulesWorkspace({
         'schedules.runNowHelp',
         'Run with the last saved prompt, Agent, Project and permission mode. Unsaved edits are excluded. This may run alongside existing work.'
       ),
-      accept: requestRun(item.scheduleId),
+      accept: requestRun(item),
     });
   const detailActions: ScheduleAction[] = [];
   if (row && rowContext) {
@@ -560,6 +622,22 @@ function SupportedSchedulesWorkspace({
     />
   );
   const showTabs = !!row && !row.scheduledMessage;
+  const detailView =
+    scheduleId && scheduleId !== 'new'
+      ? resolveScheduleDetailView({
+          workspaceId: runtime?.workspaceId,
+          scheduleId,
+          detail,
+          row,
+        })
+      : null;
+  const staleReadOnlyReason =
+    detailView?.kind === 'ready' && detailView.staleReadOnly
+      ? t(
+          'schedules.staleReadOnly',
+          'Showing a cached version while syncing the latest changes. Editing will resume once synced.'
+        )
+      : undefined;
   // Saving and closing return to the full list.
   const settings = !scheduleId ? null : scheduleId === 'new' ? (
     <ScheduleEditor
@@ -569,14 +647,17 @@ function SupportedSchedulesWorkspace({
       onCancel={() => open()}
       onOpenSession={openSession}
     />
-  ) : !detail.ready ? (
+  ) : !detailView || detailView.kind === 'loading' ? (
     <p {...stylex.props(styles.loadingMessage)}>{t('schedules.loading', 'Loading schedules…')}</p>
-  ) : !detail.document || !row ? (
+  ) : detailView.kind === 'missing' || !row ? (
     <p {...stylex.props(styles.loadingMessage)}>
       {t('schedules.notFound', 'This schedule is unavailable or deleted.')}
     </p>
   ) : (
     <>
+      {staleReadOnlyReason ? (
+        <p {...stylex.props(styles.readOnlyMessage)}>{staleReadOnlyReason}</p>
+      ) : null}
       {!canManage ? (
         <p {...stylex.props(styles.readOnlyMessage)}>
           {t(
@@ -596,16 +677,19 @@ function SupportedSchedulesWorkspace({
           </span>
         </p>
       ) : null}
-      {detail.document.message ? (
+      {detailView.document.message ? (
         <ScheduledMessageEditor
-          key={`${runtime?.workspaceId}:${scheduleId}:${row.activationId}`}
-          document={detail.document}
+          key={detailView.editorKey}
+          document={detailView.document}
+          expectedActivationId={row.activationId}
+          expectedUpdatedAt={row.updatedAt}
           disabledReason={
-            !isOwner
+            staleReadOnlyReason ??
+            (!isOwner
               ? t('schedules.ownerOnly')
               : !machineSupportsScheduledMessagesProtocol(machines.get(row.machineId as MachineId))
                 ? t('scheduledMessage.upgrade')
-                : undefined
+                : undefined)
           }
           sent={!!rowRuntime?.lastDispatch}
           state={rowRuntime?.messageState}
@@ -615,14 +699,17 @@ function SupportedSchedulesWorkspace({
       ) : (
         <ScheduleEditor
           board={board}
-          key={`${runtime?.workspaceId}:${scheduleId}:${row.activationId}`}
-          document={detail.document}
+          key={detailView.editorKey}
+          document={detailView.document}
+          expectedActivationId={row.activationId}
+          expectedUpdatedAt={row.updatedAt}
           disabledReason={
-            !isOwner
+            staleReadOnlyReason ??
+            (!isOwner
               ? t('schedules.ownerOnly', 'Only the schedule owner can save changes.')
               : !canManage
                 ? t('schedules.upgrade', 'Update the target machine’s CLI to edit schedules.')
-                : undefined
+                : undefined)
           }
           onSaved={() => open()}
           onCancel={() => open()}
@@ -712,6 +799,8 @@ function SupportedSchedulesWorkspace({
 
 function ScheduleEditor({
   document,
+  expectedActivationId,
+  expectedUpdatedAt,
   board,
   disabledReason,
   onSaved,
@@ -719,6 +808,8 @@ function ScheduleEditor({
   onOpenSession,
 }: {
   document?: ScheduleDocument;
+  expectedActivationId?: string;
+  expectedUpdatedAt?: number;
   board?: BoardMeta;
   disabledReason?: string;
   onSaved: (id: string) => void;
@@ -1004,8 +1095,21 @@ function ScheduleEditor({
     try {
       await runtime.withScheduleStore(
         identity.scheduleId,
-        () =>
-          new ScheduleRepository(runtime.repo, runtime.workspaceId, {
+        (store) => {
+          if (document) {
+            const latest = store?.getState();
+            const isRetryOfThisSave = latest?.timeline.some(
+              (entry) => entry.id === identity.activityId
+            );
+            if (
+              latest &&
+              latest.definition.activationId !== document.definition.activationId &&
+              !isRetryOfThisSave
+            ) {
+              throw new ScheduleEditConflictError();
+            }
+          }
+          return new ScheduleRepository(runtime.repo, runtime.workspaceId, {
             protectedContent: runtime.contentMode === 'e2ee',
             signDeclaration: runtime.signScheduleDeclaration,
           }).save({
@@ -1028,16 +1132,31 @@ function ScheduleEditor({
               overlapPolicy: value.overlap,
               retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
             },
-          }),
-        { create: !document }
+          });
+        },
+        {
+          create: !document,
+          ...(document
+            ? {
+                expectedActivationId: expectedActivationId ?? document.definition.activationId,
+                expectedUpdatedAt: expectedUpdatedAt ?? document.definition.updatedAt,
+              }
+            : {}),
+        }
       );
       onSaved(identity.scheduleId);
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : t('schedules.saveError', 'The schedule could not be saved.')
-      );
+      const message =
+        e instanceof ScheduleEditConflictError
+          ? t(
+              'schedules.staleEditConflict',
+              'This schedule was updated elsewhere. Review the latest version before saving.'
+            )
+          : e instanceof Error
+            ? e.message
+            : t('schedules.saveError', 'The schedule could not be saved.');
+      setError(message);
+      if (e instanceof ScheduleEditConflictError) toast.error(message);
     } finally {
       setSaving(false);
     }

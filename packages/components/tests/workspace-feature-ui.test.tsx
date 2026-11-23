@@ -21,8 +21,10 @@ import {
 } from '../src/components/sessions/session-status-strip';
 import {
   prepareScheduledMessage,
+  rescheduleScheduledMessageTime,
   saveScheduledMessage,
 } from '../src/components/schedules/scheduled-message-write';
+import { ScheduleEditConflictError } from '../src/providers/schedule-write-sync';
 import type { WorkspaceRuntime } from '../src/atoms/runtime';
 import { runtimeAtom } from '../src/atoms/runtime';
 import { createSessionSendResources } from '../src/lib/session-send-resources';
@@ -127,6 +129,147 @@ it('prepares and saves an encrypted scheduled message through the ordinary repos
     expect((await repository.read('reserved'))?.message).toEqual(message);
     expect(declarations.signed.map((document) => document.message)).toEqual([message]);
     expect((await repository.list()).map((row) => row.scheduleId)).toEqual(['reserved']);
+  } finally {
+    await repo.destroy();
+  }
+});
+
+it('preserves concurrent body edits when rescheduling time and rejects stale full-message overwrites', async () => {
+  const repo = await LoroRepo.create({});
+  const workspaceId = 'workspace' as WorkspaceId;
+  const repository = new ScheduleRepository(repo, workspaceId);
+  const runtime = {
+    contentMode: 'plaintext',
+    workspaceId,
+    repo,
+    withScheduleStore: async (
+      id: string,
+      write: (store: { getState: () => unknown }) => Promise<unknown>
+    ) => {
+      const current = await repository.read(id);
+      return write({ getState: () => current });
+    },
+  } as unknown as WorkspaceRuntime;
+  try {
+    const v1Message = { inputBlocks: [{ type: 'text' as const, text: 'v1 body' }] };
+    const v2Message = { inputBlocks: [{ type: 'text' as const, text: 'v2 body from other device' }] };
+    await repository.save({
+      scheduleId: 'msg-1',
+      activationId: 'act-v1',
+      activityId: 'ev-v1',
+      actorId: 'owner',
+      create: true,
+      now: 100,
+      draft: {
+        title: 'v1 body',
+        prompt: 'v1 body',
+        message: v1Message,
+        trigger: { kind: 'once', at: new Date(10_000).toISOString() },
+        destination: { kind: 'existing_session', sessionId: 'session' },
+        machineId: 'machine',
+        agent: { agentConfigId: 'agent' },
+        misfirePolicy: { kind: 'run_once' },
+        overlapPolicy: 'queue_one',
+        retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+      },
+    });
+    // Another device updates the message body to v2 while the time/edit dialog was open on v1.
+    await repository.save({
+      scheduleId: 'msg-1',
+      activationId: 'act-v2',
+      activityId: 'ev-v2',
+      actorId: 'owner',
+      create: false,
+      now: 200,
+      draft: {
+        title: 'v2 body from other device',
+        prompt: 'v2 body from other device',
+        message: v2Message,
+        trigger: { kind: 'once', at: new Date(10_000).toISOString() },
+        destination: { kind: 'existing_session', sessionId: 'session' },
+        machineId: 'machine',
+        agent: { agentConfigId: 'agent' },
+        misfirePolicy: { kind: 'run_once' },
+        overlapPolicy: 'queue_one',
+        retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+      },
+    });
+
+    // Full-form save started from v1 must reject with conflict instead of overwriting v2.
+    await expect(
+      saveScheduledMessage({
+        runtime,
+        actorId: 'owner',
+        scheduleId: 'msg-1',
+        activationId: 'act-v1-stale-save',
+        activityId: 'ev-v1-stale-save',
+        create: false,
+        baseActivationId: 'act-v1',
+        expectedActivationId: 'act-v2',
+        expectedUpdatedAt: 200,
+        now: 300,
+        draft: {
+          title: 'v1 body',
+          prompt: 'v1 edited locally',
+          message: v1Message,
+          trigger: { kind: 'once', at: new Date(20_000).toISOString() },
+          destination: { kind: 'existing_session', sessionId: 'session' },
+          machineId: 'machine',
+          agent: { agentConfigId: 'agent' },
+          misfirePolicy: { kind: 'run_once' },
+          overlapPolicy: 'queue_one',
+          retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+        },
+      })
+    ).rejects.toBeInstanceOf(ScheduleEditConflictError);
+    expect((await repository.read('msg-1'))?.prompt).toBe('v2 body from other device');
+
+    // Retrying the same save (`activityId` already recorded in `timeline`) must
+    // reach the repository's idempotent replay branch rather than conflict-failing.
+    await expect(
+      saveScheduledMessage({
+        runtime,
+        actorId: 'owner',
+        scheduleId: 'msg-1',
+        activationId: 'act-v2',
+        activityId: 'ev-v2',
+        create: false,
+        baseActivationId: 'act-v1',
+        expectedActivationId: 'act-v2',
+        expectedUpdatedAt: 200,
+        now: 300,
+        draft: {
+          title: 'v2 body from other device',
+          prompt: 'v2 body from other device',
+          message: v2Message,
+          trigger: { kind: 'once', at: new Date(10_000).toISOString() },
+          destination: { kind: 'existing_session', sessionId: 'session' },
+          machineId: 'machine',
+          agent: { agentConfigId: 'agent' },
+          misfirePolicy: { kind: 'run_once' },
+          overlapPolicy: 'queue_one',
+          retryPolicy: { dispatchMaxAttempts: 5, dispatchMaxAgeMs: 86_400_000 },
+        },
+      })
+    ).resolves.toMatchObject({ prompt: 'v2 body from other device' });
+
+    // Time-only reschedule reads the synced v2 document and updates only `trigger.at`.
+    const rescheduledAt = new Date(30_000).toISOString();
+    await rescheduleScheduledMessageTime({
+      runtime,
+      actorId: 'owner',
+      scheduleId: 'msg-1',
+      activationId: 'act-v3-time',
+      activityId: 'ev-v3-time',
+      at: rescheduledAt,
+      expectedActivationId: 'act-v2',
+      expectedUpdatedAt: 200,
+      now: 400,
+    });
+    const afterTime = await repository.read('msg-1');
+    expect(afterTime?.prompt).toBe('v2 body from other device');
+    expect(afterTime?.message).toEqual(v2Message);
+    expect(afterTime?.definition.trigger).toEqual({ kind: 'once', at: rescheduledAt });
   } finally {
     await repo.destroy();
   }

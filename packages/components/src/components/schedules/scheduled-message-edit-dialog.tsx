@@ -10,6 +10,8 @@ import { ScheduledMessageEditor } from './scheduled-message-editor';
  */
 export function ScheduledMessageEditDialog({
   document,
+  expectedActivationId,
+  expectedUpdatedAt,
   state,
   disabledReason,
   onCancel,
@@ -17,6 +19,8 @@ export function ScheduledMessageEditDialog({
   onSaved,
 }: {
   document: ScheduleDocument;
+  expectedActivationId?: string;
+  expectedUpdatedAt?: number;
   state?: ScheduleRuntimeRow['messageState'];
   disabledReason?: string;
   onCancel: () => Promise<void>;
@@ -37,6 +41,8 @@ export function ScheduledMessageEditDialog({
         </Dialog.Header>
         <ScheduledMessageEditor
           document={document}
+          expectedActivationId={expectedActivationId}
+          expectedUpdatedAt={expectedUpdatedAt}
           state={state}
           disabledReason={disabledReason}
           sent={false}

@@ -173,21 +173,32 @@ export function useSchedules() {
   );
 }
 
-export function useScheduleDocument(id: string | undefined) {
+export const SCHEDULE_DETAIL_SYNC_TIMEOUT_MS = 10_000;
+
+export type ScheduleDocumentSyncState = 'syncing' | 'synced' | 'offline';
+
+export function useScheduleDocument(
+  id: string | undefined,
+  options?: { syncTimeoutMs?: number }
+) {
   const activeRuntime = useAtomValue(activeWorkspaceRuntimeAtom);
   const scope = useResolvedWorkspaceScope();
   const runtime =
     scope.enabled && scope.workspaceId === activeRuntime?.workspaceId ? activeRuntime : null;
+  const syncTimeoutMs = options?.syncTimeoutMs ?? SCHEDULE_DETAIL_SYNC_TIMEOUT_MS;
   const [value, setValue] = useState<{
     runtime: unknown;
     id: string;
     document: ScheduleDocument | null;
     ready: boolean;
-  }>({ runtime: null, id: '', document: null, ready: false });
+    syncState: ScheduleDocumentSyncState;
+  }>({ runtime: null, id: '', document: null, ready: false, syncState: 'syncing' });
   useEffect(() => {
     if (!runtime || !id || id === 'new') return undefined;
     let disposed = false;
     let release: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const retryAbort = new AbortController();
     void runtime
       .acquireScheduleStore(id)
       .then(async (store) => {
@@ -195,28 +206,75 @@ export function useScheduleDocument(id: string | undefined) {
           runtime.releaseScheduleStoreRef(id);
           return;
         }
-        let synced = false;
+        let syncState: ScheduleDocumentSyncState = 'syncing';
         const update = () => {
           const document = store.getState();
-          if (!disposed) setValue({ runtime, id, document, ready: !!document || synced });
+          if (!disposed) {
+            setValue({
+              runtime,
+              id,
+              document,
+              ready: !!document || syncState !== 'syncing',
+              syncState,
+            });
+          }
         };
         const off = store.subscribe(update);
+        const onOnline = () => {
+          if (disposed || syncState !== 'offline') return;
+          void runtime.repo
+            ?.sync?.({
+              scope: 'doc',
+              docIds: [store.roomId],
+              signal: retryAbort.signal,
+            })
+            .then(() => {
+              if (disposed) return;
+              syncState = 'synced';
+              update();
+            })
+            .catch(() => {});
+        };
+        window.addEventListener('online', onOnline);
         release = () => {
+          window.removeEventListener('online', onOnline);
           off();
           runtime.releaseScheduleStoreRef(id);
         };
+        timer = setTimeout(() => {
+          if (disposed || syncState !== 'syncing') return;
+          syncState = 'offline';
+          update();
+        }, syncTimeoutMs);
         update();
-        await store.firstSynced;
-        synced = true;
+        try {
+          await store.firstSynced;
+          syncState = 'synced';
+        } catch {
+          // Preserve any readable local document and keep listening for recovery,
+          // without marking an unconfirmed sync as fresh.
+          syncState = 'offline';
+        } finally {
+          if (timer !== undefined) {
+            clearTimeout(timer);
+            timer = undefined;
+          }
+        }
         update();
       })
       .catch(() => {
-        if (!disposed) setValue({ runtime, id, document: null, ready: true });
+        if (!disposed) {
+          setValue({ runtime, id, document: null, ready: true, syncState: 'offline' });
+        }
       });
     return () => {
       disposed = true;
+      retryAbort.abort();
+      if (timer !== undefined) clearTimeout(timer);
       release?.();
     };
-  }, [runtime, id]);
-  return value.runtime === runtime && value.id === id ? value : { document: null, ready: false };
+  }, [runtime, id, syncTimeoutMs]);
+  return value.runtime === runtime && value.id === id
+    ? value
+    : { document: null, ready: false, syncState: 'syncing' as const };
 }

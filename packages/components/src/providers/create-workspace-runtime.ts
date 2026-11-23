@@ -23,7 +23,11 @@ import type { AgentConfigId, MachineProviderRateLimitsRefreshResponse } from '@l
 import { createWorkspacePendingSends } from './workspace-pending-sends';
 import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
 import { createSessionSendResources } from '@/lib/session-send-resources';
-import { waitForScheduleWriteSync, withScheduleWrite } from './schedule-write-sync';
+import {
+  type ScheduleWriteOptions,
+  waitForScheduleWriteSync,
+  withScheduleWrite,
+} from './schedule-write-sync';
 import {
   getScheduleRoomId,
   scheduleDocSchema,
@@ -6355,7 +6359,7 @@ export async function createWorkspaceRuntime(deps: RuntimeDeps): Promise<Workspa
     withScheduleStore: async <T>(
       id: string,
       fn: (store: ScheduleDocStore) => Promise<T> | T,
-      options?: { create?: boolean }
+      options?: ScheduleWriteOptions
     ): Promise<T> => {
       // A provisional ordinary Repo is for local input/read access, not for
       // accepting a scheduled body into a namespace that E2EE may retire.

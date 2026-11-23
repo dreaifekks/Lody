@@ -2,6 +2,7 @@ import { getDroppedFileLocalPath } from '@/lib/dropped-local-path';
 import { space } from '@lody/ui/tokens/scales.stylex';
 import { useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
+import { toast } from '@/lib/toast';
 import { useTranslation } from 'react-i18next';
 import * as stylex from '@stylexjs/stylex';
 import { Textarea } from '@lody/ui/textarea';
@@ -35,6 +36,7 @@ import {
   saveScheduledMessage,
   scheduledAttachmentProgress,
 } from './scheduled-message-write';
+import { ScheduleEditConflictError } from '../../providers/schedule-write-sync';
 
 const styles = stylex.create({
   layout: { display: 'flex', flexDirection: 'column', gap: space[4], padding: space[4] },
@@ -45,6 +47,8 @@ const styles = stylex.create({
 /** Full-message tasks retain their target and rule; their payload never goes through the prompt-only editor. */
 export function ScheduledMessageEditor({
   document,
+  expectedActivationId,
+  expectedUpdatedAt,
   disabledReason,
   sent,
   state,
@@ -52,6 +56,8 @@ export function ScheduledMessageEditor({
   onSaved,
 }: {
   document: ScheduleDocument;
+  expectedActivationId?: string;
+  expectedUpdatedAt?: number;
   disabledReason?: string;
   sent: boolean;
   state?: ScheduleRuntimeRow['messageState'];
@@ -165,6 +171,9 @@ export function ScheduledMessageEditor({
           scheduleId,
           ...identity,
           create: false,
+          baseActivationId: document.definition.activationId,
+          expectedActivationId: expectedActivationId ?? document.definition.activationId,
+          expectedUpdatedAt: expectedUpdatedAt ?? document.definition.updatedAt,
           draft: {
             title,
             machineId,
@@ -181,11 +190,20 @@ export function ScheduledMessageEditor({
       });
       onSaved();
     } catch (cause) {
-      setError(
-        cause instanceof Error && cause.message === 'SCHEDULE_TIME_PASSED'
-          ? t('scheduledMessage.futureTime')
-          : t('scheduledMessage.saveError')
-      );
+      if (cause instanceof ScheduleEditConflictError) {
+        const message = t(
+          'schedules.staleEditConflict',
+          'This schedule was updated elsewhere. Review the latest version before saving.'
+        );
+        setError(message);
+        toast.error(message);
+      } else {
+        setError(
+          cause instanceof Error && cause.message === 'SCHEDULE_TIME_PASSED'
+            ? t('scheduledMessage.futureTime')
+            : t('scheduledMessage.saveError')
+        );
+      }
     } finally {
       setSaving(false);
       setProgress(null);
