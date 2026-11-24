@@ -16,10 +16,10 @@ export const AGY_EXTERNAL_MCP_BUDGET_ENV = 'LODY_AGY_MCP_EXTERNAL_BUDGET_TOKENS'
  * With Lody's 56 compact commands (~5.1k tok), 5,500 tok keeps worst-case MCP usage under
  * ~10.6k tok on skill-heavy machines (~11.7k MCP headroom).
  *
- * Each server still has a minimum floor of one 2-tool `lazy` facade (~360 tok).
+ * Each server still has a minimum floor of one 2-tool `lazy` facade (~400 tok).
  */
 export const DEFAULT_AGY_EXTERNAL_MCP_BUDGET_TOKENS = 5_500;
-export const AGY_LAZY_FACADE_FLOOR_TOKENS = 360;
+export const AGY_LAZY_FACADE_FLOOR_TOKENS = 400;
 const MIN_TOTAL_BUDGET_TOKENS = 800;
 const MAX_TOTAL_BUDGET_TOKENS = 18_000;
 const MIN_SERVER_SHARE_TOKENS = AGY_LAZY_FACADE_FLOOR_TOKENS;
@@ -30,7 +30,7 @@ const MAX_COMPACT_TOOLS = 25;
 const MAX_PINNED_ALLOW_TOOLS = 12;
 const COMPACT_SUMMARY_MAX_CHARS = 100;
 const HELP_INDEX_SUMMARY_MAX_CHARS = 120;
-const HELP_PREVIEW_MAX_CHARS = 240;
+const HELP_PREVIEW_MAX_BYTES = 200;
 const HELP_BATCH_MAX_TOOLS = 15;
 const HELP_RESPONSE_MAX_CHARS = 96 * 1024;
 const SEARCH_MAX_RESULTS = 30;
@@ -458,7 +458,7 @@ export function computeAgyServerTokenShare(
 /**
  * Returns an actionable warning when the number of selected external HTTP MCP servers
  * exceeds what `totalBudgetTokens` can hold even when every server folds to its minimum
- * 2-tool `lazy` facade (`~360 tok` each).
+ * 2-tool `lazy` facade (`~400 tok` each).
  */
 export function describeAgyExternalBudgetOverflow(
   servers: readonly ResolvedMcpServer[],
@@ -617,23 +617,26 @@ function pickUniqueToolName(
   return `${fallbackBase}_${Date.now()}`;
 }
 
-function buildToolNamePreview(tools: readonly UpstreamMcpTool[]): string {
-  if (tools.length === 0) return '';
+function buildToolNamePreview(
+  tools: readonly UpstreamMcpTool[],
+  maxSuffixBytes = HELP_PREVIEW_MAX_BYTES
+): string {
+  if (tools.length === 0 || maxSuffixBytes <= 0) return '';
   const prioritized = [
     ...tools.filter((tool) => CORE_TOOL_HINT_PATTERN.test(tool.name)),
     ...tools.filter((tool) => !CORE_TOOL_HINT_PATTERN.test(tool.name)),
   ];
   const chosen: string[] = [];
-  let chars = 0;
+  let preview = '';
   for (const tool of prioritized) {
-    const sep = chosen.length === 0 ? 0 : 2;
-    if (chars + sep + tool.name.length > HELP_PREVIEW_MAX_CHARS) break;
+    const nextChosen = [...chosen, tool.name];
+    const suffix = nextChosen.length < tools.length ? ', …' : '';
+    const candidate = ` Notable tools: ${nextChosen.join(', ')}${suffix}.`;
+    if (Buffer.byteLength(candidate, 'utf8') > maxSuffixBytes) break;
     chosen.push(tool.name);
-    chars += sep + tool.name.length;
+    preview = candidate;
   }
-  if (chosen.length === 0) return '';
-  const suffix = chosen.length < tools.length ? ', …' : '';
-  return ` Notable tools: ${chosen.join(', ')}${suffix}.`;
+  return preview;
 }
 
 function buildCompactToolDefinition(
@@ -660,28 +663,48 @@ function buildHelpToolDefinition(options: {
   readonly serverName: string;
   readonly tools: readonly UpstreamMcpTool[];
   readonly mode: 'compact' | 'lazy';
+  readonly maxTokens?: number;
 }): Record<string, unknown> {
-  const { helpToolName, callToolName, serverName, tools, mode } = options;
-  const description =
-    mode === 'lazy'
-      ? `Inspect ${serverName} MCP tools (${tools.length}, read-only). Call {} for index, {query} to search, or {tools:[...]} for full schemas before ${callToolName}.${buildToolNamePreview(tools)}`
-      : `Read full parameter schemas for ${serverName} MCP tools (${tools.length}, read-only). Pass {tool} or {tools:[...]} before calling parameterized tools, or {query}/{}.`;
+  const { helpToolName, callToolName, serverName, tools, mode, maxTokens } = options;
+  const inputSchema = {
+    type: 'object',
+    properties: {
+      tool: { type: 'string', description: 'Exact tool name.' },
+      tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Exact tool names (batch).',
+      },
+      query: { type: 'string', description: 'Keyword search.' },
+    },
+    additionalProperties: false,
+  };
+  let description: string;
+  if (mode === 'lazy') {
+    const baseDescription = `Inspect ${serverName} MCP tools (${tools.length}, read-only). Call {} for index, {query} to search, or {tools:[...]} for full schemas before ${callToolName}.`;
+    const maxPreviewBytes =
+      maxTokens !== undefined
+        ? Math.min(
+            HELP_PREVIEW_MAX_BYTES,
+            Math.max(
+              0,
+              maxTokens * 3 -
+                (Buffer.byteLength(helpToolName, 'utf8') +
+                  1 +
+                  Buffer.byteLength(baseDescription, 'utf8') +
+                  1 +
+                  Buffer.byteLength(JSON.stringify(inputSchema), 'utf8'))
+            )
+          )
+        : HELP_PREVIEW_MAX_BYTES;
+    description = `${baseDescription}${buildToolNamePreview(tools, maxPreviewBytes)}`;
+  } else {
+    description = `Read full parameter schemas for ${serverName} MCP tools (${tools.length}, read-only). Pass {tool} or {tools:[...]} before calling parameterized tools, or {query}/{}.`;
+  }
   return {
     name: helpToolName,
     description,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tool: { type: 'string', description: 'Exact tool name.' },
-        tools: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Exact tool names (batch).',
-        },
-        query: { type: 'string', description: 'Keyword search.' },
-      },
-      additionalProperties: false,
-    },
+    inputSchema,
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -697,14 +720,19 @@ function buildCallToolDefinition(options: {
 }): Record<string, unknown> {
   return {
     name: options.callToolName,
-    description: `Execute a ${options.serverName} MCP tool. Inspect its schema with ${options.helpToolName} first unless already in context.`,
+    description: `Execute a ${options.serverName} MCP tool (${options.helpToolName} first). Use argumentsJson for nested non-ASCII/colon keys so keys are not dropped.`,
     inputSchema: {
       type: 'object',
       properties: {
         tool: { type: 'string', description: 'Upstream tool name.' },
         arguments: {
           type: 'object',
-          description: 'Arguments matching tool inputSchema.',
+          description: 'Args object (mutually exclusive with argumentsJson).',
+        },
+        argumentsJson: {
+          type: 'string',
+          description:
+            'JSON object string (instead of arguments); use for non-ASCII or colon keys (e.g. CJK fields, date:x:start).',
         },
       },
       required: ['tool'],
@@ -852,17 +880,19 @@ export function rewriteToolsForAgyBudget(
     }
   }
 
+  const callTool = buildCallToolDefinition({
+    callToolName,
+    helpToolName,
+    serverName: directive.serverName,
+  });
+  const callTokens = estimateAdvertisedToolTokens(callTool);
   const helpTool = buildHelpToolDefinition({
     helpToolName,
     callToolName,
     serverName: directive.serverName,
     tools: deduplicated,
     mode: 'lazy',
-  });
-  const callTool = buildCallToolDefinition({
-    callToolName,
-    helpToolName,
-    serverName: directive.serverName,
+    maxTokens: Math.max(0, directive.share - callTokens),
   });
   const advertised: Record<string, unknown>[] = [helpTool, callTool];
   let usedTokens = advertised.reduce((sum, tool) => sum + estimateAdvertisedToolTokens(tool), 0);
@@ -1072,18 +1102,26 @@ export function buildHelpToolResponse(
       chars += serializedLen;
     }
 
-    const payload =
-      uniqueRequested.length === 1 && results.length === 1
-        ? results[0]!
-        : {
-            server: snapshot.serverName,
-            tools: results,
-            ...(truncated ? { truncated: true, requestedCount: uniqueRequested.length } : {}),
-          };
     const isError =
       uniqueRequested.length === 1 &&
       (isToolDeniedByRules(permissionRules, snapshot.serverName, uniqueRequested[0]!) ||
         !snapshot.toolsByName.has(uniqueRequested[0]!));
+    const hasPinnedAsk = uniqueRequested.some((name) => snapshot.pinnedAskNames.has(name));
+    const lazyCallHint =
+      snapshot.mode === 'lazy' && !hasPinnedAsk
+        ? `Invoke via ${snapshot.callToolName}({tool, arguments}) or ${snapshot.callToolName}({tool, argumentsJson}); use argumentsJson (JSON object string) when nested keys contain non-ASCII chars or colons (e.g. CJK fields, date:x:start) so keys are not dropped/truncated.`
+        : undefined;
+    const payload =
+      uniqueRequested.length === 1 && results.length === 1
+        ? !isError && lazyCallHint
+          ? { ...results[0]!, callHint: lazyCallHint }
+          : results[0]!
+        : {
+            server: snapshot.serverName,
+            ...(lazyCallHint ? { callHint: lazyCallHint } : {}),
+            tools: results,
+            ...(truncated ? { truncated: true, requestedCount: uniqueRequested.length } : {}),
+          };
     return {
       ...(isError ? { isError: true as const } : {}),
       content: [{ type: 'text', text: JSON.stringify(payload) }],
@@ -1193,9 +1231,43 @@ export function unwrapProxyCallRequest(
     };
   }
 
-  let forwardedArgs: Record<string, unknown> = {};
   const rawInner = rawArgs.arguments;
-  if (rawInner !== undefined && rawInner !== null) {
+  const rawJson = rawArgs.argumentsJson;
+  const hasArguments = rawInner !== undefined;
+  const hasArgumentsJson = rawJson !== undefined;
+
+  if (hasArguments && hasArgumentsJson) {
+    return {
+      ok: false,
+      message: `Cannot pass both "arguments" and "argumentsJson" for "${targetTool}"; choose one.`,
+    };
+  }
+
+  let forwardedArgs: Record<string, unknown> = {};
+  if (hasArgumentsJson) {
+    if (typeof rawJson !== 'string') {
+      return {
+        ok: false,
+        message: `"argumentsJson" for "${targetTool}" must be a JSON object string. Read ${snapshot.helpToolName}({tool:"${targetTool}"}) for its schema.`,
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch {
+      return {
+        ok: false,
+        message: `"argumentsJson" for "${targetTool}" is invalid JSON; pass a JSON object string. Read ${snapshot.helpToolName}({tool:"${targetTool}"}) for its schema.`,
+      };
+    }
+    if (!isPlainObject(parsed)) {
+      return {
+        ok: false,
+        message: `"argumentsJson" for "${targetTool}" must parse to a JSON object. Read ${snapshot.helpToolName}({tool:"${targetTool}"}) for its schema.`,
+      };
+    }
+    forwardedArgs = parsed;
+  } else if (rawInner !== undefined && rawInner !== null) {
     if (isPlainObject(rawInner)) {
       forwardedArgs = rawInner;
     } else if (typeof rawInner === 'string') {

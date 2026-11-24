@@ -622,7 +622,9 @@ leftover env entry in persisted configs is ignored harmlessly.
   server within a per-server token share (`raw` pass-through preserving full upstream
   definitions for small servers, `compact` open schemas + `tools_help` for medium servers,
   or a 2-tool `tools_help` + `tools_call` lazy facade for oversized servers such as
-  Notion). Explicit agy `mcp(...)` `deny` rules are enforced locally in all modes, and
+  Notion, where `tools_call` also accepts an optional `argumentsJson` JSON-object string
+  mutually exclusive with `arguments` to preserve nested non-ASCII/colon keys). Explicit
+  agy `mcp(...)` `deny` rules are enforced locally in all modes, and
   per-tool `ask` rules pin their target tools natively (refusing `tools_call` bypass).
   Non-Antigravity agents never send the header and continue to receive unmodified upstream
   passthrough.

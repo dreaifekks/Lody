@@ -313,9 +313,40 @@ describe('agy-external-mcp-proxy pure budget & parsing helpers', () => {
         }),
       0
     );
-    expect(lazyTokens).toBeLessThanOrEqual(400);
+    expect(lazyTokens).toBeLessThanOrEqual(AGY_LAZY_FACADE_FLOOR_TOKENS);
     expect(lazyRes.advertisedTools[0]?.description).toContain('notion-fetch');
     expect(lazyRes.advertisedTools[0]?.description).toContain('notion-query-data-sources');
+    const callSchema = lazyRes.advertisedTools[1]?.inputSchema as {
+      properties?: Record<string, { type?: string; description?: string }>;
+    };
+    expect(callSchema?.properties?.argumentsJson?.type).toBe('string');
+    expect(callSchema?.properties?.argumentsJson?.description).toContain('non-ASCII');
+    expect(lazyRes.advertisedTools[1]?.description).toContain('argumentsJson');
+
+    // Long server names and collision-avoidance names at minimum share still trim preview to fit <= 400 tokens.
+    for (const serverName of ['personal-external-notion-workspace-server', 'a'.repeat(64)]) {
+      const tightRes = rewriteToolsForAgyBudget(
+        [
+          { name: 'tools_help', description: 'Upstream help', inputSchema: { type: 'object' } },
+          { name: 'tools_call', description: 'Upstream call', inputSchema: { type: 'object' } },
+          ...giant,
+        ],
+        { share: AGY_LAZY_FACADE_FLOOR_TOKENS, serverName }
+      );
+      expect(tightRes.ok).toBe(true);
+      if (!tightRes.ok) throw new Error('expected tight lazy ok');
+      const tightTokens = tightRes.advertisedTools.reduce(
+        (sum, tool) =>
+          sum +
+          estimateAgyToolTokens({
+            name: String(tool.name),
+            description: typeof tool.description === 'string' ? tool.description : undefined,
+            inputSchema: tool.inputSchema,
+          }),
+        0
+      );
+      expect(tightTokens).toBeLessThanOrEqual(AGY_LAZY_FACADE_FLOOR_TOKENS);
+    }
   });
 
   it('avoids synthetic tool name collisions when upstream already exports tools_help/tools_call', () => {
@@ -873,6 +904,21 @@ describe('withAgyMcpBudgetProxy over loopback relay', () => {
       tools: Array<{ name: string }>;
     };
     expect(index.tools.map((t) => t.name)).not.toContain('notion-delete-page');
+
+    // Batch tools_help containing a pinned ask tool omits generic tools_call callHint.
+    const pinnedBatchHelp = (await (
+      await fetch(relay.endpoint.url, {
+        method: 'POST',
+        headers: agyHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 21,
+          method: 'tools/call',
+          params: { name: 'tools_help', arguments: { tools: ['notion-update-page', 'tool_2'] } },
+        }),
+      })
+    ).json()) as { result: { content: Array<{ text: string }> } };
+    expect(JSON.parse(pinnedBatchHelp.result.content[0]!.text)).not.toHaveProperty('callHint');
 
     // 3. Denied tool is rejected both through tools_call and direct call; upstream never receives it.
     const deniedViaFacade = await fetch(relay.endpoint.url, {
@@ -1746,5 +1792,188 @@ describe('withAgyMcpBudgetProxy over loopback relay', () => {
         task: { ttl: 60_000 },
       },
     ]);
+  });
+
+  it('supports mutually exclusive argumentsJson in tools_call, validates strictly, and preserves CJK/colon keys', async () => {
+    const tools: UpstreamMcpTool[] = [
+      ...makeSyntheticTools(30, 1200),
+      {
+        name: 'notion-update-page',
+        description: 'Update properties of an existing Notion page.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            page_id: { type: 'string' },
+            command: { type: 'string' },
+            properties: { type: 'object' },
+          },
+          required: ['page_id'],
+        },
+      },
+      {
+        name: 'notion-ping',
+        description: 'No-argument health check.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ];
+    const upstreamCalls: Array<{
+      name: string;
+      arguments: unknown;
+      task?: unknown;
+    }> = [];
+    const upstreamFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      const rpc = JSON.parse(decodeFetchBody(init?.body)) as {
+        id: string | number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      if (rpc.method === 'tools/list') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (rpc.method === 'tools/call') {
+        upstreamCalls.push({
+          name: String(rpc.params?.name),
+          arguments: rpc.params?.arguments,
+          ...(rpc.params?.task !== undefined ? { task: rpc.params.task } : {}),
+        });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: { content: [{ type: 'text', text: 'ok' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const relay = await startProxyRelay(upstreamFetch);
+    cleanups.push(relay.close);
+
+    const agyHeaders = {
+      Authorization: `Bearer ${relay.endpoint.capability}`,
+      'Content-Type': 'application/json',
+      [AGY_MCP_PROXY_HEADER]: formatAgyMcpProxyHeader({ share: 2000, serverName: 'notion' }),
+    };
+
+    const postRpc = async (id: number, method: string, params?: Record<string, unknown>) =>
+      (await (
+        await fetch(relay.endpoint.url, {
+          method: 'POST',
+          headers: agyHeaders,
+          body: JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }),
+        })
+      ).json()) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+
+    // Warm lazy catalog and verify tools_help schema response includes argumentsJson callHint.
+    await postRpc(1, 'tools/list');
+    const helpJson = await postRpc(2, 'tools/call', {
+      name: 'tools_help',
+      arguments: { tool: 'notion-update-page' },
+    });
+    const helpPayload = JSON.parse(helpJson.result.content[0]!.text) as {
+      name: string;
+      callHint?: string;
+    };
+    expect(helpPayload.name).toBe('notion-update-page');
+    expect(helpPayload.callHint).toContain('argumentsJson');
+
+    // 1. Valid argumentsJson with CJK keys, colon keys, null value, and params.task forwards verbatim.
+    const notionPayload = {
+      page_id: '00000000-0000-0000-0000-000000000001',
+      command: 'update_properties',
+      properties: {
+        阶段: '已完成',
+        下一步: '示例跟进备注',
+        主要待确认: '示例核对结果',
+        'date:行动日期:start': null,
+      },
+    };
+    const validRes = await postRpc(3, 'tools/call', {
+      name: 'tools_call',
+      task: { ttl: 30_000 },
+      arguments: {
+        tool: 'notion-update-page',
+        argumentsJson: JSON.stringify(notionPayload),
+      },
+    });
+    expect(validRes.result.isError).toBeUndefined();
+    expect(upstreamCalls).toEqual([
+      {
+        name: 'notion-update-page',
+        arguments: notionPayload,
+        task: { ttl: 30_000 },
+      },
+    ]);
+
+    // 2. Both arguments and argumentsJson omitted (or legacy standalone arguments: null) defaults to {}.
+    const omittedRes = await postRpc(4, 'tools/call', {
+      name: 'tools_call',
+      arguments: { tool: 'notion-ping' },
+    });
+    expect(omittedRes.result.isError).toBeUndefined();
+    expect(upstreamCalls[1]).toEqual({ name: 'notion-ping', arguments: {} });
+
+    const standaloneNullArgsRes = await postRpc(5, 'tools/call', {
+      name: 'tools_call',
+      arguments: { tool: 'notion-ping', arguments: null },
+    });
+    expect(standaloneNullArgsRes.result.isError).toBeUndefined();
+    expect(upstreamCalls[2]).toEqual({ name: 'notion-ping', arguments: {} });
+
+    const callsBeforeInvalid = upstreamCalls.length;
+    let nextId = 6;
+
+    // 3. Passing both arguments (including explicit null) and argumentsJson fails without upstream call.
+    for (const bothArgs of [
+      { tool: 'notion-update-page', arguments: { page_id: '1' }, argumentsJson: '{"page_id":"2"}' },
+      { tool: 'notion-update-page', arguments: {}, argumentsJson: '{}' },
+      { tool: 'notion-update-page', arguments: null, argumentsJson: '{"page_id":"2"}' },
+    ]) {
+      const res = await postRpc(nextId++, 'tools/call', {
+        name: 'tools_call',
+        arguments: bothArgs,
+      });
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0]?.text).toContain('Cannot pass both');
+    }
+
+    // 4. Malformed JSON strings fail cleanly without calling upstream.
+    for (const badJson of ['{bad', '', '   ']) {
+      const res = await postRpc(nextId++, 'tools/call', {
+        name: 'tools_call',
+        arguments: { tool: 'notion-update-page', argumentsJson: badJson },
+      });
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0]?.text).toContain('invalid JSON');
+    }
+
+    // 5. Valid JSON that is not a plain object (array, null, number, string, boolean) fails cleanly.
+    for (const nonObjectJson of ['[]', 'null', '123', '"str"', 'true']) {
+      const res = await postRpc(nextId++, 'tools/call', {
+        name: 'tools_call',
+        arguments: { tool: 'notion-update-page', argumentsJson: nonObjectJson },
+      });
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0]?.text).toContain('must parse to a JSON object');
+    }
+
+    // 6. Non-string argumentsJson values fail cleanly without calling upstream.
+    for (const nonString of [null, 123, true, [], { page_id: '1' }]) {
+      const res = await postRpc(nextId++, 'tools/call', {
+        name: 'tools_call',
+        arguments: { tool: 'notion-update-page', argumentsJson: nonString },
+      });
+      expect(res.result.isError).toBe(true);
+      expect(res.result.content[0]?.text).toContain('must be a JSON object string');
+    }
+
+    expect(upstreamCalls).toHaveLength(callsBeforeInvalid);
   });
 });

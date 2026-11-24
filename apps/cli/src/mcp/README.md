@@ -29,8 +29,11 @@ small servers pass through raw verbatim, medium servers advertise compact schema
 a local `tools_help` reader, and oversized servers fold into a 2-tool `tools_help` +
 `tools_call` facade while isolating catalogs per `mcp-session-id`, enforcing agy's
 `mcp(...)` deny/ask rules, preserving OAuth 401 refresh retries and upstream SSE
-streaming, and cleaning up per-lease state on close. Other agents omit the header and
-receive unmodified byte-for-byte passthrough.
+streaming, and cleaning up per-lease state on close. In `lazy` mode, `tools_call`
+accepts either `arguments` or a mutually exclusive `argumentsJson` JSON-object string
+so agy can pass nested non-ASCII or colon object keys (e.g. Notion CJK properties or
+`date:...:start`) without its function-call serializer dropping or truncating keys.
+Other agents omit the header and receive unmodified byte-for-byte passthrough.
 Stdio credentials go only to the selected local process environment. A requester
 change retires an MCP-bearing Session before another user can reuse its processes.
 
