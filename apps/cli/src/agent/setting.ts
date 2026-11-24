@@ -217,15 +217,23 @@ const KIMI_CODE_ACP_PATH_RELATIVE_DIR = '.kimi-code/bin';
 const registryAgentsById: Record<string, RegistryAcpAgent> = Object.fromEntries(
   REGISTRY_ACP_AGENTS.map((agent) => [agent.id, agent])
 );
+/**
+ * LAN fork: pinned agy CLI version for persisted `registry/antigravity-acp`
+ * providers, downloaded directly from `google-antigravity/antigravity-cli`
+ * GitHub Releases. Builtin `antigravity` stays pinned to
+ * {@link ANTIGRAVITY_RUNTIME_VERSION} (`antigravity-runtime-manifest.json`)
+ * until upstream mirrors newer `.tar.zst` runtime artifacts.
+ */
+export const ANTIGRAVITY_ACP_REGISTRY_VERSION = '1.5.16';
 // Keep existing providers and stored turns runnable until their owner chooses
 // migration. This compatibility entry is deliberately absent from the catalog.
-// It runs the managed runtime's agy release from agy's GitHub distribution, so
-// both Antigravity identities get agy's fixes together: before 1.5.10 agy held
-// a background wakeup's output back until the next prompt.
+// It runs agy from GitHub Releases at ANTIGRAVITY_ACP_REGISTRY_VERSION so the
+// LAN fork can adopt upstream agy ACP fixes ahead of the upstream-mirrored
+// builtin runtime manifest without altering its checksummed artifacts.
 registryAgentsById['antigravity-acp'] = {
   id: 'antigravity-acp',
   name: 'Antigravity ACP (Legacy)',
-  version: ANTIGRAVITY_RUNTIME_VERSION,
+  version: ANTIGRAVITY_ACP_REGISTRY_VERSION,
   description: 'Google’s AI coding agent',
   icon: 'https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg',
   distribution: {
@@ -240,7 +248,7 @@ registryAgentsById['antigravity-acp'] = {
       }).map(([platform, archive]) => [
         platform,
         {
-          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_RUNTIME_VERSION}/agy_cli_${archive}`,
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_${archive}`,
           cmd: platform.startsWith('windows-') ? './antigravity.exe' : './antigravity',
           args: ['acp', '--process-per-session', '--disable-telemetry'],
           env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },

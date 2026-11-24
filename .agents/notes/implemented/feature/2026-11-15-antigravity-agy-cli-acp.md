@@ -21,8 +21,9 @@ client-provided MCP server, including Lody's own `lody` server, unless an agy al
 rule covers it, and stored `auto_edit` and `thinking_level` selections no longer
 validate. agy skips permission requests only for a whole process, so Lody's `yolo`
 mode starts the session's agy with `--dangerously-skip-permissions` and restarts it
-when a turn switches YOLO on or off. Both Antigravity identities run the same agy
-release; from 1.5.10 agy streams what a background wakeup produces after `end_turn`,
+when a turn switches YOLO on or off. Builtin Antigravity uses the upstream-mirrored
+agy manifest while persisted registry Antigravity pins its GitHub release independently
+(`ANTIGRAVITY_ACP_REGISTRY_VERSION`); from 1.5.10 agy streams what a background wakeup produces after `end_turn`,
 and Lody writes it into the finished turn. agy also declares client-provided MCP tools only
 up to a prompt budget and drops the rest, so Lody lists its own commands to agy
 without input schemas and `lody_help` supplies their parameters.
@@ -176,8 +177,10 @@ New Providers use the upstream managed builtin Antigravity, pinned by
 `acp --process-per-session --disable-telemetry` with automatic updates disabled;
 `antigravityPath` selects a user-managed executable. Persisted registry Providers
 keep the fork's agy GitHub distribution in `setting.ts`, hidden from new-Provider
-discovery, at the manifest's agy version, so one pin brings an agy fix to both
-identities. Their identities and stored conversations are not rewritten.
+discovery and pinned independently via `ANTIGRAVITY_ACP_REGISTRY_VERSION` (1.5.16),
+so the LAN fork can adopt upstream agy ACP fixes ahead of upstream `.tar.zst`
+runtime-mirror updates without modifying `antigravity-runtime-manifest.json`. Their
+identities and stored conversations are not rewritten.
 
 The registry's Antigravity joins the Claude/Grok identity fallback for titles and
 accepts untagged `session_info_update` titles. agy titles each conversation in the
@@ -294,9 +297,10 @@ wakeup streaming.
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` no longer changes the model list for this
   entry. Sending the Zed client identity is harmless.
 - A wakeup's reply lands in the turn that started the background work; Lody announces
-  that turn as finished only after the wakeup goes quiet. The managed runtime's next
-  agy version also changes the registry entry's download, and the first launch after
-  an update downloads it.
+  that turn as finished only after the wakeup goes quiet. Bumping
+  `ANTIGRAVITY_ACP_REGISTRY_VERSION` updates only the registry entry's GitHub download
+  and capability source version (first launch after an update downloads it), leaving
+  builtin `antigravity` on `antigravity-runtime-manifest.json`.
 - A permission request from a wakeup targets a finished turn, which refuses
   permission writes, so Lody cancels it in any mode. Only what agy decides itself
   never asks: YOLO, agy's allow rules, and commands that agy's `auto` runs in its
@@ -312,7 +316,8 @@ wakeup streaming.
 - `scripts/generate-acp-registry.test.mjs` verifies discovery exclusion;
   `apps/cli/src/agent/acp-runner.test.ts` covers both identities’ print-mode quota.
 - `apps/cli/tests/agent-setting.test.ts` pins the registry entry's capability source
-  to the managed runtime's agy version.
+  and GitHub release distribution to `ANTIGRAVITY_ACP_REGISTRY_VERSION` while keeping
+  builtin `antigravity` on `ANTIGRAVITY_RUNTIME_VERSION`.
 - The 2026-11-19 runs in Findings cover agy 1.5.9's held-back output and a replaced
   process losing it (raw ACP), and agy 1.5.10's wakeup reaching the finished turn
   through a temporary daemon, on Linux only.

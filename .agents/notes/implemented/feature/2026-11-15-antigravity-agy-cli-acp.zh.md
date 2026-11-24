@@ -17,7 +17,8 @@ agy CLI 的 GitHub release 启动 `antigravity acp`，Lody 会话因此和本地
 传入的 MCP 服务（包括 Lody 自己的 `lody`），除非有 agy 的允许规则覆盖，agy 每次调用工具都会询问；
 另外，已保存的 `auto_edit`、`thinking_level` 选择不再通过校验。agy 只能让整个进程跳过权限询问，
 所以 Lody 的 `yolo` 模式用 `--dangerously-skip-permissions` 启动该会话的 agy，某一轮切入或切出
-YOLO 时重启它。两种 Antigravity 身份运行同一个 agy 版本；从 1.5.10 起，agy 会把后台工作唤醒后
+YOLO 时重启它。内置 Antigravity 使用上游镜像 manifest，已有 registry Antigravity 通过
+`ANTIGRAVITY_ACP_REGISTRY_VERSION` 独立固定 GitHub release 版本；从 1.5.10 起，agy 会把后台工作唤醒后
 在 `end_turn` 之后产生的内容即时发出，Lody 把它写进已结束的那一轮。agy 对客户端传入的 MCP 工具只在提示词预算内声明，其余直接丢掉，所以 Lody 给 agy
 列出的自家命令不带输入 schema，参数由 `lody_help` 提供。
 
@@ -117,8 +118,10 @@ Linux x86_64 及一个 macOS 会话，从 `~/.gemini/antigravity-cli/conversatio
 新 Provider 使用上游托管的内置 Antigravity，由 `antigravity-runtime-manifest.json`
 固定到 agy 1.5.10。启动参数为 `acp --process-per-session --disable-telemetry`，
 禁用自动更新；`antigravityPath` 可指定用户维护的可执行文件。已有 registry Provider 在
-`setting.ts` 保留 fork 使用的 agy GitHub 分发，从新建列表隐藏，版本跟随 manifest 的 agy 版本，
-一个固定点就能把 agy 的修复带给两种身份；不改写身份或已存会话。
+`setting.ts` 保留 fork 使用的 agy GitHub 分发，从新建列表隐藏，并通过
+`ANTIGRAVITY_ACP_REGISTRY_VERSION`（1.5.16）独立固定版本，使 LAN fork 能在上游 `.tar.zst`
+镜像更新前率先采用上游 agy ACP 修复，同时保持 `antigravity-runtime-manifest.json`
+不变；不改写身份或已存会话。
 
 registry 的 Antigravity 加入 Claude/Grok 的身份兼容名单，接收不带标签的
 `session_info_update` 标题。agy 按提示词的语言给每个会话起标题；独立的标题会话会多出一个
@@ -202,8 +205,9 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
   保留账户环境和全部返回分组；不启动模型轮次或 ACP 配额会话，不读旧 token，也不直接请求 Cloud Code。
   见 [配额决策](../bug-fix/2026-10-20-antigravity-argon-quota.zh.md)。
 - `LODY_ANTIGRAVITY_THIRD_PARTY_MODELS` 不再影响这个条目的模型列表，继续发送 Zed 客户端身份没有影响。
-- 唤醒后的回复落在发起后台工作的那一轮；Lody 等唤醒安静下来后才宣布这一轮结束。托管运行时的
-  agy 升级也会改变 registry 条目的下载，升级后第一次启动时下载新版本。
+- 唤醒后的回复落在发起后台工作的那一轮；Lody 等唤醒安静下来后才宣布这一轮结束。提升
+  `ANTIGRAVITY_ACP_REGISTRY_VERSION` 只更新 registry 条目的 GitHub 下载与能力来源版本
+  （升级后第一次启动时下载新版本），内置 `antigravity` 仍维持 `antigravity-runtime-manifest.json`。
 - 唤醒产生的权限请求指向已结束的一轮，而已结束的一轮拒绝写入权限请求，所以不论哪种模式 Lody
   都会取消它。只有 agy 自己做决定的情况不会发请求：YOLO、agy 的允许规则，以及 agy 的 `auto`
   在沙箱里运行的命令。
@@ -215,7 +219,9 @@ YOLO 是 Lody 加进 agy 模式列表的模式，沿用旧服务的 id，已保�
 
 - `scripts/generate-acp-registry.test.mjs` 验证新建列表排除旧条目；
   `apps/cli/src/agent/acp-runner.test.ts` 覆盖两种身份的 print 模式配额。
-- `apps/cli/tests/agent-setting.test.ts` 把 registry 条目的能力来源版本固定为托管运行时的 agy 版本。
+- `apps/cli/tests/agent-setting.test.ts` 将 registry 条目的能力来源版本与 GitHub release
+  分发固定到 `ANTIGRAVITY_ACP_REGISTRY_VERSION`，同时验证内置 `antigravity` 保持在
+  `ANTIGRAVITY_RUNTIME_VERSION`。
 - 「发现」里 2026-11-19 的实测覆盖了 agy 1.5.9 扣住输出、换进程后丢失（原始 ACP），以及 agy 1.5.10
   的唤醒内容经由临时 daemon 落进已结束的一轮；只在 Linux 上测过。
 - `packages/shared/tests/title-generation-defaults.test.ts` 固定标题归属。

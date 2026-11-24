@@ -18,6 +18,8 @@ import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { spawn } from 'node:child_process';
 
 import {
+  ANTIGRAVITY_ACP_REGISTRY_VERSION,
+  BuiltinACPSetting,
   expandHomePath,
   getAcpCapabilitySourceVersion,
   mergeACPProcessEnv,
@@ -32,6 +34,7 @@ import {
   resolveRegistryNpxPackage,
   withDefaultAcpPathEntries,
 } from '../src/agent/setting';
+import * as acpBinaryManager from '../src/agent/acp-binary-manager';
 import {
   ANTIGRAVITY_RUNTIME_VERSION,
   BUILTIN_CLAUDE_CAPABILITY_SOURCE_VERSION,
@@ -914,14 +917,15 @@ describe('resolveBuiltinACPSetting', () => {
     );
   });
 
-  it('pins persisted registry Antigravity to the agy release and ignores leftover third-party env', () => {
+  it('pins persisted registry Antigravity to the LAN fork GitHub agy release and ignores leftover third-party env', async () => {
     const plain = { cliType: 'registry' as const, agentType: 'antigravity-acp' };
     const withLegacyEnv = { ...plain, env: { LODY_ANTIGRAVITY_THIRD_PARTY_MODELS: '1' } };
 
     // The creation catalog hides this provider; the compatibility resolver still knows it
-    // and runs the managed runtime's agy release without client-identity spoofing.
+    // and runs the fork's GitHub agy release independently of the managed builtin manifest.
     const sourceVersion = getAcpCapabilitySourceVersion(plain);
-    expect(sourceVersion).toBe(`antigravity-acp@${ANTIGRAVITY_RUNTIME_VERSION}+agy-usage:1`);
+    expect(ANTIGRAVITY_ACP_REGISTRY_VERSION).toBe('1.5.16');
+    expect(sourceVersion).toBe(`antigravity-acp@${ANTIGRAVITY_ACP_REGISTRY_VERSION}+agy-usage:1`);
     expect(getAcpCapabilitySourceVersion(withLegacyEnv)).toBe(sourceVersion);
     const oldCache = {
       cacheVersion: ACP_CAPABILITY_CACHE_VERSION,
@@ -936,6 +940,15 @@ describe('resolveBuiltinACPSetting', () => {
     );
     expect(
       getAcpCapabilityCacheStaleReason(
+        {
+          ...oldCache,
+          sourceVersion: `antigravity-acp@${ANTIGRAVITY_RUNTIME_VERSION}+agy-usage:1`,
+        },
+        sourceVersion
+      )
+    ).toBe('source-version-mismatch');
+    expect(
+      getAcpCapabilityCacheStaleReason(
         { ...oldCache, sourceVersion: `${sourceVersion}+client:zed` },
         sourceVersion
       )
@@ -943,6 +956,68 @@ describe('resolveBuiltinACPSetting', () => {
     expect(
       getAcpCapabilityCacheStaleReason({ ...oldCache, sourceVersion }, sourceVersion)
     ).toBeUndefined();
+
+    let capturedAgent: (typeof REGISTRY_ACP_AGENTS)[number] | undefined;
+    const binaryManager = vi.spyOn(acpBinaryManager, 'getAcpBinaryManager').mockReturnValue({
+      ensureBinary: async (agent: (typeof REGISTRY_ACP_AGENTS)[number]) => {
+        capturedAgent = agent;
+        return {
+          command: '/cached/antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        };
+      },
+    } as never);
+    try {
+      const launch = await resolveACPProcessLaunchAsync(plain);
+      expect(launch).toEqual({
+        command: '/cached/antigravity',
+        args: ['acp', '--process-per-session', '--disable-telemetry'],
+        env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        capabilitySourceVersion: sourceVersion,
+      });
+      expect(capturedAgent?.version).toBe(ANTIGRAVITY_ACP_REGISTRY_VERSION);
+      expect(capturedAgent?.distribution.binary).toEqual({
+        'darwin-aarch64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_mac_arm64.tar.gz`,
+          cmd: './antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+        'darwin-x86_64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_mac_x64.tar.gz`,
+          cmd: './antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+        'linux-aarch64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_linux_arm64.tar.gz`,
+          cmd: './antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+        'linux-x86_64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_linux_x64.tar.gz`,
+          cmd: './antigravity',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+        'windows-aarch64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_windows_arm64.zip`,
+          cmd: './antigravity.exe',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+        'windows-x86_64': {
+          archive: `https://github.com/google-antigravity/antigravity-cli/releases/download/${ANTIGRAVITY_ACP_REGISTRY_VERSION}/agy_cli_windows_x64.zip`,
+          cmd: './antigravity.exe',
+          args: ['acp', '--process-per-session', '--disable-telemetry'],
+          env: { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+        },
+      });
+    } finally {
+      binaryManager.mockRestore();
+    }
   });
 
   it('keeps removed registry providers launchable without listing duplicates', () => {
@@ -1384,6 +1459,11 @@ describe('managed Antigravity', () => {
         ).args
       ).toEqual(['acp', '--process-per-session', '--disable-telemetry']);
       expect(REGISTRY_ACP_AGENTS.some((a) => a.id === 'antigravity-acp')).toBe(false);
+      // Builtin Antigravity stays pinned to the managed manifest independently of the registry bump.
+      expect(BuiltinACPSetting.antigravity.version).toBe(ANTIGRAVITY_RUNTIME_VERSION);
+      expect(getAcpCapabilitySourceVersion({ cliType: 'builtin', agentType: 'antigravity' })).toBe(
+        `builtin-antigravity:${ANTIGRAVITY_RUNTIME_VERSION}`
+      );
     } finally {
       manager.mockRestore();
     }

@@ -274,7 +274,10 @@ uses methods returned by ACP initialize, not a native terminal login command.
 New Provider discovery omits `registry/antigravity-acp`. Persisted Providers retain
 the fork’s agy CLI launch definition from agy’s GitHub releases and show a Legacy
 label; neither Provider identity nor native session IDs are rewritten. That entry
-downloads the manifest’s agy version, so both identities run the same agy release.
+pins its own GitHub release version via `ANTIGRAVITY_ACP_REGISTRY_VERSION` in
+`setting.ts` (independent of `antigravity-runtime-manifest.json`), so the LAN fork
+can adopt upstream agy fixes ahead of upstream managed-runtime mirrors while keeping
+builtin `antigravity` on `ANTIGRAVITY_RUNTIME_VERSION`.
 Create a builtin Provider for new work. Compatibility of old server sessions with
 agy is not assumed.
 
@@ -557,7 +560,9 @@ isolated generator's own fallback is the raw prompt.
 
 New Providers use [managed Antigravity](#managed-antigravity). Persisted
 `registry/antigravity-acp` Providers retain the fork’s agy CLI GitHub distribution
-in `setting.ts`, at the managed runtime’s agy version and hidden from discovery. Both launch
+in `setting.ts`, pinned independently via `ANTIGRAVITY_ACP_REGISTRY_VERSION` and
+hidden from discovery while builtin `antigravity` stays on
+`antigravity-runtime-manifest.json`. Both launch
 `acp --process-per-session --disable-telemetry` with automatic updates disabled;
 the legacy transition never returns to `agy_acp_server`.
 The server loads the user's agy plugins, hooks and MCP servers, and offers `default`,
