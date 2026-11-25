@@ -34,8 +34,14 @@ const EXPLICIT_COMPACT_COMMAND_RE = /^\/compact(?:\s|$)/;
  * or `/plugin.cmd`, while rejecting multi-segment filesystem paths like `/home/user/file`.
  */
 const SLASH_COMMAND_INPUT_RE = /^\/[a-zA-Z0-9_.:-]+(?:\s|$)/;
-const BOARD_CONTEXT_REMINDER_BLOCK_RE =
-  /(?:\r?\n)*[ \t]*<board_context_reminder>[\s\S]*?<\/board_context_reminder>[ \t]*(?:\r?\n)*/g;
+/** Fixed first line emitted by `buildBoardCompactReminder`, used to identify Lody-generated blocks. */
+export const BOARD_CONTEXT_REMINDER_HEADER =
+  'Context was recently compacted or reconstructed. The current Board role, boundaries, and rules below are authoritative and override any earlier summary.';
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const BOARD_CONTEXT_REMINDER_BLOCK_RE = new RegExp(
+  `(?:\\r?\\n)*[ \\t]*<board_context_reminder>\\r?\\n${escapeRegExp(BOARD_CONTEXT_REMINDER_HEADER)}[\\s\\S]*?<\\/board_context_reminder>[ \\t]*(?:\\r?\\n)*`,
+  'g'
+);
 const MARKER_FILE_VERSION = 1;
 const MAX_OPEN_COMPACTION_IDS_PER_SESSION = 16;
 
@@ -48,8 +54,6 @@ export type BoardCompactPromptContext = {
 
 export type BoardCompactContextLoadResult = {
   context?: BoardCompactPromptContext;
-  /** True only when the workspace Flock catalog synced cleanly and confirmed the Board is gone. */
-  confirmedMissing?: boolean;
 };
 
 export type BoardCompactReinjectStore = {
@@ -60,13 +64,15 @@ export type BoardCompactReinjectStore = {
 
 export type BoardCompactionReason = 'explicit_compact' | 'acp_marker' | 'usage_drop';
 
-type ActiveTurnUsageObservation = {
+export type BoardTurnUsageSnapshot = {
   turnId: string;
   peakUsed?: number;
   lastObservedUsed?: number;
   detectedUsageDrop: boolean;
   detectedCompactionMarker: boolean;
 };
+
+type ActiveTurnUsageObservation = BoardTurnUsageSnapshot;
 
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -221,8 +227,7 @@ export function buildBoardCompactReminder(context: BoardCompactPromptContext): s
   const isCoordinator = role === 'coordinator';
   const goal = board.purpose.trim() ? ` Goal: ${board.purpose.trim()}.` : '';
 
-  const header =
-    'Context was recently compacted or reconstructed. The current Board role, boundaries, and rules below are authoritative and override any earlier summary.';
+  const header = BOARD_CONTEXT_REMINDER_HEADER;
 
   const identity = isCoordinator
     ? `Role: main session (coordinator) of Board "${board.name}".${goal}
@@ -495,10 +500,13 @@ export class BoardCompactReinjectTracker {
     });
   }
 
-  endTurn(sessionId: SessionId, turnId: string): void {
-    if (this.activeTurns.get(sessionId)?.turnId === turnId) {
+  endTurn(sessionId: SessionId, turnId: string): BoardTurnUsageSnapshot | undefined {
+    const active = this.activeTurns.get(sessionId);
+    if (active?.turnId === turnId) {
       this.activeTurns.delete(sessionId);
+      return active;
     }
+    return undefined;
   }
 
   private async awaitIdleMarks(sessionId: SessionId): Promise<void> {
@@ -611,6 +619,7 @@ export class BoardCompactReinjectTracker {
     meta: SessionMeta | null | undefined;
     dispatchSource?: string;
     hasGoalControl?: boolean;
+    hasNonTextInput?: boolean;
     turnInputText: string;
     promptBlocks: ContentBlock[];
     loadBoardContext: () => Promise<BoardCompactContextLoadResult>;
@@ -620,6 +629,7 @@ export class BoardCompactReinjectTracker {
       meta,
       dispatchSource,
       hasGoalControl,
+      hasNonTextInput,
       turnInputText,
       promptBlocks,
       loadBoardContext,
@@ -637,7 +647,7 @@ export class BoardCompactReinjectTracker {
     try {
       await this.awaitIdleMarks(sessionId);
       const pending = await this.store.has(sessionId);
-      if (!pending || isSlashCommandInput(turnInputText)) {
+      if (!pending || (!hasNonTextInput && isSlashCommandInput(turnInputText))) {
         return { promptBlocks, injected: false };
       }
 
@@ -646,14 +656,6 @@ export class BoardCompactReinjectTracker {
         loaded = await loadBoardContext();
       } catch (error) {
         this.logger.warn(`[${sessionId}] Skipping Board compact reminder: ${formatError(error)}`);
-        return { promptBlocks, injected: false };
-      }
-
-      if (loaded.confirmedMissing) {
-        this.logger.warn(
-          `[${sessionId}] Skipping Board compact reminder: Board confirmed missing after catalog sync`
-        );
-        await this.clearPending(sessionId);
         return { promptBlocks, injected: false };
       }
 
@@ -715,6 +717,7 @@ export class BoardCompactReinjectTracker {
     explicitCompactTriggered: boolean;
     turnStartUsed?: number;
     ineligibleForUsageDrop: boolean;
+    observationSnapshot?: BoardTurnUsageSnapshot;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
     const {
@@ -731,15 +734,22 @@ export class BoardCompactReinjectTracker {
       explicitCompactTriggered,
       turnStartUsed,
       ineligibleForUsageDrop,
+      observationSnapshot,
       readAssistantTurn,
     } = args;
 
     try {
       const active = this.activeTurns.get(sessionId);
-      const observedPeakUsed = active?.turnId === turnId ? active.peakUsed : undefined;
-      const lastObservedUsed = active?.turnId === turnId ? active.lastObservedUsed : undefined;
-      const observedUsageDrop = active?.turnId === turnId ? active.detectedUsageDrop : false;
-      const observedMarker = active?.turnId === turnId ? active.detectedCompactionMarker : false;
+      const observation =
+        active?.turnId === turnId
+          ? active
+          : observationSnapshot?.turnId === turnId
+            ? observationSnapshot
+            : undefined;
+      const observedPeakUsed = observation?.peakUsed;
+      const lastObservedUsed = observation?.lastObservedUsed;
+      const observedUsageDrop = observation?.detectedUsageDrop ?? false;
+      const observedMarker = observation?.detectedCompactionMarker ?? false;
 
       if (dispatchSource === 'maintenance' || !meta?.boardId) {
         return { compacted: false };
@@ -832,6 +842,7 @@ export class BoardCompactReinjectTracker {
     requestedModelId?: string;
     freshAgentSession: boolean;
     usedHistoryReplay: boolean;
+    observationSnapshot?: BoardTurnUsageSnapshot;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
     try {
@@ -883,6 +894,7 @@ export class BoardCompactReinjectTracker {
         explicitCompactTriggered,
         turnStartUsed: args.isStartTurn ? undefined : args.turnStartUsed,
         ineligibleForUsageDrop: replacedAcpSession || modelChanged,
+        observationSnapshot: args.observationSnapshot,
         readAssistantTurn: args.readAssistantTurn,
       });
     } catch (error) {
@@ -916,6 +928,7 @@ export class BoardCompactReinjectTracker {
     finalInputConfig?: SessionTurnInputConfig;
     freshAgentSession: boolean;
     usedHistoryReplay: boolean;
+    observationSnapshot?: BoardTurnUsageSnapshot;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
     return await this.completeSessionTurn({

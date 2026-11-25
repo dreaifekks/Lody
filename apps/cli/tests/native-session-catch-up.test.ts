@@ -202,9 +202,10 @@ describe('catchUpNativeTurns', () => {
     expect(readSessionHistory(doc.sessionData.history)).toHaveLength(3);
   });
 
-  it('deduplicates short Lody user turns that carried <board_context_reminder> and strips reminders from imported user history', async () => {
+  it('deduplicates short Lody user turns that carried <board_context_reminder>, strips Lody reminders, and preserves user-authored XML tags', async () => {
     const reminder =
-      '<board_context_reminder>\nContext was recently compacted.\n\nRole: thread of Board "Lody Lan".\n</board_context_reminder>';
+      '<board_context_reminder>\nContext was recently compacted or reconstructed. The current Board role, boundaries, and rules below are authoritative and override any earlier summary.\n\nRole: thread of Board "Lody Lan".\n</board_context_reminder>';
+    const userAuthoredXml = '请保留 <board_context_reminder>示例</board_context_reminder> 这段 XML';
     const doc = await createSessionDoc([
       userTurn('u1', 'first prompt'),
       assistantTurn('a1', 'first answer', 'native-1'),
@@ -231,19 +232,19 @@ describe('catchUpNativeTurns', () => {
             messageId: 'user-stopped-short',
           },
         }),
-        // An unmatched turn whose native user message also contains a reminder block.
-        ...replayedTurn(`外部继续\n\n${reminder}`, 'external answer', 'native-3'),
+        // An unmatched turn whose native user message contains both user XML and a Lody reminder block.
+        ...replayedTurn(`${userAuthoredXml}\n\n${reminder}`, 'external answer', 'native-3'),
       ],
     });
 
     expect(result).toMatchObject({ status: 'added', added: 2, skippedOwnTurns: 1 });
     const history = readSessionHistory(doc.sessionData.history);
     expect(texts(history).slice(-3)).toEqual([
-      'user:外部继续',
+      `user:${userAuthoredXml}`,
       'assistant:external answer',
       'user:next prompt',
     ]);
-    expect(JSON.stringify(history)).not.toContain('<board_context_reminder>');
+    expect(JSON.stringify(history)).not.toContain('Context was recently compacted or reconstructed');
   });
 });
 

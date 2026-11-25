@@ -779,17 +779,19 @@ describe('Board compact re-injection integration', () => {
     expect(h.prompts[6]!.text).toContain('<board_context_reminder>');
     expect(h.prompts[6]!.text).toContain('Fresh instructions synced from peer.');
 
-    // 4. Clean sync + missing Board row confirms deletion and clears pending.
+    // 4. Even when syncFlockDocOrThrow resolves without throwing (e.g. partial LAN sync),
+    // a missing local Board row MUST keep pending instead of clearing it prematurely.
     await h.sendContinue('/compact');
     remoteBoardUpdated = false;
     h.setBoard(null);
-    await h.sendContinue('Confirmed deleted board turn');
+    await h.sendContinue('Partial sync missing board turn');
     expect(h.prompts[8]!.text).not.toContain('<board_context_reminder>');
 
-    // Even if a Board object is later mocked back in, pending was already cleared.
-    h.setBoard(makeBoard({ instructions: 'Re-added mock board' }));
-    await h.sendContinue('No stale retry after confirmed deletion');
-    expect(h.prompts[9]!.text).not.toContain('<board_context_reminder>');
+    // Once the Board row arrives on a later sync, the preserved pending reminder still fires.
+    h.setBoard(makeBoard({ instructions: 'Synced after partial failure' }));
+    await h.sendContinue('Retry after Board row syncs');
+    expect(h.prompts[9]!.text).toContain('<board_context_reminder>');
+    expect(h.prompts[9]!.text).toContain('Synced after partial failure');
   });
 
   it('persists pending on History Replay so slash commands skip safely and pre-prompt failures retry on the next normal turn', async () => {
@@ -1035,6 +1037,41 @@ describe('Board compact re-injection integration', () => {
     // Next normal message finally receives the preserved reminder.
     await h.sendContinue('Normal follow-up message');
     expect(h.prompts[5]!.text).toContain('<board_context_reminder>');
+
+    // When pending IS armed, image + `/compact` is treated by providers (e.g. Codex) as a normal
+    // prompt (image block first), so it MUST receive the reminder rather than deferring as a slash cmd.
+    await h.sendContinue('/compact');
+    await h.sendContinue('/compact', {
+      inputBlocks: [
+        {
+          type: 'image',
+          imageId: 'img-2',
+          mimeType: 'image/png',
+          sizeBytes: 1024,
+        },
+        { type: 'text', text: '/compact' },
+      ],
+    });
+    expect(h.prompts[7]!.text).toContain('<board_context_reminder>');
+  });
+
+  it('preserves mid-turn usage drop (115k -> 22k -> 80k) when the provider throws after compaction', async () => {
+    const h = createBoardExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 70_000 } },
+      onPrompt: ({ callIndex, setUsage }) => {
+        if (callIndex === 0) {
+          h.service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 115_000 });
+          h.service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 22_000 });
+          h.service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 80_000 });
+          setUsage(80_000);
+          throw new Error('provider network error after compaction');
+        }
+      },
+    });
+
+    await h.sendContinue('Long turn that compacts then throws');
+    await h.sendContinue('Follow-up after provider error');
+    expect(h.prompts[1]!.text).toContain('<board_context_reminder>');
   });
 
   it('arms pending when coordinator maintenance :compact confirms compaction so a user turn preempting :renew receives the reminder', async () => {

@@ -17,6 +17,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BOARD_COMPACT_USAGE_DROP_MIN_BASELINE,
+  BOARD_CONTEXT_REMINDER_HEADER,
   BoardCompactReinjectTracker,
   buildBoardCompactReminder,
   createFileBoardCompactReinjectStore,
@@ -128,15 +129,20 @@ describe('board-compact-reinject helpers', () => {
   });
 
   describe('stripBoardCompactReminder', () => {
-    const reminder =
-      '<board_context_reminder>\nContext was recently compacted.\n\nRole: thread.\n</board_context_reminder>';
+    const reminder = `<board_context_reminder>\n${BOARD_CONTEXT_REMINDER_HEADER}\n\nRole: thread.\n</board_context_reminder>`;
 
-    it('strips trailing, leading, standalone, concatenated, and embedded reminder blocks cleanly', () => {
+    it('strips trailing, leading, standalone, concatenated, and embedded Lody reminder blocks cleanly', () => {
       expect(stripBoardCompactReminder(`继续\n\n${reminder}`)).toBe('继续');
       expect(stripBoardCompactReminder(`继续${reminder}`)).toBe('继续');
       expect(stripBoardCompactReminder(`${reminder}\n\n继续`)).toBe('继续');
       expect(stripBoardCompactReminder(reminder)).toBe('');
       expect(stripBoardCompactReminder(`前文\n\n${reminder}\n\n后文`)).toBe('前文\n\n后文');
+    });
+
+    it('preserves user-authored XML that happens to reuse the <board_context_reminder> tag name', () => {
+      const userXml = '请保留 <board_context_reminder>示例</board_context_reminder> 这段 XML';
+      expect(stripBoardCompactReminder(userXml)).toBe(userXml);
+      expect(stripBoardCompactReminder(`${userXml}\n\n${reminder}`)).toBe(userXml);
     });
 
     it('returns text without a reminder block verbatim', () => {

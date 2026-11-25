@@ -7,8 +7,10 @@ import {
   BoardCompactReinjectTracker,
   createMemoryBoardCompactReinjectStore,
   extractTurnPromptText,
+  hasNonTextInputBlocks,
   type BoardCompactContextLoadResult,
   type BoardCompactReinjectStore,
+  type BoardTurnUsageSnapshot,
 } from './board-compact-reinject';
 import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';
@@ -418,6 +420,8 @@ type TurnRuntimeState = {
   };
   /** Guard ensuring Board post-compaction bookkeeping runs at most once per visible turn. */
   boardCompactionSettled?: boolean;
+  /** Live usage/marker observation captured when `endTurn` clears `activeTurns` before outer failure settlement. */
+  boardCompactionObservation?: BoardTurnUsageSnapshot;
   userTurnId?: string;
   invocation?: TurnInvocation;
   /** Encrypted only: whose authority admitted the claimed turn's verified signer. */
@@ -629,6 +633,10 @@ type SessionDispatchOptions = {
    * recorded against, so they become the Session's runtime baseline.
    */
   runtimeConfigTurnId?: string;
+  /** Maintenance only: whether this turn renews full Board instructions (clears pending reinject). */
+  renewBoardInstructions?: boolean;
+  /** Maintenance only: pre-turn context usage baseline for `:compact` confirmation. */
+  maintenanceUsedBefore?: number;
 };
 
 export type PreparedSessionDispatchRequest =
@@ -2317,8 +2325,8 @@ export class SessionExecutionService {
   /**
    * Load the latest Board row for post-compaction reminder injection, syncing the
    * workspace Flock catalog best-effort first so cross-machine Board edits are fresh.
-   * Distinguishes a confirmed deletion (clean sync + `BOARD_NOT_FOUND`) from transient
-   * sync/read failures so pending reminders are never dropped prematurely.
+   * Preserves pending markers whenever the Board row cannot be loaded (including
+   * partial or unconfirmed LAN syncs) so cross-machine reminders are never lost.
    */
   private async loadBoardPromptContextForReinject(
     sessionId: SessionId,
@@ -2326,7 +2334,6 @@ export class SessionExecutionService {
     meta: SessionMeta | null | undefined
   ): Promise<BoardCompactContextLoadResult> {
     if (!meta?.boardId) return {};
-    let catalogSynced = false;
     const syncFlockDocOrThrow = this.deps.workspaceDocument.syncFlockDocOrThrow?.bind(
       this.deps.workspaceDocument
     );
@@ -2335,22 +2342,14 @@ export class SessionExecutionService {
         await syncFlockDocOrThrow(getWorkspaceFlockDocId(workspaceId), {
           reason: 'board-prompt',
         });
-        catalogSynced = true;
       } catch (error) {
         this.deps.logger.warn(
           `[${sessionId}] Board catalog refresh failed before compact reminder; using local rows: ${formatErrorMessage(error)}`
         );
       }
     }
-    try {
-      const context = await this.boardPromptContext(sessionId, meta);
-      return { context };
-    } catch (error) {
-      if (catalogSynced && error instanceof Error && error.message === 'BOARD_NOT_FOUND') {
-        return { confirmedMissing: true };
-      }
-      throw error;
-    }
+    const context = await this.boardPromptContext(sessionId, meta);
+    return { context };
   }
 
   /**
@@ -2384,6 +2383,7 @@ export class SessionExecutionService {
       finalInputConfig: runtime.invocation?.inputConfig,
       freshAgentSession: context.freshAgentSession,
       usedHistoryReplay: context.usedHistoryReplay(),
+      observationSnapshot: runtime.boardCompactionObservation,
       readAssistantTurn: async (entryId) => {
         const backend = await this.getSessionBackend(context.sessionDoc, sessionId);
         const read = await backend.readTurn(entryId);
@@ -2507,6 +2507,10 @@ export class SessionExecutionService {
       {
         dispatchSource: 'maintenance',
         ...(request.freshAgentSession ? { freshAgentSession: true } : {}),
+        ...(request.renewBoardInstructions ? { renewBoardInstructions: true } : {}),
+        ...(usedBeforeMaintenance !== undefined
+          ? { maintenanceUsedBefore: usedBeforeMaintenance }
+          : {}),
         ...(switchTo
           ? {
               switchAgent: {
@@ -2522,36 +2526,8 @@ export class SessionExecutionService {
       },
       { sessionDoc }
     );
-    let maintenanceTurnId: string | undefined;
     try {
-      const outcome = await this.runVisibleSessionTurn(turn.options, (ctx) => {
-        maintenanceTurnId = ctx.turnId;
-        return turn.body(ctx);
-      });
-      if (request.renewBoardInstructions && outcome === 'completed') {
-        await this.boardCompactReinject.clearPending(sessionId);
-      } else if (
-        request.stepTurnId.endsWith(':compact') &&
-        !request.renewBoardInstructions &&
-        outcome === 'completed'
-      ) {
-        await this.boardCompactReinject.completeMaintenanceCompactTurn({
-          sessionId,
-          preTurnMeta: meta,
-          readFreshMeta: () => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined),
-          assistantTurnIds: [
-            ...(maintenanceTurnId ? [maintenanceTurnId] : []),
-            `assistant:${request.stepTurnId}`,
-          ],
-          usedBefore: usedBeforeMaintenance,
-          readAssistantTurn: async (entryId) => {
-            const backend = await this.getSessionBackend(sessionDoc, sessionId);
-            const read = await backend.readTurn(entryId);
-            return read.state === 'ready' ? (read.turn as SessionHistoryInput) : undefined;
-          },
-        });
-      }
-      return outcome;
+      return await this.runVisibleSessionTurn(turn.options, turn.body);
     } finally {
       // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
       await this.operationInbox?.wake();
@@ -4863,7 +4839,8 @@ export class SessionExecutionService {
       options.sessionId,
       options.sessionDoc,
       options.error,
-      options.runtime.maintenance === true
+      options.runtime.maintenance === true,
+      options.runtime
     );
     options.runtime.failureFinalized = true;
     await options.onUnhandledError?.(options.error);
@@ -4975,11 +4952,12 @@ export class SessionExecutionService {
     sessionDoc: SessionDocument,
     error?: unknown,
     /** The failing turn is Board maintenance: record its failure without an alert. */
-    quiet = false
+    quiet = false,
+    explicitRuntime?: TurnRuntimeState
   ): Promise<void> {
     const acpError = error ? parseACPError(error) : null;
     const providerDisconnected = error ? isAgentDisconnectedError(error) : false;
-    const runtime = this.turnRuntimeBySession.get(sessionId);
+    const runtime = explicitRuntime ?? this.turnRuntimeBySession.get(sessionId);
     const turnId = runtime?.turnId ?? this.currentTurnBySession.get(sessionId);
     try {
       await this.deps.turnFinalization.finalizeACPState(sessionId, turnId);
@@ -5745,10 +5723,13 @@ export class SessionExecutionService {
                 }).pipe(Effect.andThen(Effect.failCause(cause)))
               )
             );
-            self.boardCompactReinject.endTurn(
+            const endedObservation = self.boardCompactReinject.endTurn(
               sessionId,
               turnRuntime.boardCompactionContext?.initialTurnId ?? turnRuntime.turnId
             );
+            if (endedObservation) {
+              turnRuntime.boardCompactionObservation = endedObservation;
+            }
             if (!turnRuntime.releaseFailure && !inboxInput)
               self.releaseTurnRuntime(sessionId, turnRuntime.turnId);
           })
@@ -8165,6 +8146,7 @@ export class SessionExecutionService {
                 meta: preTurnMeta,
                 dispatchSource: dispatchOptions?.dispatchSource,
                 hasGoalControl: Boolean(dispatchOptions?.goalControl),
+                hasNonTextInput: hasNonTextInputBlocks(sessionInputBlocks),
                 turnInputText,
                 promptBlocks: baseBlocks,
                 loadBoardContext: () =>
@@ -8506,7 +8488,35 @@ export class SessionExecutionService {
         );
       }
 
-      if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
+      if (dispatchOptions?.dispatchSource === 'maintenance' && preTurnMeta?.boardId) {
+        const boardTurnMeta = preTurnMeta;
+        runtime.boardCompactionSettled = true;
+        if (dispatchOptions.renewBoardInstructions && !runtime.promptFailed) {
+          yield* self.tryPromise(() => self.boardCompactReinject.clearPending(sessionId));
+        } else if (
+          userTurnId.endsWith(':compact') &&
+          !dispatchOptions.renewBoardInstructions &&
+          promptCompletedNormally
+        ) {
+          yield* self.tryPromise(() =>
+            self.boardCompactReinject.completeMaintenanceCompactTurn({
+              sessionId,
+              preTurnMeta: boardTurnMeta,
+              readFreshMeta: () => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined),
+              assistantTurnIds: [
+                ...(runtime.assistantTurnIds ?? [turnId, completedTurnId]),
+                `assistant:${userTurnId}`,
+              ],
+              usedBefore: dispatchOptions.maintenanceUsedBefore ?? turnStartUsed,
+              readAssistantTurn: async (entryId) => {
+                const backend = await self.getSessionBackend(sessionDoc, sessionId);
+                const read = await backend.readTurn(entryId);
+                return read.state === 'ready' ? (read.turn as SessionHistoryInput) : undefined;
+              },
+            })
+          );
+        }
+      } else if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
         const boardTurnMeta = preTurnMeta;
         runtime.boardCompactionSettled = true;
         yield* self.tryPromise(() =>
