@@ -1,4 +1,4 @@
-import type { BoardMeta, BoardDrivingState } from '@lody/shared';
+import type { BoardDrivingState, BoardId, BoardMeta } from '@lody/shared';
 import type {
   LodyOperationItemResult,
   SessionHistoryInput,
@@ -55,6 +55,8 @@ export type CoordinatorBoardMaintenance = {
   holdInbox(id: SessionId, held: boolean): void;
   /** Daemon-owned immutable fold-rollover node store under `<boardDir>/line/`. */
   boardLine?: BoardLineStore;
+  /** Best-effort UTF-8 byte length of the Board's shared notes (`undefined` if unreadable). */
+  boardNotesBytes?: (boardId: BoardId) => Effect.Effect<number | undefined, unknown>;
   runTurn(request: {
     sessionId: SessionId;
     stepTurnId: string;

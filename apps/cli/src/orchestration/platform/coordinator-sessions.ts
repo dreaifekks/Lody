@@ -1,13 +1,17 @@
+import type { LoroDoc } from 'loro-crdt';
 import { antigravitySupportsContextCompaction } from '@/agent/antigravity-acp-stream';
 import { getSharedBoardLineStore } from '@/lib/board-line-store';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import {
   estimateTokenCount,
+  getBoardRoomId,
   getWorkspaceFlockDocId,
   getSessionIdFromRoomId,
   normalizeBoardMeta,
+  readBoardDocument,
   readLatestDrivingTurn,
+  type BoardId,
   type SessionHistoryInput,
   type SessionTurnInputConfig,
 } from '@lody/shared';
@@ -301,6 +305,27 @@ export const coordinatorSessionsLayer = (
         }),
       holdInbox: (id, held) => options.executionService.holdInboxForBoardMaintenance?.(id, held),
       boardLine: options.boardLineStore ?? getSharedBoardLineStore(getLodyDataDir, options.logger),
+      boardNotesBytes: (boardId: BoardId) =>
+        io(async () => {
+          try {
+            const roomId = getBoardRoomId(boardId);
+            const handle = await options.workspaceDocument.repo.openPersistedDoc(roomId);
+            await options.workspaceDocument
+              .syncDocOrThrow?.(roomId, { reason: 'board-notes' })
+              ?.catch((error) => {
+                options.logger.warn(
+                  `[board-continuity] board ${boardId}: board notes refresh failed; using local document: ${String(error)}`
+                );
+              });
+            const { notes } = readBoardDocument(handle.doc as LoroDoc);
+            return Buffer.byteLength(notes, 'utf8');
+          } catch (error) {
+            options.logger.warn(
+              `[board-continuity] board ${boardId}: failed to read shared notes size: ${String(error)}`
+            );
+            return undefined;
+          }
+        }),
       // A maintenance turn outlives a Worker stop like any turn: never track it as raw work.
       runTurn: (request) =>
         Effect.tryPromise({

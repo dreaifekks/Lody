@@ -289,7 +289,7 @@ system 驱动的维护回合，再在压缩后的下一回合重新注入看板�
   用户回合、Inbox 没有待跑的工作、没被 Stop 暂停、树没被停止协作，并且上次维护之后有过新的
   对话。最后这条代替了提案里「至少多 20K tokens」和「失败冷却 1 小时」：维护之后什么都没发生，
   就不再做；失败之后也要等有了新对话才再试。
-- **三个回合**：整理记忆（写笔记和 `memory/`，更新 `MEMORY.md`）→ `/compact <保留清单>` →
+- **三个回合**：整理记忆（写笔记和 `memory/`，更新 `MEMORY.md`；当共享笔记超过 8 KB UTF-8 时提示先读全文再用 `lody_board_notes_replace` 合并清理已完成流水账与过时状态，而不是继续追加）→ `/compact <保留清单>` →
   续接回合（带上当前看板行生成的协调者说明）。每一步开始前，用户回合或 Inbox 结果在等就让路，
   下一次空闲再来。
 - **成功的判定**：压缩回合的 assistant 条目里有已完成的压缩标记，或者上下文用量降到整理记忆后、
@@ -385,7 +385,8 @@ Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏
   `fold_rollover`，老版本守护进程也能照常处理而不会永久挂起。
 - **四步流水线（复用 `holdInbox` 与 `isPendingSwitch` 崩溃恢复）**：
   1. `seal`：先将分隔线置为 `running`（防止目录不可读时无间隔自旋）；若有 `acpSessionId`，用静默维护
-     回合让旧 agent 输出严格 JSON（`title`/`tags`/`summary`）；若旧 agent 不可用/失败/输出不可解析，从
+     回合让旧 agent 输出严格 JSON（`title`/`tags`/`summary`），并复用与整理记忆相同的 8 KB 共享笔记阈值提示
+     （超过 8 KB 时要求先 `lody_board_notes_get` 再 `lody_board_notes_replace` 合并裁剪）；若旧 agent 不可用/失败/输出不可解析，从
      Loro 历史人类首尾发言机械生成 `fallback` 摘要，不阻塞换代。
   2. 落盘不可变 `segment` 节点（携带 `maintenanceRunId` 防崩溃重复建段），原子写 `pending-switch.json`
      并将 `nodeId` 写入 `running` 分隔线。

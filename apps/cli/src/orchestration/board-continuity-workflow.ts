@@ -12,6 +12,7 @@ import {
   isTerminalAssistantEntry,
   readBoardMaintenance,
   type BoardCoordinatorAgent,
+  type BoardId,
   type BoardMaintenanceKind,
   type BoardMaintenanceMeta,
   type BoardMaintenanceStep,
@@ -68,7 +69,49 @@ export type BoardCoordinatorView = {
   history: CoordinatorHistory;
 };
 
-const TIDY_PROMPT = `Lody maintenance. The user does not see this turn. Your context will be compacted next, so record now what later turns must not lose: decisions and their reasons, each thread's latest conclusion, questions waiting for the user, and the user's recent corrections and preferences. Append them to the shared notes with lody_board_notes_append, and keep short Markdown files in the Board memory with MEMORY.md as their index, one line per file. Write only what is not recorded yet. Do not open sessions, do not message anyone and do not address the user; end with one short line.`;
+/** Shared Board notes byte size above which maintenance asks the coordinator to consolidate via replace. */
+export const BOARD_NOTES_TIDY_THRESHOLD_BYTES = 8 * 1024;
+
+const formatNotesKb = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
+
+/**
+ * Shared Board notes guidance for coordinator maintenance turns (`:memory` and `:seal`).
+ * Keeps notes concise by asking the coordinator to consolidate and prune via `lody_board_notes_replace`
+ * once the document exceeds 8 KB UTF-8, instead of blindly appending chronological logs.
+ */
+export function buildBoardNotesTidyInstruction(notesBytes: number | undefined): string {
+  const validBytes =
+    notesBytes !== undefined && Number.isFinite(notesBytes) && notesBytes >= 0
+      ? notesBytes
+      : undefined;
+  if (validBytes !== undefined && validBytes > BOARD_NOTES_TIDY_THRESHOLD_BYTES) {
+    return (
+      `The shared Board notes are currently ${formatNotesKb(validBytes)} (${validBytes} bytes), over the 8 KB limit. ` +
+      `First call lody_board_notes_get to read the full notes, then use lody_board_notes_replace to merge and prune completed task logs and stale status, ` +
+      `keeping only: the current status snapshot, active/pending threads, open questions waiting for the user, and still-valid decisions (with reasons). ` +
+      `Do not keep blindly calling lody_board_notes_append.`
+    );
+  }
+  if (validBytes !== undefined) {
+    return (
+      `Append only unrecorded items to the shared notes with lody_board_notes_append ` +
+      `(if there are obvious duplicates or outdated entries, you may also trim them with lody_board_notes_replace).`
+    );
+  }
+  return (
+    `First check the shared notes with lody_board_notes_get: if they exceed roughly 8 KB or have accumulated completed task logs, ` +
+    `use lody_board_notes_replace to merge and prune them into a concise current status snapshot, active/pending threads, open questions waiting for the user, and still-valid decisions instead of blindly appending; ` +
+    `otherwise append only what is not recorded yet with lody_board_notes_append.`
+  );
+}
+
+export function buildTidyPrompt(notesBytes?: number): string {
+  return [
+    `Lody maintenance. The user does not see this turn. Your context will be compacted next, so record now what later turns must not lose: decisions and their reasons, each thread's latest conclusion, questions waiting for the user, and the user's recent corrections and preferences.`,
+    buildBoardNotesTidyInstruction(notesBytes),
+    `Also keep short Markdown files in the Board memory with MEMORY.md as their index, one line per file. Do not open sessions, do not message anyone and do not address the user; end with one short line.`,
+  ].join(' ');
+}
 
 /**
  * Instructions for the agent's own summary; Codex ignores them, the tidy turn covers it.
@@ -149,17 +192,21 @@ const renewalRecord = (record: BoardMaintenanceMeta, step: string): BoardMainten
       ? { ...record, renewed: false }
       : { ...record, renewed: false, reason: `renewal-${step}` };
 
-const SEAL_PROMPT = `Lody maintenance. The user does not see this turn. Your context is about to roll over into a fresh underlying agent session while the Lody conversation stays continuous.
-First, if any durable decisions, thread conclusions, or user preferences from this segment are not persisted yet, append them to shared notes with lody_board_notes_append or update Board memory (MEMORY.md).
-Do not open sessions, do not message anyone, and do not address the user.
-End your reply with a single JSON code block summarizing this segment in first person ("我…"):
-\`\`\`json
-{
-  "title": "Short title (<= 60 chars) of this segment",
-  "tags": ["tag1", "tag2"],
-  "summary": "First-person markdown summary covering key decisions and reasons, thread ids/states/conclusions, open questions waiting for the user, user corrections/preferences, and next steps."
+export function buildSealPrompt(notesBytes?: number): string {
+  return [
+    `Lody maintenance. The user does not see this turn. Your context is about to roll over into a fresh underlying agent session while the Lody conversation stays continuous.`,
+    `First, update durable Board state if anything from this segment is not persisted yet (decisions and reasons, thread conclusions, open questions, user preferences): ${buildBoardNotesTidyInstruction(notesBytes)} Also keep Board memory (MEMORY.md) up to date as needed.`,
+    `Do not open sessions, do not message anyone, and do not address the user.`,
+    `End your reply with a single JSON code block summarizing this segment in first person ("我…"):`,
+    '```json',
+    '{',
+    '  "title": "Short title (<= 60 chars) of this segment",',
+    '  "tags": ["tag1", "tag2"],',
+    '  "summary": "First-person markdown summary covering key decisions and reasons, thread ids/states/conclusions, open questions waiting for the user, user corrections/preferences, and next steps."',
+    '}',
+    '```',
+  ].join('\n');
 }
-\`\`\``;
 
 const buildFoldPrompt = (candidates: BoardLineFoldCandidates): string => {
   const blocks = candidates.nodes.map((node, index) => {
@@ -800,6 +847,28 @@ export class BoardContinuityWorkflow {
     return undefined;
   });
 
+  private readBoardNotesBytes = Effect.fnUntraced(
+    function* (
+      this: BoardContinuityWorkflow,
+      maintenance: CoordinatorBoardMaintenance,
+      meta: SessionMeta,
+      boardId: BoardId
+    ) {
+      if (!maintenance.boardNotesBytes) return undefined;
+      const exit = yield* Effect.exit(maintenance.boardNotesBytes(boardId));
+      if (Exit.isSuccess(exit)) return exit.value;
+      if (Cause.hasInterrupts(exit.cause)) {
+        yield* Effect.failCause(exit.cause);
+        return undefined;
+      }
+      yield* this.ports.warn(
+        `[board-continuity] ${meta.id}: failed to read shared notes size; using fallback guidance`,
+        Cause.squash(exit.cause)
+      );
+      return undefined;
+    }.bind(this)
+  );
+
   private compact(
     maintenance: CoordinatorBoardMaintenance,
     board: BoardMeta,
@@ -829,7 +898,15 @@ export class BoardContinuityWorkflow {
         return;
       }
       yield* write(record);
-      const tidy = yield* this.step(maintenance, meta, history, run.runId, 'memory', TIDY_PROMPT);
+      const notesBytes = yield* this.readBoardNotesBytes(maintenance, meta, board.id);
+      const tidy = yield* this.step(
+        maintenance,
+        meta,
+        history,
+        run.runId,
+        'memory',
+        buildTidyPrompt(notesBytes)
+      );
       if (tidy !== 'completed') {
         yield* write({ ...record, status: 'interrupted', reason: tidy });
         return;
@@ -1100,8 +1177,9 @@ export class BoardContinuityWorkflow {
 
           let parsedSummary: { title: string; tags: string[]; summary: string } | null = null;
           if (meta.acpSessionId) {
+            const notesBytes = yield* this.readBoardNotesBytes(maintenance, meta, board.id);
             const sealExit = yield* Effect.exit(
-              this.step(maintenance, meta, history, run.runId, 'seal', SEAL_PROMPT)
+              this.step(maintenance, meta, history, run.runId, 'seal', buildSealPrompt(notesBytes))
             );
             if (Exit.isFailure(sealExit)) {
               if (Cause.hasInterrupts(sealExit.cause)) {

@@ -8,12 +8,14 @@ import {
   boardMaintenanceStepId,
   boardMaintenanceTurn,
   createSessionMirror,
+  getBoardRoomId,
   getSessionRoomId,
   getWorkspaceFlockDocId,
   makeLodyError,
   normalizeBoardMeta,
   readBoardMaintenance,
   workspaceFlockKeys,
+  writeBoardNotes,
   type BoardMeta,
   type MachineId,
   type SessionHistoryInput,
@@ -24,6 +26,12 @@ import {
 } from '@lody/shared';
 import { createLoroSessionData } from '@lody/shared/session-data';
 import { BoardLineStore, FOLD_TRIGGER_COUNT } from '@/lib/board-line-store';
+import {
+  BOARD_NOTES_TIDY_THRESHOLD_BYTES,
+  buildBoardNotesTidyInstruction,
+  buildSealPrompt,
+  buildTidyPrompt,
+} from './board-continuity-workflow';
 import { LodyOperationCoordinator } from './operation-coordinator';
 import { LodyOperationStore } from './operation-store';
 
@@ -1117,6 +1125,124 @@ describe('Board fold rollover workflow', () => {
       expect(h.steps()).toContain('memory');
     } finally {
       await h.close();
+    }
+  });
+
+  it('builds 8 KB threshold-aware Board notes instructions for tidy and seal prompts', () => {
+    expect(BOARD_NOTES_TIDY_THRESHOLD_BYTES).toBe(8192);
+
+    // At or below 8192 bytes: lightweight append guidance.
+    for (const bytes of [0, 512, 8192]) {
+      const instruction = buildBoardNotesTidyInstruction(bytes);
+      expect(instruction).toContain('lody_board_notes_append');
+      expect(instruction).not.toContain('over the 8 KB limit');
+      expect(buildTidyPrompt(bytes)).toContain(instruction);
+      expect(buildSealPrompt(bytes)).toContain(instruction);
+    }
+
+    // Above 8192 bytes: require get + replace consolidation with exact current size.
+    const overBoundary = buildBoardNotesTidyInstruction(8193);
+    expect(overBoundary).toContain('8.0 KB (8193 bytes), over the 8 KB limit');
+    expect(overBoundary).toContain('lody_board_notes_get');
+    expect(overBoundary).toContain('lody_board_notes_replace');
+    expect(overBoundary).toContain('Do not keep blindly calling lody_board_notes_append');
+
+    const bigTidy = buildTidyPrompt(12 * 1024);
+    expect(bigTidy).toContain('12.0 KB (12288 bytes), over the 8 KB limit');
+    expect(bigTidy).toContain('lody_board_notes_replace');
+    const bigSeal = buildSealPrompt(12 * 1024);
+    expect(bigSeal).toContain('12.0 KB (12288 bytes), over the 8 KB limit');
+    expect(bigSeal).toContain('lody_board_notes_replace');
+
+    // Undefined / unreadable fallback: check with get and consolidate if > ~8 KB.
+    const fallback = buildBoardNotesTidyInstruction(undefined);
+    expect(fallback).toContain('lody_board_notes_get');
+    expect(fallback).toContain('8 KB');
+    expect(fallback).toContain('lody_board_notes_replace');
+    expect(fallback).toContain('lody_board_notes_append');
+    expect(buildTidyPrompt(undefined)).toContain(fallback);
+    expect(buildSealPrompt(undefined)).toContain(fallback);
+  });
+
+  it('injects UTF-8 shared-notes size guidance into fold_rollover :seal (> 8 KB, <= 8 KB, and unreadable fallback)', async () => {
+    // 1. Over 8 KB UTF-8 (3,000 CJK chars = 9,000 UTF-8 bytes, while UTF-16 .length is only 3,000).
+    const hLarge = await createFoldHarness();
+    try {
+      const boardHandle = await hLarge.repo.openPersistedDoc(getBoardRoomId(hLarge.board.id));
+      const cjkNotes = '笔记'.repeat(1500);
+      const expectedBytes = Buffer.byteLength(cjkNotes, 'utf8');
+      expect(cjkNotes.length).toBeLessThan(8192);
+      expect(expectedBytes).toBe(9000);
+      writeBoardNotes(boardHandle.doc as LoroDoc, {
+        kind: 'replace',
+        text: cjkNotes,
+        updatedBy: hLarge.coordinatorId,
+        now: hLarge.now(),
+      });
+
+      hLarge.coordinator.start();
+      hLarge.advance(10 * 60_000 + 1);
+      await hLarge.drain();
+      await hLarge.until(() => hLarge.records().some((r) => r.status === 'done'));
+      await hLarge.drain();
+
+      const sealRun = hLarge.maintenance.runs.find((r) => r.stepTurnId.endsWith(':seal'))!;
+      expect(sealRun.prompt).toContain('8.8 KB (9000 bytes), over the 8 KB limit');
+      expect(sealRun.prompt).toContain('lody_board_notes_get');
+      expect(sealRun.prompt).toContain('lody_board_notes_replace');
+    } finally {
+      await hLarge.close();
+    }
+
+    // 2. Within 8 KB UTF-8: stays lightweight.
+    const hSmall = await createFoldHarness();
+    try {
+      const boardHandle = await hSmall.repo.openPersistedDoc(getBoardRoomId(hSmall.board.id));
+      writeBoardNotes(boardHandle.doc as LoroDoc, {
+        kind: 'replace',
+        text: 'Short current snapshot.',
+        updatedBy: hSmall.coordinatorId,
+        now: hSmall.now(),
+      });
+
+      hSmall.coordinator.start();
+      hSmall.advance(10 * 60_000 + 1);
+      await hSmall.drain();
+      await hSmall.until(() => hSmall.records().some((r) => r.status === 'done'));
+      await hSmall.drain();
+
+      const sealRun = hSmall.maintenance.runs.find((r) => r.stepTurnId.endsWith(':seal'))!;
+      expect(sealRun.prompt).toContain('lody_board_notes_append');
+      expect(sealRun.prompt).not.toContain('over the 8 KB limit');
+    } finally {
+      await hSmall.close();
+    }
+
+    // 3. Unreadable board notes doc: logs warn, uses fallback instruction, does not block rollover.
+    const hUnreadable = await createFoldHarness();
+    try {
+      const boardRoom = getBoardRoomId(hUnreadable.board.id);
+      const origOpen = hUnreadable.repo.openPersistedDoc.bind(hUnreadable.repo);
+      vi.spyOn(hUnreadable.repo, 'openPersistedDoc').mockImplementation((docId: string) => {
+        if (docId === boardRoom)
+          return Promise.reject(new Error('board doc temporarily unavailable'));
+        return origOpen(docId);
+      });
+
+      hUnreadable.coordinator.start();
+      hUnreadable.advance(10 * 60_000 + 1);
+      await hUnreadable.drain();
+      await hUnreadable.until(() => hUnreadable.records().some((r) => r.status === 'done'));
+      await hUnreadable.drain();
+
+      expect(hUnreadable.steps()).toEqual(['seal', 'renew']);
+      const sealRun = hUnreadable.maintenance.runs.find((r) => r.stepTurnId.endsWith(':seal'))!;
+      expect(sealRun.prompt).toContain(buildBoardNotesTidyInstruction(undefined));
+      expect(
+        hUnreadable.warnings.some((w) => String(w).includes('failed to read shared notes size'))
+      ).toBe(true);
+    } finally {
+      await hUnreadable.close();
     }
   });
 });

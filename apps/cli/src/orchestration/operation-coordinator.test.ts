@@ -18,9 +18,11 @@ import {
   boardMaintenanceTurn,
   makeLodyError,
   getAgentConfigRoomId,
+  getBoardRoomId,
   getSessionRoomId,
   readBoardMaintenance,
   machineFlockKeys,
+  writeBoardNotes,
   type AgentConfigMeta,
   type MachineId,
   type SessionHistoryInput,
@@ -28,6 +30,7 @@ import {
   type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
+import { buildBoardNotesTidyInstruction } from './board-continuity-workflow';
 
 import { projectTurnAttention, type TurnResultAudience } from '@lody/shared/notifications';
 import { LodyOperationCoordinator } from './operation-coordinator';
@@ -3727,6 +3730,88 @@ describe('Board coordinator continuity', () => {
       }
     }
   );
+
+  it('asks compact :memory to consolidate shared notes when over 8 KB UTF-8, keeps <= 8 KB lightweight, and falls back when unreadable', async () => {
+    // 1. Shared notes > 8 KB UTF-8 (CJK multi-byte).
+    const hLarge = await largeIdleCoordinator();
+    try {
+      const boardHandle = await hLarge.repo.openPersistedDoc(getBoardRoomId(hLarge.board.id));
+      const cjkNotes = '共享笔记'.repeat(700); // 2,800 chars, 8,400 UTF-8 bytes
+      expect(Buffer.byteLength(cjkNotes, 'utf8')).toBe(8400);
+      writeBoardNotes(boardHandle.doc as LoroDoc, {
+        kind: 'replace',
+        text: cjkNotes,
+        updatedBy: hLarge.coordinatorId,
+        now: TEST_NOW_MS,
+      });
+
+      hLarge.coordinator.start();
+      hLarge.advance(10 * 60_000 + 1);
+      await hLarge.drain();
+      await settled(hLarge, 'done', (record) => 'renewed' in record && record.renewed === true);
+      await hLarge.drain();
+
+      expect(steps(hLarge)).toEqual(['memory', 'compact', 'renew']);
+      const memoryRun = hLarge.maintenance.runs.find((r) => r.stepTurnId.endsWith(':memory'))!;
+      expect(memoryRun.prompt).toContain('8.2 KB (8400 bytes), over the 8 KB limit');
+      expect(memoryRun.prompt).toContain('lody_board_notes_get');
+      expect(memoryRun.prompt).toContain('lody_board_notes_replace');
+      expect(memoryRun.prompt).toContain('Do not keep blindly calling lody_board_notes_append');
+    } finally {
+      await hLarge.close();
+    }
+
+    // 2. Shared notes <= 8 KB UTF-8: lightweight append prompt.
+    const hSmall = await largeIdleCoordinator();
+    try {
+      const boardHandle = await hSmall.repo.openPersistedDoc(getBoardRoomId(hSmall.board.id));
+      writeBoardNotes(boardHandle.doc as LoroDoc, {
+        kind: 'replace',
+        text: 'Concise snapshot.',
+        updatedBy: hSmall.coordinatorId,
+        now: TEST_NOW_MS,
+      });
+
+      hSmall.coordinator.start();
+      hSmall.advance(10 * 60_000 + 1);
+      await hSmall.drain();
+      await settled(hSmall, 'done', (record) => 'renewed' in record && record.renewed === true);
+      await hSmall.drain();
+
+      const memoryRun = hSmall.maintenance.runs.find((r) => r.stepTurnId.endsWith(':memory'))!;
+      expect(memoryRun.prompt).toContain('lody_board_notes_append');
+      expect(memoryRun.prompt).not.toContain('over the 8 KB limit');
+    } finally {
+      await hSmall.close();
+    }
+
+    // 3. Unreadable board doc: falls back gracefully without blocking compaction.
+    const hUnreadable = await largeIdleCoordinator();
+    try {
+      const boardRoom = getBoardRoomId(hUnreadable.board.id);
+      const origOpen = hUnreadable.repo.openPersistedDoc.bind(hUnreadable.repo);
+      vi.spyOn(hUnreadable.repo, 'openPersistedDoc').mockImplementation((docId: string) => {
+        if (docId === boardRoom) return Promise.reject(new Error('notes storage read error'));
+        return origOpen(docId);
+      });
+
+      hUnreadable.coordinator.start();
+      hUnreadable.advance(10 * 60_000 + 1);
+      await hUnreadable.drain();
+      await settled(
+        hUnreadable,
+        'done',
+        (record) => 'renewed' in record && record.renewed === true
+      );
+      await hUnreadable.drain();
+
+      expect(steps(hUnreadable)).toEqual(['memory', 'compact', 'renew']);
+      const memoryRun = hUnreadable.maintenance.runs.find((r) => r.stepTurnId.endsWith(':memory'))!;
+      expect(memoryRun.prompt).toContain(buildBoardNotesTidyInstruction(undefined));
+    } finally {
+      await hUnreadable.close();
+    }
+  });
 });
 
 it('closes Inbox and SQLite even when an execution drain has a release failure', async () => {
