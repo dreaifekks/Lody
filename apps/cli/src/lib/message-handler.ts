@@ -45,6 +45,7 @@ import {
 } from '@lody/shared';
 import { encodeSessionFilePath, resolveSessionPullRequests } from '@lody/shared';
 import { SessionAutomationAuthority } from '@/session/session-automation-authority';
+import { createFileBoardCompactReinjectStore } from '@/session/board-compact-reinject';
 import type { SessionFileRoot } from '@lody/shared';
 import { resolveProjectFileRoots } from '@/session/worktree/project-member-access';
 import { worktreeGitLegacy } from '@/session/worktree/git-execution-legacy';
@@ -3612,6 +3613,7 @@ export class MessageHandler {
     this.executionService = new SessionExecutionService({
       encryptedExecution: this.encryptedExecution,
       encryptedWorkspace: config.encryptedWorkspace,
+      boardCompactReinjectStore: createFileBoardCompactReinjectStore({ logger: this.logger }),
       logger: this.logger,
       sessionManager: this.sessionManager,
       workspaceDocument: this.workspaceDocument,
@@ -4657,6 +4659,7 @@ export class MessageHandler {
 
     this.sessionManager.on('onContextWindowUsageUpdate', (sessionId, usage) => {
       this.enqueueContextWindowUsageUpdate(sessionId, usage);
+      this.executionService.noteContextWindowUsageUpdate(sessionId, usage);
     });
 
     this.sessionManager.on(

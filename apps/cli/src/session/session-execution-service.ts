@@ -3,6 +3,12 @@ import {
   antigravityYoloChanged,
 } from '@/agent/antigravity-acp-stream';
 import { machineTurnInterruptionReason, reserveMachineTurn } from './machine-turn-admission';
+import {
+  BoardCompactReinjectTracker,
+  createMemoryBoardCompactReinjectStore,
+  extractTurnPromptText,
+  type BoardCompactReinjectStore,
+} from './board-compact-reinject';
 import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';
 import { classifyCapacityFailure } from './acp-error-classification';
@@ -85,6 +91,7 @@ import {
   getServerNow,
   SessionCreateRequestValidated,
   SessionHistoryInput,
+  type SessionContextWindowUsage,
   type SessionId,
   type SessionInputBlock,
   type SessionTurnInputConfig,
@@ -706,6 +713,8 @@ export type SessionExecutionServiceDeps = {
   /** Only encrypted workspace composition installs this shared execution gate. */
   encryptedExecution?: EncryptedAgentExecution;
   encryptedWorkspace?: boolean;
+  /** Optional machine-local store for pending Board post-compaction instruction refreshes. */
+  boardCompactReinjectStore?: BoardCompactReinjectStore;
   logger: Logger;
   sessionManager: SessionManager;
   workspaceDocument: LoroDocumentManager;
@@ -1614,9 +1623,14 @@ export class SessionExecutionService {
   // "download" twice (or a refresh racing an install) triggers a single download.
   private readonly inFlightAcpBinaryInstall = new Map<string, InFlightAcpBinaryInstallEntry>();
   private readonly acpAuthenticationManager: AcpAuthenticationManager;
+  private readonly boardCompactReinject: BoardCompactReinjectTracker;
 
   constructor(private readonly deps: SessionExecutionServiceDeps) {
     this.acpAuthenticationManager = new AcpAuthenticationManager(deps.logger);
+    this.boardCompactReinject = new BoardCompactReinjectTracker(
+      deps.boardCompactReinjectStore ?? createMemoryBoardCompactReinjectStore(),
+      deps.logger
+    );
   }
 
   private createPromptHandoffRun(options: {
@@ -2300,6 +2314,11 @@ export class SessionExecutionService {
     return client ? client.supportsContextCompaction() : undefined;
   }
 
+  /** Record a live context-window usage reading for in-turn Board auto-compaction detection. */
+  noteContextWindowUsageUpdate(sessionId: SessionId, usage: SessionContextWindowUsage): void {
+    this.boardCompactReinject.noteContextWindowUsageUpdate(sessionId, usage);
+  }
+
   /**
    * Run one Board maintenance step in an idle Session: a system turn with a
    * hidden assistant entry, outside the Inbox, that never marks the Session
@@ -2393,7 +2412,11 @@ export class SessionExecutionService {
       { sessionDoc }
     );
     try {
-      return await this.runVisibleSessionTurn(turn.options, turn.body);
+      const outcome = await this.runVisibleSessionTurn(turn.options, turn.body);
+      if (request.renewBoardInstructions && outcome === 'completed') {
+        await this.boardCompactReinject.clearPending(sessionId);
+      }
+      return outcome;
     } finally {
       // Outside the Inbox, nothing else tells it or a held user turn that the Session is free.
       await this.operationInbox?.wake();
@@ -7505,6 +7528,10 @@ export class SessionExecutionService {
 
     let replayPromptResult: ReplayPromptResult | null = null;
     let usedHistoryReplay = false;
+    let preTurnMeta: SessionMeta | undefined;
+    let turnStartUsed: number | undefined;
+    let turnStartAcpSessionId: ACPSessionId | undefined;
+    let turnStartModelId: string | undefined;
     const self = this;
     const turnErrorContext: VisibleSessionTurnUnhandledErrorContext = {
       code: 'session_chat_failed',
@@ -7942,13 +7969,15 @@ export class SessionExecutionService {
       };
 
       const sessionInputBlocks = resolveSessionExecutionInputBlocks(acpSessionConfig);
+      const turnInputText = extractTurnPromptText(sessionInputBlocks, acpSessionConfig.prompt);
+      let injectedBoardReminder = false;
       const buildPromptBlocksForCurrentResumeState = (): Promise<ContentBlock[]> =>
         traceAsync(
           self.deps.logger,
           'execution.build_acp_prompt_blocks',
           { sessionId, turnId, inputBlocks: sessionInputBlocks.length },
-          async () =>
-            await self.deps.buildAcpPromptBlocks({
+          async () => {
+            const baseBlocks = await self.deps.buildAcpPromptBlocks({
               requesterUserId: message.userId,
               workspaceId: message.workspaceId,
               sessionId,
@@ -7959,7 +7988,20 @@ export class SessionExecutionService {
                 usedHistoryReplay && replayPromptResult?.promptText
                   ? replayPromptResult.promptText
                   : undefined,
-            })
+            });
+            const reinjectResult =
+              await self.boardCompactReinject.maybeAppendReminderToPromptBlocks({
+                sessionId,
+                meta: preTurnMeta,
+                dispatchSource: dispatchOptions?.dispatchSource,
+                usedHistoryReplay,
+                turnInputText,
+                promptBlocks: baseBlocks,
+                loadBoardContext: () => self.boardPromptContext(sessionId, preTurnMeta),
+              });
+            injectedBoardReminder = reinjectResult.injected;
+            return reinjectResult.promptBlocks;
+          }
         );
 
       const maybeRecordHistoryReplayNotice = Effect.fnUntraced(function* (): Effect.fn.Return<
@@ -8180,6 +8222,10 @@ export class SessionExecutionService {
 
       yield* abortIfCancelled();
 
+      if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
+        self.boardCompactReinject.beginTurn(sessionId, turnId);
+      }
+
       yield* promptWithStaleACPRecovery(promptBlocks);
 
       const completedTurnId = runtime.turnId;
@@ -8267,6 +8313,38 @@ export class SessionExecutionService {
         );
       }
 
+      if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
+        const boardTurnMeta = preTurnMeta;
+        yield* self.tryPromise(() =>
+          self.boardCompactReinject.completeContinueTurn({
+            sessionId,
+            turnId,
+            completedTurnId,
+            preTurnMeta: boardTurnMeta,
+            readFreshMeta: () => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined),
+            dispatchSource: dispatchOptions?.dispatchSource,
+            promptFailed: runtime.promptFailed,
+            producedOutput,
+            injectedBoardReminder,
+            initialInputText: turnInputText,
+            finalInputConfig: runtime.invocation?.inputConfig,
+            turnStartUsed,
+            turnStartAcpSessionId,
+            turnStartModelId,
+            activeAcpSessionId: activeSession.acpSessionId,
+            activeModelId: activeSession.agentClient?.currentModel?.modelId,
+            requestedModelId: acpSessionConfig.modelId,
+            freshAgentSession,
+            usedHistoryReplay,
+            readAssistantTurn: async (entryId) => {
+              const backend = await self.getSessionBackend(sessionDoc, sessionId);
+              const read = await backend.readTurn(entryId);
+              return read.state === 'ready' ? (read.turn as SessionHistoryInput) : undefined;
+            },
+          })
+        );
+      }
+
       yield* abortIfCancelled();
 
       self.clearTurnCancellation(sessionId, completedTurnId);
@@ -8332,6 +8410,16 @@ export class SessionExecutionService {
           });
           if (authorizedIds) authorized = { ids: authorizedIds, meta: scopedMeta };
           yield* self.tryPromise(() => self.acquireParentAdmission(ctx.runtime, sessionDoc));
+          preTurnMeta =
+            scopedMeta ??
+            (yield* self.tryPromise(
+              () => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined)
+            ));
+          turnStartUsed = preTurnMeta?.contextWindowUsage?.used;
+          turnStartAcpSessionId =
+            session?.acpSessionId ?? resolveResumableAcpSessionId(preTurnMeta);
+          turnStartModelId =
+            session?.agentClient?.currentModel?.modelId ?? preTurnMeta?.lastModel?.modelId;
           const memoryPressureResult = yield* self.tryPromise(() =>
             self.evictForTurnStart(sessionId)
           );
@@ -8471,7 +8559,13 @@ export class SessionExecutionService {
             });
           }
 
-          yield* runReadySessionTurn(resolvedSession, ctx);
+          yield* runReadySessionTurn(resolvedSession, ctx).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                self.boardCompactReinject.endTurn(sessionId, ctx.turnId);
+              })
+            )
+          );
         }),
     };
   }

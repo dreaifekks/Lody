@@ -64,8 +64,11 @@ Intent: [Board design](../../../../../specs/project-coordinator/design.md).
   projects (`assertBoardProjectInScope`); chats, parent Tabs and user threads are
   free. The picker merges by name, storing each machine's pair.
 - Instructions (≤16,000 code points) and the directory join each member's start
-  prompt, coordinator included. Threads keep what they read; the coordinator
-  rereads current row after Lody compacts or replaces its agent conversation.
+  prompt, coordinator included. After compaction (`/compact`, ACP compaction
+  marker, or large context-usage drop) or history replay, any Board member gets
+  a compact `<board_context_reminder>` from the current row on the next
+  non-slash turn; coordinator maintenance renewal clears it and rereads the full
+  row.
 - Coordinator maintenance (`board-continuity-workflow.ts`): quiet system turns in
   same Session, outside the Inbox (one divider, hidden replies, no push; neither
   they nor their late output move `lastMessageAt`). It yields to user turns and
