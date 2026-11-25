@@ -1,17 +1,20 @@
 import {
   LODY_MAX_CHAIN_DEPTH,
   normalizeBoardMeta,
+  parseSessionNotification,
   type BoardId,
   type BoardMeta,
   type LocalProjectId,
   type MachineId,
   type SessionHistoryInput,
   type SessionId,
+  type SessionMeta,
 } from '@lody/shared';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BOARD_COMPACT_USAGE_DROP_MIN_BASELINE,
   BoardCompactReinjectTracker,
@@ -21,8 +24,11 @@ import {
   detectContextUsageDropCompaction,
   extractTurnPromptText,
   hasCompletedCompactionMarker,
+  hasNonTextInputBlocks,
   isExplicitCompactCommand,
+  isExplicitCompactTurnInput,
   isSlashCommandInput,
+  stripBoardCompactReminder,
 } from './board-compact-reinject';
 
 const makeBoard = (overrides: Partial<BoardMeta> = {}): BoardMeta =>
@@ -83,17 +89,58 @@ describe('board-compact-reinject helpers', () => {
       expect(isExplicitCompactCommand('/status')).toBe(false);
     });
 
-    it('identifies slash commands while ignoring filesystem paths and normal text', () => {
+    it('identifies slash commands including namespaced commands while ignoring filesystem paths and normal text', () => {
       expect(isSlashCommandInput('/compact')).toBe(true);
       expect(isSlashCommandInput('/compact focus on tests')).toBe(true);
       expect(isSlashCommandInput('/status')).toBe(true);
       expect(isSlashCommandInput('/review-pr 123')).toBe(true);
       expect(isSlashCommandInput('/foo_bar')).toBe(true);
+      expect(isSlashCommandInput('/mcp:github:prompt')).toBe(true);
+      expect(isSlashCommandInput('/mcp:github:prompt arg1')).toBe(true);
+      expect(isSlashCommandInput('/plugin.cmd')).toBe(true);
 
       expect(isSlashCommandInput('/home/dreaife/Lody/README.md check this')).toBe(false);
       expect(isSlashCommandInput('/etc/hosts')).toBe(false);
       expect(isSlashCommandInput('continue fixing the bug')).toBe(false);
       expect(isSlashCommandInput('')).toBe(false);
+    });
+
+    it('requires pure-text input for explicit /compact turn detection (rejecting attachments/references)', () => {
+      expect(isExplicitCompactTurnInput([{ type: 'text', text: '/compact' }])).toBe(true);
+      expect(
+        isExplicitCompactTurnInput([{ type: 'text', text: '  /compact keep decisions  ' }])
+      ).toBe(true);
+      expect(hasNonTextInputBlocks([{ type: 'text', text: '/compact' }])).toBe(false);
+
+      const withImage = [
+        { type: 'image', imageId: 'img-1', mimeType: 'image/png' },
+        { type: 'text', text: '/compact' },
+      ] as never;
+      expect(hasNonTextInputBlocks(withImage)).toBe(true);
+      expect(isExplicitCompactTurnInput(withImage, '/compact')).toBe(false);
+
+      const withAttachment = [
+        { type: 'text', text: '/compact' },
+        { type: 'local_attachment', path: '/tmp/a.txt', name: 'a.txt' },
+      ] as never;
+      expect(isExplicitCompactTurnInput(withAttachment, '/compact')).toBe(false);
+    });
+  });
+
+  describe('stripBoardCompactReminder', () => {
+    const reminder =
+      '<board_context_reminder>\nContext was recently compacted.\n\nRole: thread.\n</board_context_reminder>';
+
+    it('strips trailing, leading, standalone, concatenated, and embedded reminder blocks cleanly', () => {
+      expect(stripBoardCompactReminder(`继续\n\n${reminder}`)).toBe('继续');
+      expect(stripBoardCompactReminder(`继续${reminder}`)).toBe('继续');
+      expect(stripBoardCompactReminder(`${reminder}\n\n继续`)).toBe('继续');
+      expect(stripBoardCompactReminder(reminder)).toBe('');
+      expect(stripBoardCompactReminder(`前文\n\n${reminder}\n\n后文`)).toBe('前文\n\n后文');
+    });
+
+    it('returns text without a reminder block verbatim', () => {
+      expect(stripBoardCompactReminder('  keep spaces  ')).toBe('  keep spaces  ');
     });
   });
 
@@ -320,9 +367,41 @@ describe('board-compact-reinject helpers', () => {
       const store2 = createFileBoardCompactReinjectStore({ rootDir });
       expect(await store2.has(sessionId)).toBe(false);
     });
+
+    it('does not poison the negative cache on transient non-ENOENT read errors', async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), 'lody-board-compact-reinject-'));
+      tempDirs.push(rootDir);
+      const sessionId = 'session-transient-read-1' as SessionId;
+      const markerPath = path.join(
+        rootDir,
+        `${createHash('sha256').update(sessionId).digest('hex')}.json`
+      );
+      const warn = vi.fn();
+
+      // A directory at the marker path produces EISDIR on readFile (non-ENOENT).
+      await mkdir(markerPath, { recursive: true });
+
+      const store = createFileBoardCompactReinjectStore({
+        rootDir,
+        logger: { warn } as never,
+      });
+      expect(await store.has(sessionId)).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // Once the transient read failure resolves and a valid marker is on disk,
+      // the SAME store instance must observe `true` rather than a poisoned `false`.
+      await rm(markerPath, { recursive: true, force: true });
+      await writeFile(
+        markerPath,
+        JSON.stringify({ version: 1, sessionId, markedAt: Date.now() }),
+        'utf8'
+      );
+
+      expect(await store.has(sessionId)).toBe(true);
+    });
   });
 
-  describe('BoardCompactReinjectTracker dispatch-source handling', () => {
+  describe('BoardCompactReinjectTracker dispatch-source, latching, and idle compaction', () => {
     const silentLogger = {
       info: () => {},
       warn: () => {},
@@ -335,7 +414,7 @@ describe('board-compact-reinject helpers', () => {
       close: async () => {},
     } as never;
 
-    it('injects for inbox dispatch when pending, and skips maintenance turns', async () => {
+    it('injects for inbox dispatch when pending, and skips maintenance and goal turns without consuming pending', async () => {
       const store = createMemoryBoardCompactReinjectStore();
       const tracker = new BoardCompactReinjectTracker(store, silentLogger);
       const sessionId = 'session-inbox-1' as SessionId;
@@ -348,22 +427,43 @@ describe('board-compact-reinject helpers', () => {
         sessionId,
         meta,
         dispatchSource: 'maintenance',
-        usedHistoryReplay: false,
         turnInputText: 'Lody maintenance.',
         promptBlocks: [{ type: 'text', text: 'Lody maintenance.' }],
-        loadBoardContext: async () => ({ board }),
+        loadBoardContext: async () => ({ context: { board } }),
       });
       expect(maintenance.injected).toBe(false);
       expect(maintenance.promptBlocks).toHaveLength(1);
+
+      const goalBySource = await tracker.maybeAppendReminderToPromptBlocks({
+        sessionId,
+        meta,
+        dispatchSource: 'goal',
+        turnInputText: 'Continue the goal loop',
+        promptBlocks: [{ type: 'text', text: 'Continue the goal loop' }],
+        loadBoardContext: async () => ({ context: { board } }),
+      });
+      expect(goalBySource.injected).toBe(false);
+      expect(await tracker.hasPending(sessionId)).toBe(true);
+
+      const goalByControl = await tracker.maybeAppendReminderToPromptBlocks({
+        sessionId,
+        meta,
+        dispatchSource: 'rpc',
+        hasGoalControl: true,
+        turnInputText: 'Start goal',
+        promptBlocks: [{ type: 'text', text: 'Start goal' }],
+        loadBoardContext: async () => ({ context: { board } }),
+      });
+      expect(goalByControl.injected).toBe(false);
+      expect(await tracker.hasPending(sessionId)).toBe(true);
 
       const inbox = await tracker.maybeAppendReminderToPromptBlocks({
         sessionId,
         meta,
         dispatchSource: 'inbox',
-        usedHistoryReplay: false,
         turnInputText: 'The results returned by delegated work follow.',
         promptBlocks: [{ type: 'text', text: 'The results returned by delegated work follow.' }],
-        loadBoardContext: async () => ({ board }),
+        loadBoardContext: async () => ({ context: { board } }),
       });
       expect(inbox.injected).toBe(true);
       expect(inbox.promptBlocks).toHaveLength(2);
@@ -371,6 +471,98 @@ describe('board-compact-reinject helpers', () => {
         type: 'text',
         text: expect.stringContaining('<board_context_reminder>'),
       });
+    });
+
+    it('latches mid-turn usage drop even when context grows back before turn end (115k -> 22k -> 80k)', async () => {
+      const store = createMemoryBoardCompactReinjectStore();
+      const tracker = new BoardCompactReinjectTracker(store, silentLogger);
+      const sessionId = 'session-latch-1' as SessionId;
+      const meta = {
+        id: sessionId,
+        boardId: 'bd_test' as BoardId,
+        contextWindowUsage: { size: 1_000_000, used: 80_000 },
+      } as SessionMeta;
+
+      tracker.beginTurn(sessionId, 'turn-1', { seedBaselineUsed: 115_000 });
+      tracker.noteContextWindowUsageUpdate(sessionId, { size: 1_000_000, used: 22_000 });
+      tracker.noteContextWindowUsageUpdate(sessionId, { size: 1_000_000, used: 80_000 });
+
+      const result = await tracker.completeTurn({
+        sessionId,
+        turnId: 'turn-1',
+        assistantTurnIds: ['turn-1'],
+        meta,
+        promptFailed: false,
+        promptCompletedNormally: true,
+        producedOutput: true,
+        injectedBoardReminder: false,
+        explicitCompactTriggered: false,
+        turnStartUsed: 115_000,
+        ineligibleForUsageDrop: false,
+        readAssistantTurn: async () => undefined,
+      });
+
+      expect(result).toEqual({ compacted: true, reason: 'usage_drop' });
+      expect(await tracker.hasPending(sessionId)).toBe(true);
+      tracker.endTurn(sessionId, 'turn-1');
+    });
+
+    it('records spontaneous idle compaction updates for Board sessions only', async () => {
+      const store = createMemoryBoardCompactReinjectStore();
+      const tracker = new BoardCompactReinjectTracker(store, silentLogger);
+      const boardSessionId = 'session-idle-board' as SessionId;
+      const plainSessionId = 'session-idle-plain' as SessionId;
+
+      const boardMeta = { id: boardSessionId, boardId: 'bd_test' as BoardId } as SessionMeta;
+      const plainMeta = { id: plainSessionId } as SessionMeta;
+
+      // Tool-call compaction lifecycle while idle (Claude idle compaction).
+      tracker.noteLiveAcpUpdate(
+        boardSessionId,
+        parseSessionNotification({
+          sessionId: 'acp-1',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'idle-compact-1',
+            title: 'Compacting context',
+            status: 'in_progress',
+            _meta: { lody: { activity: { kind: 'context_compaction' } } },
+          },
+        }),
+        { isMaintenance: false, readSessionMeta: async () => boardMeta }
+      );
+      expect(await tracker.hasPending(boardSessionId)).toBe(false);
+
+      tracker.noteLiveAcpUpdate(
+        boardSessionId,
+        parseSessionNotification({
+          sessionId: 'acp-1',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'idle-compact-1',
+            status: 'completed',
+          },
+        }),
+        { isMaintenance: false, readSessionMeta: async () => boardMeta }
+      );
+      expect(await tracker.hasPending(boardSessionId)).toBe(true);
+
+      // Ordinary non-Board sessions ignore idle compaction updates.
+      tracker.noteLiveAcpUpdate(
+        plainSessionId,
+        parseSessionNotification({
+          sessionId: 'acp-2',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'idle-compact-plain',
+            title: 'Compacting context',
+            status: 'completed',
+            _meta: { lody: { activity: { kind: 'context_compaction' } } },
+          },
+        }),
+        { isMaintenance: false, readSessionMeta: async () => plainMeta }
+      );
+      expect(await tracker.hasPending(plainSessionId)).toBe(false);
     });
   });
 });

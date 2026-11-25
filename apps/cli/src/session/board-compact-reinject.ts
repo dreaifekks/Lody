@@ -3,6 +3,7 @@ import {
   LODY_MAX_CHAIN_DEPTH,
   resolveSessionExecutionInputBlocks,
   type ACPSessionId,
+  type AcpSessionNotification,
   type BoardMeta,
   type SessionContextWindowUsage,
   type SessionHistoryInput,
@@ -24,16 +25,31 @@ export const BOARD_COMPACT_USAGE_DROP_MIN_BASELINE = 40_000;
 export const BOARD_COMPACT_USAGE_DROP_MAX_AFTER_RATIO = 0.65;
 /** Minimum absolute token drop required to treat a usage decrease as compaction. */
 export const BOARD_COMPACT_USAGE_DROP_MIN_DELTA = 20_000;
+/** Same shrinkage ratio `BoardContinuityWorkflow` accepts as proof of `:compact`. */
+const MAINTENANCE_COMPACT_USAGE_DROP_RATIO = 0.8;
 
 const EXPLICIT_COMPACT_COMMAND_RE = /^\/compact(?:\s|$)/;
-const SLASH_COMMAND_INPUT_RE = /^\/[a-zA-Z0-9_-]+(?:\s|$)/;
+/**
+ * Matches slash commands including namespaced commands like `/mcp:github:prompt`
+ * or `/plugin.cmd`, while rejecting multi-segment filesystem paths like `/home/user/file`.
+ */
+const SLASH_COMMAND_INPUT_RE = /^\/[a-zA-Z0-9_.:-]+(?:\s|$)/;
+const BOARD_CONTEXT_REMINDER_BLOCK_RE =
+  /(?:\r?\n)*[ \t]*<board_context_reminder>[\s\S]*?<\/board_context_reminder>[ \t]*(?:\r?\n)*/g;
 const MARKER_FILE_VERSION = 1;
+const MAX_OPEN_COMPACTION_IDS_PER_SESSION = 16;
 
 export type BoardCompactPromptContext = {
   board: BoardMeta;
   role?: SessionMeta['boardRole'];
   /** The Board directory, when this machine keeps it. */
   directory?: string;
+};
+
+export type BoardCompactContextLoadResult = {
+  context?: BoardCompactPromptContext;
+  /** True only when the workspace Flock catalog synced cleanly and confirmed the Board is gone. */
+  confirmedMissing?: boolean;
 };
 
 export type BoardCompactReinjectStore = {
@@ -48,6 +64,8 @@ type ActiveTurnUsageObservation = {
   turnId: string;
   peakUsed?: number;
   lastObservedUsed?: number;
+  detectedUsageDrop: boolean;
+  detectedCompactionMarker: boolean;
 };
 
 const formatError = (error: unknown): string =>
@@ -55,6 +73,49 @@ const formatError = (error: unknown): string =>
 
 const isFiniteNonNegative = (value: number | undefined): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const hasCompactionToolMeta = (meta: unknown): boolean => {
+  const record = asRecord(meta);
+  if (!record) return false;
+  if (record.contextCompaction === true || asRecord(record.contextCompaction) !== undefined) {
+    return true;
+  }
+  const lody = asRecord(record.lody);
+  if (lody) {
+    const activity = asRecord(lody.activity);
+    if (activity?.kind === 'context_compaction') return true;
+    if (lody.activityKind === 'context_compaction') return true;
+  }
+  const jetbrains = asRecord(record.jetbrains);
+  const air = asRecord(jetbrains?.air);
+  if (asRecord(air?.contextCompaction) !== undefined) return true;
+  return false;
+};
+
+/**
+ * Strip Lody's inline `<board_context_reminder>...</board_context_reminder>`
+ * block (and its separating blank lines) from replayed native user prompts so
+ * catch-up deduplication matches the user's authored message and never writes
+ * internal reminders into Loro user history.
+ */
+export function stripBoardCompactReminder(text: string): string {
+  if (!text.includes('<board_context_reminder>')) {
+    return text;
+  }
+  return text
+    .replace(BOARD_CONTEXT_REMINDER_BLOCK_RE, (match, offset: number, source: string) => {
+      const atStart = offset === 0;
+      const atEnd = offset + match.length === source.length;
+      if (atStart || atEnd) return '';
+      return '\n\n';
+    })
+    .trim();
+}
 
 /**
  * Extract the primary text of a turn from normalized input blocks, falling back
@@ -75,14 +136,35 @@ export function extractTurnPromptText(
   return fallbackPrompt?.trim() ?? '';
 }
 
+/** Whether input blocks include any non-text attachment or structured reference. */
+export function hasNonTextInputBlocks(
+  inputBlocks: readonly SessionInputBlock[] | undefined
+): boolean {
+  return Boolean(inputBlocks?.some((block) => block.type !== 'text'));
+}
+
 /** Whether trimmed user input invokes `/compact` (bare or with trailing instructions). */
 export function isExplicitCompactCommand(text: string): boolean {
   return EXPLICIT_COMPACT_COMMAND_RE.test(text.trim());
 }
 
 /**
- * Whether trimmed user input starts with a slash command (`/cmd` or `/cmd ...`).
- * Paths like `/home/user/file.ts` do not match because `/` follows the first segment.
+ * Whether a turn's input is a pure-text explicit `/compact` command (no image,
+ * file, local attachment, or structured reference blocks that cause providers
+ * such as Codex to treat the turn as an ordinary prompt instead of `/compact`).
+ */
+export function isExplicitCompactTurnInput(
+  inputBlocks: readonly SessionInputBlock[] | undefined,
+  fallbackPrompt?: string
+): boolean {
+  if (hasNonTextInputBlocks(inputBlocks)) return false;
+  return isExplicitCompactCommand(extractTurnPromptText(inputBlocks, fallbackPrompt));
+}
+
+/**
+ * Whether trimmed user input starts with a slash command (`/cmd`, `/mcp:srv:cmd`,
+ * `/plugin.cmd`, etc.). Multi-segment paths like `/home/user/file.ts` do not match
+ * because `/` follows the first segment.
  */
 export function isSlashCommandInput(text: string): boolean {
   return SLASH_COMMAND_INPUT_RE.test(text.trim());
@@ -235,13 +317,32 @@ export function createFileBoardCompactReinjectStore(options?: {
     });
   };
 
-  const readMarkerFromDisk = async (sessionId: SessionId): Promise<boolean> => {
+  const readMarkerFromDisk = async (
+    sessionId: SessionId
+  ): Promise<{ pending: boolean; cacheable: boolean }> => {
+    let content: string;
     try {
-      const content = await readFile(markerPathFor(sessionId), 'utf8');
+      content = await readFile(markerPathFor(sessionId), 'utf8');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+      if (code === 'ENOENT') {
+        return { pending: false, cacheable: true };
+      }
+      // Do not poison the cache on transient I/O errors (EMFILE, EACCES, etc.);
+      // retry from disk on the next call.
+      options?.logger?.warn(
+        `[${sessionId}] Failed to read Board compact reinject marker; will retry next turn: ${formatError(error)}`
+      );
+      return { pending: false, cacheable: false };
+    }
+    try {
       const parsed = JSON.parse(content) as { version?: unknown; sessionId?: unknown } | null;
-      return parsed?.version === MARKER_FILE_VERSION && parsed?.sessionId === sessionId;
+      return {
+        pending: parsed?.version === MARKER_FILE_VERSION && parsed?.sessionId === sessionId,
+        cacheable: true,
+      };
     } catch {
-      return false;
+      return { pending: false, cacheable: true };
     }
   };
 
@@ -250,9 +351,11 @@ export function createFileBoardCompactReinjectStore(options?: {
       return enqueue(sessionId, async () => {
         const cached = cache.get(sessionId);
         if (cached !== undefined) return cached;
-        const onDisk = await readMarkerFromDisk(sessionId);
-        cache.set(sessionId, onDisk);
-        return onDisk;
+        const { pending, cacheable } = await readMarkerFromDisk(sessionId);
+        if (cacheable) {
+          cache.set(sessionId, pending);
+        }
+        return pending;
       });
     },
 
@@ -295,23 +398,101 @@ export function createFileBoardCompactReinjectStore(options?: {
 
 export class BoardCompactReinjectTracker {
   private readonly activeTurns = new Map<SessionId, ActiveTurnUsageObservation>();
+  private readonly openCompactionToolCallIds = new Map<SessionId, Set<string>>();
+  private readonly inFlightIdleMarks = new Map<SessionId, Promise<void>>();
 
   constructor(
     private readonly store: BoardCompactReinjectStore,
     private readonly logger: Logger
   ) {}
 
-  beginTurn(sessionId: SessionId, turnId: string): void {
-    this.activeTurns.set(sessionId, { turnId });
+  beginTurn(
+    sessionId: SessionId,
+    turnId: string,
+    options?: {
+      /**
+       * Optional pre-turn token count to seed `peakUsed` so a mid-turn drop that
+       * later climbs back up (`115k -> 22k -> 80k`) is latched immediately.
+       * Omitted on first turns and turns that already carry a reinjected reminder
+       * (protecting against providers like agy that defer usage_update after bare `/compact`).
+       */
+      seedBaselineUsed?: number;
+    }
+  ): void {
+    const seed = isFiniteNonNegative(options?.seedBaselineUsed)
+      ? options.seedBaselineUsed
+      : undefined;
+    this.activeTurns.set(sessionId, {
+      turnId,
+      peakUsed: seed,
+      detectedUsageDrop: false,
+      detectedCompactionMarker: false,
+    });
   }
 
   noteContextWindowUsageUpdate(sessionId: SessionId, usage: SessionContextWindowUsage): void {
     if (!isFiniteNonNegative(usage.used)) return;
     const active = this.activeTurns.get(sessionId);
     if (!active) return;
+    if (
+      active.peakUsed !== undefined &&
+      detectContextUsageDropCompaction({
+        peakUsed: active.peakUsed,
+        afterUsed: usage.used,
+      })
+    ) {
+      active.detectedUsageDrop = true;
+    }
     active.peakUsed =
       active.peakUsed === undefined ? usage.used : Math.max(active.peakUsed, usage.used);
     active.lastObservedUsed = usage.used;
+  }
+
+  /**
+   * Observe live (post-replay-suppression) ACP updates for explicit completed
+   * context compaction signals — covering both in-turn markers and spontaneous
+   * idle compaction (such as Claude Code's `IdleCompaction`).
+   */
+  noteLiveAcpUpdate(
+    sessionId: SessionId,
+    notification: AcpSessionNotification,
+    options: {
+      isMaintenance: boolean;
+      readSessionMeta: () => Promise<SessionMeta | undefined>;
+    }
+  ): void {
+    if (!this.observeCompletedCompactionNotification(sessionId, notification)) {
+      return;
+    }
+    const active = this.activeTurns.get(sessionId);
+    if (active) {
+      active.detectedCompactionMarker = true;
+      return;
+    }
+    if (options.isMaintenance) {
+      return;
+    }
+    const previous = this.inFlightIdleMarks.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          const meta = await options.readSessionMeta();
+          if (meta?.boardId) {
+            await this.store.mark(sessionId);
+          }
+        } catch (error) {
+          this.logger.warn(
+            `[${sessionId}] Failed to record idle Board compaction: ${formatError(error)}`
+          );
+        }
+      });
+    this.inFlightIdleMarks.set(sessionId, next);
+    void next.finally(() => {
+      if (this.inFlightIdleMarks.get(sessionId) === next) {
+        this.inFlightIdleMarks.delete(sessionId);
+      }
+    });
   }
 
   endTurn(sessionId: SessionId, turnId: string): void {
@@ -320,138 +501,190 @@ export class BoardCompactReinjectTracker {
     }
   }
 
+  private async awaitIdleMarks(sessionId: SessionId): Promise<void> {
+    const pending = this.inFlightIdleMarks.get(sessionId);
+    if (pending) {
+      await pending.catch(() => undefined);
+    }
+  }
+
+  private observeCompletedCompactionNotification(
+    sessionId: SessionId,
+    notification: AcpSessionNotification
+  ): boolean {
+    const update = asRecord(notification.update);
+    if (!update) return false;
+    const sessionUpdate = update.sessionUpdate;
+    const status = update.status;
+
+    if (sessionUpdate === 'compaction_update') {
+      return status === 'completed';
+    }
+
+    if (sessionUpdate !== 'tool_call' && sessionUpdate !== 'tool_call_update') {
+      return false;
+    }
+
+    const toolCallId = typeof update.toolCallId === 'string' ? update.toolCallId : undefined;
+    const trackedIds = this.openCompactionToolCallIds.get(sessionId);
+    const isCompaction =
+      hasCompactionToolMeta(update._meta) ||
+      (toolCallId !== undefined && trackedIds?.has(toolCallId) === true);
+    if (!isCompaction) {
+      return false;
+    }
+
+    if (status === 'completed') {
+      if (toolCallId && trackedIds) {
+        trackedIds.delete(toolCallId);
+        if (trackedIds.size === 0) this.openCompactionToolCallIds.delete(sessionId);
+      }
+      return true;
+    }
+
+    if (status === 'failed' || status === 'cancelled') {
+      if (toolCallId && trackedIds) {
+        trackedIds.delete(toolCallId);
+        if (trackedIds.size === 0) this.openCompactionToolCallIds.delete(sessionId);
+      }
+      return false;
+    }
+
+    if (toolCallId) {
+      let ids = trackedIds;
+      if (!ids) {
+        ids = new Set();
+        this.openCompactionToolCallIds.set(sessionId, ids);
+      }
+      if (ids.size >= MAX_OPEN_COMPACTION_IDS_PER_SESSION) {
+        const oldest = ids.values().next().value;
+        if (oldest !== undefined) ids.delete(oldest);
+      }
+      ids.add(toolCallId);
+    }
+    return false;
+  }
+
   async hasPending(sessionId: SessionId): Promise<boolean> {
-    return await this.store.has(sessionId);
+    try {
+      await this.awaitIdleMarks(sessionId);
+      return await this.store.has(sessionId);
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Failed to read pending Board compact reinject state: ${formatError(error)}`
+      );
+      return false;
+    }
+  }
+
+  async markPending(sessionId: SessionId): Promise<void> {
+    try {
+      await this.awaitIdleMarks(sessionId);
+      await this.store.mark(sessionId);
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Failed to mark pending Board compact reinject state: ${formatError(error)}`
+      );
+    }
   }
 
   async clearPending(sessionId: SessionId): Promise<void> {
-    await this.store.clear(sessionId);
+    try {
+      await this.awaitIdleMarks(sessionId);
+      await this.store.clear(sessionId);
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Failed to clear pending Board compact reinject state: ${formatError(error)}`
+      );
+    }
   }
 
   /**
    * Append a compact `<board_context_reminder>` text block to `promptBlocks` when
-   * this non-maintenance Board member turn follows a compaction or runs on a
-   * history-replayed ACP session. Slash commands skip injection and retain any
-   * pending marker for the next normal message.
+   * this eligible Board member turn has a pending refresh. Maintenance turns,
+   * goal control turns (which slash-compat rewrites to `/goal ...`), and slash
+   * commands skip injection while retaining any pending marker for the next
+   * normal message.
    */
   async maybeAppendReminderToPromptBlocks(args: {
     sessionId: SessionId;
     meta: SessionMeta | null | undefined;
     dispatchSource?: string;
-    usedHistoryReplay: boolean;
+    hasGoalControl?: boolean;
     turnInputText: string;
     promptBlocks: ContentBlock[];
-    loadBoardContext: () => Promise<BoardCompactPromptContext | undefined>;
+    loadBoardContext: () => Promise<BoardCompactContextLoadResult>;
   }): Promise<{ promptBlocks: ContentBlock[]; injected: boolean }> {
     const {
       sessionId,
       meta,
       dispatchSource,
-      usedHistoryReplay,
+      hasGoalControl,
       turnInputText,
       promptBlocks,
       loadBoardContext,
     } = args;
 
-    if (dispatchSource === 'maintenance' || !meta?.boardId) {
+    if (
+      dispatchSource === 'maintenance' ||
+      dispatchSource === 'goal' ||
+      hasGoalControl ||
+      !meta?.boardId
+    ) {
       return { promptBlocks, injected: false };
     }
 
-    const pending = await this.store.has(sessionId);
-    const shouldInject = usedHistoryReplay || (pending && !isSlashCommandInput(turnInputText));
-    if (!shouldInject) {
-      return { promptBlocks, injected: false };
-    }
-
-    let context: BoardCompactPromptContext | undefined;
     try {
-      context = await loadBoardContext();
-    } catch (error) {
-      const message = formatError(error);
-      this.logger.warn(`[${sessionId}] Skipping Board compact reminder: ${message}`);
-      if (message === 'BOARD_NOT_FOUND') {
-        await this.store.clear(sessionId);
+      await this.awaitIdleMarks(sessionId);
+      const pending = await this.store.has(sessionId);
+      if (!pending || isSlashCommandInput(turnInputText)) {
+        return { promptBlocks, injected: false };
       }
+
+      let loaded: BoardCompactContextLoadResult;
+      try {
+        loaded = await loadBoardContext();
+      } catch (error) {
+        this.logger.warn(`[${sessionId}] Skipping Board compact reminder: ${formatError(error)}`);
+        return { promptBlocks, injected: false };
+      }
+
+      if (loaded.confirmedMissing) {
+        this.logger.warn(
+          `[${sessionId}] Skipping Board compact reminder: Board confirmed missing after catalog sync`
+        );
+        await this.clearPending(sessionId);
+        return { promptBlocks, injected: false };
+      }
+
+      if (!loaded.context) {
+        return { promptBlocks, injected: false };
+      }
+
+      const reminderText = buildBoardCompactReminder(loaded.context);
+      return {
+        promptBlocks: [...promptBlocks, { type: 'text', text: reminderText }],
+        injected: true,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Skipping Board compact reminder after unexpected error: ${formatError(error)}`
+      );
       return { promptBlocks, injected: false };
     }
-
-    if (!context) {
-      return { promptBlocks, injected: false };
-    }
-
-    const reminderText = buildBoardCompactReminder(context);
-    return {
-      promptBlocks: [...promptBlocks, { type: 'text', text: reminderText }],
-      injected: true,
-    };
   }
 
-  /**
-   * Consume a delivered reminder and evaluate three-layer compaction signals
-   * after turn finalization (`finalizeACPState` + `persistTurnDiffsAndFlushUsage`).
-   */
-  async completeTurn(args: {
-    sessionId: SessionId;
-    turnId: string;
-    completedTurnId: string;
-    meta: SessionMeta | null | undefined;
-    dispatchSource?: string;
-    promptFailed: boolean;
-    producedOutput: boolean;
-    injectedBoardReminder: boolean;
-    turnInputTexts: readonly string[];
-    turnStartUsed?: number;
-    ineligibleForUsageDrop: boolean;
-    readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
-  }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
-    const {
-      sessionId,
-      turnId,
-      completedTurnId,
-      meta,
-      dispatchSource,
-      promptFailed,
-      producedOutput,
-      injectedBoardReminder,
-      turnInputTexts,
-      turnStartUsed,
-      ineligibleForUsageDrop,
-      readAssistantTurn,
-    } = args;
-
-    const active = this.activeTurns.get(sessionId);
-    const observedPeakUsed = active?.turnId === turnId ? active.peakUsed : undefined;
-    const lastObservedUsed = active?.turnId === turnId ? active.lastObservedUsed : undefined;
-
-    if (dispatchSource === 'maintenance' || !meta?.boardId) {
-      return { compacted: false };
-    }
-
-    const turnSucceeded = !promptFailed && producedOutput;
-    // Consume the previous pending flag BEFORE checking whether this turn itself
-    // compacted, so a turn that both received a reminder and compacted again
-    // leaves the pending marker armed for the following turn.
-    if (injectedBoardReminder && turnSucceeded) {
-      await this.store.clear(sessionId);
-    }
-
-    // Layer 1: explicit `/compact` command completed cleanly (covers bare `/compact`
-    // on providers like Antigravity that emit neither a compaction marker nor an
-    // immediate usage_update).
-    if (turnSucceeded && turnInputTexts.some(isExplicitCompactCommand)) {
-      await this.store.mark(sessionId);
-      return { compacted: true, reason: 'explicit_compact' };
-    }
-
-    // Layer 2: explicit ACP `context_compaction` completed marker persisted in
-    // the finalized assistant entry (Claude Code / Codex manual & auto-compact).
-    const entryIds = completedTurnId === turnId ? [completedTurnId] : [completedTurnId, turnId];
-    for (const entryId of entryIds) {
+  private async hasCompletedMarkerInEntries(
+    sessionId: SessionId,
+    entryIds: readonly string[],
+    readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>
+  ): Promise<boolean> {
+    const uniqueIds = [...new Set(entryIds.filter((id) => id.length > 0))];
+    for (const entryId of uniqueIds) {
       try {
         const entry = await readAssistantTurn(entryId);
         if (hasCompletedCompactionMarker(entry)) {
-          await this.store.mark(sessionId);
-          return { compacted: true, reason: 'acp_marker' };
+          return true;
         }
       } catch (error) {
         this.logger.debug(
@@ -459,45 +692,137 @@ export class BoardCompactReinjectTracker {
         );
       }
     }
-
-    // Layer 3: context window usage drop fallback (auto-compaction without marker).
-    // When this turn already carried a reinjected reminder, `turnStartUsed` may
-    // hold a stale pre-compact reading from a provider that defers usage_update
-    // across a bare `/compact`; rely on live in-turn `observedPeakUsed` only so
-    // the deferred usage refresh does not trigger a second reinjection.
-    const afterUsed = meta.contextWindowUsage?.used ?? lastObservedUsed;
-    const effectiveStartUsed = injectedBoardReminder ? undefined : turnStartUsed;
-    if (
-      detectContextUsageDropCompaction({
-        startUsed: effectiveStartUsed,
-        peakUsed: observedPeakUsed,
-        afterUsed,
-        ineligible: ineligibleForUsageDrop,
-      })
-    ) {
-      await this.store.mark(sessionId);
-      return { compacted: true, reason: 'usage_drop' };
-    }
-
-    return { compacted: false };
+    return false;
   }
 
   /**
-   * Thin adapter for `SessionExecutionService.prepareContinueSessionTurn` so the
-   * execution service only passes raw turn context and keeps compaction logic
-   * encapsulated in this module.
+   * Consume a delivered reminder and evaluate three-layer compaction signals
+   * after turn finalization (`finalizeACPState` + `persistTurnDiffsAndFlushUsage`).
+   * Fully error-contained: never throws to the caller.
    */
-  async completeContinueTurn(args: {
+  async completeTurn(args: {
     sessionId: SessionId;
     turnId: string;
-    completedTurnId: string;
+    assistantTurnIds: readonly string[];
+    meta: SessionMeta | null | undefined;
+    dispatchSource?: string;
+    hasGoalControl?: boolean;
+    promptFailed: boolean;
+    /** Whether `agentClient.prompt()` itself returned cleanly (even if visible output was empty). */
+    promptCompletedNormally: boolean;
+    producedOutput: boolean;
+    injectedBoardReminder: boolean;
+    explicitCompactTriggered: boolean;
+    turnStartUsed?: number;
+    ineligibleForUsageDrop: boolean;
+    readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
+  }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
+    const {
+      sessionId,
+      turnId,
+      assistantTurnIds,
+      meta,
+      dispatchSource,
+      hasGoalControl,
+      promptFailed,
+      promptCompletedNormally,
+      producedOutput,
+      injectedBoardReminder,
+      explicitCompactTriggered,
+      turnStartUsed,
+      ineligibleForUsageDrop,
+      readAssistantTurn,
+    } = args;
+
+    try {
+      const active = this.activeTurns.get(sessionId);
+      const observedPeakUsed = active?.turnId === turnId ? active.peakUsed : undefined;
+      const lastObservedUsed = active?.turnId === turnId ? active.lastObservedUsed : undefined;
+      const observedUsageDrop = active?.turnId === turnId ? active.detectedUsageDrop : false;
+      const observedMarker = active?.turnId === turnId ? active.detectedCompactionMarker : false;
+
+      if (dispatchSource === 'maintenance' || !meta?.boardId) {
+        return { compacted: false };
+      }
+
+      const turnSucceeded = !promptFailed && producedOutput;
+      // Consume the previous pending flag BEFORE checking whether this turn itself
+      // compacted, so a turn that both received a reminder and compacted again
+      // leaves the pending marker armed for the following turn.
+      if (injectedBoardReminder && turnSucceeded) {
+        await this.clearPending(sessionId);
+      }
+
+      // Layer 1: pure-text explicit `/compact` command returned cleanly from ACP
+      // (covers bare `/compact` on providers like Antigravity that may emit zero
+      // visible output, no compaction marker, and no immediate usage_update).
+      if (
+        dispatchSource !== 'goal' &&
+        !hasGoalControl &&
+        promptCompletedNormally &&
+        explicitCompactTriggered
+      ) {
+        await this.markPending(sessionId);
+        return { compacted: true, reason: 'explicit_compact' };
+      }
+
+      // Layer 2: explicit ACP `context_compaction` completed marker observed live
+      // or persisted across any assistant entry in the turn/steer-handoff chain.
+      if (
+        observedMarker ||
+        (await this.hasCompletedMarkerInEntries(sessionId, assistantTurnIds, readAssistantTurn))
+      ) {
+        await this.markPending(sessionId);
+        return { compacted: true, reason: 'acp_marker' };
+      }
+
+      // Layer 3: context window usage drop fallback (auto-compaction without marker).
+      // Latched `observedUsageDrop` catches mid-turn drop-then-regrowth (`115k -> 22k -> 80k`).
+      // When this turn already carried a reinjected reminder, ignore stale pre-turn
+      // `turnStartUsed` so deferred `usage_update` from bare `/compact` never re-triggers.
+      const afterUsed = meta.contextWindowUsage?.used ?? lastObservedUsed;
+      const effectiveStartUsed = injectedBoardReminder ? undefined : turnStartUsed;
+      if (
+        !ineligibleForUsageDrop &&
+        (observedUsageDrop ||
+          detectContextUsageDropCompaction({
+            startUsed: effectiveStartUsed,
+            peakUsed: observedPeakUsed,
+            afterUsed,
+          }))
+      ) {
+        await this.markPending(sessionId);
+        return { compacted: true, reason: 'usage_drop' };
+      }
+
+      return { compacted: false };
+    } catch (error) {
+      this.logger.warn(
+        `[${sessionId}] Failed to finalize Board compact reinject bookkeeping: ${formatError(error)}`
+      );
+      return { compacted: false };
+    }
+  }
+
+  /**
+   * Thin adapter for `SessionExecutionService` turn completion (both first turns
+   * and continuation turns). Fully error-contained: never throws.
+   */
+  async completeSessionTurn(args: {
+    sessionId: SessionId;
+    turnId: string;
+    assistantTurnIds: readonly string[];
     preTurnMeta: SessionMeta;
     readFreshMeta: () => Promise<SessionMeta | undefined>;
     dispatchSource?: string;
+    hasGoalControl?: boolean;
     promptFailed: boolean;
+    promptCompletedNormally: boolean;
     producedOutput: boolean;
     injectedBoardReminder: boolean;
-    initialInputText: string;
+    isStartTurn: boolean;
+    initialInputBlocks?: readonly SessionInputBlock[];
+    initialFallbackPrompt?: string;
     finalInputConfig?: SessionTurnInputConfig;
     turnStartUsed?: number;
     turnStartAcpSessionId?: ACPSessionId;
@@ -509,42 +834,147 @@ export class BoardCompactReinjectTracker {
     usedHistoryReplay: boolean;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
-    const freshMeta = (await args.readFreshMeta()) ?? args.preTurnMeta;
-    const finalInputText = args.finalInputConfig
-      ? extractTurnPromptText(
-          resolveSessionExecutionInputBlocks(args.finalInputConfig),
-          args.finalInputConfig.prompt
-        )
-      : '';
-    const turnInputTexts =
-      finalInputText && finalInputText !== args.initialInputText
-        ? [args.initialInputText, finalInputText]
-        : [args.initialInputText];
-    const replacedAcpSession =
-      args.freshAgentSession ||
-      args.usedHistoryReplay ||
-      !args.turnStartAcpSessionId ||
-      args.activeAcpSessionId !== args.turnStartAcpSessionId;
-    const requestedModelId = args.finalInputConfig?.modelId ?? args.requestedModelId;
-    const afterModelId = args.activeModelId ?? requestedModelId ?? freshMeta?.lastModel?.modelId;
-    const modelChanged = Boolean(
-      args.turnStartModelId &&
-      ((requestedModelId && requestedModelId !== args.turnStartModelId) ||
-        (afterModelId && afterModelId !== args.turnStartModelId))
-    );
-    return await this.completeTurn({
-      sessionId: args.sessionId,
-      turnId: args.turnId,
-      completedTurnId: args.completedTurnId,
-      meta: freshMeta,
-      dispatchSource: args.dispatchSource,
-      promptFailed: args.promptFailed,
-      producedOutput: args.producedOutput,
-      injectedBoardReminder: args.injectedBoardReminder,
-      turnInputTexts,
-      turnStartUsed: args.turnStartUsed,
-      ineligibleForUsageDrop: replacedAcpSession || modelChanged,
-      readAssistantTurn: args.readAssistantTurn,
+    try {
+      let freshMeta: SessionMeta | undefined;
+      try {
+        freshMeta = await args.readFreshMeta();
+      } catch (error) {
+        this.logger.warn(
+          `[${args.sessionId}] Failed to refresh SessionMeta for Board compact bookkeeping; using pre-turn meta: ${formatError(error)}`
+        );
+      }
+      const meta = freshMeta ?? args.preTurnMeta;
+
+      const explicitCompactTriggered =
+        !args.isStartTurn &&
+        (isExplicitCompactTurnInput(args.initialInputBlocks, args.initialFallbackPrompt) ||
+          (args.finalInputConfig !== undefined &&
+            isExplicitCompactTurnInput(
+              resolveSessionExecutionInputBlocks(args.finalInputConfig),
+              args.finalInputConfig.prompt
+            )));
+
+      const replacedAcpSession = args.isStartTurn
+        ? false
+        : args.freshAgentSession ||
+          args.usedHistoryReplay ||
+          !args.turnStartAcpSessionId ||
+          args.activeAcpSessionId !== args.turnStartAcpSessionId;
+
+      const requestedModelId = args.finalInputConfig?.modelId ?? args.requestedModelId;
+      const afterModelId = args.activeModelId ?? requestedModelId ?? meta?.lastModel?.modelId;
+      const modelChanged = Boolean(
+        args.turnStartModelId &&
+        ((requestedModelId && requestedModelId !== args.turnStartModelId) ||
+          (afterModelId && afterModelId !== args.turnStartModelId))
+      );
+
+      return await this.completeTurn({
+        sessionId: args.sessionId,
+        turnId: args.turnId,
+        assistantTurnIds: args.assistantTurnIds,
+        meta,
+        dispatchSource: args.dispatchSource,
+        hasGoalControl: args.hasGoalControl,
+        promptFailed: args.promptFailed,
+        promptCompletedNormally: args.promptCompletedNormally,
+        producedOutput: args.producedOutput,
+        injectedBoardReminder: args.injectedBoardReminder,
+        explicitCompactTriggered,
+        turnStartUsed: args.isStartTurn ? undefined : args.turnStartUsed,
+        ineligibleForUsageDrop: replacedAcpSession || modelChanged,
+        readAssistantTurn: args.readAssistantTurn,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `[${args.sessionId}] Failed to evaluate Board compaction after turn: ${formatError(error)}`
+      );
+      return { compacted: false };
+    }
+  }
+
+  /**
+   * Preserve confirmed compaction evidence (ACP marker or eligible usage drop)
+   * when a turn is cancelled via Stop or terminates on error after prompt start.
+   * Never consumes pending reminders and never throws.
+   */
+  async recordConfirmedCompactionOnInterruption(args: {
+    sessionId: SessionId;
+    turnId: string;
+    assistantTurnIds: readonly string[];
+    preTurnMeta: SessionMeta;
+    readFreshMeta: () => Promise<SessionMeta | undefined>;
+    dispatchSource?: string;
+    isStartTurn: boolean;
+    injectedBoardReminder: boolean;
+    turnStartUsed?: number;
+    turnStartAcpSessionId?: ACPSessionId;
+    turnStartModelId?: string;
+    activeAcpSessionId?: ACPSessionId | null;
+    activeModelId?: string;
+    requestedModelId?: string;
+    finalInputConfig?: SessionTurnInputConfig;
+    freshAgentSession: boolean;
+    usedHistoryReplay: boolean;
+    readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
+  }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
+    return await this.completeSessionTurn({
+      ...args,
+      promptFailed: true,
+      promptCompletedNormally: false,
+      producedOutput: false,
+      initialInputBlocks: undefined,
+      initialFallbackPrompt: undefined,
     });
+  }
+
+  /**
+   * Mark pending when a coordinator maintenance `:compact` turn confirms
+   * compaction (marker or `< 0.8` shrinkage), before `:renew` runs. If `:renew`
+   * runs immediately and succeeds, `:renew` clears pending (no double-inject);
+   * if a user/Inbox turn preempts `:renew` (`yielded`), it immediately gets the
+   * compact reminder. Never throws.
+   */
+  async completeMaintenanceCompactTurn(args: {
+    sessionId: SessionId;
+    preTurnMeta: SessionMeta;
+    readFreshMeta: () => Promise<SessionMeta | undefined>;
+    assistantTurnIds: readonly string[];
+    usedBefore?: number;
+    readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
+  }): Promise<boolean> {
+    try {
+      if (!args.preTurnMeta.boardId) return false;
+      const markerHit = await this.hasCompletedMarkerInEntries(
+        args.sessionId,
+        args.assistantTurnIds,
+        args.readAssistantTurn
+      );
+      let shrank = false;
+      if (!markerHit && isFiniteNonNegative(args.usedBefore)) {
+        let freshMeta: SessionMeta | undefined;
+        try {
+          freshMeta = await args.readFreshMeta();
+        } catch (error) {
+          this.logger.warn(
+            `[${args.sessionId}] Failed to refresh SessionMeta after maintenance compact: ${formatError(error)}`
+          );
+        }
+        const after = freshMeta?.contextWindowUsage?.used;
+        shrank =
+          isFiniteNonNegative(after) &&
+          after < args.usedBefore * MAINTENANCE_COMPACT_USAGE_DROP_RATIO;
+      }
+      if (markerHit || shrank) {
+        await this.markPending(args.sessionId);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      this.logger.warn(
+        `[${args.sessionId}] Failed to record Board maintenance compaction state: ${formatError(error)}`
+      );
+      return false;
+    }
   }
 }

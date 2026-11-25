@@ -5650,6 +5650,7 @@ export class MessageHandler {
     if (this.store.recordSuppressedAcpReplay(sessionId, update)) {
       return;
     }
+    this.executionService.noteLiveAcpUpdate(sessionId, update);
     const target = this.store.getCurrentACPUpdateTarget(sessionId);
     if (target) this.recordLiveActivity(sessionId, update);
     if (!target) {

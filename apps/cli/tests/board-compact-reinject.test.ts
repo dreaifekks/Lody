@@ -1,6 +1,7 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import {
   normalizeBoardMeta,
+  parseSessionNotification,
   workspaceFlockKeys,
   type ACPSessionId,
   type BoardId,
@@ -8,6 +9,7 @@ import {
   type MachineId,
   type SessionHistoryInput,
   type SessionId,
+  type SessionInputBlock,
   type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
@@ -15,6 +17,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GoalPromptControl } from '../src/agent/goal-control';
 import type { LoroDocumentManager } from '../src/lib/loro/doc';
 import {
   createFileBoardCompactReinjectStore,
@@ -63,10 +66,21 @@ function createBoardExecutionHarness(options: {
   initialHistory?: SessionHistoryInput[];
   resumeError?: Error;
   store?: BoardCompactReinjectStore;
+  syncFlockDocOrThrow?: () => Promise<void>;
+  observePromptContentForTurn?: (
+    sessionId: SessionId,
+    turnId: string
+  ) => Promise<boolean> | boolean;
+  getMetaStateOverride?: (
+    readCount: number,
+    defaultMeta: SessionMeta
+  ) => Promise<SessionMeta> | SessionMeta;
+  enableSteer?: boolean;
   onPrompt?: (ctx: {
     callIndex: number;
     acpSessionId: string;
     blocks: ContentBlock[];
+    signal?: AbortSignal;
     service: SessionExecutionService;
     setUsage: (used: number, size?: number) => void;
     pushHistory: (entry: SessionHistoryInput) => void;
@@ -110,7 +124,11 @@ function createBoardExecutionHarness(options: {
   const prompts: PromptCapture[] = [];
   let promptCallIndex = 0;
   let turnCounter = 0;
+  let metaReadCount = 0;
   let service!: SessionExecutionService;
+  const syncFlockDocOrThrow = vi.fn(options.syncFlockDocOrThrow ?? (async () => undefined));
+  let activeSteerCompletion: (() => void) | undefined;
+  let activePromptAbortController: AbortController | undefined;
 
   const setUsage = (used: number, size = 1_000_000) => {
     currentMeta = { ...currentMeta, contextWindowUsage: { used, size } };
@@ -121,22 +139,60 @@ function createBoardExecutionHarness(options: {
       isCreated: () => true,
       currentModel: { modelId, name: modelId },
       supportsContextCompaction: () => true,
+      ...(options.enableSteer
+        ? {
+            getAcknowledgedSteerCapability: () => ({
+              provider: 'codex' as const,
+              appliedNotificationMethod: 'codex/steerApplied',
+              upstreamTurn: 'same' as const,
+              configPolicy: 'active' as const,
+            }),
+            findSteerConfigMismatch: () => null,
+            steerPrompt: () => {
+              const previousComplete = activeSteerCompletion;
+              let resolveCurrent!: () => void;
+              const completion = new Promise<void>((resolve) => {
+                resolveCurrent = resolve;
+              });
+              activeSteerCompletion = resolveCurrent;
+              previousComplete?.();
+              return {
+                outcome: Promise.resolve({
+                  outcome: 'applied' as const,
+                  application: { release: () => {} },
+                }),
+                completion,
+              };
+            },
+          }
+        : {}),
       prompt: async (id: string, blocks: ContentBlock[]) => {
         const callIndex = promptCallIndex++;
         const text = blocks
           .map((block) => (block.type === 'text' ? block.text : `[${block.type}]`))
           .join('\n');
         prompts.push({ acpSessionId: id, blocks, text });
-        await options.onPrompt?.({
-          callIndex,
-          acpSessionId: id,
-          blocks,
-          service,
-          setUsage,
-          pushHistory: (entry) => history.push(entry),
-        });
+        const controller = new AbortController();
+        activePromptAbortController = controller;
+        try {
+          await options.onPrompt?.({
+            callIndex,
+            acpSessionId: id,
+            blocks,
+            signal: controller.signal,
+            service,
+            setUsage,
+            pushHistory: (entry) => history.push(entry),
+          });
+        } finally {
+          if (activePromptAbortController === controller) {
+            activePromptAbortController = undefined;
+          }
+        }
       },
-      cancel: async () => {},
+      cancel: async () => {
+        activePromptAbortController?.abort();
+      },
     },
     acpSessionId,
     getMemoryBinding: () => null,
@@ -155,7 +211,13 @@ function createBoardExecutionHarness(options: {
 
   const sessionDoc = withHistoryPort({
     sessionId,
-    getMetaState: async () => currentMeta,
+    getMetaState: async () => {
+      metaReadCount += 1;
+      if (options.getMetaStateOverride) {
+        return await options.getMetaStateOverride(metaReadCount, currentMeta);
+      }
+      return currentMeta;
+    },
     getHistory: () => history,
     setStatus: async () => {},
     setLastMessageAt: async () => {},
@@ -165,6 +227,9 @@ function createBoardExecutionHarness(options: {
 
   const deps = createBaseDeps({
     boardCompactReinjectStore: options.store,
+    ...(options.observePromptContentForTurn
+      ? { observePromptContentForTurn: options.observePromptContentForTurn }
+      : {}),
     beginConversationTurn: vi.fn((_sid, userTurnId) =>
       userTurnId ? `assistant:${userTurnId}` : `assistant:${++turnCounter}`
     ),
@@ -193,6 +258,7 @@ function createBoardExecutionHarness(options: {
       ),
     } as unknown as SessionManager,
     workspaceDocument: {
+      syncFlockDocOrThrow,
       repo: {
         upsertDocMeta: vi.fn(async () => {}),
         getDocMeta: vi.fn(async () => ({ meta: currentMeta })),
@@ -216,7 +282,7 @@ function createBoardExecutionHarness(options: {
           : []),
         ...inputBlocks.map((block) => ({
           type: 'text' as const,
-          text: block.type === 'text' ? block.text : '',
+          text: block.type === 'text' ? block.text : `[${block.type}]`,
         })),
       ] as ContentBlock[],
   });
@@ -228,7 +294,9 @@ function createBoardExecutionHarness(options: {
     extra: {
       userTurnId?: string;
       modelId?: string;
-      dispatchSource?: 'rpc' | 'crdt' | 'queue' | 'inbox';
+      inputBlocks?: SessionInputBlock[];
+      dispatchSource?: 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal';
+      goalControl?: GoalPromptControl;
     } = {}
   ) => {
     const userTurnId = extra.userTurnId ?? `user-turn-${++turnCounter}`;
@@ -244,13 +312,39 @@ function createBoardExecutionHarness(options: {
         userEmail: 'owner@example.com',
         acpSessionConfig: {
           prompt,
+          ...(extra.inputBlocks ? { inputBlocks: extra.inputBlocks } : {}),
           cliType: 'registry',
           agentType: 'antigravity',
           ...(extra.modelId ? { modelId: extra.modelId } : {}),
         },
       },
-      extra.dispatchSource ? { dispatchSource: extra.dispatchSource } : undefined
+      extra.dispatchSource || extra.goalControl
+        ? {
+            ...(extra.dispatchSource ? { dispatchSource: extra.dispatchSource } : {}),
+            ...(extra.goalControl ? { goalControl: extra.goalControl } : {}),
+          }
+        : undefined
     );
+    return userTurnId;
+  };
+
+  const sendStart = async (prompt: string, extra: { userTurnId?: string } = {}) => {
+    const userTurnId = extra.userTurnId ?? `user-start-${++turnCounter}`;
+    await service.startSession({
+      type: 'session/create',
+      sessionId,
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+      userTurnId,
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+      acpSessionConfig: {
+        prompt,
+        cliType: 'registry',
+        agentType: 'antigravity',
+      },
+    });
     return userTurnId;
   };
 
@@ -259,8 +353,11 @@ function createBoardExecutionHarness(options: {
     deps,
     prompts,
     history,
+    syncFlockDocOrThrow,
     sendContinue,
+    sendStart,
     setUsage,
+    finishSteerTail: () => activeSteerCompletion?.(),
     setBoard: (next: BoardMeta | null) => {
       board = next;
     },
@@ -639,5 +736,360 @@ describe('Board compact re-injection integration', () => {
     await hDeleted.sendContinue('Still works after Board deleted');
     expect(hDeleted.prompts[1]!.text).toBe('Still works after Board deleted');
     expect(hDeleted.prompts[1]!.text).not.toContain('<board_context_reminder>');
+  });
+
+  it('syncs the workspace Flock doc before reinject, falls back on sync failure, and preserves pending on unsynced BOARD_NOT_FOUND', async () => {
+    let syncFails = false;
+    let remoteBoardUpdated = false;
+    const h = createBoardExecutionHarness({
+      board: makeBoard({ instructions: 'Stale local board instructions.' }),
+      syncFlockDocOrThrow: async () => {
+        if (syncFails) throw new Error('LAN peer unreachable');
+        if (remoteBoardUpdated) {
+          h.setBoard(makeBoard({ instructions: 'Fresh instructions synced from peer.' }));
+        }
+      },
+    });
+
+    // 1. Clean sync fetches latest instructions from peer before building reminder.
+    await h.sendContinue('/compact');
+    remoteBoardUpdated = true;
+    await h.sendContinue('Use latest instructions');
+    expect(h.syncFlockDocOrThrow).toHaveBeenCalledTimes(1);
+    expect(h.prompts[1]!.text).toContain('Fresh instructions synced from peer.');
+
+    // 2. Sync failure falls back to local replica and still injects.
+    await h.sendContinue('/compact');
+    syncFails = true;
+    await h.sendContinue('Offline fallback turn');
+    expect(h.syncFlockDocOrThrow).toHaveBeenCalledTimes(2);
+    expect(h.prompts[3]!.text).toContain('<board_context_reminder>');
+    expect(h.prompts[3]!.text).toContain('Fresh instructions synced from peer.');
+
+    // 3. Sync failure + missing local Board row MUST keep pending until sync recovers.
+    await h.sendContinue('/compact');
+    h.setBoard(null);
+    await h.sendContinue('Unsynced missing board turn');
+    expect(h.prompts[5]!.text).toBe('Unsynced missing board turn');
+    expect(h.prompts[5]!.text).not.toContain('<board_context_reminder>');
+
+    // Once sync recovers and populates the Board row, pending fires immediately.
+    syncFails = false;
+    await h.sendContinue('After sync recovers');
+    expect(h.prompts[6]!.text).toContain('<board_context_reminder>');
+    expect(h.prompts[6]!.text).toContain('Fresh instructions synced from peer.');
+
+    // 4. Clean sync + missing Board row confirms deletion and clears pending.
+    await h.sendContinue('/compact');
+    remoteBoardUpdated = false;
+    h.setBoard(null);
+    await h.sendContinue('Confirmed deleted board turn');
+    expect(h.prompts[8]!.text).not.toContain('<board_context_reminder>');
+
+    // Even if a Board object is later mocked back in, pending was already cleared.
+    h.setBoard(makeBoard({ instructions: 'Re-added mock board' }));
+    await h.sendContinue('No stale retry after confirmed deletion');
+    expect(h.prompts[9]!.text).not.toContain('<board_context_reminder>');
+  });
+
+  it('persists pending on History Replay so slash commands skip safely and pre-prompt failures retry on the next normal turn', async () => {
+    // 1. History Replay + slash command skips injection and carries pending to the next normal turn.
+    const hSlash = createBoardExecutionHarness({
+      liveAgent: false,
+      resumeError: new Error('ACP_RESUME_FAILED: missing'),
+    });
+    await hSlash.sendContinue('/status');
+    expect(hSlash.prompts[0]!.text).toContain('/status');
+    expect(hSlash.prompts[0]!.text).not.toContain('<board_context_reminder>');
+
+    await hSlash.sendContinue('Now run normal work');
+    expect(hSlash.prompts[1]!.text).toContain('<board_context_reminder>');
+
+    await hSlash.sendContinue('Already consumed');
+    expect(hSlash.prompts[2]!.text).not.toContain('<board_context_reminder>');
+
+    // 2. History Replay + pre-prompt credential failure retains pending for retry.
+    let failCreds = true;
+    const hRetry = createBoardExecutionHarness({
+      liveAgent: false,
+      resumeError: new Error('ACP_RESUME_FAILED: missing'),
+      validateSessionCredentials: async () => {
+        if (failCreds) throw new Error('credentials temporarily unavailable');
+      },
+    });
+    await hRetry.sendContinue('First attempt fails before prompt');
+    expect(hRetry.prompts).toHaveLength(0);
+
+    failCreds = false;
+    await hRetry.sendContinue('Second attempt receives reminder');
+    expect(hRetry.prompts).toHaveLength(1);
+    expect(hRetry.prompts[0]!.text).toContain('<board_context_reminder>');
+  });
+
+  it('captures auto-compaction on first turns (startSession), mid-turn drop-then-regrowth (115k -> 22k -> 80k), and silent bare /compact', async () => {
+    // 1. First turn (startSession) mid-turn auto-compaction (20k -> 115k -> 22k -> 80k).
+    const hStart = createBoardExecutionHarness({
+      liveAgent: false,
+      metaPatch: { acpSessionId: undefined, contextWindowUsage: undefined },
+      onPrompt: ({ callIndex, service, setUsage }) => {
+        if (callIndex === 0) {
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 20_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 115_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 22_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 80_000 });
+          setUsage(80_000);
+        }
+      },
+    });
+    await hStart.sendStart('Initial long Board thread task');
+    expect(hStart.prompts[0]!.text).toContain('This session is a thread of Board "Lody Lan".');
+
+    await hStart.sendContinue('Follow-up after first-turn compaction');
+    expect(hStart.prompts[1]!.text).toContain('<board_context_reminder>');
+
+    // 2. Continue turn mid-turn drop-then-regrowth (115k -> 22k -> 80k).
+    const hRegrowth = createBoardExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 115_000 } },
+      onPrompt: ({ callIndex, service, setUsage }) => {
+        if (callIndex === 0) {
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 22_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 80_000 });
+          setUsage(80_000);
+        }
+      },
+    });
+    await hRegrowth.sendContinue('Long multi-tool turn');
+    await hRegrowth.sendContinue('Next turn after mid-turn regrowth');
+    expect(hRegrowth.prompts[1]!.text).toContain('<board_context_reminder>');
+
+    // 3. Silent bare `/compact` returning cleanly with zero visible output still arms pending.
+    const hSilent = createBoardExecutionHarness({
+      observePromptContentForTurn: (_sid, turnId) => turnId !== 'assistant:silent-compact',
+    });
+    await hSilent.sendContinue('/compact', { userTurnId: 'silent-compact' });
+    await hSilent.sendContinue('Next turn after silent bare compact');
+    expect(hSilent.prompts[1]!.text).toContain('<board_context_reminder>');
+  });
+
+  it('preserves confirmed compaction across Stop cancellation, multi-steer intermediate entries, and spontaneous idle compaction', async () => {
+    // 1. Stop/cancel after mid-turn usage drop preserves pending for the next turn.
+    let resolvePromptEntered!: () => void;
+    const promptEntered = new Promise<void>((resolve) => {
+      resolvePromptEntered = resolve;
+    });
+    const hStop = createBoardExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 120_000 } },
+      onPrompt: async ({ callIndex, signal, service, setUsage }) => {
+        if (callIndex === 0) {
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 20_000 });
+          setUsage(20_000);
+          resolvePromptEntered();
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) return resolve();
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+      },
+    });
+    const turnPromise = hStop.sendContinue('Long task cancelled after compaction', {
+      userTurnId: 'cancel-after-compact',
+    });
+    await promptEntered;
+    await hStop.service.cancelSession({
+      type: 'session/cancel',
+      sessionId: SESSION_ID,
+      turnId: 'assistant:cancel-after-compact',
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+    });
+    await turnPromise;
+
+    await hStop.sendContinue('Next message after Stop');
+    expect(hStop.prompts[1]!.text).toContain('<board_context_reminder>');
+
+    // 2. Multi-steer handoff (`turn-1 -> turn-2 -> turn-3`) with compaction marker on intermediate `turn-2`.
+    let resolveSteerTurnStarted!: () => void;
+    const steerTurnStarted = new Promise<void>((resolve) => {
+      resolveSteerTurnStarted = resolve;
+    });
+    let resolveInitialPrompt!: () => void;
+    const initialPromptGate = new Promise<void>((resolve) => {
+      resolveInitialPrompt = resolve;
+    });
+    const hSteer = createBoardExecutionHarness({
+      enableSteer: true,
+      onPrompt: async ({ callIndex }) => {
+        if (callIndex === 0) {
+          resolveSteerTurnStarted();
+          await initialPromptGate;
+        }
+      },
+    });
+    const steerRun = hSteer.sendContinue('Turn 1 initial prompt', { userTurnId: 'u-steer-1' });
+    await steerTurnStarted;
+
+    // First steer hands off to `assistant:u-steer-2`, which records a completed compaction marker.
+    const steer1 = await hSteer.service.steerSession({
+      sessionId: SESSION_ID,
+      expectedTurnId: 'assistant:u-steer-1',
+      userTurnId: 'u-steer-2',
+      userId: 'owner-user',
+      timestamp: '2026-11-26T00:01:00.000Z',
+      inputConfig: { prompt: 'Steer 1', cliType: 'registry', agentType: 'antigravity' },
+    });
+    expect(steer1.applied).toBe(true);
+    hSteer.history.push({
+      id: 'assistant:u-steer-2',
+      role: 'assistant',
+      timestamp: '2026-11-26T00:01:05.000Z',
+      items: [
+        {
+          type: 'tool_call',
+          toolCallId: 'mid-steer-compact',
+          title: 'Compacting context',
+          status: 'completed',
+          activityKind: 'context_compaction',
+        },
+      ],
+    } as unknown as SessionHistoryInput);
+
+    // Second steer hands off to `assistant:u-steer-3` (no compaction marker on final entry).
+    const steer2 = await hSteer.service.steerSession({
+      sessionId: SESSION_ID,
+      expectedTurnId: 'assistant:u-steer-2',
+      userTurnId: 'u-steer-3',
+      userId: 'owner-user',
+      timestamp: '2026-11-26T00:01:10.000Z',
+      inputConfig: { prompt: 'Steer 2', cliType: 'registry', agentType: 'antigravity' },
+    });
+    expect(steer2.applied).toBe(true);
+    resolveInitialPrompt();
+    hSteer.finishSteerTail();
+    await steerRun;
+
+    await hSteer.sendContinue('Turn after multi-steer compaction');
+    expect(hSteer.prompts[1]!.text).toContain('<board_context_reminder>');
+
+    // 3. Spontaneous idle compaction via `noteLiveAcpUpdate` arms pending for Board sessions only.
+    const hIdle = createBoardExecutionHarness({});
+    hIdle.service.noteLiveAcpUpdate(
+      SESSION_ID,
+      parseSessionNotification({
+        sessionId: 'acp-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'idle-compact-integration',
+          title: 'Compacting context',
+          status: 'in_progress',
+          _meta: { lody: { activity: { kind: 'context_compaction' } } },
+        },
+      })
+    );
+    hIdle.service.noteLiveAcpUpdate(
+      SESSION_ID,
+      parseSessionNotification({
+        sessionId: 'acp-1',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'idle-compact-integration',
+          status: 'completed',
+        },
+      })
+    );
+    await hIdle.sendContinue('First turn after idle compaction');
+    expect(hIdle.prompts[0]!.text).toContain('<board_context_reminder>');
+  });
+
+  it('skips goal turns and namespaced slash commands without consuming pending, and ignores /compact with non-text attachments', async () => {
+    const h = createBoardExecutionHarness({});
+
+    // Image + `/compact` must NOT mark pending.
+    await h.sendContinue('/compact', {
+      inputBlocks: [
+        {
+          type: 'image',
+          imageId: 'img-1',
+          mimeType: 'image/png',
+          sizeBytes: 1024,
+        },
+        { type: 'text', text: '/compact' },
+      ],
+    });
+    await h.sendContinue('After image plus compact');
+    expect(h.prompts[1]!.text).not.toContain('<board_context_reminder>');
+
+    // Arm pending via pure-text `/compact`.
+    await h.sendContinue('/compact');
+
+    // Goal control turn skips injection and preserves pending.
+    await h.sendContinue('Continue goal iteration', {
+      dispatchSource: 'goal',
+      goalControl: { action: 'start', prompt: 'Continue goal iteration' } as GoalPromptControl,
+    });
+    expect(h.prompts[3]!.text).not.toContain('<board_context_reminder>');
+
+    // Namespaced slash command skips injection and preserves pending.
+    await h.sendContinue('/mcp:github:prompt repo=lody');
+    expect(h.prompts[4]!.text).not.toContain('<board_context_reminder>');
+
+    // Next normal message finally receives the preserved reminder.
+    await h.sendContinue('Normal follow-up message');
+    expect(h.prompts[5]!.text).toContain('<board_context_reminder>');
+  });
+
+  it('arms pending when coordinator maintenance :compact confirms compaction so a user turn preempting :renew receives the reminder', async () => {
+    const h = createBoardExecutionHarness({
+      sessionId: COORD_ID,
+      metaPatch: {
+        id: COORD_ID,
+        boardRole: 'coordinator',
+        contextWindowUsage: { size: 1_000_000, used: 180_000 },
+      },
+      onPrompt: ({ callIndex, setUsage }) => {
+        if (callIndex === 0) {
+          // Maintenance `:compact` shrinks context below 0.8x baseline (180k -> 30k).
+          setUsage(30_000);
+        }
+      },
+    });
+
+    const compactOutcome = await h.service.runBoardMaintenanceTurn({
+      sessionId: COORD_ID,
+      stepTurnId: 'board-maintenance:run-preempt:compact',
+      prompt: '/compact Keep board state.',
+      config: {},
+      userId: 'owner-user',
+      userName: 'Owner',
+      userEmail: 'owner@example.com',
+    });
+    expect(compactOutcome).toBe('completed');
+
+    // Simulate a user turn preempting `:renew` (which causes `:renew` to yield).
+    await h.sendContinue('Urgent user message before renew');
+    expect(h.prompts[1]!.text).toContain('<board_context_reminder>');
+    expect(h.prompts[1]!.text).toContain('Role: main session (coordinator) of Board "Lody Lan".');
+  });
+
+  it('contains post-turn compaction bookkeeping errors so turn settlement and processMessageQueue still finish cleanly', async () => {
+    let failPostTurnMetaRead = false;
+    const h = createBoardExecutionHarness({
+      getMetaStateOverride: (_readCount, defaultMeta) => {
+        if (failPostTurnMetaRead) {
+          throw new Error('transient meta read failure during bookkeeping');
+        }
+        return defaultMeta;
+      },
+      onPrompt: () => {
+        failPostTurnMetaRead = true;
+      },
+    });
+
+    await expect(h.sendContinue('/compact')).resolves.toBeTypeOf('string');
+    expect(h.deps.processMessageQueue).toHaveBeenCalledWith(SESSION_ID);
+
+    // Even though `readFreshMeta` threw, pre-turn meta fallback still armed pending for `/compact`.
+    failPostTurnMetaRead = false;
+    await h.sendContinue('Turn after contained bookkeeping failure');
+    expect(h.prompts[1]!.text).toContain('<board_context_reminder>');
   });
 });

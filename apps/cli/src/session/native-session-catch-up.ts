@@ -12,6 +12,7 @@ import {
   type SessionHistoryInput,
 } from '@lody/shared';
 import type { SessionData, SessionHistoryReader } from '@lody/shared/session-data';
+import { stripBoardCompactReminder } from './board-compact-reinject';
 
 // # Catching up with turns written outside Lody
 //
@@ -73,7 +74,92 @@ const userTextOf = (turn: {
 };
 
 const normalizePrompt = (text: string): string =>
-  sanitizeLodyInternalInstructions(text).replace(/\s+/g, ' ').trim();
+  stripBoardCompactReminder(sanitizeLodyInternalInstructions(text)).replace(/\s+/g, ' ').trim();
+
+const stripReminderFromTextRecords = <T>(
+  entries: readonly T[],
+  getText: (entry: T) => string | undefined,
+  withText: (entry: T, text: string) => T
+): { entries: T[]; changed: boolean } => {
+  let changed = false;
+  const mapped = entries.map((entry) => {
+    const text = getText(entry);
+    if (text === undefined || !text.includes('<board_context_reminder>')) return entry;
+    changed = true;
+    return withText(entry, stripBoardCompactReminder(text));
+  });
+  if (!changed) return { entries: mapped, changed: false };
+  const hasNonEmpty = mapped.some((entry) => {
+    const text = getText(entry);
+    return text === undefined || text.length > 0;
+  });
+  if (!hasNonEmpty) return { entries: mapped, changed: true };
+  return {
+    entries: mapped.filter((entry) => {
+      const text = getText(entry);
+      return text === undefined || text.length > 0;
+    }),
+    changed: true,
+  };
+};
+
+/** Remove Lody's inline post-compaction Board reminder before importing replayed user history. */
+const sanitizeExternalUserTurn = (entry: SessionHistoryInput): SessionHistoryInput => {
+  if (entry.role !== 'user') return entry;
+  let changed = false;
+
+  let items = entry.items;
+  if (Array.isArray(items)) {
+    const cleaned = stripReminderFromTextRecords(
+      items,
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        (item as { type?: unknown }).type === 'text' &&
+        typeof (item as { text?: unknown }).text === 'string'
+          ? (item as { text: string }).text
+          : undefined,
+      (item, text) => ({ ...(item as Record<string, unknown>), text }) as typeof item
+    );
+    if (cleaned.changed) {
+      items = cleaned.entries;
+      changed = true;
+    }
+  }
+
+  let inputConfig = entry.inputConfig;
+  if (inputConfig) {
+    let configChanged = false;
+    let prompt = inputConfig.prompt;
+    if (typeof prompt === 'string' && prompt.includes('<board_context_reminder>')) {
+      prompt = stripBoardCompactReminder(prompt);
+      configChanged = true;
+    }
+    let inputBlocks = inputConfig.inputBlocks;
+    if (Array.isArray(inputBlocks)) {
+      const cleanedBlocks = stripReminderFromTextRecords(
+        inputBlocks,
+        (block) =>
+          block && block.type === 'text' && typeof block.text === 'string' ? block.text : undefined,
+        (block, text) => ({ ...block, text })
+      );
+      if (cleanedBlocks.changed) {
+        inputBlocks = cleanedBlocks.entries;
+        configChanged = true;
+      }
+    }
+    if (configChanged) {
+      changed = true;
+      inputConfig = {
+        ...inputConfig,
+        ...(prompt !== undefined ? { prompt } : {}),
+        ...(inputBlocks !== undefined ? { inputBlocks } : {}),
+      };
+    }
+  }
+
+  return changed ? { ...entry, items, inputConfig } : entry;
+};
 
 const MIN_PREFIX_MATCH_CHARS = 16;
 
@@ -187,7 +273,11 @@ export function buildExternalTurns(args: {
     skippedOwnTurns += 1;
   }
 
-  return { turns: groups.flat(), skippedOwnTurns, droppedNotifications };
+  return {
+    turns: groups.flat().map(sanitizeExternalUserTurn),
+    skippedOwnTurns,
+    droppedNotifications,
+  };
 }
 
 export type NativeCatchUpResult =

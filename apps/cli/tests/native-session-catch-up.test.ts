@@ -201,6 +201,50 @@ describe('catchUpNativeTurns', () => {
     expect(result).toEqual({ status: 'unaligned' });
     expect(readSessionHistory(doc.sessionData.history)).toHaveLength(3);
   });
+
+  it('deduplicates short Lody user turns that carried <board_context_reminder> and strips reminders from imported user history', async () => {
+    const reminder =
+      '<board_context_reminder>\nContext was recently compacted.\n\nRole: thread of Board "Lody Lan".\n</board_context_reminder>';
+    const doc = await createSessionDoc([
+      userTurn('u1', 'first prompt'),
+      assistantTurn('a1', 'first answer', 'native-1'),
+      // Short prompt (<16 chars) that reached ACP with an inline reminder and was stopped before reply.
+      userTurn('u2', '继续'),
+      assistantTurn('a2', ''),
+      userTurn('u3', 'next prompt', 'pending'),
+    ]);
+
+    const result = await catchUpNativeTurns({
+      sessionData: doc.sessionData,
+      acpSessionId,
+      cliType: 'builtin',
+      agentType: 'claude',
+      beforeTurnId: 'u3',
+      replay: [
+        ...replayedTurn('first prompt', 'first answer', 'native-1'),
+        // Stopped short Lody turn replayed with appended reminder.
+        parseSessionNotification({
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: `继续\n\n${reminder}` },
+            messageId: 'user-stopped-short',
+          },
+        }),
+        // An unmatched turn whose native user message also contains a reminder block.
+        ...replayedTurn(`外部继续\n\n${reminder}`, 'external answer', 'native-3'),
+      ],
+    });
+
+    expect(result).toMatchObject({ status: 'added', added: 2, skippedOwnTurns: 1 });
+    const history = readSessionHistory(doc.sessionData.history);
+    expect(texts(history).slice(-3)).toEqual([
+      'user:外部继续',
+      'assistant:external answer',
+      'user:next prompt',
+    ]);
+    expect(JSON.stringify(history)).not.toContain('<board_context_reminder>');
+  });
 });
 
 describe('readNativeTranscriptTailTurnId', () => {
