@@ -195,7 +195,7 @@ const renewalRecord = (record: BoardMaintenanceMeta, step: string): BoardMainten
 export function buildSealPrompt(notesBytes?: number): string {
   return [
     `Lody maintenance. The user does not see this turn. Your context is about to roll over into a fresh underlying agent session while the Lody conversation stays continuous.`,
-    `First, update durable Board state if anything from this segment is not persisted yet (decisions and reasons, thread conclusions, open questions, user preferences): ${buildBoardNotesTidyInstruction(notesBytes)} Also keep Board memory (MEMORY.md) up to date as needed.`,
+    `First, tend to durable Board state (decisions and reasons, thread conclusions, open questions, user preferences, and MEMORY.md as needed). ${buildBoardNotesTidyInstruction(notesBytes)}`,
     `Do not open sessions, do not message anyone, and do not address the user.`,
     `End your reply with a single JSON code block summarizing this segment in first person ("我…"):`,
     '```json',

@@ -310,15 +310,23 @@ export const coordinatorSessionsLayer = (
           try {
             const roomId = getBoardRoomId(boardId);
             const handle = await options.workspaceDocument.repo.openPersistedDoc(roomId);
-            await options.workspaceDocument
-              .syncDocOrThrow?.(roomId, { reason: 'board-notes' })
-              ?.catch((error) => {
-                options.logger.warn(
-                  `[board-continuity] board ${boardId}: board notes refresh failed; using local document: ${String(error)}`
-                );
-              });
+            let synced = true;
+            if (options.workspaceDocument.syncDocOrThrow) {
+              await options.workspaceDocument
+                .syncDocOrThrow(roomId, { reason: 'board-notes', timeoutMs: 2_000 })
+                .catch((error) => {
+                  synced = false;
+                  options.logger.warn(
+                    `[board-continuity] board ${boardId}: board notes refresh failed; using local document: ${String(error)}`
+                  );
+                });
+            }
             const { notes } = readBoardDocument(handle.doc as LoroDoc);
-            return Buffer.byteLength(notes, 'utf8');
+            const bytes = Buffer.byteLength(notes, 'utf8');
+            // On a cold replica whose sync failed, an empty local doc does not prove
+            // the Board's shared notes are empty; return undefined to trigger the safe fallback.
+            if (!synced && bytes === 0) return undefined;
+            return bytes;
           } catch (error) {
             options.logger.warn(
               `[board-continuity] board ${boardId}: failed to read shared notes size: ${String(error)}`
