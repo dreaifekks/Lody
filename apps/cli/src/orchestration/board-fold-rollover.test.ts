@@ -1080,4 +1080,43 @@ describe('Board fold rollover workflow', () => {
       await h.close();
     }
   });
+
+  it('does not block ordinary compact requests when pending-switch.json cannot be read', async () => {
+    const h = await createFoldHarness({ strategy: 'compact' });
+    try {
+      h.maintenance.support = true;
+      // Force readPendingSwitch to reject (simulating unreadable `line/` directory).
+      h.lineStore.readPendingSwitch = async () => {
+        throw new Error('EACCES: permission denied');
+      };
+      // Write a manual `compact` request divider.
+      await h.append(h.coordinatorId, {
+        id: 'board-maintenance:manual-compact-1',
+        role: 'system',
+        timestamp: new Date(h.now()).toISOString(),
+        fileDiff: [],
+        items: [
+          {
+            type: 'system_notice',
+            name: 'board_context_maintenance',
+            meta: {
+              boardId: h.board.id,
+              kind: 'compact',
+              trigger: 'manual',
+              status: 'requested',
+            },
+          },
+        ],
+      });
+
+      h.coordinator.start();
+      await h.drain();
+      await h.until(() => h.maintenance.runs.length > 0);
+      await h.drain();
+
+      expect(h.steps()).toContain('memory');
+    } finally {
+      await h.close();
+    }
+  });
 });

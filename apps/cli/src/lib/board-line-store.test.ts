@@ -390,4 +390,13 @@ describe('BoardLineStore', () => {
       })
     ).rejects.toThrow(/BOARD_LINE_FOLD_ALREADY_COVERED/);
   });
+
+  it('ignores corrupt pending-switch.json without throwing', async () => {
+    const lineDir = store.linePath(WS, BOARD);
+    fs.mkdirSync(path.join(lineDir, 'nodes'), { recursive: true });
+    fs.writeFileSync(path.join(lineDir, 'pending-switch.json'), '{not-valid-json', 'utf8');
+
+    await expect(store.readPendingSwitch(WS, BOARD)).resolves.toBeNull();
+    expect(warnings.some((w) => w.includes('corrupt pending-switch.json'))).toBe(true);
+  });
 });

@@ -694,7 +694,16 @@ export class BoardLineStore {
     const pendingPath = path.join(dirs.lineDir, 'pending-switch.json');
     try {
       const raw = await this.readTextNoFollow(pendingPath);
-      const parsed = BoardLinePendingSwitchSchema.safeParse(JSON.parse(raw));
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(raw);
+      } catch (parseError) {
+        this.logger?.warn(
+          `[board-line] Ignoring corrupt pending-switch.json for ${boardId}: ${parseError instanceof Error ? parseError.message : String(parseError)}`
+        );
+        return null;
+      }
+      const parsed = BoardLinePendingSwitchSchema.safeParse(decoded);
       if (!parsed.success) {
         this.logger?.warn(
           `[board-line] Ignoring invalid pending-switch.json for ${boardId}: ${parsed.error.message}`

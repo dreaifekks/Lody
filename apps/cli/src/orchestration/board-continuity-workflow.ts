@@ -413,15 +413,15 @@ export class BoardContinuityWorkflow {
             yield* Effect.failCause(pendingExit.cause);
             return;
           }
+          // Failure containment: never let an unreadable `line/` directory block
+          // ordinary `compact` or `new_conversation` requests on this Board.
           yield* this.logOnce(
             id,
             'line-pending-read-error',
-            `failed to read pending-switch.json (${String(Cause.squash(pendingExit.cause))}); retrying later`
+            `failed to read pending-switch.json (${String(Cause.squash(pendingExit.cause))}); continuing without durable switch hint`
           );
-          yield* this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity');
-          return;
         }
-        const pendingSwitch = pendingExit.value;
+        const pendingSwitch = Exit.isSuccess(pendingExit) ? pendingExit.value : null;
         if (pendingSwitch && pendingSwitch.sessionId === id) {
           const turnId = boardMaintenanceTurnId(pendingSwitch.runId);
           const inTail = dividers.find((d) => d.row.id === turnId);
@@ -952,6 +952,11 @@ export class BoardContinuityWorkflow {
         } else record = { ...record, handoff: 'none' };
         yield* write(record);
       }
+      // Re-check user Stop / collaboration pause right before opening the fresh agent session.
+      if (maintenance.inbox(meta.id).paused || meta.collaborationStopped === true) {
+        pending = true;
+        return;
+      }
       const started = yield* this.step(
         maintenance,
         meta,
@@ -1207,10 +1212,9 @@ export class BoardContinuityWorkflow {
 
       // Close crash window #2: if `:renew` already ran and completed in a prior process before
       // the `done` divider could be written, finalize directly without opening a second fresh session.
-      const priorRenew = yield* history.readTurn(
-        `assistant:${boardMaintenanceStepId(run.runId, 'renew')}`
-      );
-      if (this.isCompletedRenewTurn(priorRenew)) {
+      const renewEntryId = `assistant:${boardMaintenanceStepId(run.runId, 'renew')}`;
+      const priorRenew = yield* history.readTurn(renewEntryId);
+      if (yield* this.isCompletedRenewTurn(history, renewEntryId, priorRenew)) {
         const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
         pending = false;
         yield* write({
@@ -1344,6 +1348,12 @@ export class BoardContinuityWorkflow {
         usage,
         reservedTokens,
       });
+      // Re-check user Stop / collaboration pause right before opening the fresh agent session
+      // (e.g. if the user pressed Stop while `:fold` was retrying on momentary contention).
+      if (maintenance.inbox(meta.id).paused || meta.collaborationStopped === true) {
+        pending = true;
+        return;
+      }
       const started = yield* this.step(
         maintenance,
         meta,
@@ -1390,8 +1400,15 @@ export class BoardContinuityWorkflow {
     );
   }
 
-  /** True when the `:renew` assistant entry already ran to a clean visible completion. */
-  private isCompletedRenewTurn(read: { state: string; turn?: unknown }): boolean {
+  /**
+   * True when the `:renew` assistant entry already ran to a terminal completion
+   * (visible text or tool output) and was not followed by a sibling `chat_failed` system row.
+   */
+  private isCompletedRenewTurn = Effect.fnUntraced(function* (
+    history: CoordinatorHistory,
+    renewEntryId: string,
+    read: { state: string; turn?: unknown }
+  ) {
     if (read.state !== 'ready' || !read.turn) return false;
     const entry = read.turn as SessionHistoryInput;
     if (!isTerminalAssistantEntry(entry)) return false;
@@ -1405,8 +1422,30 @@ export class BoardContinuityWorkflow {
     if (entry.items?.some((item) => item.type === 'system_notice' && item.name === 'chat_failed')) {
       return false;
     }
-    return extractVisibleTurnText(entry).length > 0;
-  }
+    const hasOutput =
+      extractVisibleTurnText(entry).length > 0 ||
+      Boolean(entry.items?.some((item) => item.type === 'tool_call'));
+    if (!hasOutput) return false;
+    // Check sibling system rows immediately after `:renew` for a `chat_failed` notice.
+    const tail = yield* history.readTail(TAIL_ROWS);
+    const renewIndex = tail.findIndex((row) => row.id === renewEntryId);
+    if (renewIndex >= 0) {
+      for (let i = renewIndex + 1; i < tail.length; i++) {
+        const nextRow = tail[i]!;
+        if (nextRow.role !== 'system') break;
+        const nextRead = yield* history.readTurn(nextRow.id);
+        if (
+          nextRead.state === 'ready' &&
+          (nextRead.turn as SessionHistoryInput).items?.some(
+            (item) => item.type === 'system_notice' && item.name === 'chat_failed'
+          )
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  });
 
   /** Slice non-maintenance Loro turns after the last completed rollover/new-conversation or segment end. */
   private sliceUnsealedSegment(
