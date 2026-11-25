@@ -7495,11 +7495,7 @@ const SessionDetail = ({
             id: 'board-compact',
             icon: <Shrink {...stylex.props(detailStyles.icon14)} />,
             label: t('boards.maintenance.compactNow', 'Tidy context now'),
-            onClick: () =>
-              void requestBoardMaintenance(
-                activeSession,
-                activeBoard.continuity.strategy === 'fold_rollover' ? 'fold_rollover' : 'compact'
-              ),
+            onClick: () => void requestBoardMaintenance(activeSession, 'compact'),
           },
           {
             id: 'board-new-conversation',

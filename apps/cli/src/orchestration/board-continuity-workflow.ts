@@ -6,8 +6,10 @@ import {
   boardMaintenanceTurnId,
   compactsInBackground,
   decideBoardIdleCompaction,
+  estimateTokenCount,
   isBoardMaintenanceEntry,
   isBoardMaintenanceTurnId,
+  isTerminalAssistantEntry,
   readBoardMaintenance,
   type BoardCoordinatorAgent,
   type BoardMaintenanceKind,
@@ -24,19 +26,23 @@ import {
 import type { SessionDirectoryScalars } from '@lody/shared/session-data';
 import { Cause, Effect, Exit, Scope } from 'effect';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { z } from 'zod';
 import {
   clampCodePoints,
   findFoldCandidates,
+  findSegmentByRunId,
   normalizeBoardLineTags,
   normalizeBoardLineTitle,
   type BoardLineFoldCandidates,
   type BoardLineTree,
 } from '@/lib/board-line-store';
+import { buildPrompt } from '@/session/session-execution-helpers';
 import {
   buildBoardFoldOpening,
   extractRecentCoordinatorContext,
   extractVisibleTurnText,
+  isHumanUserTurn,
 } from './board-fold-opening';
 import type { CoordinatorActivity } from './coordinator-activity';
 import type {
@@ -51,6 +57,10 @@ const TAIL_ROWS = 50;
 const BUSY_RECHECK_MS = 30_000;
 /** Without a completed compaction marker, a drop this large still proves the context shrank. */
 const USAGE_DROP_PROOF = 0.8;
+
+/** Preserve the original rejected Error/cause rather than wrapping in Effect's UnknownException. */
+const tryPromiseRaw = <A>(fn: () => Promise<A>) =>
+  Effect.tryPromise({ try: fn, catch: (cause) => cause });
 
 export type BoardCoordinatorView = {
   board: BoardMeta;
@@ -233,7 +243,7 @@ export function buildFallbackSegmentSummary(
   for (const entry of segmentEntries) {
     const text = extractVisibleTurnText(entry);
     if (!text) continue;
-    if (entry.role === 'user') userTexts.push(text);
+    if (isHumanUserTurn(entry)) userTexts.push(text);
     else if (entry.role === 'assistant') lastAssistantText = text;
   }
   const firstUser = userTexts[0];
@@ -307,6 +317,7 @@ const withCoordinatorAgent = (
  */
 export class BoardContinuityWorkflow {
   private readonly running = new Set<SessionId>();
+  private readonly backoff = new Set<SessionId>();
   private readonly logged = new Set<string>();
 
   constructor(
@@ -389,19 +400,135 @@ export class BoardContinuityWorkflow {
       let switching: (typeof dividers)[number] | undefined;
       for (const divider of dividers) if (isPendingSwitch(divider.record)) switching = divider;
 
+      // Check durable `pending-switch.json` so recovery works even if >= TAIL_ROWS turns arrived
+      // while the switch waited (or if the daemon crashed after segment write before updating divider).
+      if (maintenance.boardLine) {
+        const pendingExit = yield* Effect.exit(
+          tryPromiseRaw(() =>
+            maintenance.boardLine!.readPendingSwitch(this.options.workspaceId, board.id)
+          )
+        );
+        if (Exit.isFailure(pendingExit)) {
+          if (Cause.hasInterrupts(pendingExit.cause)) {
+            yield* Effect.failCause(pendingExit.cause);
+            return;
+          }
+          yield* this.logOnce(
+            id,
+            'line-pending-read-error',
+            `failed to read pending-switch.json (${String(Cause.squash(pendingExit.cause))}); retrying later`
+          );
+          yield* this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity');
+          return;
+        }
+        const pendingSwitch = pendingExit.value;
+        if (pendingSwitch && pendingSwitch.sessionId === id) {
+          const turnId = boardMaintenanceTurnId(pendingSwitch.runId);
+          const inTail = dividers.find((d) => d.row.id === turnId);
+          let targetDivider = inTail;
+          if (!targetDivider) {
+            const read = yield* history.readTurn(turnId);
+            if (read.state === 'ready') {
+              const turn = read.turn as SessionHistoryInput;
+              const rec = readBoardMaintenance(turn);
+              if (rec) {
+                targetDivider = {
+                  row: {
+                    id: turn.id,
+                    role: 'system',
+                    timestamp: turn.timestamp,
+                    position: -1,
+                  },
+                  record: rec,
+                };
+              }
+            }
+          }
+          if (
+            targetDivider &&
+            targetDivider.record.kind === 'fold_rollover' &&
+            targetDivider.record.status === 'running'
+          ) {
+            switching = {
+              row: targetDivider.row,
+              record: targetDivider.record.nodeId
+                ? targetDivider.record
+                : { ...targetDivider.record, nodeId: pendingSwitch.nodeId },
+            };
+            maintenance.holdInbox(id, true);
+          } else {
+            // Divider already settled (or missing): drop stale pending-switch and unhold Inbox.
+            yield* Effect.exit(
+              tryPromiseRaw(() =>
+                maintenance.boardLine!.clearPendingSwitch(
+                  this.options.workspaceId,
+                  board.id,
+                  pendingSwitch.runId
+                )
+              )
+            );
+            maintenance.holdInbox(id, false);
+          }
+        }
+      }
+
+      // Close crash window #1: if a `running` fold_rollover divider lacks `nodeId`, check whether
+      // its segment already landed on disk (`maintenanceRunId === runId`) before marking interrupted.
+      if (!switching && maintenance.boardLine) {
+        let unsealedRunning: (typeof dividers)[number] | undefined;
+        for (let index = dividers.length - 1; index >= 0; index--) {
+          const candidate = dividers[index]!;
+          if (
+            candidate.record.kind === 'fold_rollover' &&
+            candidate.record.status === 'running' &&
+            candidate.record.nodeId === undefined
+          ) {
+            unsealedRunning = candidate;
+            break;
+          }
+        }
+        if (unsealedRunning) {
+          const treeExit = yield* Effect.exit(
+            tryPromiseRaw(() => maintenance.boardLine!.readTree(this.options.workspaceId, board.id))
+          );
+          if (Exit.isFailure(treeExit)) {
+            if (Cause.hasInterrupts(treeExit.cause)) {
+              yield* Effect.failCause(treeExit.cause);
+              return;
+            }
+            yield* this.logOnce(
+              id,
+              'line-tree-read-error',
+              `failed to inspect Board line store during recovery (${String(Cause.squash(treeExit.cause))}); retrying later`
+            );
+            yield* this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity');
+            return;
+          }
+          const runId = unsealedRunning.row.id.slice('board-maintenance:'.length);
+          const existingSeg = findSegmentByRunId(treeExit.value, runId);
+          if (existingSeg) {
+            // Keep original record (`nodeId: undefined`) so `foldRollover` reuses `existingSeg`
+            // and durably persists both `pending-switch.json` and `divider.nodeId` before `:renew`.
+            switching = unsealedRunning;
+            maintenance.holdInbox(id, true);
+          }
+        }
+      }
+
       if (maintenance.busy(id) || (!switching && maintenance.inbox(id).runnable)) {
         // Releasing a turn need not change history: look again shortly.
-        if (request || activitySinceMaintenance || last?.record.status === 'running')
+        if (request || activitySinceMaintenance || last?.record.status === 'running' || switching)
           yield* this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity');
         return;
       }
       // The coordinator is free and this Worker runs nothing for it: a run left
       // `running` was cut short by a restart, unless it only waits to switch.
       for (const { row, record } of dividers)
-        if (record.status === 'running' && record !== switching?.record)
+        if (record.status === 'running' && row.id !== switching?.row.id)
           yield* this.writeDivider(history, row.id, { ...record, status: 'interrupted' }, row);
+      const held = maintenance.inbox(id).paused || meta.collaborationStopped === true;
       if (switching) {
-        if (meta.collaborationStopped === true) return;
+        if (held) return;
         yield* this.start(maintenance, board, meta, history, {
           runId: switching.row.id.slice('board-maintenance:'.length),
           kind: switching.record.kind,
@@ -418,7 +545,6 @@ export class BoardContinuityWorkflow {
           { ...stale.record, status: 'interrupted', reason: 'superseded' },
           stale.row
         );
-      const held = maintenance.inbox(id).paused || meta.collaborationStopped === true;
       if (request) {
         // Stop and a stopped tree hold the request until the user speaks again.
         if (held) return;
@@ -468,11 +594,11 @@ export class BoardContinuityWorkflow {
       }
       if (board.continuity.strategy === 'fold_rollover') {
         const keeper = boardFilesMachineId(board, meta);
-        if (keeper && keeper !== this.options.machineId) {
+        if (!keeper || keeper !== this.options.machineId) {
           yield* this.logOnce(
             id,
-            `line-local:${keeper}`,
-            'the Board directory lives on another machine; idle fold rollover skipped'
+            `line-local:${keeper ?? 'unknown'}`,
+            'the Board directory does not belong to this machine; idle fold rollover skipped'
           );
           return;
         }
@@ -532,16 +658,21 @@ export class BoardContinuityWorkflow {
 
   private fork(id: SessionId, run: Effect.Effect<void, unknown>) {
     this.running.add(id);
+    this.backoff.delete(id);
     return run.pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause)
-          ? Effect.void
-          : this.ports.warn('[board-continuity] maintenance failed', Cause.squash(cause))
-      ),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.void;
+        this.backoff.add(id);
+        return this.ports.warn('[board-continuity] maintenance failed', Cause.squash(cause));
+      }),
       Effect.ensuring(
-        Effect.sync(() => this.running.delete(id)).pipe(
-          Effect.andThen(this.activity.signal('board-continuity'))
-        )
+        Effect.suspend(() => {
+          this.running.delete(id);
+          const defer = this.backoff.delete(id);
+          return defer
+            ? this.activity.arm(this.key(id), BUSY_RECHECK_MS, 'board-continuity')
+            : this.activity.signal('board-continuity');
+        })
       ),
       Effect.forkIn(this.scope),
       Effect.asVoid
@@ -883,7 +1014,7 @@ export class BoardContinuityWorkflow {
   ) {
     const turnId = `board-maintenance:${run.runId}`;
     const usage = meta.contextWindowUsage;
-    let pending = false;
+    let pending = run.record?.nodeId !== undefined;
     return Effect.gen({ self: this }, function* () {
       const write = (next: BoardMaintenanceMeta) =>
         this.writeDivider(history, turnId, next, run.row);
@@ -896,103 +1027,208 @@ export class BoardContinuityWorkflow {
       };
       const lineStore = maintenance.boardLine;
       const keeper = boardFilesMachineId(board, meta);
-      if (!lineStore || (keeper && keeper !== this.options.machineId)) {
+      if (!lineStore || !keeper || keeper !== this.options.machineId) {
+        pending = false;
         yield* write({ ...record, status: 'failed', reason: 'BOARD_LINE_LOCAL_ONLY' });
         return;
       }
 
-      maintenance.holdInbox(meta.id, true);
-      let tree: BoardLineTree = yield* Effect.tryPromise(() =>
-        lineStore.readTree(this.options.workspaceId, board.id)
+      const clearPendingBestEffort = Effect.exit(
+        tryPromiseRaw(() =>
+          lineStore.clearPendingSwitch(this.options.workspaceId, board.id, run.runId)
+        )
+      ).pipe(
+        Effect.flatMap((exit) =>
+          Exit.isFailure(exit) && !Cause.hasInterrupts(exit.cause)
+            ? this.ports.warn(
+                `[board-continuity] ${meta.id}: failed to clear pending-switch.json`,
+                Cause.squash(exit.cause)
+              )
+            : Effect.void
+        )
       );
+
+      // Mark `running` BEFORE any `line/` I/O so an unreadable line directory never leaves
+      // a `requested` divider behind to spin-trigger retries without backoff.
+      if (record.nodeId === undefined) {
+        yield* write(record);
+      }
+
+      maintenance.holdInbox(meta.id, true);
+      const initialTreeExit = yield* Effect.exit(
+        tryPromiseRaw(() => lineStore.readTree(this.options.workspaceId, board.id))
+      );
+      if (Exit.isFailure(initialTreeExit)) {
+        if (Cause.hasInterrupts(initialTreeExit.cause)) {
+          yield* Effect.failCause(initialTreeExit.cause);
+          return;
+        }
+        yield* this.ports.warn(
+          `[board-continuity] ${meta.id}: failed to read Board line store`,
+          Cause.squash(initialTreeExit.cause)
+        );
+        if (record.nodeId === undefined) {
+          pending = false;
+          yield* write({ ...record, status: 'failed', reason: 'line-store-error' });
+          yield* clearPendingBestEffort;
+          this.backoff.add(meta.id);
+          return;
+        }
+        // Already sealed: preserve hold and retry after a bounded delay instead of spinning.
+        pending = true;
+        this.backoff.add(meta.id);
+        return;
+      }
+      let tree: BoardLineTree = initialTreeExit.value;
 
       // Step 1 & 2: seal the current unsealed Loro history range into an immutable segment node.
       if (record.nodeId === undefined) {
-        yield* write(record);
-        const nowIso = new Date(this.ports.now()).toISOString();
-        const fullHistory = yield* history.readHistory;
-        const segmentSlice = this.sliceUnsealedSegment(fullHistory, tree, run.runId, nowIso);
+        // Close crash window #1: reuse the segment already persisted for this runId if present.
+        const existingSegment = findSegmentByRunId(tree, run.runId);
+        let segmentId: string;
+        if (existingSegment) {
+          segmentId = existingSegment.meta.id;
+        } else {
+          const nowIso = new Date(this.ports.now()).toISOString();
+          const fullHistory = yield* history.readHistory;
+          const segmentSlice = this.sliceUnsealedSegment(fullHistory, tree, run.runId, nowIso);
 
-        let parsedSummary: { title: string; tags: string[]; summary: string } | null = null;
-        if (meta.acpSessionId) {
-          const sealExit = yield* Effect.exit(
-            this.step(maintenance, meta, history, run.runId, 'seal', SEAL_PROMPT)
+          let parsedSummary: { title: string; tags: string[]; summary: string } | null = null;
+          if (meta.acpSessionId) {
+            const sealExit = yield* Effect.exit(
+              this.step(maintenance, meta, history, run.runId, 'seal', SEAL_PROMPT)
+            );
+            if (Exit.isFailure(sealExit)) {
+              if (Cause.hasInterrupts(sealExit.cause)) {
+                yield* Effect.failCause(sealExit.cause);
+                return;
+              }
+              yield* this.ports.warn(
+                `[board-continuity] ${meta.id}: seal step threw; continuing with fallback summary`,
+                Cause.squash(sealExit.cause)
+              );
+            } else {
+              const sealOutcome = sealExit.value;
+              if (CONTENDED.has(sealOutcome) || sealOutcome === 'cancelled') {
+                yield* write({ ...record, status: 'interrupted', reason: sealOutcome });
+                yield* clearPendingBestEffort;
+                return;
+              }
+              if (sealOutcome === 'completed') {
+                const sealRead = yield* history.readTurn(
+                  `assistant:${boardMaintenanceStepId(run.runId, 'seal')}`
+                );
+                const rawText =
+                  sealRead.state === 'ready'
+                    ? extractVisibleTurnText(sealRead.turn as SessionHistoryInput)
+                    : '';
+                parsedSummary = parseFoldStructuredSummary(rawText);
+                if (!parsedSummary) {
+                  yield* this.ports.warn(
+                    `[board-continuity] ${meta.id}: seal output was not parseable JSON; using fallback summary`
+                  );
+                }
+              } else {
+                yield* this.ports.warn(
+                  `[board-continuity] ${meta.id}: seal step ended with "${sealOutcome}"; using fallback summary`
+                );
+              }
+            }
+          }
+
+          const fallback = parsedSummary
+            ? null
+            : buildFallbackSegmentSummary(
+                segmentSlice.entries,
+                segmentSlice.coversFrom,
+                segmentSlice.coversTo,
+                segmentSlice.turnRange.turnCount
+              );
+          const chosen = parsedSummary ?? fallback!;
+          const freshMeta = (yield* this.ports.metadata(meta.id))?.meta ?? meta;
+          const appendExit = yield* Effect.exit(
+            tryPromiseRaw(() =>
+              lineStore.appendSegment(this.options.workspaceId, board.id, {
+                coversFrom: segmentSlice.coversFrom,
+                coversTo: segmentSlice.coversTo,
+                title: chosen.title,
+                tags: chosen.tags,
+                summary: chosen.summary,
+                summaryQuality: parsedSummary ? 'written' : 'fallback',
+                outcome: parsedSummary ? 'rolled' : 'fallback',
+                turnRange: segmentSlice.turnRange,
+                maintenanceRunId: run.runId,
+                ...(record.usedBefore !== undefined ? { tokensBefore: record.usedBefore } : {}),
+                ...(freshMeta.lastModel?.modelId ? { model: freshMeta.lastModel.modelId } : {}),
+                ...(freshMeta.agentType ? { agentType: freshMeta.agentType } : {}),
+                createdAt: new Date(this.ports.now()).toISOString(),
+              })
+            )
           );
-          if (Exit.isFailure(sealExit)) {
-            if (Cause.hasInterrupts(sealExit.cause)) {
-              yield* Effect.failCause(sealExit.cause);
+          if (Exit.isFailure(appendExit)) {
+            if (Cause.hasInterrupts(appendExit.cause)) {
+              yield* Effect.failCause(appendExit.cause);
               return;
             }
             yield* this.ports.warn(
-              `[board-continuity] ${meta.id}: seal step threw; continuing with fallback summary`,
-              Cause.squash(sealExit.cause)
+              `[board-continuity] ${meta.id}: failed to persist segment node`,
+              Cause.squash(appendExit.cause)
             );
-          } else {
-            const sealOutcome = sealExit.value;
-            if (CONTENDED.has(sealOutcome) || sealOutcome === 'cancelled') {
-              yield* write({ ...record, status: 'interrupted', reason: sealOutcome });
-              return;
-            }
-            if (sealOutcome === 'completed') {
-              const sealRead = yield* history.readTurn(
-                `assistant:${boardMaintenanceStepId(run.runId, 'seal')}`
-              );
-              const rawText =
-                sealRead.state === 'ready'
-                  ? extractVisibleTurnText(sealRead.turn as SessionHistoryInput)
-                  : '';
-              parsedSummary = parseFoldStructuredSummary(rawText);
-              if (!parsedSummary) {
-                yield* this.ports.warn(
-                  `[board-continuity] ${meta.id}: seal output was not parseable JSON; using fallback summary`
-                );
-              }
-            } else {
-              yield* this.ports.warn(
-                `[board-continuity] ${meta.id}: seal step ended with "${sealOutcome}"; using fallback summary`
-              );
-            }
+            yield* write({ ...record, status: 'failed', reason: 'line-store-error' });
+            yield* clearPendingBestEffort;
+            return;
           }
+          segmentId = appendExit.value.meta.id;
         }
 
-        const fallback = parsedSummary
-          ? null
-          : buildFallbackSegmentSummary(
-              segmentSlice.entries,
-              segmentSlice.coversFrom,
-              segmentSlice.coversTo,
-              segmentSlice.turnRange.turnCount
-            );
-        const chosen = parsedSummary ?? fallback!;
-        const freshMeta = (yield* this.ports.metadata(meta.id))?.meta ?? meta;
-        const segmentNode = yield* Effect.tryPromise(() =>
-          lineStore.appendSegment(this.options.workspaceId, board.id, {
-            coversFrom: segmentSlice.coversFrom,
-            coversTo: segmentSlice.coversTo,
-            title: chosen.title,
-            tags: chosen.tags,
-            summary: chosen.summary,
-            summaryQuality: parsedSummary ? 'written' : 'fallback',
-            outcome: parsedSummary ? 'rolled' : 'fallback',
-            turnRange: segmentSlice.turnRange,
-            ...(record.usedBefore !== undefined ? { tokensBefore: record.usedBefore } : {}),
-            ...(freshMeta.lastModel?.modelId ? { model: freshMeta.lastModel.modelId } : {}),
-            ...(freshMeta.agentType ? { agentType: freshMeta.agentType } : {}),
-            createdAt: new Date(this.ports.now()).toISOString(),
-          })
+        // Persist `pending-switch.json` alongside the sealed divider so restarts hold Inbox
+        // and recover even if >= TAIL_ROWS turns arrive before the switch finishes.
+        pending = true;
+        const pendingWriteExit = yield* Effect.exit(
+          tryPromiseRaw(() =>
+            lineStore.writePendingSwitch(this.options.workspaceId, board.id, {
+              runId: run.runId,
+              nodeId: segmentId,
+              sessionId: meta.id,
+              updatedAt: new Date(this.ports.now()).toISOString(),
+            })
+          )
         );
-        record = { ...record, nodeId: segmentNode.meta.id };
+        if (Exit.isFailure(pendingWriteExit) && !Cause.hasInterrupts(pendingWriteExit.cause)) {
+          yield* this.ports.warn(
+            `[board-continuity] ${meta.id}: failed to persist pending-switch.json`,
+            Cause.squash(pendingWriteExit.cause)
+          );
+        }
+        record = { ...record, nodeId: segmentId };
         yield* write(record);
-        tree = yield* Effect.tryPromise(() =>
-          lineStore.readTree(this.options.workspaceId, board.id)
-        );
+        tree = yield* tryPromiseRaw(() => lineStore.readTree(this.options.workspaceId, board.id));
+      }
+
+      // Close crash window #2: if `:renew` already ran and completed in a prior process before
+      // the `done` divider could be written, finalize directly without opening a second fresh session.
+      const priorRenew = yield* history.readTurn(
+        `assistant:${boardMaintenanceStepId(run.runId, 'renew')}`
+      );
+      if (this.isCompletedRenewTurn(priorRenew)) {
+        const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
+        pending = false;
+        yield* write({
+          ...record,
+          status: 'done',
+          renewed: true,
+          ...(after !== undefined ? { usedAfter: after } : {}),
+        });
+        yield* clearPendingBestEffort;
+        return;
       }
 
       // Step 3: optional higher-level fold when >= 8 uncovered, unpinned nodes exist on one level.
-      // Any fold failure warns and skips so rollover is never blocked.
+      // Explicit user Stop (`cancelled`) aborts rollover; non-cancel failures warn and skip folding.
       if (record.foldId === undefined) {
         const candidates = findFoldCandidates(tree);
         if (candidates) {
+          let foldCancelled = false;
           const foldExit = yield* Effect.exit(
             Effect.gen({ self: this }, function* () {
               const foldOutcome = yield* this.step(
@@ -1004,6 +1240,10 @@ export class BoardContinuityWorkflow {
                 buildFoldPrompt(candidates),
                 { yieldToInbox: false }
               );
+              if (foldOutcome === 'cancelled') {
+                foldCancelled = true;
+                return;
+              }
               if (foldOutcome !== 'completed') {
                 yield* this.ports.warn(
                   `[board-continuity] ${meta.id}: fold step ended with "${foldOutcome}"; skipping fold for this rollover`
@@ -1025,7 +1265,7 @@ export class BoardContinuityWorkflow {
                 return;
               }
               const freshMeta = (yield* this.ports.metadata(meta.id))?.meta ?? meta;
-              const foldNode = yield* Effect.tryPromise(() =>
+              const foldNode = yield* tryPromiseRaw(() =>
                 lineStore.appendFold(this.options.workspaceId, board.id, {
                   covers: candidates.nodes.map((node) => node.meta.id),
                   title: parsedFold.title,
@@ -1043,11 +1283,17 @@ export class BoardContinuityWorkflow {
                 foldedCount: candidates.nodes.length,
               };
               yield* write(record);
-              tree = yield* Effect.tryPromise(() =>
+              tree = yield* tryPromiseRaw(() =>
                 lineStore.readTree(this.options.workspaceId, board.id)
               );
             })
           );
+          if (foldCancelled) {
+            pending = false;
+            yield* write({ ...record, status: 'interrupted', reason: 'cancelled' });
+            yield* clearPendingBestEffort;
+            return;
+          }
           if (Exit.isFailure(foldExit)) {
             if (Cause.hasInterrupts(foldExit.cause)) {
               yield* Effect.failCause(foldExit.cause);
@@ -1057,17 +1303,35 @@ export class BoardContinuityWorkflow {
               `[board-continuity] ${meta.id}: fold step failed; skipping fold for this rollover`,
               Cause.squash(foldExit.cause)
             );
+            // Refresh tree best-effort so any pin added during `:fold` is reflected in the opening prompt.
+            const refreshedTree = yield* Effect.exit(
+              tryPromiseRaw(() => lineStore.readTree(this.options.workspaceId, board.id))
+            );
+            if (Exit.isSuccess(refreshedTree)) {
+              tree = refreshedTree.value;
+            }
           }
         }
       }
 
-      // Step 4: open a fresh underlying agent session with the deterministic opening prompt.
+      // Step 4: open a fresh underlying agent session with the deterministic opening prompt,
+      // accounting for the Board instructions suffix appended by `renewBoardInstructions: true`.
       const latestHistory = yield* history.readHistory;
       const { recentUserMessages, recentExchanges } =
         extractRecentCoordinatorContext(latestHistory);
       const sealedNode = record.nodeId ? tree.byId.get(record.nodeId) : undefined;
       const lastSegmentEndedAtIso =
         sealedNode?.meta.coversTo ?? tree.segments.at(-1)?.meta.coversTo;
+      const boardDirectory = path.dirname(lineStore.linePath(this.options.workspaceId, board.id));
+      const reservedTokens = estimateTokenCount(
+        buildPrompt('', undefined, undefined, undefined, {
+          boardContext: {
+            board,
+            role: meta.boardRole ?? 'coordinator',
+            directory: boardDirectory,
+          },
+        })
+      );
       const openingPrompt = buildBoardFoldOpening({
         sessionId: meta.id,
         board,
@@ -1078,6 +1342,7 @@ export class BoardContinuityWorkflow {
         nowIso: new Date(this.ports.now()).toISOString(),
         ...(lastSegmentEndedAtIso ? { lastSegmentEndedAtIso } : {}),
         usage,
+        reservedTokens,
       });
       const started = yield* this.step(
         maintenance,
@@ -1098,20 +1363,24 @@ export class BoardContinuityWorkflow {
         return;
       }
       if (started !== 'completed') {
+        pending = false;
         yield* write({
           ...record,
           status: started === 'cancelled' ? 'interrupted' : 'failed',
           reason: started,
         });
+        yield* clearPendingBestEffort;
         return;
       }
       const after = (yield* this.ports.metadata(meta.id))?.meta.contextWindowUsage?.used;
+      pending = false;
       yield* write({
         ...record,
         status: 'done',
         renewed: true,
         ...(after !== undefined ? { usedAfter: after } : {}),
       });
+      yield* clearPendingBestEffort;
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -1119,6 +1388,24 @@ export class BoardContinuityWorkflow {
         })
       )
     );
+  }
+
+  /** True when the `:renew` assistant entry already ran to a clean visible completion. */
+  private isCompletedRenewTurn(read: { state: string; turn?: unknown }): boolean {
+    if (read.state !== 'ready' || !read.turn) return false;
+    const entry = read.turn as SessionHistoryInput;
+    if (!isTerminalAssistantEntry(entry)) return false;
+    if (
+      entry.cancellationReason !== undefined ||
+      entry.status === 'canceled' ||
+      entry.status === 'failed'
+    ) {
+      return false;
+    }
+    if (entry.items?.some((item) => item.type === 'system_notice' && item.name === 'chat_failed')) {
+      return false;
+    }
+    return extractVisibleTurnText(entry).length > 0;
   }
 
   /** Slice non-maintenance Loro turns after the last completed rollover/new-conversation or segment end. */

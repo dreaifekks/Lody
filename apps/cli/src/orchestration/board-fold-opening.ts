@@ -2,6 +2,7 @@ import {
   estimateTokenCount,
   isBoardMaintenanceEntry,
   isBoardMaintenanceTurnId,
+  readMessageAuthor,
   type BoardMeta,
   type SessionHistoryInput,
   type SessionId,
@@ -15,6 +16,12 @@ import type {
 } from '@/lib/board-line-store';
 
 export const BOARD_FOLD_OPENING_MAX_TOKENS = 14_000;
+/**
+ * Minimum core budget retained for the rollover header, pinned anchor and expand
+ * guide when the user's own `board.instructions` consume nearly all (or more than)
+ * 14,000 tokens; user Board rules are never truncated.
+ */
+export const BOARD_FOLD_OPENING_MIN_CORE_BUDGET = 1_500;
 export const BOARD_FOLD_HISTORY_BUDGET = 2_500;
 export const BOARD_FOLD_RECENT_TREE_BUDGET = 4_000;
 export const BOARD_FOLD_THREADS_BUDGET = 1_500;
@@ -23,6 +30,8 @@ export const BOARD_FOLD_FOOTER_BUDGET = 500;
 export const BOARD_FOLD_RECENT_FULL_SEGMENTS = 2;
 export const BOARD_FOLD_RECENT_USER_COUNT = 4;
 export const BOARD_FOLD_RECENT_QA_ROUNDS = 2;
+
+const AGENT_SENDER_HEADER_PREFIX = '[Lody] This message was sent by another agent';
 
 export type CoordinatorUserUtterance = {
   readonly turnId: string;
@@ -47,6 +56,12 @@ export type BuildBoardFoldOpeningInput = {
   readonly nowIso: string;
   readonly lastSegmentEndedAtIso?: string;
   readonly usage?: SessionMeta['contextWindowUsage'];
+  /**
+   * Estimated tokens already reserved for appended Board instructions/reminders
+   * (`renewBoardInstructions: true`). Deducted from the 14,000-token ceiling so
+   * the combined rollover prompt stays within budget without truncating user rules.
+   */
+  readonly reservedTokens?: number;
 };
 
 /** Extract only visible plain text items (never thinking or tool output). */
@@ -63,8 +78,24 @@ export function extractVisibleTurnText(
 }
 
 /**
- * Extract the coordinator's recent non-maintenance user messages (last 4) and
- * closing complete Q&A exchanges (last 2, visible text only) from Loro history.
+ * True only for human-authored user turns. Rejects agent/system authors,
+ * unrecognized future author shapes, and legacy unattributed turns carrying
+ * Lody's cross-agent header prefix so inter-agent traffic is never mistaken for
+ * human utterances.
+ */
+export function isHumanUserTurn(
+  entry: Pick<SessionHistoryInput, 'role' | 'author' | 'items'>
+): boolean {
+  if (entry.role !== 'user') return false;
+  if (entry.author !== undefined) {
+    return readMessageAuthor(entry.author)?.kind === 'human';
+  }
+  return !extractVisibleTurnText(entry).startsWith(AGENT_SENDER_HEADER_PREFIX);
+}
+
+/**
+ * Extract the coordinator's recent human user messages (last 4) and closing
+ * complete human Q&A exchanges (last 2, visible text only) from Loro history.
  */
 export function extractRecentCoordinatorContext(history: readonly SessionHistoryInput[]): {
   recentUserMessages: CoordinatorUserUtterance[];
@@ -74,7 +105,7 @@ export function extractRecentCoordinatorContext(history: readonly SessionHistory
   const assistantTextByUserTurnId = new Map<string, string>();
   for (const entry of history) {
     if (isBoardMaintenanceTurnId(entry.id) || isBoardMaintenanceEntry(entry)) continue;
-    if (entry.role === 'user') {
+    if (isHumanUserTurn(entry)) {
       userEntries.push(entry);
     } else if (entry.role === 'assistant' && entry.userTurnId) {
       const text = extractVisibleTurnText(entry);
@@ -461,7 +492,10 @@ function buildFooterSection(input: {
 
 /**
  * Deterministic fold-rollover opening builder.
- * Strictly capped at `<= 14,000` estimated tokens regardless of session lifetime.
+ * Strictly capped at `<= 14,000` estimated tokens including `reservedTokens`
+ * (Board instructions appended by `renewBoardInstructions`), with a
+ * `BOARD_FOLD_OPENING_MIN_CORE_BUDGET` (1,500-token) floor when user Board
+ * instructions themselves consume nearly all or more than 14,000 tokens.
  */
 export function buildBoardFoldOpening(input: BuildBoardFoldOpeningInput): string {
   const header = [
@@ -469,31 +503,51 @@ export function buildBoardFoldOpening(input: BuildBoardFoldOpeningInput): string
     `The Lody conversation continues uninterrupted on session ${input.sessionId}; earlier turns remain stored in Loro history. The current Board instructions follow and replace any earlier version.`,
   ].join('\n');
 
-  const foldedHistory = buildFoldedHistorySection(input.tree, BOARD_FOLD_HISTORY_BUDGET);
-  const recentTree = buildRecentTreeSection(input.tree, BOARD_FOLD_RECENT_TREE_BUDGET);
-  const openThreads = buildOpenThreadsSection(input.threads, BOARD_FOLD_THREADS_BUDGET);
-  const recentVerbatim = buildRecentVerbatimSection(
-    input.recentUserMessages,
-    input.recentExchanges,
-    BOARD_FOLD_VERBATIM_BUDGET
-  );
   const footer = buildFooterSection({
     nowIso: input.nowIso,
     lastSegmentEndedAtIso: input.lastSegmentEndedAtIso,
     usage: input.usage,
   });
 
+  const reserved = Math.max(0, Math.floor(input.reservedTokens ?? 0));
+  const openingBudget = Math.max(
+    BOARD_FOLD_OPENING_MIN_CORE_BUDGET,
+    BOARD_FOLD_OPENING_MAX_TOKENS - reserved
+  );
+  const fixedTokens = estimateTokenCount(`${header}\n\n${footer}\n\n`);
+  const availableVariable = Math.max(0, openingBudget - fixedTokens);
+  const nominalVariable =
+    BOARD_FOLD_HISTORY_BUDGET +
+    BOARD_FOLD_RECENT_TREE_BUDGET +
+    BOARD_FOLD_THREADS_BUDGET +
+    BOARD_FOLD_VERBATIM_BUDGET;
+  const scale = availableVariable < nominalVariable ? availableVariable / nominalVariable : 1;
+  const historyBudget = Math.floor(BOARD_FOLD_HISTORY_BUDGET * scale);
+  const recentTreeBudget = Math.floor(BOARD_FOLD_RECENT_TREE_BUDGET * scale);
+  const threadsBudget = Math.floor(BOARD_FOLD_THREADS_BUDGET * scale);
+  const verbatimBudget = Math.floor(BOARD_FOLD_VERBATIM_BUDGET * scale);
+
+  const foldedHistory =
+    historyBudget > 0 ? buildFoldedHistorySection(input.tree, historyBudget) : '';
+  const recentTree =
+    recentTreeBudget > 0 ? buildRecentTreeSection(input.tree, recentTreeBudget) : '';
+  const openThreads =
+    threadsBudget > 0 ? buildOpenThreadsSection(input.threads, threadsBudget) : '';
+  const recentVerbatim =
+    verbatimBudget > 0
+      ? buildRecentVerbatimSection(input.recentUserMessages, input.recentExchanges, verbatimBudget)
+      : '';
+
   const sections = [header, foldedHistory, recentTree, openThreads, recentVerbatim, footer].filter(
     Boolean
   );
   const assembled = sections.join('\n\n');
-  if (estimateTokenCount(assembled) <= BOARD_FOLD_OPENING_MAX_TOKENS) {
+  if (estimateTokenCount(assembled) <= openingBudget) {
     return assembled;
   }
 
   // Final hard invariant guard: preserve header and footer verbatim, trim middle sections.
-  const fixedTokens = estimateTokenCount(`${header}\n\n${footer}\n\n`);
-  const middleBudget = Math.max(0, BOARD_FOLD_OPENING_MAX_TOKENS - fixedTokens);
+  const middleBudget = Math.max(0, openingBudget - fixedTokens);
   const middle = [foldedHistory, recentTree, openThreads, recentVerbatim]
     .filter(Boolean)
     .join('\n\n');

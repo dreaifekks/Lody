@@ -15,8 +15,10 @@ import {
 } from '@/lib/board-line-store';
 import {
   BOARD_FOLD_OPENING_MAX_TOKENS,
+  BOARD_FOLD_OPENING_MIN_CORE_BUDGET,
   buildBoardFoldOpening,
   extractRecentCoordinatorContext,
+  isHumanUserTurn,
 } from './board-fold-opening';
 
 const seg = (
@@ -138,6 +140,97 @@ describe('extractRecentCoordinatorContext', () => {
     expect(JSON.stringify(extracted)).not.toContain('Huge tool output');
     expect(JSON.stringify(extracted)).not.toContain('internal');
   });
+
+  it('excludes agent/system/unknown-authored and legacy agent-sender role:user turns from human context', () => {
+    const history: SessionHistoryInput[] = [
+      {
+        id: 'u-human-explicit',
+        role: 'user',
+        timestamp: '2026-11-25T10:00:00.000Z',
+        author: { v: 1, kind: 'human', userId: 'user-1' },
+        items: [{ type: 'text', text: 'Explicit human ask' }],
+        fileDiff: [],
+      },
+      {
+        id: 'a-human-explicit',
+        role: 'assistant',
+        userTurnId: 'u-human-explicit',
+        timestamp: '2026-11-25T10:00:05.000Z',
+        finished: true,
+        items: [{ type: 'text', text: 'Reply to human' }],
+        fileDiff: [],
+      },
+      {
+        id: 'u-agent-author',
+        role: 'user',
+        timestamp: '2026-11-25T10:01:00.000Z',
+        author: {
+          v: 1,
+          kind: 'agent',
+          sessionId: 'worker-1',
+          turnId: 'worker-turn-1',
+          name: 'Worker',
+        },
+        items: [{ type: 'text', text: 'Agent delegated report payload' }],
+        fileDiff: [],
+      },
+      {
+        id: 'u-system-author',
+        role: 'user',
+        timestamp: '2026-11-25T10:02:00.000Z',
+        author: { v: 1, kind: 'system' },
+        items: [{ type: 'text', text: 'System trigger payload' }],
+        fileDiff: [],
+      },
+      {
+        id: 'u-legacy-agent-header',
+        role: 'user',
+        timestamp: '2026-11-25T10:03:00.000Z',
+        items: [
+          {
+            type: 'text',
+            text: '[Lody] This message was sent by another agent, not by a human.\nWorker done.',
+          },
+        ],
+        fileDiff: [],
+      },
+      {
+        id: 'u-legacy-human',
+        role: 'user',
+        timestamp: '2026-11-25T10:04:00.000Z',
+        items: [{ type: 'text', text: 'Legacy unattributed human ask' }],
+        fileDiff: [],
+      },
+      {
+        id: 'a-legacy-human',
+        role: 'assistant',
+        userTurnId: 'u-legacy-human',
+        timestamp: '2026-11-25T10:04:05.000Z',
+        finished: true,
+        items: [{ type: 'text', text: 'Reply to legacy human' }],
+        fileDiff: [],
+      },
+    ];
+
+    expect(isHumanUserTurn(history[0]!)).toBe(true);
+    expect(isHumanUserTurn(history[2]!)).toBe(false);
+    expect(isHumanUserTurn(history[3]!)).toBe(false);
+    expect(isHumanUserTurn(history[4]!)).toBe(false);
+    expect(isHumanUserTurn(history[5]!)).toBe(true);
+
+    const extracted = extractRecentCoordinatorContext(history);
+    expect(extracted.recentUserMessages.map((m) => m.turnId)).toEqual([
+      'u-human-explicit',
+      'u-legacy-human',
+    ]);
+    expect(extracted.recentExchanges.map((e) => e.userTurnId)).toEqual([
+      'u-human-explicit',
+      'u-legacy-human',
+    ]);
+    expect(JSON.stringify(extracted)).not.toContain('Agent delegated report payload');
+    expect(JSON.stringify(extracted)).not.toContain('System trigger payload');
+    expect(JSON.stringify(extracted)).not.toContain('Worker done.');
+  });
 });
 
 describe('buildBoardFoldOpening', () => {
@@ -257,5 +350,50 @@ describe('buildBoardFoldOpening', () => {
     expect(estimateTokenCount(opening)).toBeLessThanOrEqual(BOARD_FOLD_OPENING_MAX_TOKENS);
     expect(opening).toContain(`[PINNED] [${pinnedId}`);
     expect(opening).toContain('lody_board_line_expand');
+  });
+
+  it('deducts reservedTokens for appended Board instructions and preserves core header floor on extreme instructions', () => {
+    const hugeParagraph = '大量历史决策与上下文细节记录。'.repeat(1800);
+    const s1 = seg(1, {}, hugeParagraph);
+    const s2 = seg(2, {}, hugeParagraph);
+    const s3 = seg(3, {}, hugeParagraph);
+    const tree = buildBoardLineTree([s1, s2, s3], [s1.meta.id]);
+    const baseInput = {
+      sessionId: 'coord-reserved' as SessionId,
+      board: { id: 'bd_reserved' as never, name: 'Reserved Budget Board' },
+      tree,
+      threads: Array.from({ length: 40 }, (_, i) => ({
+        id: `t-${i}` as SessionId,
+        title: `Thread ${i}`,
+      })) as SessionMeta[],
+      recentUserMessages: [
+        { turnId: 'u-1', timestamp: '2026-11-25T10:00:00.000Z', text: hugeParagraph },
+      ],
+      recentExchanges: [
+        {
+          userTurnId: 'u-1',
+          timestamp: '2026-11-25T10:00:00.000Z',
+          userText: hugeParagraph,
+          assistantText: hugeParagraph,
+        },
+      ],
+      nowIso: '2026-11-25T12:00:00.000Z',
+      lastSegmentEndedAtIso: '2026-11-25T10:00:00.000Z',
+    };
+
+    for (const reservedTokens of [4_000, 9_500]) {
+      const opening = buildBoardFoldOpening({ ...baseInput, reservedTokens });
+      expect(estimateTokenCount(opening) + reservedTokens).toBeLessThanOrEqual(
+        BOARD_FOLD_OPENING_MAX_TOKENS
+      );
+      expect(opening).toContain(`[PINNED] [${s1.meta.id}`);
+      expect(opening).toContain('lody_board_line_expand');
+    }
+
+    // Even if user Board instructions exceed 14,000 tokens alone, opening falls back cleanly to core floor.
+    const extreme = buildBoardFoldOpening({ ...baseInput, reservedTokens: 16_000 });
+    expect(estimateTokenCount(extreme)).toBeLessThanOrEqual(BOARD_FOLD_OPENING_MIN_CORE_BUDGET);
+    expect(extreme).toContain('Board coordinator');
+    expect(extreme).toContain('lody_board_line_expand');
   });
 });

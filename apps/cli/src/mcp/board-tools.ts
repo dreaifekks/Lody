@@ -26,8 +26,7 @@ import {
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import {
   BOARD_LINE_MAX_PINS,
-  BoardLineStore,
-  clampCodePoints,
+  getSharedBoardLineStore,
   isValidBoardLineNodeId,
 } from '@/lib/board-line-store';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
@@ -40,7 +39,10 @@ import type { McpSessionContext } from './lody-mcp-server';
 
 const BOARD_LINE_EXPAND_DEFAULT_LIMIT = 20;
 const BOARD_LINE_EXPAND_MAX_BYTES = 32 * 1024;
-const BOARD_LINE_EXPAND_TURN_MAX_CHARS = 8_000;
+/** Target ceiling for node summary on page 0 so children/turns retain room within the 32 KiB cap. */
+const BOARD_LINE_EXPAND_SUMMARY_MAX_BYTES = 10 * 1024;
+const BOARD_LINE_EXPAND_CONTINUATION_HINT =
+  'Call lody_board_line_expand with the returned nextCharOffset (same offset) to read the remainder of this turn, or increment offset / call lody_session_history.';
 
 type ExpandedSegmentTurn = {
   id: string;
@@ -48,60 +50,64 @@ type ExpandedSegmentTurn = {
   timestamp: string;
   userTurnId?: string;
   text: string;
+  truncated?: true;
+  charOffset?: number;
+  nextCharOffset?: number;
+  totalChars?: number;
+  hint?: string;
 };
 
-function sliceSegmentHistoryTurns(
-  history: readonly SessionHistoryInput[],
-  turnRange: { startTurnId: string; endTurnId: string; turnCount: number }
-): ExpandedSegmentTurn[] {
-  if (turnRange.turnCount === 0 || history.length === 0) return [];
-  const startIndex = history.findIndex((entry) => entry.id === turnRange.startTurnId);
-  let endIndex = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i]!.id === turnRange.endTurnId) {
-      endIndex = i;
-      break;
-    }
-  }
-  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return [];
-  const out: ExpandedSegmentTurn[] = [];
-  for (let i = startIndex; i <= endIndex; i++) {
-    const entry = history[i]!;
-    if (isBoardMaintenanceTurnId(entry.id) || isBoardMaintenanceEntry(entry)) continue;
-    const text = extractVisibleTurnText(entry);
-    if (!text) continue;
-    out.push({
-      id: entry.id,
-      role: entry.role,
-      timestamp: entry.timestamp,
-      ...(entry.userTurnId ? { userTurnId: entry.userTurnId } : {}),
-      text: clampCodePoints(text, BOARD_LINE_EXPAND_TURN_MAX_CHARS),
-    });
-  }
-  return out;
-}
+type ExpandedFoldChild =
+  | { id: string; missing: true }
+  | {
+      id: string;
+      kind: 'segment' | 'fold';
+      seq: number;
+      level: number;
+      coversFrom: string;
+      coversTo: string;
+      title: string;
+      tags: string[];
+      summaryQuality: 'written' | 'fallback';
+      pinned: boolean;
+      summary: string;
+      summaryTruncated?: true;
+    };
 
-function fitTurnTextToByteBudget(
-  build: (turn: ExpandedSegmentTurn) => unknown,
-  turn: ExpandedSegmentTurn,
-  maxBytes: number
-): ExpandedSegmentTurn {
-  if (Buffer.byteLength(JSON.stringify(build(turn))) <= maxBytes) return turn;
-  const chars = Array.from(turn.text);
+function fitStringToJsonByteBudget(
+  build: (candidate: string, consumedChars: number) => unknown,
+  text: string,
+  maxBytes: number,
+  appendEllipsis: boolean
+): { text: string; truncated: boolean; consumedChars: number } {
+  const chars = Array.from(text);
+  if (Buffer.byteLength(JSON.stringify(build(text, chars.length)), 'utf8') <= maxBytes) {
+    return { text, truncated: false, consumedChars: chars.length };
+  }
   let low = 0;
   let high = chars.length;
-  let best = '';
+  let bestMid = 0;
+  let bestText = '';
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
-    const candidate = mid === 0 ? '…' : `${chars.slice(0, mid).join('')}…`;
-    if (Buffer.byteLength(JSON.stringify(build({ ...turn, text: candidate }))) <= maxBytes) {
-      best = candidate;
+    const prefix = chars.slice(0, mid).join('');
+    const candidate = appendEllipsis ? (mid === 0 ? '…' : `${prefix}…`) : prefix;
+    if (Buffer.byteLength(JSON.stringify(build(candidate, mid)), 'utf8') <= maxBytes) {
+      bestMid = mid;
+      bestText = candidate;
       low = mid + 1;
     } else {
       high = mid - 1;
     }
   }
-  return { ...turn, text: best || '…' };
+  if (
+    !bestText &&
+    appendEllipsis &&
+    Buffer.byteLength(JSON.stringify(build('', 0)), 'utf8') <= maxBytes
+  ) {
+    return { text: '', truncated: true, consumedChars: 0 };
+  }
+  return { text: bestText, truncated: true, consumedChars: bestMid };
 }
 
 /** Invocations run only on the daemon's replica; headers advertise, metadata authorizes. */
@@ -161,12 +167,13 @@ export function registerBoardTools(
     ],
     [
       'lody_board_line_expand',
-      'Expand a Board fold-rollover history node. For a fold node, returns its covered lower-level nodes with full summaries; for a segment node, reads the coordinator Loro transcript turns in that segment (paginated, up to 32 KiB).',
+      'Expand a Board fold-rollover history node (strictly <= 32 KiB UTF-8 per response). For a fold node, returns its covered lower-level nodes paginated by offset/limit; for a segment node, reads coordinator Loro turns paginated by offset/limit (pass charOffset to continue an oversized turn).',
       z
         .object({
           nodeId: z.string().min(1).max(64),
           offset: z.number().int().min(0).optional(),
           limit: z.number().int().min(1).max(100).optional(),
+          charOffset: z.number().int().min(0).optional(),
         })
         .strict(),
     ],
@@ -253,10 +260,11 @@ export function registerBoardTools(
           const coordinatorMeta = coordinatorRow?.meta as SessionMeta | undefined;
           const keeper = boardFilesMachineId(board, coordinatorMeta);
           const localMachineId = environment.auth?.machineId ?? context().machineId;
-          if (keeper && keeper !== localMachineId) {
+          if (!keeper || keeper !== localMachineId) {
             throw new Error('BOARD_LINE_LOCAL_ONLY');
           }
-          const lineStore = environment.host.boardLineStore ?? new BoardLineStore(getLodyDataDir);
+          const lineStore =
+            environment.host.boardLineStore ?? getSharedBoardLineStore(getLodyDataDir);
           const nodeId = 'nodeId' in input ? input.nodeId : '';
           if (!isValidBoardLineNodeId(nodeId)) {
             throw new Error(`BOARD_LINE_INVALID_NODE_ID:Invalid nodeId "${nodeId}"`);
@@ -273,84 +281,341 @@ export function registerBoardTools(
             const tree = await lineStore.readTree(workspace.id, board.id);
             const node = tree.byId.get(nodeId);
             if (!node) throw new Error(`BOARD_LINE_NODE_NOT_FOUND:Node "${nodeId}" does not exist`);
+            const offset = 'offset' in input && input.offset !== undefined ? input.offset : 0;
+            const limit =
+              'limit' in input && input.limit !== undefined
+                ? input.limit
+                : BOARD_LINE_EXPAND_DEFAULT_LIMIT;
             if (node.meta.kind === 'fold') {
-              result = {
-                boardId: board.id,
-                node: node.meta,
-                summary: node.summary,
-                pinned: tree.pins.includes(node.meta.id),
-                children: node.meta.covers.map((childId) => {
-                  const child = tree.byId.get(childId);
-                  if (!child) return { id: childId, missing: true };
-                  return {
-                    id: child.meta.id,
-                    kind: child.meta.kind,
-                    seq: child.meta.seq,
-                    level: child.meta.level,
-                    coversFrom: child.meta.coversFrom,
-                    coversTo: child.meta.coversTo,
-                    title: child.meta.title,
-                    tags: child.meta.tags,
-                    summaryQuality: child.meta.summaryQuality,
-                    pinned: tree.pins.includes(child.meta.id),
-                    summary: child.summary,
-                  };
-                }),
+              const totalChildren = node.meta.covers.length;
+              const pageCoverIds = node.meta.covers.slice(offset, offset + limit);
+              const includeSummary = offset === 0;
+              const makeFoldPayload = (
+                candidateChildren: ExpandedFoldChild[],
+                summaryValue: string | undefined,
+                summaryTrimmed: boolean,
+                truncated: boolean
+              ) => {
+                const hasMore = offset + candidateChildren.length < totalChildren;
+                return {
+                  boardId: board.id,
+                  node: node.meta,
+                  ...(summaryValue !== undefined ? { summary: summaryValue } : {}),
+                  ...(summaryTrimmed ? { summaryTruncated: true as const } : {}),
+                  pinned: tree.pins.includes(node.meta.id),
+                  offset,
+                  limit,
+                  totalChildren,
+                  children: candidateChildren,
+                  hasMore,
+                  ...(hasMore ? { nextOffset: offset + candidateChildren.length } : {}),
+                  ...(truncated ? { truncatedByBytes: true as const } : {}),
+                };
               };
+              let summaryText: string | undefined;
+              let summaryTruncated = false;
+              if (includeSummary) {
+                const emptyEnvelopeBytes = Buffer.byteLength(
+                  JSON.stringify(makeFoldPayload([], '', true, true)),
+                  'utf8'
+                );
+                const summaryBudget =
+                  pageCoverIds.length > 0
+                    ? Math.min(
+                        BOARD_LINE_EXPAND_MAX_BYTES - 6 * 1024,
+                        emptyEnvelopeBytes + BOARD_LINE_EXPAND_SUMMARY_MAX_BYTES
+                      )
+                    : BOARD_LINE_EXPAND_MAX_BYTES;
+                const fittedSummary = fitStringToJsonByteBudget(
+                  (candidate) => makeFoldPayload([], candidate, true, true),
+                  node.summary,
+                  Math.max(emptyEnvelopeBytes, summaryBudget),
+                  true
+                );
+                summaryText = fittedSummary.text;
+                summaryTruncated = fittedSummary.truncated;
+              }
+              const children: ExpandedFoldChild[] = [];
+              let truncatedByBytes = false;
+              for (const childId of pageCoverIds) {
+                const child = tree.byId.get(childId);
+                const childObj: ExpandedFoldChild = !child
+                  ? { id: childId, missing: true }
+                  : {
+                      id: child.meta.id,
+                      kind: child.meta.kind,
+                      seq: child.meta.seq,
+                      level: child.meta.level,
+                      coversFrom: child.meta.coversFrom,
+                      coversTo: child.meta.coversTo,
+                      title: child.meta.title,
+                      tags: child.meta.tags,
+                      summaryQuality: child.meta.summaryQuality,
+                      pinned: tree.pins.includes(child.meta.id),
+                      summary: child.summary,
+                    };
+                const candidate = [...children, childObj];
+                const reserveTruncated =
+                  truncatedByBytes || offset + candidate.length < totalChildren;
+                if (
+                  Buffer.byteLength(
+                    JSON.stringify(
+                      makeFoldPayload(candidate, summaryText, summaryTruncated, reserveTruncated)
+                    ),
+                    'utf8'
+                  ) <= BOARD_LINE_EXPAND_MAX_BYTES
+                ) {
+                  children.push(childObj);
+                  continue;
+                }
+                truncatedByBytes = true;
+                if (children.length === 0 && !('missing' in childObj)) {
+                  const fittedChild = fitStringToJsonByteBudget(
+                    (candidateSummary) =>
+                      makeFoldPayload(
+                        [{ ...childObj, summary: candidateSummary, summaryTruncated: true }],
+                        summaryText,
+                        summaryTruncated,
+                        true
+                      ),
+                    childObj.summary,
+                    BOARD_LINE_EXPAND_MAX_BYTES,
+                    true
+                  );
+                  children.push({
+                    ...childObj,
+                    summary: fittedChild.text,
+                    summaryTruncated: true,
+                  });
+                }
+                break;
+              }
+              result = makeFoldPayload(children, summaryText, summaryTruncated, truncatedByBytes);
             } else {
-              const offset = 'offset' in input && input.offset !== undefined ? input.offset : 0;
-              const limit =
-                'limit' in input && input.limit !== undefined
-                  ? input.limit
-                  : BOARD_LINE_EXPAND_DEFAULT_LIMIT;
+              const charOffset =
+                'charOffset' in input && input.charOffset !== undefined ? input.charOffset : 0;
               const coordinatorDoc = await manager.getOrCreateSessionDoc(
                 board.coordinatorSessionId
               );
               const backend = await createSessionBackend(coordinatorDoc, coordinatorMeta);
-              const history = await backend.readHistory();
-              const allTurns = sliceSegmentHistoryTurns(history, node.meta.turnRange);
-              const page = allTurns.slice(offset, offset + limit);
+              const historyCount = await backend.readHistoryCount();
+              const rangeIds: string[] = [];
+              if (node.meta.turnRange.turnCount > 0 && historyCount > 0) {
+                const directory = await backend.readHistoryDirectory(0, historyCount);
+                let startIdx = -1;
+                let endIdx = -1;
+                for (let idx = 0; idx < directory.length; idx++) {
+                  const rowId = directory[idx]!.scalars?.id ?? directory[idx]!.turnId;
+                  if (rowId === node.meta.turnRange.startTurnId && startIdx === -1) {
+                    startIdx = idx;
+                  }
+                  if (rowId === node.meta.turnRange.endTurnId) {
+                    endIdx = idx;
+                  }
+                }
+                if (startIdx !== -1 && endIdx !== -1 && endIdx >= startIdx) {
+                  for (let idx = startIdx; idx <= endIdx; idx++) {
+                    const row = directory[idx]!;
+                    const rowId = row.scalars?.id ?? row.turnId;
+                    if (!rowId || row.state !== 'ready') continue;
+                    if (isBoardMaintenanceTurnId(rowId)) continue;
+                    if (
+                      row.scalars?.role === 'assistant' &&
+                      isBoardMaintenanceTurnId(row.scalars.userTurnId)
+                    ) {
+                      continue;
+                    }
+                    rangeIds.push(rowId);
+                  }
+                }
+              }
+              const totalTurns = rangeIds.length;
+              const includeSummary = offset === 0 && charOffset === 0;
+              const makeSegmentPayload = (
+                candidateTurns: ExpandedSegmentTurn[],
+                summaryValue: string | undefined,
+                summaryTrimmed: boolean,
+                paging: {
+                  hasMore: boolean;
+                  nextOffset?: number;
+                  nextCharOffset?: number;
+                  truncatedByBytes: boolean;
+                }
+              ) => ({
+                boardId: board.id,
+                sessionId: board.coordinatorSessionId,
+                node: node.meta,
+                ...(summaryValue !== undefined ? { summary: summaryValue } : {}),
+                ...(summaryTrimmed ? { summaryTruncated: true as const } : {}),
+                pinned: tree.pins.includes(node.meta.id),
+                offset,
+                limit,
+                totalTurns,
+                turns: candidateTurns,
+                hasMore: paging.hasMore,
+                ...(paging.hasMore && paging.nextOffset !== undefined
+                  ? { nextOffset: paging.nextOffset }
+                  : {}),
+                ...(paging.nextCharOffset !== undefined
+                  ? { nextCharOffset: paging.nextCharOffset }
+                  : {}),
+                ...(paging.truncatedByBytes ? { truncatedByBytes: true as const } : {}),
+              });
+
+              let summaryText: string | undefined;
+              let summaryTruncated = false;
+              if (includeSummary) {
+                const emptyEnvelopeBytes = Buffer.byteLength(
+                  JSON.stringify(
+                    makeSegmentPayload([], '', true, {
+                      hasMore: true,
+                      nextOffset: totalTurns,
+                      nextCharOffset: 999_999,
+                      truncatedByBytes: true,
+                    })
+                  ),
+                  'utf8'
+                );
+                const summaryBudget =
+                  totalTurns > 0
+                    ? Math.min(
+                        BOARD_LINE_EXPAND_MAX_BYTES - 6 * 1024,
+                        emptyEnvelopeBytes + BOARD_LINE_EXPAND_SUMMARY_MAX_BYTES
+                      )
+                    : BOARD_LINE_EXPAND_MAX_BYTES;
+                const fittedSummary = fitStringToJsonByteBudget(
+                  (candidate) =>
+                    makeSegmentPayload([], candidate, true, {
+                      hasMore: true,
+                      nextOffset: totalTurns,
+                      nextCharOffset: 999_999,
+                      truncatedByBytes: true,
+                    }),
+                  node.summary,
+                  Math.max(emptyEnvelopeBytes, summaryBudget),
+                  true
+                );
+                summaryText = fittedSummary.text;
+                summaryTruncated = fittedSummary.truncated;
+              }
+
               const turns: ExpandedSegmentTurn[] = [];
               let truncatedByBytes = false;
-              const makePayload = (candidateTurns: ExpandedSegmentTurn[], truncated: boolean) => {
-                const hasMore = offset + candidateTurns.length < allTurns.length;
-                return {
-                  boardId: board.id,
-                  sessionId: board.coordinatorSessionId,
-                  node: node.meta,
-                  summary: node.summary,
-                  pinned: tree.pins.includes(node.meta.id),
-                  offset,
-                  limit,
-                  totalTurns: allTurns.length,
-                  turns: candidateTurns,
-                  hasMore,
-                  ...(hasMore ? { nextOffset: offset + candidateTurns.length } : {}),
-                  ...(truncated ? { truncatedByBytes: true } : {}),
+              let nextIndex = offset;
+              let nextCharOffset: number | undefined;
+
+              for (let idx = offset; idx < rangeIds.length && turns.length < limit; idx++) {
+                const read = await backend.readTurn(rangeIds[idx]!);
+                if (read.state !== 'ready') {
+                  nextIndex = idx + 1;
+                  continue;
+                }
+                const entry = read.turn as SessionHistoryInput;
+                if (isBoardMaintenanceEntry(entry)) {
+                  nextIndex = idx + 1;
+                  continue;
+                }
+                const fullText = extractVisibleTurnText(entry);
+                if (!fullText) {
+                  nextIndex = idx + 1;
+                  continue;
+                }
+                const fullChars = Array.from(fullText);
+                const startChar = idx === offset && turns.length === 0 ? charOffset : 0;
+                if (startChar >= fullChars.length) {
+                  nextIndex = idx + 1;
+                  continue;
+                }
+                const sliceChars = startChar > 0 ? fullChars.slice(startChar) : fullChars;
+                const sliceText = sliceChars.join('');
+                const turnObj: ExpandedSegmentTurn = {
+                  id: entry.id,
+                  role: entry.role,
+                  timestamp: entry.timestamp,
+                  ...(entry.userTurnId ? { userTurnId: entry.userTurnId } : {}),
+                  text: sliceText,
+                  ...(startChar > 0 ? { charOffset: startChar, totalChars: fullChars.length } : {}),
                 };
-              };
-              for (const turn of page) {
-                const candidate = [...turns, turn];
+                const candidate = [...turns, turnObj];
+                const hasMoreAfterThis = idx + 1 < rangeIds.length;
+                const reserveTruncated = truncatedByBytes || hasMoreAfterThis;
                 if (
-                  Buffer.byteLength(JSON.stringify(makePayload(candidate, false))) <=
-                  BOARD_LINE_EXPAND_MAX_BYTES
+                  Buffer.byteLength(
+                    JSON.stringify(
+                      makeSegmentPayload(candidate, summaryText, summaryTruncated, {
+                        hasMore: hasMoreAfterThis,
+                        nextOffset: hasMoreAfterThis ? idx + 1 : undefined,
+                        truncatedByBytes: reserveTruncated,
+                      })
+                    ),
+                    'utf8'
+                  ) <= BOARD_LINE_EXPAND_MAX_BYTES
                 ) {
-                  turns.push(turn);
+                  turns.push(turnObj);
+                  nextIndex = idx + 1;
                   continue;
                 }
                 truncatedByBytes = true;
                 if (turns.length === 0) {
-                  turns.push(
-                    fitTurnTextToByteBudget(
-                      (fitted) => makePayload([fitted], true),
-                      turn,
-                      BOARD_LINE_EXPAND_MAX_BYTES
-                    )
+                  const fitted = fitStringToJsonByteBudget(
+                    (chunkText, consumedChars) => {
+                      const nextChar = startChar + consumedChars;
+                      return makeSegmentPayload(
+                        [
+                          {
+                            id: entry.id,
+                            role: entry.role,
+                            timestamp: entry.timestamp,
+                            ...(entry.userTurnId ? { userTurnId: entry.userTurnId } : {}),
+                            text: chunkText,
+                            truncated: true,
+                            charOffset: startChar,
+                            nextCharOffset: nextChar,
+                            totalChars: fullChars.length,
+                            hint: BOARD_LINE_EXPAND_CONTINUATION_HINT,
+                          },
+                        ],
+                        summaryText,
+                        summaryTruncated,
+                        {
+                          hasMore: true,
+                          nextOffset: idx,
+                          nextCharOffset: nextChar,
+                          truncatedByBytes: true,
+                        }
+                      );
+                    },
+                    sliceText,
+                    BOARD_LINE_EXPAND_MAX_BYTES,
+                    false
                   );
+                  const nextChar = startChar + fitted.consumedChars;
+                  turns.push({
+                    id: entry.id,
+                    role: entry.role,
+                    timestamp: entry.timestamp,
+                    ...(entry.userTurnId ? { userTurnId: entry.userTurnId } : {}),
+                    text: fitted.text,
+                    truncated: true,
+                    charOffset: startChar,
+                    nextCharOffset: nextChar,
+                    totalChars: fullChars.length,
+                    hint: BOARD_LINE_EXPAND_CONTINUATION_HINT,
+                  });
+                  nextIndex = idx;
+                  nextCharOffset = nextChar;
+                } else {
+                  nextIndex = idx;
                 }
                 break;
               }
-              result = makePayload(turns, truncatedByBytes);
+              const hasMore = nextCharOffset !== undefined || nextIndex < totalTurns;
+              result = makeSegmentPayload(turns, summaryText, summaryTruncated, {
+                hasMore,
+                nextOffset: hasMore ? nextIndex : undefined,
+                nextCharOffset,
+                truncatedByBytes,
+              });
             }
           }
         } else if (name === 'lody_board_overview') {

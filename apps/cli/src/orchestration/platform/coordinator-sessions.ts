@@ -1,5 +1,5 @@
 import { antigravitySupportsContextCompaction } from '@/agent/antigravity-acp-stream';
-import { BoardLineStore } from '@/lib/board-line-store';
+import { getSharedBoardLineStore } from '@/lib/board-line-store';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import {
@@ -300,7 +300,7 @@ export const coordinatorSessionsLayer = (
             : undefined;
         }),
       holdInbox: (id, held) => options.executionService.holdInboxForBoardMaintenance?.(id, held),
-      boardLine: options.boardLineStore ?? new BoardLineStore(getLodyDataDir, options.logger),
+      boardLine: options.boardLineStore ?? getSharedBoardLineStore(getLodyDataDir, options.logger),
       // A maintenance turn outlives a Worker stop like any turn: never track it as raw work.
       runTurn: (request) =>
         Effect.tryPromise({

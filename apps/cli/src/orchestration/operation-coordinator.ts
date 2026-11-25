@@ -26,7 +26,8 @@ import {
 } from '@lody/shared';
 
 import type { LoroDocumentManager } from '@/lib/loro/doc';
-import type { BoardLineStore } from '@/lib/board-line-store';
+import { getSharedBoardLineStore, type BoardLineStore } from '@/lib/board-line-store';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import type { SessionDispatchWatcher } from '@/session/session-dispatch-watcher';
 import type { SessionExecutionService } from '@/session/session-execution-service';
 import type { SessionUserResolver } from '@/session/session-user-resolver';
@@ -135,6 +136,18 @@ export class LodyOperationCoordinator {
     this.stoppedComplete = false;
     this.store = this.storeFactory();
     this.store.inbox.activate(this.options.workspaceId, this.workerBootId);
+    // Pre-hold Inbox for any coordinator that persisted `pending-switch.json` before a restart,
+    // preventing queued reports from leaking to the old agent before continuity reconciles.
+    const boardLineStore =
+      this.options.boardLineStore ?? getSharedBoardLineStore(getLodyDataDir, this.options.logger);
+    for (const pendingSessionId of boardLineStore.listPendingSwitchSessionIdsSync(
+      this.options.workspaceId
+    )) {
+      this.options.executionService.holdInboxForBoardMaintenance?.(
+        pendingSessionId as SessionId,
+        true
+      );
+    }
     this.started = true;
     this.metaWatch = this.options.workspaceDocument.repo.watch(
       (event) => {

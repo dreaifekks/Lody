@@ -10,6 +10,8 @@ import {
   FOLD_BATCH_SIZE,
   FOLD_TRIGGER_COUNT,
   findFoldCandidates,
+  findSegmentByRunId,
+  getSharedBoardLineStore,
 } from './board-line-store';
 
 const WS = 'ws_line_test';
@@ -280,5 +282,112 @@ describe('BoardLineStore', () => {
     await expect(store.setPinned(WS, BOARD, 'seg_00000001', true)).rejects.toThrow(
       /BOARD_PATH_OUTSIDE/
     );
+  });
+
+  it('persists pending-switch.json, scans pending sessions synchronously, and clears by runId', async () => {
+    expect(await store.readPendingSwitch(WS, BOARD)).toBeNull();
+    expect([...store.listPendingSwitchSessionIdsSync(WS)]).toEqual([]);
+
+    const saved = await store.writePendingSwitch(WS, BOARD, {
+      runId: 'run-alpha',
+      nodeId: 'seg_00000001',
+      sessionId: 'coord-1',
+      updatedAt: '2026-11-26T00:00:00.000Z',
+    });
+    expect(saved).toMatchObject({
+      v: 1,
+      runId: 'run-alpha',
+      nodeId: 'seg_00000001',
+      sessionId: 'coord-1',
+    });
+    expect(
+      fs.statSync(path.join(store.linePath(WS, BOARD), 'pending-switch.json')).mode & 0o777
+    ).toBe(0o600);
+    expect(await store.readPendingSwitch(WS, BOARD)).toEqual(saved);
+    expect([...store.listPendingSwitchSessionIdsSync(WS)]).toEqual(['coord-1']);
+
+    // Mismatched expectedRunId does not clear another run's pending switch.
+    await store.clearPendingSwitch(WS, BOARD, 'run-other');
+    expect(await store.readPendingSwitch(WS, BOARD)).toEqual(saved);
+
+    // Matching expectedRunId removes pending-switch.json cleanly.
+    await store.clearPendingSwitch(WS, BOARD, 'run-alpha');
+    expect(await store.readPendingSwitch(WS, BOARD)).toBeNull();
+    expect([...store.listPendingSwitchSessionIdsSync(WS)]).toEqual([]);
+
+    // Symlink at pending-switch.json is refused by both async reads and sync startup scanner.
+    const outsideDir = path.join(scratch, 'outside-pending');
+    fs.mkdirSync(outsideDir);
+    const linkTarget = path.join(outsideDir, 'pending.json');
+    fs.writeFileSync(linkTarget, JSON.stringify(saved));
+    fs.symlinkSync(linkTarget, path.join(store.linePath(WS, BOARD), 'pending-switch.json'));
+    await expect(store.readPendingSwitch(WS, BOARD)).rejects.toThrow(/BOARD_PATH_OUTSIDE/);
+    expect([...store.listPendingSwitchSessionIdsSync(WS)]).toEqual([]);
+  });
+
+  it('records maintenanceRunId on segments and recovers via findSegmentByRunId', async () => {
+    const seg = await makeSegment(1, {
+      id: 'seg_11112222',
+      maintenanceRunId: 'run-crash-window-1',
+    });
+    expect(seg.meta.maintenanceRunId).toBe('run-crash-window-1');
+    const tree = await store.readTree(WS, BOARD);
+    expect(findSegmentByRunId(tree, 'run-crash-window-1')?.meta.id).toBe('seg_11112222');
+    expect(findSegmentByRunId(tree, 'run-missing')).toBeUndefined();
+  });
+
+  it('shares one serialized store per dataDir so concurrent pins do not race, and rejects folding a pinned node', async () => {
+    const sharedDir = path.join(scratch, 'shared-data');
+    const s1 = getSharedBoardLineStore(() => sharedDir);
+    const s2 = getSharedBoardLineStore(() => path.join(sharedDir, '.'));
+    expect(s1).toBe(s2);
+
+    const ids: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const seg = await s1.appendSegment(WS, BOARD, {
+        coversFrom: `2026-11-${String(i).padStart(2, '0')}T08:00:00.000Z`,
+        coversTo: `2026-11-${String(i).padStart(2, '0')}T09:00:00.000Z`,
+        title: `Concurrent seg ${i}`,
+        summary: `Summary ${i}`,
+        summaryQuality: 'written',
+        outcome: 'rolled',
+        turnRange: { startTurnId: `u-${i}`, endTurnId: `a-${i}`, turnCount: 1 },
+      });
+      ids.push(seg.meta.id);
+    }
+
+    // Concurrent pins across the shared store serialize cleanly without losing writes.
+    await Promise.all(ids.map((nodeId) => s2.setPinned(WS, BOARD, nodeId, true)));
+    const afterPins = await s1.readTree(WS, BOARD);
+    expect(afterPins.pins).toHaveLength(5);
+    for (const id of ids) {
+      expect(afterPins.pins).toContain(id);
+    }
+
+    // appendFold re-checks latest pins inside its lock and refuses if any candidate is pinned.
+    await expect(
+      s1.appendFold(WS, BOARD, {
+        covers: [ids[0]!, ids[1]!],
+        title: 'Should fail on pin',
+        summary: 'Must not fold pinned nodes.',
+      })
+    ).rejects.toThrow(/BOARD_LINE_FOLD_PINNED_CONFLICT/);
+
+    // Unpinning allows folding, and folding the same nodes a second time is rejected.
+    await s1.setPinned(WS, BOARD, ids[0]!, false);
+    await s1.setPinned(WS, BOARD, ids[1]!, false);
+    const fld = await s1.appendFold(WS, BOARD, {
+      covers: [ids[0]!, ids[1]!],
+      title: 'Now allowed',
+      summary: 'Folded safely.',
+    });
+    expect(fld.meta.covers).toEqual([ids[0]!, ids[1]!]);
+    await expect(
+      s1.appendFold(WS, BOARD, {
+        covers: [ids[0]!, ids[1]!],
+        title: 'Duplicate cover',
+        summary: 'Must not double-fold.',
+      })
+    ).rejects.toThrow(/BOARD_LINE_FOLD_ALREADY_COVERED/);
   });
 });

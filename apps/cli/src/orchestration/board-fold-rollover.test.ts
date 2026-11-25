@@ -5,6 +5,7 @@ import { LoroDoc } from 'loro-crdt';
 import { LoroRepo } from 'loro-repo';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  boardMaintenanceStepId,
   boardMaintenanceTurn,
   createSessionMirror,
   getSessionRoomId,
@@ -658,6 +659,423 @@ describe('Board fold rollover workflow', () => {
           renewed: true,
         }),
       ]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('pre-holds Inbox from pending-switch.json on restart and recovers a divider pushed beyond TAIL_ROWS = 50', async () => {
+    const h = await createFoldHarness();
+    try {
+      h.maintenance.afterStep = (req) => {
+        if (req.stepTurnId.endsWith(':seal')) h.maintenance.pendingUser = true;
+      };
+      h.coordinator.start();
+      await h.drain();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'deep-tail-recovery',
+          { boardId: h.board.id, kind: 'fold_rollover', trigger: 'manual', status: 'requested' },
+          new Date(h.now()).toISOString()
+        )
+      );
+      await h.drain();
+      await h.until(() =>
+        h.records().some((r) => r.status === 'running' && r.nodeId !== undefined)
+      );
+      await h.drain();
+
+      const pendingOnDisk = await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id);
+      expect(pendingOnDisk).toMatchObject({
+        runId: 'deep-tail-recovery',
+        sessionId: h.coordinatorId,
+      });
+
+      // Append 30 full user+assistant exchanges (= 60 rows) so the divider falls outside TAIL_ROWS = 50.
+      for (let i = 1; i <= 30; i++) {
+        await h.addUserExchange(`extra-u-${i}`, `Extra ask ${i}`, `Extra answer ${i}`);
+      }
+
+      // Enqueue a runnable Inbox completion before restarting; it must stay held until :renew completes.
+      h.store.accept({
+        workspaceId: h.workspaceId,
+        ownerMachineId: h.machineId,
+        requesterSessionId: h.coordinatorId,
+        requesterUserId: 'user-1',
+        operationId: 'op-post-restart-hold',
+        kind: 'session_chat',
+        canonicalCommand: {},
+        frozenContinuationConfig: { inputConfig: { chainDepth: 0 } },
+        initiatorChainDepth: 0,
+        createdAt: new Date(h.now()).toISOString(),
+        deadlineAt: new Date(h.now() + 60_000).toISOString(),
+        items: [],
+      });
+      h.store.finish(h.coordinatorId, 'op-post-restart-hold', {
+        type: 'error',
+        error: makeLodyError('COORDINATOR_FAILED', 'must wait for fresh session', false),
+      });
+
+      h.maintenance.pendingUser = false;
+      h.maintenance.afterStep = () => {};
+      await h.restartCoordinator();
+      // Startup restored the Inbox hold synchronously from pending-switch.json before Inbox ticks.
+      expect(h.maintenance.held.has(h.coordinatorId)).toBe(true);
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'done'));
+      await h.drain();
+      await vi.waitFor(() => expect(h.launches).toHaveLength(1));
+
+      expect(h.steps()).toEqual(['seal', 'renew']);
+      expect(h.maintenance.timeline).toEqual(['step:seal', 'step:renew', 'inbox']);
+      expect(await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id)).toBeNull();
+      expect(h.maintenance.held.has(h.coordinatorId)).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('closes crash window #1 (segment saved with maintenanceRunId before divider got nodeId) without duplicating segment', async () => {
+    const h = await createFoldHarness();
+    try {
+      const runId = 'crash-after-segment';
+      const existingSeg = await h.lineStore.appendSegment(h.workspaceId, h.board.id, {
+        coversFrom: '2026-11-26T00:00:00.000Z',
+        coversTo: '2026-11-26T00:00:05.000Z',
+        title: 'Already sealed segment',
+        summary: 'Persisted right before crash.',
+        summaryQuality: 'written',
+        outcome: 'rolled',
+        turnRange: { startTurnId: 'u-1', endTurnId: 'u-2-answer', turnCount: 2 },
+        maintenanceRunId: runId,
+      });
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          runId,
+          { boardId: h.board.id, kind: 'fold_rollover', trigger: 'manual', status: 'running' },
+          new Date(h.now()).toISOString()
+        )
+      );
+
+      h.coordinator.start();
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'done'));
+      await h.drain();
+
+      expect(h.steps()).toEqual(['renew']);
+      const tree = await h.lineStore.readTree(h.workspaceId, h.board.id);
+      expect(tree.segments).toHaveLength(1);
+      expect(tree.segments[0]!.meta.id).toBe(existingSeg.meta.id);
+      expect(h.records()[0]).toMatchObject({
+        kind: 'fold_rollover',
+        status: 'done',
+        nodeId: existingSeg.meta.id,
+        renewed: true,
+      });
+      await vi.waitFor(async () => {
+        expect(await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id)).toBeNull();
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('closes crash window #2 (renew completed before done divider written) without opening a second fresh session', async () => {
+    const h = await createFoldHarness();
+    try {
+      const runId = 'crash-after-renew';
+      const seg = await h.lineStore.appendSegment(h.workspaceId, h.board.id, {
+        coversFrom: '2026-11-26T00:00:00.000Z',
+        coversTo: '2026-11-26T00:00:05.000Z',
+        title: 'Sealed before renew',
+        summary: 'Summary before renew.',
+        summaryQuality: 'written',
+        outcome: 'rolled',
+        turnRange: { startTurnId: 'u-1', endTurnId: 'u-2-answer', turnCount: 2 },
+        maintenanceRunId: runId,
+      });
+      await h.lineStore.writePendingSwitch(h.workspaceId, h.board.id, {
+        runId,
+        nodeId: seg.meta.id,
+        sessionId: h.coordinatorId,
+        updatedAt: new Date(h.now()).toISOString(),
+      });
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          runId,
+          {
+            boardId: h.board.id,
+            kind: 'fold_rollover',
+            trigger: 'manual',
+            status: 'running',
+            nodeId: seg.meta.id,
+          },
+          new Date(h.now()).toISOString()
+        )
+      );
+      await h.append(h.coordinatorId, {
+        id: `assistant:${boardMaintenanceStepId(runId, 'renew')}`,
+        role: 'assistant',
+        userTurnId: boardMaintenanceStepId(runId, 'renew'),
+        timestamp: new Date(h.now()).toISOString(),
+        endedAt: h.now(),
+        finished: true,
+        items: [{ type: 'text', text: 'Ready in fresh session.' }],
+        fileDiff: [],
+      });
+
+      h.coordinator.start();
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'done'));
+      await h.drain();
+
+      expect(h.steps()).toEqual([]);
+      expect(h.records()[0]).toMatchObject({
+        kind: 'fold_rollover',
+        status: 'done',
+        nodeId: seg.meta.id,
+        renewed: true,
+      });
+      await vi.waitFor(async () => {
+        expect(await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id)).toBeNull();
+        expect(h.maintenance.held.has(h.coordinatorId)).toBe(false);
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('aborts rollover when user cancels the fold step and waits while Inbox is paused on a pending switch', async () => {
+    const h = await createFoldHarness();
+    try {
+      for (let i = 1; i <= FOLD_TRIGGER_COUNT - 1; i++) {
+        await h.lineStore.appendSegment(h.workspaceId, h.board.id, {
+          coversFrom: `2026-11-${String(i).padStart(2, '0')}T08:00:00.000Z`,
+          coversTo: `2026-11-${String(i).padStart(2, '0')}T09:00:00.000Z`,
+          title: `Seg ${i}`,
+          summary: `Summary ${i}`,
+          summaryQuality: 'written',
+          outcome: 'rolled',
+          turnRange: { startTurnId: `old-${i}`, endTurnId: `old-${i}`, turnCount: 1 },
+        });
+      }
+      h.maintenance.outcome = (req) =>
+        req.stepTurnId.endsWith(':fold') ? 'cancelled' : 'completed';
+
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'interrupted'));
+      await h.drain();
+
+      expect(h.steps()).toEqual(['seal', 'fold']);
+      expect(h.records()[0]).toMatchObject({
+        kind: 'fold_rollover',
+        status: 'interrupted',
+        reason: 'cancelled',
+      });
+      await vi.waitFor(async () => {
+        expect(await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id)).toBeNull();
+        expect(h.maintenance.held.has(h.coordinatorId)).toBe(false);
+      });
+
+      // Now verify a pending switch respects `inbox.paused` until the user speaks again.
+      const pendingRunId = 'paused-switch';
+      const seg = (await h.lineStore.readTree(h.workspaceId, h.board.id)).segments.at(-1)!;
+      await h.lineStore.writePendingSwitch(h.workspaceId, h.board.id, {
+        runId: pendingRunId,
+        nodeId: seg.meta.id,
+        sessionId: h.coordinatorId,
+        updatedAt: new Date(h.now()).toISOString(),
+      });
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          pendingRunId,
+          {
+            boardId: h.board.id,
+            kind: 'fold_rollover',
+            trigger: 'manual',
+            status: 'running',
+            nodeId: seg.meta.id,
+          },
+          new Date(h.now()).toISOString()
+        )
+      );
+      const stopInput = {
+        workspaceId: h.workspaceId,
+        sessionId: h.coordinatorId,
+        userId: 'user-1',
+        inputId: 'stop-me',
+        kind: 'task' as const,
+      };
+      expect(h.store.inbox.accept(stopInput)).toBe(true);
+      const activeExec = 'assistant:stop-me';
+      expect(h.store.inbox.begin(stopInput, activeExec)).toBe(true);
+      expect(h.store.inbox.pause(stopInput, activeExec)).toBe(true);
+      h.store.inbox.release({ ...stopInput, executionId: activeExec, outcome: 'user_stop' });
+      expect(h.store.inbox.paused(h.workspaceId, h.coordinatorId)).toBe(true);
+
+      h.maintenance.outcome = () => 'completed';
+      const runsBefore = h.maintenance.runs.length;
+      await h.drain();
+      expect(h.maintenance.runs.length).toBe(runsBefore);
+      expect(h.records().at(-1)?.status).toBe('running');
+
+      // User speaks again -> clears paused -> pending switch resumes and completes `:renew`.
+      const resumeInput = {
+        workspaceId: h.workspaceId,
+        sessionId: h.coordinatorId,
+        userId: 'user-1',
+        inputId: 'resume-turn',
+        kind: 'task' as const,
+      };
+      expect(h.store.inbox.accept(resumeInput)).toBe(true);
+      expect(h.store.inbox.begin(resumeInput, 'assistant:resume-turn')).toBe(true);
+      h.store.inbox.release({
+        ...resumeInput,
+        executionId: 'assistant:resume-turn',
+        outcome: 'normal',
+      });
+      expect(h.store.inbox.paused(h.workspaceId, h.coordinatorId)).toBe(false);
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'done'));
+      await h.drain();
+      expect(h.steps().at(-1)).toBe('renew');
+      await vi.waitFor(async () => {
+        expect(await h.lineStore.readPendingSwitch(h.workspaceId, h.board.id)).toBeNull();
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks line-store-error without spinning when line/ is unreadable', async () => {
+    const h = await createFoldHarness();
+    try {
+      const readSpy = vi
+        .spyOn(h.lineStore, 'readTree')
+        .mockRejectedValue(new Error('EACCES: line directory unreadable'));
+
+      h.coordinator.start();
+      await h.drain();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'unreadable-line',
+          { boardId: h.board.id, kind: 'fold_rollover', trigger: 'manual', status: 'requested' },
+          new Date(h.now()).toISOString()
+        )
+      );
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'failed'));
+      await h.drain();
+
+      expect(h.records()[0]).toMatchObject({
+        kind: 'fold_rollover',
+        status: 'failed',
+        reason: 'line-store-error',
+      });
+      expect(readSpy).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(h.maintenance.held.has(h.coordinatorId)).toBe(false));
+
+      // When an already-sealed switch hits a transient readTree error, it keeps the Inbox held and backs off without spinning.
+      readSpy.mockClear();
+      await h.append(
+        h.coordinatorId,
+        boardMaintenanceTurn(
+          'sealed-unreadable-line',
+          {
+            boardId: h.board.id,
+            kind: 'fold_rollover',
+            trigger: 'manual',
+            status: 'running',
+            nodeId: 'seg_00000099',
+          },
+          new Date(h.now()).toISOString()
+        )
+      );
+      await h.drain();
+      await vi.waitFor(() => expect(readSpy).toHaveBeenCalledTimes(1));
+      // Allow microtasks/immediates to flush and prove no 0ms spin loop retries `readTree`.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(readSpy).toHaveBeenCalledTimes(1);
+      expect(h.maintenance.held.has(h.coordinatorId)).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('skips fold cleanly when a fold candidate is pinned mid-fold and excludes non-human role:user turns', async () => {
+    const h = await createFoldHarness();
+    try {
+      // Append an agent-authored role:user turn that must never leak into fallback or opening context.
+      await h.append(h.coordinatorId, {
+        id: 'agent-relay-turn',
+        role: 'user',
+        timestamp: new Date(h.now()).toISOString(),
+        status: 'handled',
+        inputConfig: {
+          cliType: 'builtin',
+          agentType: 'codex',
+          modelId: 'test-model',
+          chainDepth: 1,
+          mcpServerIds: [],
+        },
+        author: {
+          v: 1,
+          kind: 'agent',
+          sessionId: 'worker-sub' as SessionId,
+          turnId: 'worker-turn-1',
+          name: 'Worker Agent',
+        },
+        items: [{ type: 'text', text: 'AGENT_INTERNAL_RELAY_DO_NOT_LEAK' }],
+        fileDiff: [],
+      });
+
+      const seededIds: string[] = [];
+      for (let i = 1; i <= FOLD_TRIGGER_COUNT - 1; i++) {
+        const seg = await h.lineStore.appendSegment(h.workspaceId, h.board.id, {
+          coversFrom: `2026-11-${String(i).padStart(2, '0')}T08:00:00.000Z`,
+          coversTo: `2026-11-${String(i).padStart(2, '0')}T09:00:00.000Z`,
+          title: `Seed ${i}`,
+          summary: `Seed summary ${i}`,
+          summaryQuality: 'written',
+          outcome: 'rolled',
+          turnRange: { startTurnId: `old-${i}`, endTurnId: `old-${i}`, turnCount: 1 },
+        });
+        seededIds.push(seg.meta.id);
+      }
+
+      // Pin the oldest candidate while `:fold` is running; appendFold must reject it without blocking `:renew`.
+      h.maintenance.duringStep = async (req) => {
+        if (req.stepTurnId.endsWith(':fold')) {
+          await h.lineStore.setPinned(h.workspaceId, h.board.id, seededIds[0]!, true);
+        }
+      };
+      // Also exercise fallback summary path by failing `:seal` so we verify non-human turns are excluded from fallback too.
+      h.maintenance.outcome = (req) => (req.stepTurnId.endsWith(':seal') ? 'failed' : 'completed');
+
+      h.coordinator.start();
+      h.advance(10 * 60_000 + 1);
+      await h.drain();
+      await h.until(() => h.records().some((r) => r.status === 'done'));
+      await h.drain();
+
+      expect(h.steps()).toEqual(['seal', 'fold', 'renew']);
+      const tree = await h.lineStore.readTree(h.workspaceId, h.board.id);
+      expect(tree.folds).toHaveLength(0);
+      expect(tree.pins).toContain(seededIds[0]!);
+      expect(tree.segments.at(-1)!.summary).not.toContain('AGENT_INTERNAL_RELAY_DO_NOT_LEAK');
+      const renewRun = h.maintenance.runs.find((r) => r.stepTurnId.endsWith(':renew'))!;
+      expect(renewRun.prompt).not.toContain('AGENT_INTERNAL_RELAY_DO_NOT_LEAK');
+      expect(renewRun.prompt).toContain(`[PINNED] [${seededIds[0]!}`);
+      expect(h.warnings.some((w) => String(w).includes('BOARD_LINE_FOLD_PINNED_CONFLICT'))).toBe(
+        true
+      );
     } finally {
       await h.close();
     }

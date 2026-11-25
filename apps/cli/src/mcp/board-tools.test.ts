@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { LoroDoc } from 'loro-crdt';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   boardMaintenanceStepId,
   boardMaintenanceTurn,
@@ -247,18 +247,26 @@ describe('Board line MCP tools (expand & pin)', () => {
   const createCaller = (options: {
     sessionId: SessionId;
     machineId?: MachineId;
-    boardFilesMachine?: MachineId;
+    boardFilesMachine?: MachineId | null;
+    coordinatorMachineId?: MachineId | null;
   }) => {
     const localMachine = options.machineId ?? MACHINE;
     const activeBoard = normalizeBoardMeta({
       ...board,
-      files: { machineId: options.boardFilesMachine ?? MACHINE },
+      files:
+        options.boardFilesMachine === null
+          ? undefined
+          : { machineId: options.boardFilesMachine ?? MACHINE },
     })!;
+    const coordMachine =
+      options.coordinatorMachineId === null
+        ? undefined
+        : (options.coordinatorMachineId ?? activeBoard.files?.machineId);
     const sessions: Record<string, SessionMeta> = {
       coordinator: {
         id: 'coordinator' as SessionId,
         boardId: activeBoard.id,
-        machineId: activeBoard.files!.machineId,
+        ...(coordMachine ? { machineId: coordMachine } : {}),
         boardRole: 'coordinator',
       } as SessionMeta,
       [SESSION]: {
@@ -561,5 +569,174 @@ describe('Board line MCP tools (expand & pin)', () => {
     });
     expect(unpin.isError).toBe(false);
     expect(JSON.parse(unpin.text).pins).toHaveLength(BOARD_LINE_MAX_PINS - 1);
+  });
+
+  it('strictly caps serialized fold and segment expand payloads to <= 32 KiB UTF-8 and supports lossless charOffset continuation', async () => {
+    const cjkSummary = '中文摘要内容测试段落。'.repeat(1200); // 12,000 CJK chars ≈ 36 KiB UTF-8
+    const hugeTurnText = Array.from(
+      { length: 1500 },
+      (_, i) => `[段${String(i).padStart(4, '0')}中文正文]`
+    ).join(''); // ~19,500 chars, ~45 KiB UTF-8
+
+    await coordinatorSessionData.commands.appendTurn({
+      id: 'huge-cjk-turn',
+      role: 'user',
+      timestamp: '2026-11-25T12:00:00.000Z',
+      items: [{ type: 'text', text: hugeTurnText }],
+      fileDiff: [],
+    });
+    const segBig = await lineStore.appendSegment(WORKSPACE, board.id, {
+      id: 'seg_c0000001',
+      coversFrom: '2026-11-25T12:00:00.000Z',
+      coversTo: '2026-11-25T12:01:00.000Z',
+      title: 'Huge CJK Segment',
+      summary: cjkSummary,
+      summaryQuality: 'written',
+      outcome: 'rolled',
+      turnRange: { startTurnId: 'huge-cjk-turn', endTurnId: 'huge-cjk-turn', turnCount: 1 },
+    });
+
+    const callAsMember = createCaller({ sessionId: SESSION });
+
+    // Reconstruct the entire huge CJK turn across charOffset pages while every response stays <= 32 KiB.
+    let reconstructed = '';
+    let charOffset: number | undefined;
+    let pages = 0;
+    for (;;) {
+      const res = await callAsMember('lody_board_line_expand', {
+        nodeId: segBig.meta.id,
+        offset: 0,
+        ...(charOffset !== undefined ? { charOffset } : {}),
+      });
+      expect(res.isError).toBe(false);
+      expect(Buffer.byteLength(res.text, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+      const payload = JSON.parse(res.text);
+      if (pages === 0) {
+        expect(payload.summaryTruncated).toBe(true);
+        expect(payload.turns[0].truncated).toBe(true);
+        expect(payload.turns[0].hint).toContain('nextCharOffset');
+      } else {
+        expect(payload.summary).toBeUndefined();
+      }
+      expect(payload.turns).toHaveLength(1);
+      reconstructed += payload.turns[0].text;
+      pages++;
+      if (payload.nextCharOffset === undefined) {
+        expect(payload.hasMore).toBe(false);
+        break;
+      }
+      expect(payload.nextCharOffset).toBeGreaterThan(charOffset ?? 0);
+      charOffset = payload.nextCharOffset;
+      expect(pages).toBeLessThan(10);
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(reconstructed).toBe(hugeTurnText);
+
+    // Fold node with huge fold summary + 5 large CJK children paginates cleanly with every page <= 32 KiB.
+    const childIds: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const child = await lineStore.appendSegment(WORKSPACE, board.id, {
+        id: `seg_f000000${i}`,
+        coversFrom: `2026-11-2${i}T08:00:00.000Z`,
+        coversTo: `2026-11-2${i}T09:00:00.000Z`,
+        title: `CJK Child ${i}`,
+        summary: `子段${i}：${'折叠正文内容测试。'.repeat(600)}`, // ~16 KiB UTF-8 each
+        summaryQuality: 'written',
+        outcome: 'rolled',
+        turnRange: { startTurnId: `u-${i}`, endTurnId: `a-${i}`, turnCount: 1 },
+      });
+      childIds.push(child.meta.id);
+    }
+    const bigFold = await lineStore.appendFold(WORKSPACE, board.id, {
+      id: 'fld_c0000001',
+      covers: childIds,
+      title: 'Huge CJK Fold',
+      summary: cjkSummary,
+    });
+    const seenChildIds: string[] = [];
+    let foldOffset = 0;
+    let foldPages = 0;
+    for (;;) {
+      const res = await callAsMember('lody_board_line_expand', {
+        nodeId: bigFold.meta.id,
+        offset: foldOffset,
+      });
+      expect(res.isError).toBe(false);
+      expect(Buffer.byteLength(res.text, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+      const payload = JSON.parse(res.text);
+      if (foldPages === 0) {
+        expect(payload.summaryTruncated).toBe(true);
+      } else {
+        expect(payload.summary).toBeUndefined();
+      }
+      expect(payload.children.length).toBeGreaterThan(0);
+      seenChildIds.push(...payload.children.map((c: { id: string }) => c.id));
+      foldPages++;
+      if (!payload.hasMore) break;
+      foldOffset = payload.nextOffset;
+      expect(foldPages).toBeLessThan(10);
+    }
+    expect(foldPages).toBeGreaterThan(1);
+    expect(seenChildIds).toEqual(childIds);
+  });
+
+  it('materializes only the requested segment page via readTurn without reading earlier turns and fails closed when keeper is unknown', async () => {
+    for (let i = 1; i <= 25; i++) {
+      await coordinatorSessionData.commands.appendTurn({
+        id: `pre-${i}`,
+        role: 'user',
+        timestamp: `2026-11-25T08:${String(i).padStart(2, '0')}:00.000Z`,
+        items: [{ type: 'text', text: `Earlier turn ${i}` }],
+        fileDiff: [],
+      });
+    }
+    for (let i = 1; i <= 6; i++) {
+      await coordinatorSessionData.commands.appendTurn({
+        id: `seg-turn-${i}`,
+        role: 'user',
+        timestamp: `2026-11-25T09:${String(i).padStart(2, '0')}:00.000Z`,
+        items: [{ type: 'text', text: `Segment turn ${i}` }],
+        fileDiff: [],
+      });
+    }
+    const seg = await lineStore.appendSegment(WORKSPACE, board.id, {
+      id: 'seg_0000cafe',
+      coversFrom: '2026-11-25T09:01:00.000Z',
+      coversTo: '2026-11-25T09:06:00.000Z',
+      title: 'Indexed Segment',
+      summary: 'Indexed summary.',
+      summaryQuality: 'written',
+      outcome: 'rolled',
+      turnRange: { startTurnId: 'seg-turn-1', endTurnId: 'seg-turn-6', turnCount: 6 },
+    });
+
+    const readTurnSpy = vi.spyOn(coordinatorSessionData.history, 'readTurn');
+    const callAsMember = createCaller({ sessionId: SESSION });
+    const page = await callAsMember('lody_board_line_expand', {
+      nodeId: seg.meta.id,
+      offset: 2,
+      limit: 2,
+    });
+    expect(page.isError).toBe(false);
+    const parsed = JSON.parse(page.text);
+    expect(parsed.turns.map((t: { id: string }) => t.id)).toEqual(['seg-turn-3', 'seg-turn-4']);
+    expect(readTurnSpy.mock.calls.map((c) => c[0])).toEqual(['seg-turn-3', 'seg-turn-4']);
+
+    // Unknown keeper (no board.files and no coordinatorMeta.machineId) fails closed with BOARD_LINE_LOCAL_ONLY.
+    const callUnknownKeeper = createCaller({
+      sessionId: 'coordinator' as SessionId,
+      boardFilesMachine: null,
+      coordinatorMachineId: null,
+    });
+    const expUnknown = await callUnknownKeeper('lody_board_line_expand', { nodeId: seg.meta.id });
+    expect(expUnknown.isError).toBe(true);
+    expect(expUnknown.text).toContain('BOARD_LINE_LOCAL_ONLY');
+
+    const pinUnknown = await callUnknownKeeper('lody_board_line_pin', {
+      nodeId: seg.meta.id,
+      pinned: true,
+    });
+    expect(pinUnknown.isError).toBe(true);
+    expect(pinUnknown.text).toContain('BOARD_LINE_LOCAL_ONLY');
   });
 });

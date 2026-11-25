@@ -375,22 +375,31 @@ Inbox、Operation、回报游标、笔记替换权限、线程归属和侧边栏
 
 - **独立不可变节点存储**：落盘在 `<dataDir>/boards/<workspaceId>/<boardId>/line/`（与 `files/`、
   `memory/` 同级，不暴露给 `BoardFileArea`），包含 `nodes/<nodeId>.{json,md}`（`seg_<8hex>` /
-  `fld_<8hex>`，`v: 1`，权限 `0o700`/`0o600`，拒绝覆写与符号链接）和 `pins.json`（上限 8 个）。
-  每次读取按 `seq` 扫描重建树，单个损坏文件打 warn 跳过。
-- **不依赖原生 `/compact`**：空闲达阈值（复用 `decideBoardIdleCompaction`）或手动「立即整理上下文」
-  在策略为 `fold_rollover` 时均走折叠换代流，Kimi、Grok 等不支持或后台压缩的 agent 同样可用。
+  `fld_<8hex>`，`v: 1`，权限 `0o700`/`0o600`，拒绝覆写与符号链接）、`pins.json`（上限 8 个）和
+  `pending-switch.json`（持久化待切换游标，守护进程重启时在 Inbox 启动前预持锁并突破 `TAIL_ROWS = 50`
+  恢复盲区）。同一 `dataDir` 下工作流与 MCP 共用按 Board 串行的 `BoardLineStore` 实例；`appendFold`
+  提交前在锁内复核最新 `pins.json`，拒绝折叠已被钉住的节点。每次读取按 `seq` 扫描重建树，单个损坏文件打 warn 跳过。
+- **不依赖原生 `/compact` 与混合版本兼容**：空闲达阈值（复用 `decideBoardIdleCompaction`）或手动
+  「立即整理上下文」在策略为 `fold_rollover` 时均走折叠换代流，Kimi、Grok 等不支持或后台压缩的 agent
+  同样可用。UI 手动「立即整理上下文」统一写 `kind: 'compact'`，新版协调者宿主按看板策略自动升级为
+  `fold_rollover`，老版本守护进程也能照常处理而不会永久挂起。
 - **四步流水线（复用 `holdInbox` 与 `isPendingSwitch` 崩溃恢复）**：
-  1. `seal`：若有 `acpSessionId`，用静默维护回合让旧 agent 输出严格 JSON（`title`/`tags`/`summary`）；
-     若旧 agent 不可用/失败/输出不可解析，从 Loro 历史首尾用户消息机械生成 `fallback` 摘要，不阻塞换代。
-  2. 落盘不可变 `segment` 节点并将 `nodeId` 写入 `running` 分隔线（重启恢复直接跳过封口，不重复建段）。
+  1. `seal`：先将分隔线置为 `running`（防止目录不可读时无间隔自旋）；若有 `acpSessionId`，用静默维护
+     回合让旧 agent 输出严格 JSON（`title`/`tags`/`summary`）；若旧 agent 不可用/失败/输出不可解析，从
+     Loro 历史人类首尾发言机械生成 `fallback` 摘要，不阻塞换代。
+  2. 落盘不可变 `segment` 节点（携带 `maintenanceRunId` 防崩溃重复建段），原子写 `pending-switch.json`
+     并将 `nodeId` 写入 `running` 分隔线。
   3. 按需 `fold`：同层未被更高层覆盖且未被 `pin` 的节点达到 8 个时，将最旧 5 个节点的完整 `summary.md`
-     送入静默 `fold` 维护回合生成 `level + 1` 的 `fld_` 节点（支持多层折叠）；失败记 warn 跳过，不阻塞换代。
-  4. `renew`：`freshAgentSession: true` + `renewBoardInstructions: true` + `yieldToInbox: false`，使用确定性
-     开场生成器 `buildBoardFoldOpening`（总预算 ≤ 14,000 tokens：折叠历史 + `[PINNED]` ≤ 2,500、最近节点树
-     ≤ 4,000 且最近 2 段附完整摘要、活跃线程 ≤ 1,500、最近 4 条用户原话 + 结尾 2 轮可见问答 ≤ 4,000、
-     当前时间/间隔/用量与展开指引）。
-- **MCP 工具**：`lody_board_line_expand({ nodeId, offset?, limit? })` 展开 `fold` 的下层完整摘要或读取
-  `segment` 对应 Loro 原文区间（分页，≤ 32 KiB，跨机返回 `BOARD_LINE_LOCAL_ONLY`）；`lody_board_line_pin({ nodeId, pinned })`
+     送入静默 `fold` 维护回合生成 `level + 1` 的 `fld_` 节点（支持多层折叠）；用户按 Stop（`cancelled`）
+     立即中止换代并清理待切换状态；其余失败记 warn 跳过，不阻塞换代。
+  4. `renew`：先核对 `assistant:board-maintenance:<runId>:renew` 是否已完成（防止写 `done` 前崩溃导致
+     重开第二个 fresh session）；未完成时以 `freshAgentSession: true` + `renewBoardInstructions: true` +
+     `yieldToInbox: false` 运行确定性开场生成器 `buildBoardFoldOpening`（将追加的 Board 指令 `reservedTokens`
+     计入 14,000 tokens 总预算且绝不裁剪用户规则，过滤非人类 `author` 发言）。完成后落盘 `done` 并清理
+     `pending-switch.json`。
+- **MCP 工具**：`lody_board_line_expand({ nodeId, offset?, limit?, charOffset? })` 对 `fold` 与 `segment`
+  均支持分页并严格约束最终序列化输出 ≤ 32 KiB（`segment` 通过目录标量定位并仅物化当前页，超长消息支持
+  `charOffset` 续读；`keeper` 缺失或跨机均返回 `BOARD_LINE_LOCAL_ONLY`）；`lody_board_line_pin({ nodeId, pinned })`
   仅限看板协调者调用，管理 8 个钉住节点上限。
 - **界面**：看板设置 › 记忆 › 上下文增加策略切换（`Compact` vs `Fold rollover (experimental)`）；
   `BoardMaintenanceDivider` 支持 `fold_rollover` 全状态及 `nodeId` / `foldedCount` / `foldId` 展示。

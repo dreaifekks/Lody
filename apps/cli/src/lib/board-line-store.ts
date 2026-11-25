@@ -55,6 +55,8 @@ export const BoardLineSegmentMetaSchema = z
     turnRange: BoardLineTurnRangeSchema,
     outcome: z.enum(['rolled', 'fallback']),
     tokensBefore: z.number().nonnegative().optional(),
+    /** Maintenance run id that created this segment, used to prevent duplicate segments across crashes. */
+    maintenanceRunId: z.string().min(1).max(128).optional(),
   })
   .strict();
 export type BoardLineSegmentMeta = z.infer<typeof BoardLineSegmentMetaSchema>;
@@ -84,6 +86,17 @@ const BoardLinePinsFileSchema = z
     pins: z.array(z.string().regex(BOARD_LINE_NODE_ID_RE)).max(BOARD_LINE_MAX_PINS),
   })
   .strict();
+
+export const BoardLinePendingSwitchSchema = z
+  .object({
+    v: z.literal(BOARD_LINE_SCHEMA_VERSION),
+    runId: z.string().min(1).max(128),
+    nodeId: z.string().regex(SEGMENT_NODE_ID_RE),
+    sessionId: z.string().min(1).max(256),
+    updatedAt: z.string().min(1),
+  })
+  .strict();
+export type BoardLinePendingSwitch = z.infer<typeof BoardLinePendingSwitchSchema>;
 
 export type BoardLineSegmentNode = {
   readonly meta: BoardLineSegmentMeta;
@@ -127,6 +140,7 @@ export type AppendSegmentInput = {
   outcome: 'rolled' | 'fallback';
   turnRange: BoardLineTurnRange;
   tokensBefore?: number;
+  maintenanceRunId?: string;
   model?: string;
   agentType?: string;
   createdAt?: string;
@@ -264,6 +278,18 @@ export function findFoldCandidates(tree: BoardLineTree): BoardLineFoldCandidates
     }
   }
   return null;
+}
+
+/** Find a previously persisted segment created by `runId`, if any. */
+export function findSegmentByRunId(
+  tree: BoardLineTree,
+  runId: string
+): BoardLineSegmentNode | undefined {
+  for (let index = tree.segments.length - 1; index >= 0; index--) {
+    const segment = tree.segments[index]!;
+    if (segment.meta.maintenanceRunId === runId) return segment;
+  }
+  return undefined;
 }
 
 const compareIsoAsc = (a: string, b: string): number => {
@@ -526,6 +552,7 @@ export class BoardLineStore {
         turnRange: input.turnRange,
         outcome: input.outcome,
         ...(input.tokensBefore !== undefined ? { tokensBefore: input.tokensBefore } : {}),
+        ...(input.maintenanceRunId ? { maintenanceRunId: input.maintenanceRunId } : {}),
       });
       const summary = input.summary.trim() || meta.title;
       await this.writeNodePair(dirs.nodesDir, meta, summary);
@@ -556,10 +583,25 @@ export class BoardLineStore {
         throw new Error('BOARD_LINE_INVALID_FOLD:a fold must cover at least 2 nodes');
       }
       const children: BoardLineNode[] = [];
+      const pinnedSet = new Set(tree.pins);
+      const pinnedConflicts: string[] = [];
+      const coveredConflicts: string[] = [];
       for (const childId of uniqueCovers) {
         const child = tree.byId.get(childId);
         if (!child) throw new Error(`BOARD_LINE_NODE_NOT_FOUND:${childId}`);
+        if (pinnedSet.has(childId)) pinnedConflicts.push(childId);
+        if (tree.coveredBy.has(childId)) coveredConflicts.push(childId);
         children.push(child);
+      }
+      if (pinnedConflicts.length > 0) {
+        throw new Error(
+          `BOARD_LINE_FOLD_PINNED_CONFLICT:Cannot fold pinned node(s): ${pinnedConflicts.join(', ')}`
+        );
+      }
+      if (coveredConflicts.length > 0) {
+        throw new Error(
+          `BOARD_LINE_FOLD_ALREADY_COVERED:Node(s) already covered by another fold: ${coveredConflicts.join(', ')}`
+        );
       }
       const level = Math.max(...children.map((child) => child.meta.level)) + 1;
       const coversFrom = children.map((child) => child.meta.coversFrom).sort(compareIsoAsc)[0]!;
@@ -642,6 +684,133 @@ export class BoardLineStore {
     });
   }
 
+  /** Read durable pending-switch state (`pending-switch.json`), if one is active for this Board. */
+  async readPendingSwitch(
+    workspaceId: string,
+    boardId: string
+  ): Promise<BoardLinePendingSwitch | null> {
+    const dirs = await this.resolveSafeDirs(workspaceId, boardId, false);
+    if (!dirs) return null;
+    const pendingPath = path.join(dirs.lineDir, 'pending-switch.json');
+    try {
+      const raw = await this.readTextNoFollow(pendingPath);
+      const parsed = BoardLinePendingSwitchSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) {
+        this.logger?.warn(
+          `[board-line] Ignoring invalid pending-switch.json for ${boardId}: ${parsed.error.message}`
+        );
+        return null;
+      }
+      return parsed.data;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  /** Persist `pending-switch.json` atomically so restarts hold Inbox and recover past TAIL_ROWS. */
+  writePendingSwitch(
+    workspaceId: string,
+    boardId: string,
+    input: Omit<BoardLinePendingSwitch, 'v'>
+  ): Promise<BoardLinePendingSwitch> {
+    return this.enqueue(workspaceId, boardId, async () => {
+      const record = BoardLinePendingSwitchSchema.parse({
+        v: BOARD_LINE_SCHEMA_VERSION,
+        ...input,
+      });
+      const dirs = (await this.resolveSafeDirs(workspaceId, boardId, true))!;
+      const pendingPath = path.join(dirs.lineDir, 'pending-switch.json');
+      await this.writeAtomicReplace(pendingPath, `${JSON.stringify(record, null, 2)}\n`);
+      return record;
+    });
+  }
+
+  /** Clear `pending-switch.json` (optionally only when its `runId` matches `expectedRunId`). */
+  clearPendingSwitch(workspaceId: string, boardId: string, expectedRunId?: string): Promise<void> {
+    return this.enqueue(workspaceId, boardId, async () => {
+      const dirs = await this.resolveSafeDirs(workspaceId, boardId, false);
+      if (!dirs) return;
+      const pendingPath = path.join(dirs.lineDir, 'pending-switch.json');
+      const existing = await fs.promises
+        .lstat(pendingPath)
+        .catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+      if (!existing) return;
+      if (existing.isSymbolicLink() || !existing.isFile()) {
+        throw outside('refused symbolic link or non-file at pending-switch.json');
+      }
+      if (expectedRunId !== undefined) {
+        try {
+          const raw = await this.readTextNoFollow(pendingPath);
+          const parsed = BoardLinePendingSwitchSchema.safeParse(JSON.parse(raw));
+          if (parsed.success && parsed.data.runId !== expectedRunId) return;
+        } catch {
+          // Corrupt pending-switch file: safe to remove.
+        }
+      }
+      await fs.promises.rm(pendingPath, { force: true });
+    });
+  }
+
+  /**
+   * Synchronously discover coordinator session ids with an active `pending-switch.json`
+   * under `<dataDir>/boards/<workspaceId>/<boardId>/line/pending-switch.json`. Used during
+   * coordinator startup before the Inbox opens so queued batches cannot leak to the old agent.
+   */
+  listPendingSwitchSessionIdsSync(workspaceId: string): Set<string> {
+    const result = new Set<string>();
+    if (!PATH_SEGMENT_RE.test(workspaceId)) return result;
+    const boardsRoot = path.join(this.dataDir(), 'boards');
+    const wsRoot = path.join(boardsRoot, workspaceId);
+    for (const dir of [boardsRoot, wsRoot]) {
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(dir);
+      } catch {
+        return result;
+      }
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return result;
+    }
+    let boardEntries: fs.Dirent[];
+    try {
+      boardEntries = fs.readdirSync(wsRoot, { withFileTypes: true });
+    } catch {
+      return result;
+    }
+    for (const entry of boardEntries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory() || !PATH_SEGMENT_RE.test(entry.name)) {
+        continue;
+      }
+      const lineDir = path.join(wsRoot, entry.name, 'line');
+      const pendingPath = path.join(lineDir, 'pending-switch.json');
+      try {
+        const lineStat = fs.lstatSync(lineDir);
+        if (lineStat.isSymbolicLink() || !lineStat.isDirectory()) continue;
+        const fileStat = fs.lstatSync(pendingPath);
+        if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue;
+        const fd = fs.openSync(pendingPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        let raw: string;
+        try {
+          raw = fs.readFileSync(fd, 'utf8');
+        } finally {
+          fs.closeSync(fd);
+        }
+        const parsed = BoardLinePendingSwitchSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) result.add(parsed.data.sessionId);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.logger?.warn(
+            `[board-line] Ignoring unreadable pending-switch.json for ${entry.name}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
+    return result;
+  }
+
   private allocateNodeId(
     kind: 'segment' | 'fold',
     explicitId: string | undefined,
@@ -680,4 +849,24 @@ export class BoardLineStore {
       throw error;
     }
   }
+}
+
+const sharedBoardLineStores = new Map<string, BoardLineStore>();
+
+/**
+ * Shared daemon-wide `BoardLineStore` per resolved `dataDir` so workflow writes
+ * (`appendSegment`/`appendFold`) and MCP writes (`lody_board_line_pin`) share
+ * the same per-Board serialization queue and never clobber concurrent updates.
+ */
+export function getSharedBoardLineStore(
+  dataDir: () => string,
+  logger?: Pick<Logger, 'warn'>
+): BoardLineStore {
+  const root = path.resolve(dataDir());
+  let store = sharedBoardLineStores.get(root);
+  if (!store) {
+    store = new BoardLineStore(() => root, logger);
+    sharedBoardLineStores.set(root, store);
+  }
+  return store;
 }
