@@ -6,6 +6,8 @@ import { Input } from '@lody/ui/input';
 import { NumberField } from '@lody/ui/number-field';
 import { Switch } from '@lody/ui/switch';
 import { Textarea } from '@lody/ui/textarea';
+import { Toggle } from '@lody/ui/toggle';
+import { ToggleGroup } from '@lody/ui/toggle-group';
 import { Brain, Settings2, X } from 'lucide-react';
 import { useAtomValue } from 'jotai';
 import { useState, type ReactNode } from 'react';
@@ -15,6 +17,7 @@ import {
   MAX_BOARD_INSTRUCTIONS,
   normalizeBoardMeta,
   type BoardContinuitySettings,
+  type BoardContinuityStrategy,
   type BoardMeta,
   type BoardProjectRef,
 } from '@lody/shared';
@@ -397,6 +400,30 @@ export function BoardContinuityView({
           aria-label={t('boards.continuity.idle', 'Tidy context when idle')}
           onCheckedChange={(on) => onChange({ ...value, idleCompaction: on })}
         />
+      </CompactRow>
+      <CompactRow
+        label={t('boards.continuity.strategy', 'Context strategy')}
+        helper={t(
+          'boards.continuity.strategyHelper',
+          'Fold rollover does not rely on native /compact: it seals the segment and continues in a fresh agent session at the threshold.'
+        )}
+      >
+        <ToggleGroup<BoardContinuityStrategy>
+          size="small"
+          aria-label={t('boards.continuity.strategy', 'Context strategy')}
+          value={[value.strategy]}
+          onValueChange={(values) => {
+            const next = values[0];
+            if (next) onChange({ ...value, strategy: next });
+          }}
+        >
+          <Toggle value="compact">
+            {t('boards.continuity.strategyCompact', 'Compact')}
+          </Toggle>
+          <Toggle value="fold_rollover">
+            {t('boards.continuity.strategyFoldRollover', 'Fold rollover (experimental)')}
+          </Toggle>
+        </ToggleGroup>
       </CompactRow>
       {value.idleCompaction ? (
         <>

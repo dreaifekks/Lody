@@ -26,6 +26,7 @@ import {
 } from '@lody/shared';
 
 import type { LoroDocumentManager } from '@/lib/loro/doc';
+import type { BoardLineStore } from '@/lib/board-line-store';
 import type { SessionDispatchWatcher } from '@/session/session-dispatch-watcher';
 import type { SessionExecutionService } from '@/session/session-execution-service';
 import type { SessionUserResolver } from '@/session/session-user-resolver';
@@ -54,6 +55,8 @@ export type LodyOperationCoordinatorOptions = {
   userResolver?: Pick<SessionUserResolver, 'resolve'>;
   logger: Logger;
   storeFactory?: () => LodyOperationStore;
+  /** Optional override for `<boardDir>/line/` storage (defaults to `<lodyDataDir>/boards/...`). */
+  boardLineStore?: BoardLineStore;
   onAvailabilityChange?: (message: string | undefined) => void;
   storePath?: string;
   now?: () => number;

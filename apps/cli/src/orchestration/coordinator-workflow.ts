@@ -68,6 +68,7 @@ export class CoordinatorWorkflow {
   ) {
     this.boards = new BoardReportWorkflow(options, ports, operations, activity, scope);
     this.continuity = new BoardContinuityWorkflow(
+      options,
       ports,
       activity,
       scope,

@@ -2502,8 +2502,8 @@ describe('MessageHandler ACP batching', () => {
         lastMessageAt: 1_000,
         lastReadAt: 1_000,
       });
-      // Idle tidy-up and a new agent conversation: every step, each ending its turn.
-      for (const step of ['memory', 'compact', 'renew', 'handoff'] as const) {
+      // Idle tidy-up, fold rollover and a new agent conversation: every step, each ending its turn.
+      for (const step of ['memory', 'compact', 'renew', 'handoff', 'seal', 'fold'] as const) {
         const turnId = host.beginConversationTurn(sessionId, boardMaintenanceStepId('run-1', step));
         host.enqueueACPUpdate(sessionId, reply(`${step} done`));
         await host.flushACPUpdatesNow(sessionId);
@@ -2517,7 +2517,9 @@ describe('MessageHandler ACP batching', () => {
         'memory done',
         'compact done',
         'renew done',
-        'handoff done later',
+        'handoff done',
+        'seal done',
+        'fold done later',
       ]);
       const meta = await doc.getMetaState();
       expect(meta?.lastMessageAt).toBe(1_000);

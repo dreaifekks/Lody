@@ -40,6 +40,17 @@ function Dividers() {
         renewed: true,
       })}
       {divider('fresh', { kind: 'new_conversation', trigger: 'manual', status: 'done' })}
+      {divider('fold-done', {
+        kind: 'fold_rollover',
+        trigger: 'idle',
+        status: 'done',
+        usedBefore: 168_000,
+        usedAfter: 13_000,
+        renewed: true,
+        nodeId: 'seg_1234abcd',
+        foldId: 'fld_5678ef90',
+        foldedCount: 5,
+      })}
       {divider('unsupported', { kind: 'compact', trigger: 'manual', status: 'unsupported' })}
       {divider('failed', {
         kind: 'compact',

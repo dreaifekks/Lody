@@ -6,6 +6,7 @@ import { BoardNewConversationDialog } from '../boards/board-new-conversation-dia
 import type { AgentRunRef } from '../shared/agent-run-ref';
 import { boardEnabledAtom, streamingThoughtPreviewFeatureEnabledAtom } from '@/atoms/settings';
 import { useSessionOwnerAccess } from '@/hooks/use-session-owner-access';
+import { useWorkspaceCatalog } from '@/hooks/use-workspace-catalog';
 import { MessageQuoteAction } from '../ai-gui/message-quote-action';
 import { resolveBackgroundTaskStatus } from '../ai-gui/background-task-status-row';
 import { reportMcpDefaultsBlocked } from '../chat/mcp-defaults-recovery';
@@ -1521,8 +1522,12 @@ export function SessionHeaderMenu({
     (sharing?.visibility === 'private' &&
       (sharing.privateReason === 'machine-not-registered' || !sharing.canManage));
   const boardsEnabled = useAtomValue(boardEnabledAtom);
+  const { boards } = useWorkspaceCatalog();
   // A coordinator's page is its Board: rename, archive and restore act on the Board.
   const isBoard = boardsEnabled && session.boardRole === 'coordinator';
+  const coordinatorBoard = isBoard
+    ? boards.find((entry) => entry.coordinatorSessionId === session.id)
+    : undefined;
   const requestMaintenance = useBoardMaintenanceRequest();
   const [boardMembershipOpen, setBoardMembershipOpen] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
@@ -1957,7 +1962,12 @@ export function SessionHeaderMenu({
               <Menu.Item
                 icon={Shrink}
                 onClick={() => {
-                  void requestMaintenance(session, 'compact');
+                  void requestMaintenance(
+                    session,
+                    coordinatorBoard?.continuity.strategy === 'fold_rollover'
+                      ? 'fold_rollover'
+                      : 'compact'
+                  );
                 }}
               >
                 {t('boards.maintenance.compactNow', 'Tidy context now')}

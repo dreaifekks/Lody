@@ -39,31 +39,58 @@ export function BoardMaintenanceDivider({ meta }: { meta: BoardMaintenanceMeta }
       ? `${formatCompactNumber(meta.usedBefore, locale)} → ${formatCompactNumber(meta.usedAfter, locale)}`
       : undefined;
   const compact = meta.kind === 'compact';
+  const foldRollover = meta.kind === 'fold_rollover';
+  const foldDoneLabel = [
+    t('boards.maintenance.folded', 'Folded rollover'),
+    ...(tokens ? [tokens] : []),
+    ...(meta.nodeId ? [meta.nodeId] : []),
+    ...(meta.foldedCount !== undefined && meta.foldId
+      ? [
+          t('boards.maintenance.foldedMerge', 'folded {{count}} → {{foldId}}', {
+            count: meta.foldedCount,
+            foldId: meta.foldId,
+          }),
+        ]
+      : []),
+  ].join(' · ');
   const labels: Record<BoardMaintenanceMeta['status'], string> = {
-    requested: compact
+    requested: foldRollover
       ? t(
-          'boards.maintenance.compactRequested',
-          'Tidy requested · starts when the coordinator is free'
+          'boards.maintenance.foldRequested',
+          'Fold rollover requested · starts when the coordinator is free'
         )
-      : t(
-          'boards.maintenance.startRequested',
-          'New conversation requested · starts when the coordinator is free'
-        ),
-    running: compact
-      ? t('boards.maintenance.compacting', 'Tidying context…')
-      : t('boards.maintenance.starting', 'Starting a new conversation…'),
-    done: compact
-      ? tokens
-        ? t('boards.maintenance.compactedTokens', 'Context tidied · {{tokens}}', { tokens })
-        : t('boards.maintenance.compacted', 'Context tidied')
-      : t('boards.maintenance.started', 'New conversation'),
+      : compact
+        ? t(
+            'boards.maintenance.compactRequested',
+            'Tidy requested · starts when the coordinator is free'
+          )
+        : t(
+            'boards.maintenance.startRequested',
+            'New conversation requested · starts when the coordinator is free'
+          ),
+    running: foldRollover
+      ? t('boards.maintenance.folding', 'Rolling over context…')
+      : compact
+        ? t('boards.maintenance.compacting', 'Tidying context…')
+        : t('boards.maintenance.starting', 'Starting a new conversation…'),
+    done: foldRollover
+      ? foldDoneLabel
+      : compact
+        ? tokens
+          ? t('boards.maintenance.compactedTokens', 'Context tidied · {{tokens}}', { tokens })
+          : t('boards.maintenance.compacted', 'Context tidied')
+        : t('boards.maintenance.started', 'New conversation'),
     unsupported: t('boards.maintenance.unsupported', 'This agent cannot tidy its context'),
-    failed: compact
-      ? t('boards.maintenance.compactFailed', 'Context not tidied')
-      : t('boards.maintenance.startFailed', 'New conversation not started'),
-    interrupted: compact
-      ? t('boards.maintenance.compactInterrupted', 'Tidying stopped')
-      : t('boards.maintenance.startInterrupted', 'New conversation stopped'),
+    failed: foldRollover
+      ? t('boards.maintenance.foldFailed', 'Fold rollover failed')
+      : compact
+        ? t('boards.maintenance.compactFailed', 'Context not tidied')
+        : t('boards.maintenance.startFailed', 'New conversation not started'),
+    interrupted: foldRollover
+      ? t('boards.maintenance.foldInterrupted', 'Fold rollover stopped')
+      : compact
+        ? t('boards.maintenance.compactInterrupted', 'Tidying stopped')
+        : t('boards.maintenance.startInterrupted', 'New conversation stopped'),
   };
   const label = labels[meta.status];
   return (

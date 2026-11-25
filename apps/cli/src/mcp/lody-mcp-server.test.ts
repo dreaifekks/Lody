@@ -375,6 +375,8 @@ describe('Lody MCP tool catalog', () => {
       'lody_board_files_list',
       'lody_board_files_read',
       'lody_board_files_write',
+      'lody_board_line_expand',
+      'lody_board_line_pin',
     ];
     expect(await listPublishedToolNames('bd_member')).toEqual(expect.arrayContaining(expected));
     vi.stubEnv('LODY_MCP_BOARD_ID', 'bd_member');

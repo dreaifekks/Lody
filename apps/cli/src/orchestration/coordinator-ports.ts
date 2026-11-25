@@ -13,6 +13,7 @@ import type {
   SessionTurnRead,
 } from '@lody/shared/session-data';
 import { Context, Effect } from 'effect';
+import type { BoardLineStore } from '@/lib/board-line-store';
 import type { InboxBatch } from './inbox/model';
 
 export type CoordinatorBoardCatalog = {
@@ -24,6 +25,8 @@ export type CoordinatorHistory = {
   meta: SessionMeta;
   readTurn(id: string): Effect.Effect<SessionTurnRead, unknown>;
   readTurnOutput(id: string): Effect.Effect<SessionHistoryInput[], unknown>;
+  /** Full logical session history, oldest first, used by fold rollover sealing/opening. */
+  readHistory: Effect.Effect<SessionHistoryInput[], unknown>;
   /** The last `limit` rows' scalars, oldest first, with their positions. */
   readTail(
     limit: number
@@ -50,6 +53,8 @@ export type CoordinatorBoardMaintenance = {
   compactionSupport(id: SessionId, meta: SessionMeta): Effect.Effect<boolean | undefined, unknown>;
   /** Keep Inbox batches away while the coordinator switches to a new agent. */
   holdInbox(id: SessionId, held: boolean): void;
+  /** Daemon-owned immutable fold-rollover node store under `<boardDir>/line/`. */
+  boardLine?: BoardLineStore;
   runTurn(request: {
     sessionId: SessionId;
     stepTurnId: string;

@@ -19,6 +19,7 @@ import {
 import {
   DEFAULT_BOARD_CONTINUITY,
   boardCompactionThreshold,
+  boardMaintenanceStepId,
   boardMaintenanceTurn,
   decideBoardIdleCompaction,
   isBoardMaintenanceEntry,
@@ -48,7 +49,13 @@ describe('boards in the workspace catalog', () => {
       name: '看'.repeat(80),
       instructions: '',
       rules: { maxRoundsPerThread: 4, reportHumanTurns: false, executorConstraints: '' },
-      continuity: { idleCompaction: true, idleMinutes: 10, maxTokens: 150_000, windowPercent: 40 },
+      continuity: {
+        strategy: 'compact',
+        idleCompaction: true,
+        idleMinutes: 10,
+        maxTokens: 150_000,
+        windowPercent: 40,
+      },
     });
     // A Board may start from its name alone.
     const { purpose: _purpose, ...named } = board;
@@ -298,8 +305,62 @@ describe('coordinator continuity', () => {
     expect(readBoardMaintenance(turn)).toMatchObject({ kind: 'compact', status: 'done' });
     expect(readBoardMaintenance({ ...turn, id: 'other' })).toBeUndefined();
     expect(
-      isBoardMaintenanceEntry({ role: 'assistant', userTurnId: 'board-maintenance:run-1:memory' })
+      isBoardMaintenanceEntry({
+        role: 'assistant',
+        userTurnId: boardMaintenanceStepId('run-1', 'memory'),
+      })
+    ).toBe(true);
+    expect(
+      isBoardMaintenanceEntry({
+        role: 'assistant',
+        userTurnId: boardMaintenanceStepId('run-1', 'seal'),
+      })
+    ).toBe(true);
+    expect(
+      isBoardMaintenanceEntry({
+        role: 'assistant',
+        userTurnId: boardMaintenanceStepId('run-1', 'fold'),
+      })
     ).toBe(true);
     expect(isBoardMaintenanceEntry({ role: 'assistant', userTurnId: 'user-1' })).toBe(false);
+
+    const foldTurn = boardMaintenanceTurn(
+      'run-fold',
+      {
+        boardId: 'bd_1',
+        kind: 'fold_rollover',
+        trigger: 'idle',
+        status: 'done',
+        usedBefore: 168_000,
+        usedAfter: 13_000,
+        renewed: true,
+        nodeId: 'seg_1234abcd',
+        foldId: 'fld_5678ef90',
+        foldedCount: 5,
+      },
+      '2026-10-17T00:00:00.000Z'
+    );
+    expect(foldTurn.items?.every((item) => MessageContentSchema.safeParse(item).success)).toBe(
+      true
+    );
+    expect(readBoardMaintenance(foldTurn)).toMatchObject({
+      kind: 'fold_rollover',
+      status: 'done',
+      nodeId: 'seg_1234abcd',
+      foldId: 'fld_5678ef90',
+      foldedCount: 5,
+    });
+    expect(
+      normalizeBoardMeta({
+        ...board,
+        continuity: { strategy: 'fold_rollover', idleCompaction: true },
+      })?.continuity
+    ).toEqual({
+      strategy: 'fold_rollover',
+      idleCompaction: true,
+      idleMinutes: 10,
+      maxTokens: 150_000,
+      windowPercent: 40,
+    });
   });
 });

@@ -19,6 +19,7 @@ import type { LoroStreamsMachineRpcClient } from '@lody/loro-streams-rpc';
 import type { AuthContext } from './command-runtime';
 import type { RuntimeConfigOption } from './agent-permission-tier';
 import type { LoroDocumentManager } from './loro/doc';
+import type { BoardLineStore } from './board-line-store';
 import type { MachineAccessCheckResult, WorkspaceSummary } from './workspace';
 import { readMachineLocalProjects } from './local-project-meta';
 import type { SessionLiveStatusBatchItem } from '@/commands/session';
@@ -77,6 +78,8 @@ export interface SessionCommandHost {
   remote?: SessionCommandRemote;
   /** Board shared directories; absent where this daemon reaches none. */
   boardFiles?: BoardFilesPort;
+  /** Optional Board fold-rollover line store override (defaults to `<lodyDataDir>/boards/...`). */
+  boardLineStore?: BoardLineStore;
 }
 
 /**

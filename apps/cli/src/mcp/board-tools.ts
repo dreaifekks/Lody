@@ -6,7 +6,10 @@ import {
   BOARD_NOTES_MAX_BYTES,
   BoardFileAreaSchema,
   BoardFilePathSchema,
+  boardFilesMachineId,
   deriveBoardSessionStatus,
+  isBoardMaintenanceEntry,
+  isBoardMaintenanceTurnId,
   isBoardSessionStopped,
   findFreshSessionPresenceState,
   getBoardRoomId,
@@ -16,14 +19,90 @@ import {
   readBoardDocument,
   workspaceFlockKeys,
   writeBoardNotes,
+  type SessionHistoryInput,
   type SessionMeta,
   type WorkspaceId,
 } from '@lody/shared';
+import { getLodyDataDir } from '@lody/shared/node/installation-profile';
+import {
+  BOARD_LINE_MAX_PINS,
+  BoardLineStore,
+  clampCodePoints,
+  isValidBoardLineNodeId,
+} from '@/lib/board-line-store';
 import { getSessionCommandEnvironment } from '@/lib/session-command-environment';
 import { listAliveSessionMetas } from '@/lib/command-runtime';
 import { resolveContainedUploadPath } from '@/lib/session-file-attachments';
+import { extractVisibleTurnText } from '@/orchestration/board-fold-opening';
+import { createSessionBackend } from '@/session/session-backend';
 import type { createSessionToolRegistrar } from './session-tool-router';
 import type { McpSessionContext } from './lody-mcp-server';
+
+const BOARD_LINE_EXPAND_DEFAULT_LIMIT = 20;
+const BOARD_LINE_EXPAND_MAX_BYTES = 32 * 1024;
+const BOARD_LINE_EXPAND_TURN_MAX_CHARS = 8_000;
+
+type ExpandedSegmentTurn = {
+  id: string;
+  role: SessionHistoryInput['role'];
+  timestamp: string;
+  userTurnId?: string;
+  text: string;
+};
+
+function sliceSegmentHistoryTurns(
+  history: readonly SessionHistoryInput[],
+  turnRange: { startTurnId: string; endTurnId: string; turnCount: number }
+): ExpandedSegmentTurn[] {
+  if (turnRange.turnCount === 0 || history.length === 0) return [];
+  const startIndex = history.findIndex((entry) => entry.id === turnRange.startTurnId);
+  let endIndex = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.id === turnRange.endTurnId) {
+      endIndex = i;
+      break;
+    }
+  }
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return [];
+  const out: ExpandedSegmentTurn[] = [];
+  for (let i = startIndex; i <= endIndex; i++) {
+    const entry = history[i]!;
+    if (isBoardMaintenanceTurnId(entry.id) || isBoardMaintenanceEntry(entry)) continue;
+    const text = extractVisibleTurnText(entry);
+    if (!text) continue;
+    out.push({
+      id: entry.id,
+      role: entry.role,
+      timestamp: entry.timestamp,
+      ...(entry.userTurnId ? { userTurnId: entry.userTurnId } : {}),
+      text: clampCodePoints(text, BOARD_LINE_EXPAND_TURN_MAX_CHARS),
+    });
+  }
+  return out;
+}
+
+function fitTurnTextToByteBudget(
+  build: (turn: ExpandedSegmentTurn) => unknown,
+  turn: ExpandedSegmentTurn,
+  maxBytes: number
+): ExpandedSegmentTurn {
+  if (Buffer.byteLength(JSON.stringify(build(turn))) <= maxBytes) return turn;
+  const chars = Array.from(turn.text);
+  let low = 0;
+  let high = chars.length;
+  let best = '';
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = mid === 0 ? '…' : `${chars.slice(0, mid).join('')}…`;
+    if (Buffer.byteLength(JSON.stringify(build({ ...turn, text: candidate }))) <= maxBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { ...turn, text: best || '…' };
+}
 
 /** Invocations run only on the daemon's replica; headers advertise, metadata authorizes. */
 export function registerBoardTools(
@@ -77,6 +156,27 @@ export function registerBoardTools(
           source: z.string().min(1).max(4096),
           path: BoardFilePathSchema.optional(),
           area: BoardFileAreaSchema.optional(),
+        })
+        .strict(),
+    ],
+    [
+      'lody_board_line_expand',
+      'Expand a Board fold-rollover history node. For a fold node, returns its covered lower-level nodes with full summaries; for a segment node, reads the coordinator Loro transcript turns in that segment (paginated, up to 32 KiB).',
+      z
+        .object({
+          nodeId: z.string().min(1).max(64),
+          offset: z.number().int().min(0).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+        })
+        .strict(),
+    ],
+    [
+      'lody_board_line_pin',
+      'Pin or unpin a Board fold-rollover history node (maximum 8 pins) so it stays preserved across rollovers. Only the Board coordinator may call this.',
+      z
+        .object({
+          nodeId: z.string().min(1).max(64),
+          pinned: z.boolean(),
         })
         .strict(),
     ],
@@ -139,6 +239,119 @@ export function registerBoardTools(
               workdir
             );
             result = await files.put(scope, input.path ?? path.basename(input.source), source);
+          }
+        } else if (name === 'lody_board_line_expand' || name === 'lody_board_line_pin') {
+          if (
+            name === 'lody_board_line_pin' &&
+            (session.boardRole !== 'coordinator' || board.coordinatorSessionId !== sessionId)
+          ) {
+            throw new Error('BOARD_COORDINATOR_REQUIRED');
+          }
+          const coordinatorRow = await manager.repo.getDocMeta(
+            getSessionRoomId(board.coordinatorSessionId)
+          );
+          const coordinatorMeta = coordinatorRow?.meta as SessionMeta | undefined;
+          const keeper = boardFilesMachineId(board, coordinatorMeta);
+          const localMachineId = environment.auth?.machineId ?? context().machineId;
+          if (keeper && keeper !== localMachineId) {
+            throw new Error('BOARD_LINE_LOCAL_ONLY');
+          }
+          const lineStore = environment.host.boardLineStore ?? new BoardLineStore(getLodyDataDir);
+          const nodeId = 'nodeId' in input ? input.nodeId : '';
+          if (!isValidBoardLineNodeId(nodeId)) {
+            throw new Error(`BOARD_LINE_INVALID_NODE_ID:Invalid nodeId "${nodeId}"`);
+          }
+          if (name === 'lody_board_line_pin' && 'pinned' in input) {
+            const updated = await lineStore.setPinned(workspace.id, board.id, nodeId, input.pinned);
+            result = {
+              ok: true,
+              boardId: board.id,
+              ...updated,
+              maxPins: BOARD_LINE_MAX_PINS,
+            };
+          } else {
+            const tree = await lineStore.readTree(workspace.id, board.id);
+            const node = tree.byId.get(nodeId);
+            if (!node) throw new Error(`BOARD_LINE_NODE_NOT_FOUND:Node "${nodeId}" does not exist`);
+            if (node.meta.kind === 'fold') {
+              result = {
+                boardId: board.id,
+                node: node.meta,
+                summary: node.summary,
+                pinned: tree.pins.includes(node.meta.id),
+                children: node.meta.covers.map((childId) => {
+                  const child = tree.byId.get(childId);
+                  if (!child) return { id: childId, missing: true };
+                  return {
+                    id: child.meta.id,
+                    kind: child.meta.kind,
+                    seq: child.meta.seq,
+                    level: child.meta.level,
+                    coversFrom: child.meta.coversFrom,
+                    coversTo: child.meta.coversTo,
+                    title: child.meta.title,
+                    tags: child.meta.tags,
+                    summaryQuality: child.meta.summaryQuality,
+                    pinned: tree.pins.includes(child.meta.id),
+                    summary: child.summary,
+                  };
+                }),
+              };
+            } else {
+              const offset = 'offset' in input && input.offset !== undefined ? input.offset : 0;
+              const limit =
+                'limit' in input && input.limit !== undefined
+                  ? input.limit
+                  : BOARD_LINE_EXPAND_DEFAULT_LIMIT;
+              const coordinatorDoc = await manager.getOrCreateSessionDoc(
+                board.coordinatorSessionId
+              );
+              const backend = await createSessionBackend(coordinatorDoc, coordinatorMeta);
+              const history = await backend.readHistory();
+              const allTurns = sliceSegmentHistoryTurns(history, node.meta.turnRange);
+              const page = allTurns.slice(offset, offset + limit);
+              const turns: ExpandedSegmentTurn[] = [];
+              let truncatedByBytes = false;
+              const makePayload = (candidateTurns: ExpandedSegmentTurn[], truncated: boolean) => {
+                const hasMore = offset + candidateTurns.length < allTurns.length;
+                return {
+                  boardId: board.id,
+                  sessionId: board.coordinatorSessionId,
+                  node: node.meta,
+                  summary: node.summary,
+                  pinned: tree.pins.includes(node.meta.id),
+                  offset,
+                  limit,
+                  totalTurns: allTurns.length,
+                  turns: candidateTurns,
+                  hasMore,
+                  ...(hasMore ? { nextOffset: offset + candidateTurns.length } : {}),
+                  ...(truncated ? { truncatedByBytes: true } : {}),
+                };
+              };
+              for (const turn of page) {
+                const candidate = [...turns, turn];
+                if (
+                  Buffer.byteLength(JSON.stringify(makePayload(candidate, false))) <=
+                  BOARD_LINE_EXPAND_MAX_BYTES
+                ) {
+                  turns.push(turn);
+                  continue;
+                }
+                truncatedByBytes = true;
+                if (turns.length === 0) {
+                  turns.push(
+                    fitTurnTextToByteBudget(
+                      (fitted) => makePayload([fitted], true),
+                      turn,
+                      BOARD_LINE_EXPAND_MAX_BYTES
+                    )
+                  );
+                }
+                break;
+              }
+              result = makePayload(turns, truncatedByBytes);
+            }
           }
         } else if (name === 'lody_board_overview') {
           const sessions = new Map(

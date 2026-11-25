@@ -15,7 +15,7 @@ export const BOARD_MAINTENANCE_TURN_PREFIX = 'board-maintenance:';
 export const boardMaintenanceTurnId = (runId: string): string =>
   `${BOARD_MAINTENANCE_TURN_PREFIX}${runId}`;
 
-export type BoardMaintenanceStep = 'memory' | 'compact' | 'renew' | 'handoff';
+export type BoardMaintenanceStep = 'memory' | 'compact' | 'renew' | 'handoff' | 'seal' | 'fold';
 
 /** The provenance id of one maintenance step; its assistant entry carries it as `userTurnId`. */
 export const boardMaintenanceStepId = (runId: string, step: BoardMaintenanceStep): string =>
@@ -48,7 +48,12 @@ const BACKGROUND_COMPACTION_AGENT_TYPES: ReadonlySet<string> = new Set(['kimi', 
 export const compactsInBackground = (agentType: string | undefined): boolean =>
   agentType !== undefined && BACKGROUND_COMPACTION_AGENT_TYPES.has(agentType);
 
+export const BoardContinuityStrategySchema = z.enum(['compact', 'fold_rollover']);
+export type BoardContinuityStrategy = z.infer<typeof BoardContinuityStrategySchema>;
+
 export const BoardContinuitySettingsSchema = z.object({
+  /** How Lody tidies the coordinator's context: native `/compact` or fold rollover. */
+  strategy: BoardContinuityStrategySchema.default('compact'),
   /** Compact the coordinator's context once it sits idle with a large context. */
   idleCompaction: z.boolean().default(true),
   idleMinutes: z.number().int().min(1).max(1440).default(10),
@@ -58,6 +63,7 @@ export const BoardContinuitySettingsSchema = z.object({
 });
 export type BoardContinuitySettings = z.infer<typeof BoardContinuitySettingsSchema>;
 export const DEFAULT_BOARD_CONTINUITY: BoardContinuitySettings = {
+  strategy: 'compact',
   idleCompaction: true,
   idleMinutes: 10,
   maxTokens: 150_000,
@@ -101,7 +107,7 @@ export function decideBoardIdleCompaction(input: {
   return delayMs > 0 ? { kind: 'wait', delayMs } : { kind: 'compact' };
 }
 
-export const BoardMaintenanceKindSchema = z.enum(['compact', 'new_conversation']);
+export const BoardMaintenanceKindSchema = z.enum(['compact', 'new_conversation', 'fold_rollover']);
 export type BoardMaintenanceKind = z.infer<typeof BoardMaintenanceKindSchema>;
 export const BoardMaintenanceStatusSchema = z.enum([
   /** Asked for by the user; the coordinator's machine starts it when the coordinator is free. */
@@ -169,6 +175,12 @@ export const BoardMaintenanceMetaSchema = z
      * the switch in history. Absent: the coordinator keeps its agent and settings.
      */
     agent: BoardCoordinatorAgentSchema.optional(),
+    /** Fold rollover: the sealed immutable segment node id. */
+    nodeId: z.string().min(1).max(64).optional(),
+    /** Fold rollover: the higher-level fold node id created in this run. */
+    foldId: z.string().min(1).max(64).optional(),
+    /** Fold rollover: number of lower-level nodes merged into `foldId`. */
+    foldedCount: z.number().int().min(2).optional(),
     /** A short reason code, never agent output. */
     reason: z.string().max(200).optional(),
   })
