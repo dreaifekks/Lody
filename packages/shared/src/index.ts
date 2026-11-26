@@ -536,6 +536,7 @@ export * from './magpie-import';
 export * from './board';
 export * from './board-continuity';
 export * from './board-files';
+export * from './session-rollover';
 
 export * from './workspace-project';
 

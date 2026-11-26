@@ -108,8 +108,9 @@ import { getAgentMetaByIdAtomFamily } from '@/atoms/agents';
 import { sessionMetaAtomFamily } from '@/atoms/doc-meta';
 import { authTokenAtom, runtimeAtom } from '@/atoms/runtime';
 import { machineSupportsSubagentCancellation, machineSupportsSubagentEvents } from '@lody/shared';
-import { BoardMaintenanceMetaSchema } from '@lody/shared';
+import { BoardMaintenanceMetaSchema, SessionRolloverNoticeMetaSchema } from '@lody/shared';
 import { BoardMaintenanceDivider } from '../boards/board-maintenance-divider';
+import { SessionRolloverDivider } from './session-rollover-divider';
 import { scrollDebug } from '@/hooks/scroll-debug-log';
 import { readSessionTurnTokenUsage, type SessionTurnTokenUsage } from '@lody/shared/session-data';
 import { formatCompactNumber, formatUsdAmount } from '@/lib/format-compact-number';
@@ -4269,6 +4270,10 @@ const SystemNoticeView = ({
     case 'board_context_maintenance': {
       const meta = BoardMaintenanceMetaSchema.safeParse(notice.meta);
       return meta.success ? <BoardMaintenanceDivider meta={meta.data} /> : null;
+    }
+    case 'session_context_rollover': {
+      const meta = SessionRolloverNoticeMetaSchema.safeParse(notice.meta);
+      return meta.success ? <SessionRolloverDivider meta={meta.data} /> : null;
     }
     case 'board_chain_limit':
       return (

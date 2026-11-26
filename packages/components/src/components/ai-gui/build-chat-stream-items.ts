@@ -1,7 +1,10 @@
 import {
   BoardMaintenanceMetaSchema,
+  SessionRolloverNoticeMetaSchema,
   isBoardMaintenanceEntry,
+  isSessionRolloverEntry,
   isSilentBoardMaintenance,
+  isSilentSessionRollover,
   type MessageContent,
   type SessionHistory,
   type SessionHistoryParsed,
@@ -152,9 +155,16 @@ const isSilentMaintenanceDivider = (message: SessionHistoryParsed): boolean =>
   message.role === 'system' &&
   message.items.length > 0 &&
   message.items.every((item) => {
-    if (item.type !== 'system_notice' || item.name !== 'board_context_maintenance') return false;
-    const meta = BoardMaintenanceMetaSchema.safeParse(item.meta);
-    return meta.success && isSilentBoardMaintenance(meta.data);
+    if (item.type !== 'system_notice') return false;
+    if (item.name === 'board_context_maintenance') {
+      const meta = BoardMaintenanceMetaSchema.safeParse(item.meta);
+      return meta.success && isSilentBoardMaintenance(meta.data);
+    }
+    if (item.name === 'session_context_rollover') {
+      const meta = SessionRolloverNoticeMetaSchema.safeParse(item.meta);
+      return meta.success && isSilentSessionRollover(meta.data);
+    }
+    return false;
   });
 
 /** Notices the emitting agent turn owns; anything else keeps its own row. */
@@ -271,10 +281,11 @@ export function buildChatStreamItems(
       inputConfig: expectedInputConfig,
     };
 
-    // A Board maintenance reply is represented by its divider row.
+    // Board maintenance and linear rollover replies are represented by their divider rows.
     if (
       isEmptyAssistantMessage(message) ||
       isBoardMaintenanceEntry(message) ||
+      isSessionRolloverEntry(message) ||
       isSilentMaintenanceDivider(message)
     )
       continue;

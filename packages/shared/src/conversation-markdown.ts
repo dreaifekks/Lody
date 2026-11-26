@@ -59,6 +59,7 @@ import {
 import type { SessionHistoryInput } from './schema';
 import { redactSensitiveTokens } from './replay-prompt-builder';
 import { normalizeSessionLinksForExport } from './session-link-export';
+import { isSessionRolloverEntry } from './session-rollover';
 
 /** Character ceiling for the copied Markdown. */
 export const CONVERSATION_MARKDOWN_MAX_CHARS = 150_000;
@@ -105,6 +106,9 @@ export function collectConversationMessages(history: SessionHistoryInput[]): Con
   const messages: ConversationMessage[] = [];
   for (const entry of history) {
     if (entry.role !== 'user' && entry.role !== 'assistant') {
+      continue;
+    }
+    if (isSessionRolloverEntry(entry)) {
       continue;
     }
     const texts: string[] = [];
@@ -808,7 +812,9 @@ function renderConversation(
     toolCallsCollapsed: false,
   };
 
-  const renderable = history.filter((entry) => entry.role === 'user' || entry.role === 'assistant');
+  const renderable = history.filter(
+    (entry) => (entry.role === 'user' || entry.role === 'assistant') && !isSessionRolloverEntry(entry)
+  );
   const recentFrom = Math.max(0, renderable.length - options.recentEntryCount);
 
   // A human name on every turn of a solo session is noise, so per-turn names are

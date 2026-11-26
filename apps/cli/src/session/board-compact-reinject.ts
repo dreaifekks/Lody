@@ -29,6 +29,17 @@ export const BOARD_COMPACT_USAGE_DROP_MIN_DELTA = 20_000;
 const MAINTENANCE_COMPACT_USAGE_DROP_RATIO = 0.8;
 
 const EXPLICIT_COMPACT_COMMAND_RE = /^\/compact(?:\s|$)/;
+const BARE_COMPACT_COMMAND_RE = /^\/compact$/;
+/**
+ * Default preservation focus appended only when forwarding a pure bare `/compact`
+ * (no trailing instructions, no non-text attachments) to ACP so runtimes like
+ * Antigravity (`agy`) run synchronous compaction with a brief confirmation instead
+ * of appearing hung with zero visible output.
+ */
+export const BARE_COMPACT_DEFAULT_INSTRUCTIONS =
+  'Keep: hard constraints, confirmed invariants/baselines that must not regress, role boundaries, key decisions, and current next steps. Reply with one short confirmation line once compaction completes.';
+/** Brief visible status line written when an explicit `/compact` finishes cleanly with zero visible text. */
+export const EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT = 'Context compaction completed.';
 /**
  * Matches slash commands including namespaced commands like `/mcp:github:prompt`
  * or `/plugin.cmd`, while rejecting multi-segment filesystem paths like `/home/user/file`.
@@ -165,6 +176,18 @@ export function isExplicitCompactTurnInput(
 ): boolean {
   if (hasNonTextInputBlocks(inputBlocks)) return false;
   return isExplicitCompactCommand(extractTurnPromptText(inputBlocks, fallbackPrompt));
+}
+
+/**
+ * Whether a turn's input is a bare pure-text `/compact` with no trailing
+ * instructions and no non-text attachments.
+ */
+export function isBareExplicitCompactTurnInput(
+  inputBlocks: readonly SessionInputBlock[] | undefined,
+  fallbackPrompt?: string
+): boolean {
+  if (hasNonTextInputBlocks(inputBlocks)) return false;
+  return BARE_COMPACT_COMMAND_RE.test(extractTurnPromptText(inputBlocks, fallbackPrompt));
 }
 
 /**

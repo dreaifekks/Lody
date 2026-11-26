@@ -10,6 +10,8 @@ import {
   deriveBoardSessionStatus,
   isBoardMaintenanceEntry,
   isBoardMaintenanceTurnId,
+  isSessionRolloverEntry,
+  isSessionRolloverTurnId,
   isBoardSessionStopped,
   findFreshSessionPresenceState,
   getBoardRoomId,
@@ -418,10 +420,11 @@ export function registerBoardTools(
                     const row = directory[idx]!;
                     const rowId = row.scalars?.id ?? row.turnId;
                     if (!rowId || row.state !== 'ready') continue;
-                    if (isBoardMaintenanceTurnId(rowId)) continue;
+                    if (isBoardMaintenanceTurnId(rowId) || isSessionRolloverTurnId(rowId)) continue;
                     if (
                       row.scalars?.role === 'assistant' &&
-                      isBoardMaintenanceTurnId(row.scalars.userTurnId)
+                      (isBoardMaintenanceTurnId(row.scalars.userTurnId) ||
+                        isSessionRolloverTurnId(row.scalars.userTurnId))
                     ) {
                       continue;
                     }
@@ -511,7 +514,7 @@ export function registerBoardTools(
                   continue;
                 }
                 const entry = read.turn as SessionHistoryInput;
-                if (isBoardMaintenanceEntry(entry)) {
+                if (isBoardMaintenanceEntry(entry) || isSessionRolloverEntry(entry)) {
                   nextIndex = idx + 1;
                   continue;
                 }

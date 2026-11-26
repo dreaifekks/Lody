@@ -35,6 +35,7 @@ import {
 } from './lan-share';
 import { AgentRoleSnapshotSchema } from './message-author';
 import { BoardMaintenanceMetaSchema } from './board-continuity';
+import { SessionRolloverNoticeMetaSchema } from './session-rollover';
 import { z } from 'zod';
 import { SessionHistoryContentPatchSchema } from './session-data/history-patches';
 import { BugReportClientLogSchema } from './bug-report';
@@ -4062,6 +4063,7 @@ export const PermissionRequestInfoSchema = z.object({
 export const SystemNoticeNameSchema = z.enum([
   'board_chain_limit',
   'board_context_maintenance',
+  'session_context_rollover',
   'resume_from_external_chat_history',
   'chat_failed',
   'agent_warning',
@@ -4443,6 +4445,11 @@ export const SystemNoticeSchema = z.discriminatedUnion('name', [
     type: z.literal('system_notice'),
     name: z.literal('board_context_maintenance'),
     meta: BoardMaintenanceMetaSchema.optional(),
+  }),
+  z.object({
+    type: z.literal('system_notice'),
+    name: z.literal('session_context_rollover'),
+    meta: SessionRolloverNoticeMetaSchema.optional(),
   }),
   z.object({
     type: z.literal('system_notice'),

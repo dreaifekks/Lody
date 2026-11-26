@@ -1,5 +1,11 @@
 import { isSessionGoalActive, resolveLatestSessionGoalFromHistory } from '../goal';
 import type { PermissionOutcome } from '../message';
+import {
+  isSessionRolloverSealEntry,
+  isSessionRolloverTurnId,
+  readSessionRolloverNotice,
+} from '../session-rollover';
+import type { SessionHistoryInput } from '../schema';
 import type {
   OpenAssistantTurnInput,
   ReplaceEditableTailInput,
@@ -130,7 +136,34 @@ export type EditableTailTurn = {
   readonly inputConfig?: unknown;
   readonly finished?: unknown;
   readonly acpTurnId?: unknown;
+  readonly userTurnId?: unknown;
+  readonly items?: unknown;
 };
+
+/**
+ * True when `entry` is a completed (`status === 'done'`) linear rollover divider.
+ * Uses the parsed notice when `items` is hydrated, and falls back to the scalar
+ * `finished === true` marker stamped by `sessionRolloverTurn` so scalar-only
+ * metadata readers (`readSessionHistoryMetadata`) agree with full-turn reads.
+ */
+function isCompletedSessionRolloverDivider(entry: EditableTailTurn | undefined): boolean {
+  if (!entry || entry.role !== 'system' || typeof entry.id !== 'string') return false;
+  if (!isSessionRolloverTurnId(entry.id)) return false;
+  if (Array.isArray(entry.items)) {
+    const notice = readSessionRolloverNotice({
+      id: entry.id,
+      role: 'system',
+      items: entry.items as SessionHistoryInput['items'],
+    });
+    if (notice) return notice.status === 'done';
+  }
+  return entry.finished === true;
+}
+
+function isHiddenRolloverSealAssistant(entry: EditableTailTurn | undefined): boolean {
+  if (!entry || entry.role !== 'assistant' || typeof entry.userTurnId !== 'string') return false;
+  return isSessionRolloverSealEntry({ role: 'assistant', userTurnId: entry.userTurnId });
+}
 
 export type EditableTail<T extends EditableTailTurn = EditableTailTurn> = {
   readonly userIndex: number;
@@ -143,6 +176,14 @@ export type EditableTail<T extends EditableTailTurn = EditableTailTurn> = {
  * Locate the editable tail: the last user turn, which must be `expectedUserTurnId`,
  * not parked in `pending_apply` and not a steer delivery. A preceding user turn
  * without an intervening finished provider boundary makes the tail uneditable.
+ *
+ * Linear node rollovers act as hard boundaries:
+ * - Hidden `:seal` assistant entries are skipped when searching for a boundary.
+ * - Completed (`done`) `session_context_rollover` dividers cannot be crossed in
+ *   either direction (old-node messages cannot be edited once switched, and
+ *   new-node messages cannot borrow a pre-rollover `acpTurnId`).
+ * - A finished `:renew` assistant entry inside the new node serves as a valid
+ *   `acpTurnId` boundary for the first user message after rollover.
  */
 export function resolveEditableTail<T extends EditableTailTurn>(
   turns: readonly T[],
@@ -165,9 +206,15 @@ export function resolveEditableTail<T extends EditableTailTurn>(
     return null;
   }
 
+  for (let index = userIndex + 1; index < turns.length; index += 1) {
+    if (isCompletedSessionRolloverDivider(turns[index])) return null;
+  }
+
   for (let index = userIndex - 1; index >= 0; index -= 1) {
     const entry = turns[index];
     if (!entry) continue;
+    if (isCompletedSessionRolloverDivider(entry)) return null;
+    if (isHiddenRolloverSealAssistant(entry)) continue;
     if (entry.role === 'user') return null;
     if (entry.role !== 'assistant') continue;
     if (entry.finished !== true || typeof entry.acpTurnId !== 'string' || !entry.acpTurnId) {

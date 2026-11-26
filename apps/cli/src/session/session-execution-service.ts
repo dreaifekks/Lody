@@ -4,14 +4,32 @@ import {
 } from '@/agent/antigravity-acp-stream';
 import { machineTurnInterruptionReason, reserveMachineTurn } from './machine-turn-admission';
 import {
+  BARE_COMPACT_DEFAULT_INSTRUCTIONS,
   BoardCompactReinjectTracker,
+  EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT,
   createMemoryBoardCompactReinjectStore,
   extractTurnPromptText,
   hasNonTextInputBlocks,
+  isBareExplicitCompactTurnInput,
+  isExplicitCompactTurnInput,
+  isSlashCommandInput,
   type BoardCompactContextLoadResult,
   type BoardCompactReinjectStore,
   type BoardTurnUsageSnapshot,
 } from './board-compact-reinject';
+import { extractVisibleTurnText } from '@/orchestration/board-fold-opening';
+import {
+  createMemorySessionRolloverStore,
+  type SessionRolloverState,
+  type SessionRolloverStore,
+} from './session-rollover-store';
+import { parseSessionRolloverCommand } from './session-rollover-opening';
+import {
+  buildLowEffortRunConfigForRenew,
+  SessionRolloverService,
+  type SessionRolloverColdSummarizer,
+  type SessionRolloverWorkspaceProber,
+} from './session-rollover-service';
 import { isMissingHistoryUserTurn } from '@lody/shared';
 import { verifyAutomationWorktreeHeads } from './automation-worktree';
 import { classifyCapacityFailure } from './acp-error-classification';
@@ -198,7 +216,10 @@ import {
   isSessionCollaborationStopped,
   resolveActiveAssistantTurnId,
   resolveSessionAuthoredText,
+  sessionRolloverTurn,
+  sessionRolloverTurnId,
   type SessionProjectRun,
+  type SessionRolloverNoticeMeta,
   usesAcpProtocolAuthentication,
 } from '@lody/shared';
 import {
@@ -600,7 +621,17 @@ type VisibleSessionTurnPlan = {
 };
 
 /** How the turn payload reached this machine (RPC fast path vs CRDT history vs queue promotion). */
-export type SessionDispatchSource = 'rpc' | 'crdt' | 'queue' | 'inbox' | 'goal' | 'maintenance';
+export type SessionDispatchSource =
+  | 'rpc'
+  | 'crdt'
+  | 'queue'
+  | 'inbox'
+  | 'goal'
+  | 'maintenance'
+  | 'rollover';
+
+const isHiddenSystemDispatchSource = (source?: SessionDispatchSource): boolean =>
+  source === 'maintenance' || source === 'rollover';
 
 type SessionDispatchOptions = {
   inboxBatch?: InboxBatch;
@@ -744,6 +775,15 @@ export type SessionExecutionServiceDeps = {
   encryptedWorkspace?: boolean;
   /** Optional machine-local store for pending Board post-compaction instruction refreshes. */
   boardCompactReinjectStore?: BoardCompactReinjectStore;
+  /** Optional machine-local store for linear session node rollover state. */
+  sessionRolloverStore?: SessionRolloverStore;
+  /** Optional clock / warm-TTL / cold-summarizer / workspace-probe overrides for linear rollover. */
+  sessionRolloverNow?: () => number;
+  sessionRolloverWarmCacheTtlMs?: number;
+  sessionRolloverColdSummarizer?: SessionRolloverColdSummarizer;
+  sessionRolloverProbeWorkspace?: SessionRolloverWorkspaceProber;
+  /** Last observed session activity timestamp (ms) for warm-vs-cold rollover seal selection. */
+  getSessionLastActivity?: (sessionId: SessionId) => number | undefined;
   logger: Logger;
   sessionManager: SessionManager;
   workspaceDocument: LoroDocumentManager;
@@ -1653,6 +1693,8 @@ export class SessionExecutionService {
   private readonly inFlightAcpBinaryInstall = new Map<string, InFlightAcpBinaryInstallEntry>();
   private readonly acpAuthenticationManager: AcpAuthenticationManager;
   private readonly boardCompactReinject: BoardCompactReinjectTracker;
+  private readonly sessionRollover: SessionRolloverService;
+  private readonly lastTurnCompletedAtBySession = new Map<SessionId, number>();
 
   constructor(private readonly deps: SessionExecutionServiceDeps) {
     this.acpAuthenticationManager = new AcpAuthenticationManager(deps.logger);
@@ -1660,6 +1702,59 @@ export class SessionExecutionService {
       deps.boardCompactReinjectStore ?? createMemoryBoardCompactReinjectStore(),
       deps.logger
     );
+    this.sessionRollover = new SessionRolloverService({
+      store: deps.sessionRolloverStore ?? createMemorySessionRolloverStore(),
+      logger: deps.logger,
+      ...(deps.sessionRolloverNow ? { now: deps.sessionRolloverNow } : {}),
+      ...(deps.sessionRolloverWarmCacheTtlMs !== undefined
+        ? { warmCacheTtlMs: deps.sessionRolloverWarmCacheTtlMs }
+        : {}),
+      ...(deps.sessionRolloverColdSummarizer
+        ? { coldSummarizer: deps.sessionRolloverColdSummarizer }
+        : {}),
+      ...(deps.sessionRolloverProbeWorkspace
+        ? { probeWorkspace: deps.sessionRolloverProbeWorkspace }
+        : {}),
+    });
+  }
+
+  /** Read machine-local linear rollover state for a session (used by dispatch watcher & tests). */
+  async getSessionRolloverState(sessionId: SessionId): Promise<SessionRolloverState | undefined> {
+    return await this.sessionRollover.getState(sessionId);
+  }
+
+  private resolveSessionLastActivityMs(sessionId: SessionId): number | undefined {
+    const fromDep = this.deps.getSessionLastActivity?.(sessionId);
+    const fromTurn = this.lastTurnCompletedAtBySession.get(sessionId);
+    if (fromDep !== undefined && fromTurn !== undefined) return Math.max(fromDep, fromTurn);
+    return fromDep ?? fromTurn;
+  }
+
+  private async upsertSessionRolloverDivider(
+    sessionDoc: SessionDocument,
+    sessionId: SessionId,
+    runId: string,
+    meta: SessionRolloverNoticeMeta,
+    timestamp: string,
+    dividerTimestamps: Map<string, string>,
+    beforeTurnId?: string
+  ): Promise<void> {
+    let stableTimestamp = dividerTimestamps.get(runId);
+    const backend = await this.getSessionBackend(sessionDoc, sessionId);
+    if (!stableTimestamp) {
+      const existing = await backend.readTurn(sessionRolloverTurnId(runId)).catch(() => undefined);
+      if (existing?.state === 'ready' && existing.turn.timestamp) {
+        stableTimestamp = existing.turn.timestamp;
+      } else {
+        stableTimestamp = timestamp;
+      }
+      dividerTimestamps.set(runId, stableTimestamp);
+    }
+    await backend.applyHistoryAction({
+      kind: 'upsert-turn',
+      ...(beforeTurnId ? { beforeTurnId } : {}),
+      turn: sessionRolloverTurn(runId, meta, stableTimestamp),
+    });
   }
 
   private createPromptHandoffRun(options: {
@@ -3642,7 +3737,7 @@ export class SessionExecutionService {
       userTurnId: options.userTurnId,
       invocation: options.invocation,
       goalControl: options.goalControl,
-      ...(options.dispatchSource === 'maintenance' ? { maintenance: true } : {}),
+      ...(isHiddenSystemDispatchSource(options.dispatchSource) ? { maintenance: true } : {}),
       session: options.session,
       promptStarted: false,
       promptInFlight: false,
@@ -5425,9 +5520,11 @@ export class SessionExecutionService {
       return 'duplicate';
     }
 
-    // Board maintenance stays outside the Inbox: it neither takes queued results
-    // nor admits as a task; the Worker that runs it wakes the Inbox afterwards.
-    const inbox = options.dispatchSource === 'maintenance' ? undefined : this.operationInbox;
+    // Board maintenance and linear rollover stay outside the Inbox: they neither take
+    // queued results nor admit as a task; the Worker that runs them wakes the Inbox afterwards.
+    const inbox = isHiddenSystemDispatchSource(options.dispatchSource)
+      ? undefined
+      : this.operationInbox;
     const invocation = options.invocation;
     if (invocation?.inputConfig._lodyAutomation) {
       try {
@@ -7075,6 +7172,25 @@ export class SessionExecutionService {
     excludeTurnId?: string
   ): Promise<ReplayPromptResult> {
     const backend = await this.getSessionBackend(sessionDoc, sessionDoc.sessionId);
+    // Hard Trap #2: once a session has rolled over to a newer node, replay only
+    // the bounded current-node opening plus turns after `lastSealedTurnId`,
+    // never dumping 100k of pre-rollover history back into the model.
+    const rolloverState = await this.sessionRollover
+      .getState(sessionDoc.sessionId)
+      .catch(() => undefined);
+    if (rolloverState && rolloverState.generation > 0 && rolloverState.lastSealedTurnId) {
+      const fullHistory = await backend.readHistory();
+      const workdir = this.deps.sessionManager.getSession(sessionDoc.sessionId)?.getWorkdir();
+      const boundedReplay = await this.sessionRollover.buildRolloverRecoveryReplay({
+        sessionId: sessionDoc.sessionId,
+        history: fullHistory,
+        excludeTurnId,
+        workdir,
+      });
+      if (boundedReplay) {
+        return boundedReplay;
+      }
+    }
     if (backend.readHistoryReplay) return backend.readHistoryReplay(excludeTurnId);
     const builder = await backend.foldHistory(
       () => createReplayPromptBuilder({ excludeTurnId }),
@@ -7638,14 +7754,16 @@ export class SessionExecutionService {
     const executionUserTurnId =
       dispatchOptions?.dispatchSource === 'inbox' ||
       dispatchOptions?.dispatchSource === 'goal' ||
-      dispatchOptions?.dispatchSource === 'maintenance'
+      isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource)
         ? undefined
         : userTurnId;
     const freshAgentSession =
-      dispatchOptions?.dispatchSource === 'maintenance' &&
-      dispatchOptions.freshAgentSession === true;
-    // A Board maintenance turn's failure stays on its divider, without a failure alert.
-    const quietFailure = dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {};
+      isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) &&
+      dispatchOptions?.freshAgentSession === true;
+    // A Board maintenance or rollover turn's failure stays on its divider, without a failure alert.
+    const quietFailure = isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource)
+      ? { quiet: true }
+      : {};
     const sessionDoc =
       prepareOptions?.sessionDoc ??
       (await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId));
@@ -7667,10 +7785,12 @@ export class SessionExecutionService {
 
     let replayPromptResult: ReplayPromptResult | null = null;
     let usedHistoryReplay = false;
+    let justRolledOverInThisTurn = false;
     let preTurnMeta: SessionMeta | undefined;
     let turnStartUsed: number | undefined;
     let turnStartAcpSessionId: ACPSessionId | undefined;
     let turnStartModelId: string | undefined;
+    const dividerTimestamps = new Map<string, string>();
     const self = this;
     const turnErrorContext: VisibleSessionTurnUnhandledErrorContext = {
       code: 'session_chat_failed',
@@ -7688,8 +7808,11 @@ export class SessionExecutionService {
     };
 
     const restoreMissingSession = Effect.fnUntraced(function* (
-      ctx: VisibleSessionTurnContext
+      ctx: VisibleSessionTurnContext,
+      restoreOverrides?: { forceFreshAgentSession?: boolean }
     ): Effect.fn.Return<ISession, unknown, Scope.Scope> {
+      const effectiveFreshAgentSession =
+        freshAgentSession || restoreOverrides?.forceFreshAgentSession === true;
       const current = yield* self.tryPromise(() => sessionDoc.getMetaState());
       const frozen = authorized?.meta;
       const meta: SessionMeta | undefined =
@@ -7769,8 +7892,10 @@ export class SessionExecutionService {
         `[${sessionId}] Resume env resolved (agentConfigId=${meta?.agentConfigId ?? 'none'} source=${storedLaunchConfig.source} keys=${agentConfigEnv ? Object.keys(agentConfigEnv).length : 0})`
       );
 
-      const requestedResumeSessionId = freshAgentSession ? undefined : acpSessionConfig.resume;
-      const storedResumeSessionId = freshAgentSession
+      const requestedResumeSessionId = effectiveFreshAgentSession
+        ? undefined
+        : acpSessionConfig.resume;
+      const storedResumeSessionId = effectiveFreshAgentSession
         ? undefined
         : resolveResumableAcpSessionId(meta);
       const resumeSessionId = requestedResumeSessionId ?? storedResumeSessionId;
@@ -7911,14 +8036,14 @@ export class SessionExecutionService {
           // to resume, even though the user turn is durable in Loro history.
           // This freshly created ACP session has no knowledge of that turn,
           // so reconstruct its context before sending the current request.
-          if (!freshAgentSession) {
+          if (!effectiveFreshAgentSession) {
             replayPromptResult = yield* self.tryPromise(() =>
               self.buildHistoryReplay(sessionDoc, message.userTurnId)
             );
             if (replayPromptResult.stats.messagesIncluded > 0) {
               usedHistoryReplay = true;
               if (
-                dispatchOptions?.dispatchSource !== 'maintenance' &&
+                !isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) &&
                 (preTurnMeta?.boardId ?? meta?.boardId)
               ) {
                 yield* self.tryPromise(() => self.boardCompactReinject.markPending(sessionId));
@@ -8121,6 +8246,18 @@ export class SessionExecutionService {
 
       const sessionInputBlocks = resolveSessionExecutionInputBlocks(acpSessionConfig);
       const turnInputText = extractTurnPromptText(sessionInputBlocks, acpSessionConfig.prompt);
+      const isUserExplicitCompactTurn =
+        !isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) &&
+        dispatchOptions?.dispatchSource !== 'goal' &&
+        !dispatchOptions?.goalControl &&
+        isExplicitCompactTurnInput(sessionInputBlocks, acpSessionConfig.prompt);
+      const effectiveAgentType = acpSessionConfig.agentType ?? preTurnMeta?.agentType;
+      const isAntigravityAgentTarget =
+        effectiveAgentType === 'antigravity' || effectiveAgentType === 'antigravity-acp';
+      const isUserBareCompactTurn =
+        isUserExplicitCompactTurn &&
+        isAntigravityAgentTarget &&
+        isBareExplicitCompactTurnInput(sessionInputBlocks, acpSessionConfig.prompt);
       let injectedBoardReminder = false;
       const buildPromptBlocksForCurrentResumeState = (): Promise<ContentBlock[]> =>
         traceAsync(
@@ -8128,12 +8265,20 @@ export class SessionExecutionService {
           'execution.build_acp_prompt_blocks',
           { sessionId, turnId, inputBlocks: sessionInputBlocks.length },
           async () => {
+            const effectiveInputBlocks =
+              isUserBareCompactTurn && !usedHistoryReplay
+                ? sessionInputBlocks.map((block) =>
+                    block.type === 'text' && block.text.trim() === '/compact'
+                      ? { ...block, text: `/compact ${BARE_COMPACT_DEFAULT_INSTRUCTIONS}` }
+                      : block
+                  )
+                : sessionInputBlocks;
             const baseBlocks = await self.deps.buildAcpPromptBlocks({
               requesterUserId: message.userId,
               workspaceId: message.workspaceId,
               sessionId,
               userTurnId: message.userTurnId,
-              inputBlocks: sessionInputBlocks,
+              inputBlocks: effectiveInputBlocks,
               issuePRMentions: acpSessionConfig.issuePRMentions,
               replayPromptText:
                 usedHistoryReplay && replayPromptResult?.promptText
@@ -8379,7 +8524,7 @@ export class SessionExecutionService {
 
       yield* abortIfCancelled();
 
-      if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
+      if (!isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) && preTurnMeta?.boardId) {
         runtime.boardCompactionContext = {
           initialTurnId: turnId,
           preTurnMeta,
@@ -8391,12 +8536,13 @@ export class SessionExecutionService {
           turnStartModelId,
           requestedModelId: acpSessionConfig.modelId,
           isStartTurn: false,
-          freshAgentSession,
+          freshAgentSession: freshAgentSession || justRolledOverInThisTurn,
           usedHistoryReplay: () => usedHistoryReplay,
           injectedBoardReminder: () => injectedBoardReminder,
         };
         self.boardCompactReinject.beginTurn(sessionId, turnId, {
-          seedBaselineUsed: injectedBoardReminder ? undefined : turnStartUsed,
+          seedBaselineUsed:
+            injectedBoardReminder || justRolledOverInThisTurn ? undefined : turnStartUsed,
         });
       }
 
@@ -8407,9 +8553,52 @@ export class SessionExecutionService {
       const completedUserTurnId = runtime.userTurnId ?? executionUserTurnId;
       const completedRequesterUserId = runtime.invocation?.requesterUserId ?? userId;
       // Read before finalization clears the turn's ACP update state.
-      const producedOutput = yield* self.tryPromise(() =>
+      let producedOutput = yield* self.tryPromise(() =>
         self.turnProducedVisibleOutput(sessionId, completedTurnId)
       );
+
+      // Phase 0: when a user-initiated explicit `/compact` returns cleanly from
+      // ACP with zero visible text (e.g. agy silent compaction), append a brief
+      // visible status confirmation so it never appears hung or fails as
+      // `agent_no_output` (BoardContinuityWorkflow `:compact` is excluded via
+      // `isUserExplicitCompactTurn`).
+      if (!producedOutput && promptCompletedNormally && isUserExplicitCompactTurn) {
+        const wroteCompactFallback = yield* self.tryPromise(async () => {
+          try {
+            const backend = await self.getSessionBackend(sessionDoc, sessionId);
+            const appended = await backend.applyHistoryAction({
+              kind: 'assistant-items',
+              turnId: completedTurnId,
+              mode: 'append',
+              items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
+            });
+            if (!appended.matched) {
+              await backend.applyHistoryAction({
+                kind: 'upsert-turn',
+                turn: {
+                  id: completedTurnId,
+                  role: 'assistant',
+                  timestamp: new Date(getServerNow()).toISOString(),
+                  ...(completedUserTurnId ? { userTurnId: completedUserTurnId } : {}),
+                  modelInfo: activeSession.agentClient?.currentModel,
+                  fileDiff: [],
+                  finished: true,
+                  items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
+                },
+              });
+            }
+            return true;
+          } catch (error) {
+            self.deps.logger.debug(
+              `[${sessionId}] Failed to append explicit /compact fallback confirmation: ${formatErrorMessage(error)}`
+            );
+            return false;
+          }
+        });
+        if (wroteCompactFallback) {
+          producedOutput = true;
+        }
+      }
 
       yield* self.tryPromise(() =>
         traceAsync(
@@ -8440,7 +8629,9 @@ export class SessionExecutionService {
               session: activeSession,
               sessionDoc,
               turnId: completedTurnId,
-              ...(dispatchOptions?.dispatchSource === 'maintenance' ? { quiet: true } : {}),
+              ...(isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource)
+                ? { quiet: true }
+                : {}),
               project,
               producedOutput,
               isTurnCancelled: () => self.isTurnCancelled(sessionId, completedTurnId),
@@ -8487,6 +8678,10 @@ export class SessionExecutionService {
           )
         );
       }
+      self.lastTurnCompletedAtBySession.set(
+        sessionId,
+        self.deps.sessionRolloverNow?.() ?? Date.now()
+      );
 
       if (dispatchOptions?.dispatchSource === 'maintenance' && preTurnMeta?.boardId) {
         const boardTurnMeta = preTurnMeta;
@@ -8516,7 +8711,10 @@ export class SessionExecutionService {
             })
           );
         }
-      } else if (dispatchOptions?.dispatchSource !== 'maintenance' && preTurnMeta?.boardId) {
+      } else if (
+        !isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) &&
+        preTurnMeta?.boardId
+      ) {
         const boardTurnMeta = preTurnMeta;
         runtime.boardCompactionSettled = true;
         yield* self.tryPromise(() =>
@@ -8542,7 +8740,7 @@ export class SessionExecutionService {
             activeAcpSessionId: activeSession.acpSessionId,
             activeModelId: activeSession.agentClient?.currentModel?.modelId,
             requestedModelId: acpSessionConfig.modelId,
-            freshAgentSession,
+            freshAgentSession: freshAgentSession || justRolledOverInThisTurn,
             usedHistoryReplay,
             readAssistantTurn: async (entryId) => {
               const backend = await self.getSessionBackend(sessionDoc, sessionId);
@@ -8591,7 +8789,7 @@ export class SessionExecutionService {
           notificationAudience: dispatchOptions?.notificationAudience,
         },
         ...(dispatchOptions?.dispatchSource === 'inbox' ||
-        dispatchOptions?.dispatchSource === 'maintenance'
+        isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource)
           ? { assistantEntryParentTurnId: userTurnId }
           : {}),
         ...(dispatchOptions?.goalControl ? { goalControl: dispatchOptions.goalControl } : {}),
@@ -8628,6 +8826,518 @@ export class SessionExecutionService {
             session?.acpSessionId ?? resolveResumableAcpSessionId(preTurnMeta);
           turnStartModelId =
             session?.agentClient?.currentModel?.modelId ?? preTurnMeta?.lastModel?.modelId;
+
+          const isOrdinaryUserContinueTurn =
+            !isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) &&
+            dispatchOptions?.dispatchSource !== 'goal' &&
+            dispatchOptions?.dispatchSource !== 'inbox' &&
+            !dispatchOptions?.goalControl;
+          const incomingBlocks = resolveSessionExecutionInputBlocks(acpSessionConfig);
+          const incomingText = extractTurnPromptText(incomingBlocks, acpSessionConfig.prompt);
+          const incomingHasNonText = hasNonTextInputBlocks(incomingBlocks);
+
+          // Phase 1: intercept pure-text `/rollover [hint]` on ordinary sessions
+          // (excluding Board coordinators and messages with non-text attachments).
+          // Consumed locally to run `:seal` and arm `pendingSwitch` — never sent to ACP.
+          const rolloverCommand =
+            isOrdinaryUserContinueTurn &&
+            preTurnMeta &&
+            !preTurnMeta.isArchived &&
+            preTurnMeta.boardRole !== 'coordinator' &&
+            !incomingHasNonText
+              ? parseSessionRolloverCommand(incomingText)
+              : ({ matched: false } as const);
+
+          if (rolloverCommand.matched && preTurnMeta) {
+            ctx.runtime.maintenance = true;
+            self.deps.setSessionActivePresencePhase(sessionId, 'thinking');
+            yield* self.tryPromise(() => sessionDoc.setStatus(SessionStatusFactory.running()));
+            const backend = yield* self.tryPromise(() =>
+              self.getSessionBackend(sessionDoc, sessionId)
+            );
+            const fullHistory = yield* self.tryPromise(() => backend.readHistory());
+            const liveSession = session;
+            const hasLiveSession = Boolean(
+              liveSession?.agentClient?.isCreated() && liveSession.acpSessionId
+            );
+            const hasLiveProcess = hasLiveSession && liveSession?.hasLiveAgentProcess?.() !== false;
+            const sealOutcome = yield* self.tryPromise((signal) =>
+              self.sessionRollover.sealNode({
+                sessionId,
+                meta: preTurnMeta!,
+                reason: 'manual_command',
+                history: fullHistory,
+                excludeTurnId: executionUserTurnId,
+                userHint: rolloverCommand.hint,
+                usedBefore: turnStartUsed,
+                hasLiveSession,
+                hasLiveProcess,
+                lastActivityMs: self.resolveSessionLastActivityMs(sessionId),
+                workdir: liveSession?.getWorkdir(),
+                abortSignal: signal,
+                isCancelled: () =>
+                  signal.aborted ||
+                  ctx.runtime.cancelRequested ||
+                  self.isTurnCancelled(sessionId, ctx.runtime.turnId),
+                writeDivider: (runId, noticeMeta, timestamp) =>
+                  self.upsertSessionRolloverDivider(
+                    sessionDoc,
+                    sessionId,
+                    runId,
+                    noticeMeta,
+                    timestamp,
+                    dividerTimestamps
+                  ),
+                runWarmSeal: async (step) => {
+                  if (!liveSession?.agentClient?.isCreated() || !liveSession.acpSessionId) {
+                    return { status: 'failed', reason: 'no-live-session' };
+                  }
+                  const sealAssistantId = self.deps.beginConversationTurn(
+                    sessionId,
+                    step.stepTurnId,
+                    {
+                      dispatchSource: 'rollover',
+                      sessionDoc,
+                      deferACPUpdateTarget: false,
+                    }
+                  );
+                  await self.deps.createAssistantEntryForTurn(
+                    sessionId,
+                    sessionDoc,
+                    sealAssistantId,
+                    liveSession.agentClient.currentModel,
+                    step.stepTurnId
+                  );
+                  ctx.bindSession(liveSession);
+                  ctx.runtime.promptInFlight = true;
+                  try {
+                    await liveSession.agentClient.prompt(liveSession.acpSessionId, [
+                      { type: 'text', text: step.prompt },
+                    ]);
+                  } catch (error) {
+                    if (
+                      signal.aborted ||
+                      ctx.runtime.cancelRequested ||
+                      self.isTurnCancelled(sessionId, ctx.runtime.turnId)
+                    ) {
+                      return { status: 'cancelled' };
+                    }
+                    return { status: 'failed', reason: formatErrorMessage(error) };
+                  } finally {
+                    ctx.runtime.promptInFlight = false;
+                    await self.deps.turnFinalization
+                      .finalizeACPState(sessionId, sealAssistantId)
+                      .catch(() => undefined);
+                    await backend
+                      .applyHistoryAction({
+                        kind: 'finish-assistant',
+                        turnId: sealAssistantId,
+                        endedAt: getServerNow(),
+                      })
+                      .catch(() => undefined);
+                    self.deps.clearConversationTurn(sessionId, sealAssistantId);
+                  }
+                  if (
+                    signal.aborted ||
+                    ctx.runtime.cancelRequested ||
+                    self.isTurnCancelled(sessionId, ctx.runtime.turnId)
+                  ) {
+                    return { status: 'cancelled' };
+                  }
+                  const read = await backend.readTurn(sealAssistantId).catch(() => undefined);
+                  const text =
+                    read?.state === 'ready'
+                      ? extractVisibleTurnText(read.turn as SessionHistoryInput)
+                      : '';
+                  return { status: 'completed', text };
+                },
+              })
+            );
+
+            yield* self.tryPromise(() =>
+              self.markPromptWorkingEnded(sessionId, sessionDoc, userId, 'prompt_completed')
+            );
+            yield* self.tryPromise(() => sessionDoc.setStatus(SessionStatusFactory.idle()));
+            ctx.runtime.finalizeCompleted = true;
+
+            if (sealOutcome.outcome === 'sealed') {
+              if (executionUserTurnId) {
+                yield* self.tryPromise(() =>
+                  self.setDispatchHandled(sessionId, sessionDoc, executionUserTurnId)
+                );
+              }
+              self.clearTurnCancellation(sessionId, ctx.runtime.turnId);
+              yield* self
+                .tryPromise(() => self.deps.processMessageQueue(sessionId))
+                .pipe(Effect.catch(() => Effect.void));
+            } else if (sealOutcome.outcome === 'interrupted') {
+              if (executionUserTurnId) {
+                yield* self.tryPromise(() =>
+                  self.markDispatchCancelled(sessionId, sessionDoc, executionUserTurnId)
+                );
+              }
+            } else if (executionUserTurnId) {
+              yield* self.tryPromise(() =>
+                self.markTurnFailed(sessionId, sessionDoc, executionUserTurnId)
+              );
+            }
+            return undefined;
+          }
+
+          // Phase 1 (Form B): lazy `:renew` when a normal (non-slash) user message
+          // enters a session with an armed `pendingSwitch`. Runs inside this same
+          // per-session execution lock so the user's message M arrives 100% pure on
+          // the freshly warmed ACP node.
+          const eligibleForLazyRenew =
+            isOrdinaryUserContinueTurn &&
+            Boolean(preTurnMeta) &&
+            !preTurnMeta!.isArchived &&
+            preTurnMeta!.boardRole !== 'coordinator' &&
+            !(!incomingHasNonText && isSlashCommandInput(incomingText));
+
+          if (
+            eligibleForLazyRenew &&
+            preTurnMeta &&
+            (yield* self.tryPromise(() => self.sessionRollover.hasPendingSwitch(sessionId)))
+          ) {
+            const backend = yield* self.tryPromise(() =>
+              self.getSessionBackend(sessionDoc, sessionId)
+            );
+            const fullHistory = yield* self.tryPromise(() => backend.readHistory());
+            const preparedRenew = yield* self.tryPromise(() =>
+              self.sessionRollover.prepareLazyRenew({
+                sessionId,
+                meta: preTurnMeta!,
+                history: fullHistory,
+                workdir: session?.getWorkdir(),
+                writeDivider: (runId, noticeMeta, timestamp) =>
+                  self.upsertSessionRolloverDivider(
+                    sessionDoc,
+                    sessionId,
+                    runId,
+                    noticeMeta,
+                    timestamp,
+                    dividerTimestamps
+                  ),
+                clearBoardCompactPending: () => self.boardCompactReinject.clearPending(sessionId),
+              })
+            );
+
+            if (preparedRenew.kind === 'recovered') {
+              justRolledOverInThisTurn = true;
+              turnStartUsed = preparedRenew.usedAfter;
+              turnStartAcpSessionId = preparedRenew.acpSessionId;
+            } else if (preparedRenew.kind === 'ready') {
+              const previousSession = session;
+              if (previousSession) {
+                yield* ctx.abortIfCancelled();
+                yield* self.tryPromise(() =>
+                  self.deps.sessionManager.retireSessionForReconfiguration(previousSession)
+                );
+                session = null;
+                ctx.runtime.session = undefined;
+                ctx.runtime.pendingSession = undefined;
+              }
+
+              self.deps.setSessionActivePresencePhase(sessionId, 'initializing');
+              yield* self.tryPromise(() =>
+                sessionDoc.setStatus(SessionStatusFactory.initializing())
+              );
+
+              let freshRenewSession: ISession | null = null;
+              let renewResult:
+                | {
+                    readonly status: 'completed';
+                    readonly newAcpSessionId: ACPSessionId;
+                    readonly usedAfter?: number;
+                  }
+                | { readonly status: 'cancelled' }
+                | { readonly status: 'failed'; readonly reason?: string; readonly error?: unknown };
+
+              const renewExit = yield* Effect.exit(
+                Effect.gen(function* () {
+                  const created = yield* restoreMissingSession(ctx, {
+                    forceFreshAgentSession: true,
+                  });
+                  freshRenewSession = created;
+                  if (!created.agentClient?.isCreated() || !created.acpSessionId) {
+                    return {
+                      status: 'failed' as const,
+                      reason: 'acp-not-ready',
+                      error: new Error('Fresh ACP session was not ready for rollover :renew'),
+                    };
+                  }
+                  yield* acpReplaySuppression.release;
+                  yield* ctx.abortIfCancelled({ terminateSession: true });
+
+                  const resolvedProject =
+                    project ?? self.resolveProjectFromMeta(preTurnMeta, message.project?.branch);
+                  const projectRun = preTurnMeta?.projectRun;
+                  const projectFileRoots = projectRun
+                    ? yield* self
+                        .tryPromise(() =>
+                          resolveProjectFileRoots(
+                            created.getWorkdir(),
+                            projectRun,
+                            self.deps.machineId,
+                            (id) => self.deps.sessionManager.resolveLocalProjectRootPath(id)
+                          )
+                        )
+                        .pipe(
+                          Effect.catch((error) =>
+                            Effect.sync(() => {
+                              self.deps.logger.warn(
+                                `[${sessionId}] Failed to resolve projectFileRoots during rollover :renew; continuing without additional roots: ${formatErrorMessage(error)}`
+                              );
+                              return undefined;
+                            })
+                          )
+                        )
+                    : undefined;
+                  const boardContext = preTurnMeta?.boardId
+                    ? yield* self.tryPromise(() => self.boardPromptContext(sessionId, preTurnMeta!))
+                    : undefined;
+                  const fullRenewPrompt = buildPrompt(
+                    preparedRenew.openingPrompt,
+                    resolvedProject,
+                    undefined,
+                    undefined,
+                    {
+                      ...(projectRun ? { projectRun } : {}),
+                      ...(projectFileRoots ? { projectFileRoots } : {}),
+                      ...(boardContext ? { boardContext } : {}),
+                    }
+                  );
+
+                  const lowEffort = buildLowEffortRunConfigForRenew(
+                    acpSessionConfig,
+                    created.agentClient.getConfigOptions?.()
+                  );
+                  yield* self
+                    .tryPromise((signal) =>
+                      self.deps.applyAcpModeAndModel(created, lowEffort.config, {
+                        sessionDoc,
+                        signal,
+                      })
+                    )
+                    .pipe(
+                      Effect.catch((error) =>
+                        Effect.sync(() => {
+                          self.deps.logger.debug(
+                            `[${sessionId}] Ignoring non-fatal config error during rollover :renew: ${formatErrorMessage(error)}`
+                          );
+                        })
+                      )
+                    );
+
+                  yield* ctx.abortIfCancelled({ terminateSession: true });
+                  yield* self.tryPromise(() =>
+                    self.deps.sessionManager.validateSessionCredentials(created, userId)
+                  );
+                  yield* ctx.abortIfCancelled({ terminateSession: true });
+
+                  const renewAssistantId = self.deps.beginConversationTurn(
+                    sessionId,
+                    preparedRenew.stepTurnId,
+                    {
+                      dispatchSource: 'rollover',
+                      sessionDoc,
+                      deferACPUpdateTarget: false,
+                    }
+                  );
+                  // Place `:renew` before the incoming user turn when already persisted so
+                  // `resolveEditableTail` sees `:renew` as the new node's boundary.
+                  if (executionUserTurnId) {
+                    const userExists = yield* self
+                      .tryPromise(() => backend.readTurn(executionUserTurnId))
+                      .pipe(Effect.catch(() => Effect.succeed(undefined)));
+                    if (userExists?.state === 'ready') {
+                      yield* self
+                        .tryPromise(() =>
+                          backend.applyHistoryAction({
+                            kind: 'upsert-turn',
+                            beforeTurnId: executionUserTurnId,
+                            turn: {
+                              id: renewAssistantId,
+                              role: 'assistant',
+                              timestamp: new Date(getServerNow()).toISOString(),
+                              userTurnId: preparedRenew.stepTurnId,
+                              modelInfo: created.agentClient?.currentModel,
+                              items: [],
+                              fileDiff: [],
+                            },
+                          })
+                        )
+                        .pipe(Effect.catch(() => Effect.void));
+                    }
+                  }
+                  yield* self.tryPromise(() =>
+                    self.deps.createAssistantEntryForTurn(
+                      sessionId,
+                      sessionDoc,
+                      renewAssistantId,
+                      created.agentClient?.currentModel,
+                      preparedRenew.stepTurnId
+                    )
+                  );
+
+                  ctx.bindSession(created);
+                  ctx.runtime.promptInFlight = true;
+                  try {
+                    yield* self.tryPromise(() =>
+                      created.agentClient!.prompt(created.acpSessionId!, [
+                        { type: 'text', text: fullRenewPrompt },
+                      ])
+                    );
+                  } finally {
+                    ctx.runtime.promptInFlight = false;
+                    yield* self
+                      .tryPromise(() =>
+                        self.deps.turnFinalization.finalizeACPState(sessionId, renewAssistantId)
+                      )
+                      .pipe(Effect.catch(() => Effect.void));
+                    yield* self
+                      .tryPromise(() => self.deps.turnFinalization.flushSessionUsage(sessionId))
+                      .pipe(Effect.catch(() => Effect.void));
+                    yield* self
+                      .tryPromise(() =>
+                        backend.applyHistoryAction({
+                          kind: 'finish-assistant',
+                          turnId: renewAssistantId,
+                          endedAt: getServerNow(),
+                        })
+                      )
+                      .pipe(Effect.catch(() => Effect.void));
+                  }
+
+                  if (
+                    ctx.runtime.cancelRequested ||
+                    self.isTurnCancelled(sessionId, ctx.runtime.turnId)
+                  ) {
+                    return { status: 'cancelled' as const };
+                  }
+
+                  const freshMeta = yield* self
+                    .tryPromise(() => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined))
+                    .pipe(Effect.catch(() => Effect.succeed(undefined)));
+                  return {
+                    status: 'completed' as const,
+                    newAcpSessionId: created.acpSessionId,
+                    usedAfter: freshMeta?.contextWindowUsage?.used,
+                  };
+                })
+              );
+
+              if (Exit.isSuccess(renewExit)) {
+                renewResult = renewExit.value;
+              } else if (
+                Cause.hasInterrupts(renewExit.cause) ||
+                ctx.runtime.cancelRequested ||
+                self.isTurnCancelled(sessionId, ctx.runtime.turnId) ||
+                isSessionTurnCancelled(Cause.squash(renewExit.cause))
+              ) {
+                renewResult = { status: 'cancelled' };
+              } else {
+                const err = Cause.squash(renewExit.cause);
+                renewResult = {
+                  status: 'failed',
+                  reason: formatErrorMessage(err),
+                  error: err,
+                };
+              }
+
+              if (renewResult.status !== 'completed') {
+                // Retire the half-initialized fresh ACP session so retry starts clean,
+                // while preserving `pendingSwitch` intact!
+                if (freshRenewSession) {
+                  const toRetire = freshRenewSession as ISession;
+                  yield* self
+                    .tryPromise(() =>
+                      self.deps.sessionManager.retireSessionForReconfiguration(toRetire)
+                    )
+                    .pipe(Effect.catch(() => Effect.void));
+                  session = null;
+                  ctx.runtime.session = undefined;
+                  ctx.runtime.pendingSession = undefined;
+                }
+                yield* self
+                  .tryPromise(() =>
+                    self.sessionRollover.finishLazyRenew({
+                      sessionId,
+                      prepared: preparedRenew,
+                      result: renewResult,
+                      writeDivider: (runId, noticeMeta, timestamp) =>
+                        self.upsertSessionRolloverDivider(
+                          sessionDoc,
+                          sessionId,
+                          runId,
+                          noticeMeta,
+                          timestamp,
+                          dividerTimestamps
+                        ),
+                      clearBoardCompactPending: () =>
+                        self.boardCompactReinject.clearPending(sessionId),
+                    })
+                  )
+                  .pipe(Effect.catch(() => Effect.void));
+
+                if (renewResult.status === 'cancelled') {
+                  ctx.runtime.cancelRequested = true;
+                  yield* ctx.abortIfCancelled();
+                  return undefined;
+                }
+                if (isSessionTurnHalted(renewResult.error)) {
+                  return yield* Effect.fail(renewResult.error);
+                }
+                const errorMessage = `Session rollover failed before starting the new node: ${renewResult.reason ?? 'unknown error'}`;
+                yield* self.recordKnownChatFailureAndHaltEffect({
+                  sessionId,
+                  sessionDoc,
+                  userTurnId: executionUserTurnId,
+                  reason: 'session_restore_failed',
+                  message: errorMessage,
+                });
+                return undefined;
+              }
+
+              const renewOutcome = yield* self.tryPromise(() =>
+                self.sessionRollover.finishLazyRenew({
+                  sessionId,
+                  prepared: preparedRenew,
+                  result: renewResult,
+                  writeDivider: (runId, noticeMeta, timestamp) =>
+                    self.upsertSessionRolloverDivider(
+                      sessionDoc,
+                      sessionId,
+                      runId,
+                      noticeMeta,
+                      timestamp,
+                      dividerTimestamps
+                    ),
+                  clearBoardCompactPending: () => self.boardCompactReinject.clearPending(sessionId),
+                })
+              );
+
+              // Re-bind the conversation turn back to user message M before M runs.
+              self.deps.beginConversationTurn(sessionId, executionUserTurnId ?? userTurnId, {
+                ...(dispatchOptions?.dispatchSource
+                  ? { dispatchSource: dispatchOptions.dispatchSource }
+                  : {}),
+                sessionDoc,
+                deferACPUpdateTarget: true,
+              });
+              session = freshRenewSession;
+              justRolledOverInThisTurn = true;
+              const updatedMeta = yield* self
+                .tryPromise(() => sessionDoc.getMetaState?.() ?? Promise.resolve(undefined))
+                .pipe(Effect.catch(() => Effect.succeed(undefined)));
+              if (updatedMeta) preTurnMeta = updatedMeta;
+              if (renewOutcome.switched) {
+                turnStartUsed = renewOutcome.usedAfter;
+                turnStartAcpSessionId = renewOutcome.acpSessionId;
+              }
+            }
+          }
           const memoryPressureResult = yield* self.tryPromise(() =>
             self.evictForTurnStart(sessionId)
           );

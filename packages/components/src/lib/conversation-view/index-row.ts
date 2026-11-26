@@ -1,5 +1,6 @@
 import {
   isBoardMaintenanceEntry,
+  isSessionRolloverEntry,
   normalizeSessionTurnInputConfig,
   type Role,
   type SessionHistory,
@@ -79,8 +80,8 @@ export const isEmptyAssistantIndexRow = (row: TurnIndexRow): boolean =>
   row.role === 'assistant' && row.itemCount === 0 && (row.planCount ?? 0) === 0;
 
 /**
- * Assistant rows the conversation never draws: empty entries, and Board
- * maintenance replies, which their divider stands in for.
+ * Assistant rows the conversation never draws: empty entries, Board maintenance
+ * replies, and linear rollover step replies, which their dividers stand in for.
  */
 export const isHiddenAssistantIndexRow = (row: TurnIndexRow): boolean =>
-  isEmptyAssistantIndexRow(row) || isBoardMaintenanceEntry(row);
+  isEmptyAssistantIndexRow(row) || isBoardMaintenanceEntry(row) || isSessionRolloverEntry(row);

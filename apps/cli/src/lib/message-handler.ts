@@ -46,6 +46,7 @@ import {
 import { encodeSessionFilePath, resolveSessionPullRequests } from '@lody/shared';
 import { SessionAutomationAuthority } from '@/session/session-automation-authority';
 import { createFileBoardCompactReinjectStore } from '@/session/board-compact-reinject';
+import { createFileSessionRolloverStore } from '@/session/session-rollover-store';
 import type { SessionFileRoot } from '@lody/shared';
 import { resolveProjectFileRoots } from '@/session/worktree/project-member-access';
 import { worktreeGitLegacy } from '@/session/worktree/git-execution-legacy';
@@ -262,6 +263,7 @@ import {
   type LanMemberControlResponse,
   type MachineProtocolCapabilities,
   BOARD_MAINTENANCE_TURN_PREFIX,
+  SESSION_ROLLOVER_TURN_PREFIX,
 } from '@lody/shared';
 import { getHostMachineProtocolCapabilities } from '../agent/managed-agent-runtime';
 import { ISession, SessionManager } from '../session/session-manager';
@@ -3614,6 +3616,8 @@ export class MessageHandler {
       encryptedExecution: this.encryptedExecution,
       encryptedWorkspace: config.encryptedWorkspace,
       boardCompactReinjectStore: createFileBoardCompactReinjectStore({ logger: this.logger }),
+      sessionRolloverStore: createFileSessionRolloverStore({ logger: this.logger }),
+      getSessionLastActivity: (sessionId) => this.getLastActivity(sessionId),
       logger: this.logger,
       sessionManager: this.sessionManager,
       workspaceDocument: this.workspaceDocument,
@@ -6973,12 +6977,15 @@ export class MessageHandler {
   }
 
   /**
-   * A Board maintenance step's reply, including output that arrives after the
-   * step ended. It stays hidden behind its divider, so nothing written to it
-   * marks the Session updated or unread.
+   * A Board maintenance or linear rollover step's reply, including output that
+   * arrives after the step ended. It stays hidden behind its divider, so nothing
+   * written to it marks the Session updated or unread.
    */
   private isBoardMaintenanceEntry(entryId: string): boolean {
-    return entryId.startsWith(this.getAssistantEntryIdForUserTurn(BOARD_MAINTENANCE_TURN_PREFIX));
+    return (
+      entryId.startsWith(this.getAssistantEntryIdForUserTurn(BOARD_MAINTENANCE_TURN_PREFIX)) ||
+      entryId.startsWith(this.getAssistantEntryIdForUserTurn(SESSION_ROLLOVER_TURN_PREFIX))
+    );
   }
 
   private beginConversationTurn(

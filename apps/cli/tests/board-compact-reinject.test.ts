@@ -390,7 +390,7 @@ describe('Board compact re-injection integration', () => {
     });
 
     await h.sendContinue('/compact');
-    expect(h.prompts[0]!.text).toBe('/compact');
+    expect(h.prompts[0]!.text).toMatch(/^\/compact\s+\S+/);
     expect(h.prompts[0]!.text).not.toContain('<board_context_reminder>');
 
     // Next normal turn gets the reminder inline (never written into Loro history).
@@ -514,7 +514,7 @@ describe('Board compact re-injection integration', () => {
     await h.sendContinue('/compact keep decisions');
     await h.sendContinue('Proceed with implementation');
 
-    expect(h.prompts[0]!.text).toBe('/compact');
+    expect(h.prompts[0]!.text).toMatch(/^\/compact\s+\S+/);
     expect(h.prompts[1]!.text).toBe('/status');
     expect(h.prompts[2]!.text).toBe('/compact keep decisions');
     expect(h.prompts[1]!.text).not.toContain('<board_context_reminder>');

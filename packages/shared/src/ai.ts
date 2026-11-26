@@ -14,6 +14,7 @@ import type { ToolCallContent as AcpToolCallContent, SessionMode } from '@agentc
 import type { PermissionOutcome } from './message';
 import type { SessionGoalAction } from './goal';
 import type { BoardMaintenanceMeta } from './board-continuity';
+import type { SessionRolloverNoticeMeta } from './session-rollover';
 import { createPlanModeConfigOption } from 'acp-extension-core';
 import type { LodySubagentSnapshot, LodySubagentProgress } from 'acp-extension-core';
 import type { AgentConfigId, AgentRoleId, McpServerId, SessionId } from './ids';
@@ -1507,6 +1508,7 @@ export type SystemNoticeName =
   | 'session_fork_origin'
   | 'board_chain_limit'
   | 'board_context_maintenance'
+  | 'session_context_rollover'
   | 'agent_role_proposal';
 
 /**
@@ -1694,6 +1696,7 @@ export type SystemNoticeMeta = {
   session_fork_origin: SessionForkOriginMeta;
   board_chain_limit: { boardId: string; drivingTurnId: string };
   board_context_maintenance: BoardMaintenanceMeta;
+  session_context_rollover: SessionRolloverNoticeMeta;
 };
 
 export const SESSION_IMAGE_MAX_SIZE_BYTES = 5 * 1024 * 1024;

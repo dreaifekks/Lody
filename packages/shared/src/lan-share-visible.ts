@@ -283,6 +283,13 @@ export function projectLanShareHistory(history: unknown): unknown[] {
       ];
     }
     if (entry.role !== 'assistant') return [];
+    if (
+      typeof entry.userTurnId === 'string' &&
+      (entry.userTurnId.startsWith('board-maintenance:') ||
+        entry.userTurnId.startsWith('session-rollover:'))
+    ) {
+      return [];
+    }
     const items = Array.isArray(entry.items) ? entry.items.filter(isRecord) : [];
     const kept = projectLanShareTurnItems(items, isLanShareTurnFinished(entry));
     if (kept.length === 0) return [];

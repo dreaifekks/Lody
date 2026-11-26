@@ -13,7 +13,14 @@ import {
   readEncryptedMachineAccess,
 } from '@/lib/session-command-environment';
 import type { SessionSteerResponse } from '@lody/shared';
-import { normalizeMcpServerIdSelection, resolveSessionConversationConfig } from '@lody/shared';
+import {
+  isBoardMaintenanceEntry,
+  isBoardMaintenanceTurnId,
+  isSessionRolloverEntry,
+  isSessionRolloverTurnId,
+  normalizeMcpServerIdSelection,
+  resolveSessionConversationConfig,
+} from '@lody/shared';
 import type { SessionLiveActivity } from '@lody/shared/local-machine-rpc';
 import {
   getMachineRoomId,
@@ -667,6 +674,14 @@ export function isVisibleTranscriptTurn(
   entry: SessionTurn
 ): entry is SessionTurn & { role: SessionTranscriptRole } {
   if (!isTranscriptRole(entry.role)) return false;
+  if (
+    isBoardMaintenanceTurnId(entry.id) ||
+    isBoardMaintenanceEntry(entry) ||
+    isSessionRolloverTurnId(entry.id) ||
+    isSessionRolloverEntry(entry)
+  ) {
+    return false;
+  }
   if (
     entry.role === 'system' &&
     !(entry.items as Array<{ type?: string }> | undefined)?.some(

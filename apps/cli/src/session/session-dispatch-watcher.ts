@@ -2250,6 +2250,29 @@ export class SessionDispatchWatcher {
     const project: ProjectRef | undefined = meta.project;
     const { inputBlocks, prompt } = this.resolveDispatchInput(entry);
 
+    const metaResumeId = resolveDispatchAcpSessionId(meta);
+    let resolvedResumeId = this.deps.encryptedWorkspace
+      ? metaResumeId
+      : (entry.inputConfig?.resume ?? metaResumeId);
+    // Hard Trap #1: a user turn queued before a linear node rollover may carry a
+    // stale `inputConfig.resume` pointing at the retired ACP session. Unless the
+    // turn is pinned by automation (`_lodyAutomation.nativeSessionId`), drop the
+    // stale resume target and follow the active node's `meta.acpSessionId`.
+    if (
+      !this.deps.encryptedWorkspace &&
+      entry.inputConfig?.resume &&
+      !entry.inputConfig._lodyAutomation?.nativeSessionId &&
+      metaResumeId &&
+      entry.inputConfig.resume !== metaResumeId
+    ) {
+      const rolloverState = await this.deps.executionService
+        .getSessionRolloverState?.(meta.id)
+        .catch(() => undefined);
+      if (rolloverState && (rolloverState.generation > 0 || rolloverState.pendingSwitch)) {
+        resolvedResumeId = metaResumeId;
+      }
+    }
+
     return {
       type: 'session/chat',
       sessionId: meta.id,
@@ -2275,9 +2298,7 @@ export class SessionDispatchWatcher {
         issuePRMentions: entry.inputConfig?.issuePRMentions,
         // Encrypted inputs never choose their resume target: the signature leaves out the
         // `resume` that promotion supplies, so it comes from this Session's metadata.
-        resume: this.deps.encryptedWorkspace
-          ? resolveDispatchAcpSessionId(meta)
-          : (entry.inputConfig?.resume ?? resolveDispatchAcpSessionId(meta)),
+        resume: resolvedResumeId,
       },
       userTurnId: entry.id,
       userId: requesterUserId ?? entry.userId ?? meta.userId,

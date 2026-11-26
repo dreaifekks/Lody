@@ -60,6 +60,7 @@
 
 import type { MessageContent, ToolCallContent, ResumeFromExternalChatHistoryMeta } from './ai';
 import type { SessionHistoryInput } from './schema';
+import { isSessionRolloverEntry, isSessionRolloverTurnId } from './session-rollover';
 
 export const DEFAULT_MAX_CHARS = 100_000;
 export const DEFAULT_TERMINAL_TAIL_CHARS = 1024;
@@ -107,6 +108,11 @@ export interface BuildReplayPromptOptions {
    * (`assistant:<id>`) is excluded with it.
    */
   excludeTurnId?: string;
+  /**
+   * Only include ordinary turns strictly AFTER this turn ID (for example,
+   * the `lastSealedTurnId` boundary of an active linear rollover node).
+   */
+  afterTurnId?: string;
   /** Maximum characters for the prompt (default: 100,000) */
   maxChars?: number;
   /** Maximum characters for terminal output tail (default: 1024) */
@@ -317,19 +323,32 @@ function collectPathsFromToolCall(
 function generatePrompt(
   history: SessionHistoryInput[],
   pass: GenerationPass,
-  excludeTurnId?: string
+  excludeTurnId?: string,
+  afterTurnId?: string
 ): { text: string; paths: CollectedPath[]; messagesIncluded: number } {
   const lines: string[] = [];
   const allPaths: CollectedPath[] = [];
   let messagesIncluded = 0;
+  let passedBoundary = !afterTurnId;
 
   // Add header
   lines.push('=== Previous Conversation Context ===');
   lines.push('');
 
   for (const entry of history) {
-    // Skip the current message if specified
-    if (isReplayEntryExcluded(entry, excludeTurnId)) {
+    if (!passedBoundary) {
+      if (entry.id === afterTurnId) {
+        passedBoundary = true;
+      }
+      continue;
+    }
+
+    // Skip hidden rollover turns/dividers and the current message if specified
+    if (
+      isSessionRolloverTurnId(entry.id) ||
+      isSessionRolloverEntry(entry) ||
+      isReplayEntryExcluded(entry, excludeTurnId)
+    ) {
       continue;
     }
 
@@ -458,6 +477,7 @@ export function buildReplayPromptFromHistory(
   const {
     history,
     excludeTurnId,
+    afterTurnId,
     maxChars = DEFAULT_MAX_CHARS,
     terminalTailChars = DEFAULT_TERMINAL_TAIL_CHARS,
   } = options;
@@ -469,7 +489,7 @@ export function buildReplayPromptFromHistory(
     terminalTailChars,
   };
 
-  let result = generatePrompt(history, passA, excludeTurnId);
+  let result = generatePrompt(history, passA, excludeTurnId, afterTurnId);
   let terminalOmitted = false;
   let thinkingOmitted = false;
   let truncated = false;
@@ -499,7 +519,7 @@ export function buildReplayPromptFromHistory(
     terminalTailChars,
   };
 
-  result = generatePrompt(history, passB, excludeTurnId);
+  result = generatePrompt(history, passB, excludeTurnId, afterTurnId);
   terminalOmitted = true;
   terminalTailApplied = false;
 
@@ -526,7 +546,7 @@ export function buildReplayPromptFromHistory(
     terminalTailChars,
   };
 
-  result = generatePrompt(history, passC, excludeTurnId);
+  result = generatePrompt(history, passC, excludeTurnId, afterTurnId);
   thinkingOmitted = true;
 
   if (result.text.length <= maxChars) {
@@ -594,9 +614,23 @@ export function createReplayPromptBuilder(options: Omit<BuildReplayPromptOptions
   for (const candidate of candidates)
     append(candidate, '=== Previous Conversation Context ===\n\n');
   const paths = new Map<string, 'read' | 'edit' | 'other'>();
+  let passedBoundary = !options.afterTurnId;
   return {
     add(entry: SessionHistoryInput): void {
-      if (isReplayEntryExcluded(entry, options.excludeTurnId) || entry.role === 'system') return;
+      if (!passedBoundary) {
+        if (entry.id === options.afterTurnId) {
+          passedBoundary = true;
+        }
+        return;
+      }
+      if (
+        isSessionRolloverTurnId(entry.id) ||
+        isSessionRolloverEntry(entry) ||
+        isReplayEntryExcluded(entry, options.excludeTurnId) ||
+        entry.role === 'system'
+      ) {
+        return;
+      }
       for (const item of entry.items ?? [])
         if (item.type === 'tool_call')
           for (const path of collectPathsFromToolCall(item)) {

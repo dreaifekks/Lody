@@ -316,6 +316,7 @@ import {
   useBtwContainerWidth,
   useBtwController,
 } from './btw';
+import { mergeRolloverAvailableCommands } from './session-rollover-slash-command';
 import type { ComposerInputElement } from '@/ui/mention/composer-input';
 import { SessionPreviewPreload } from './session-preview-preload';
 import { CurrentSessionRelationsChip, useHasSessionRelations } from './session-relations-chip';
@@ -7620,9 +7621,17 @@ export const SessionChatInterface = memo(
         statusStripState,
       ]
     );
+    const rolloverCommandDescription = t(
+      'sessions.rollover.commandDescription',
+      'Seal the current context and switch to a fresh underlying node on the next message, keeping the handoff card and locked invariants'
+    );
     const composerAvailableCommands = useMemo(
-      () => mergeBtwAvailableCommands(availableCommands),
-      [availableCommands]
+      () =>
+        mergeRolloverAvailableCommands(mergeBtwAvailableCommands(availableCommands), {
+          isBoardCoordinator: session.boardRole === 'coordinator',
+          description: rolloverCommandDescription,
+        }),
+      [availableCommands, rolloverCommandDescription, session.boardRole]
     );
     const handleBtwCommand = useCallback(
       (question: string) => {
