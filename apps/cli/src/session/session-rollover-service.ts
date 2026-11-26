@@ -21,18 +21,17 @@ import {
 } from '@lody/shared';
 import { runCommandTextLegacy } from '@lody/shared/node/process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { shutdownLocalAcpAgent, startLocalAcpAgent } from '@/agent/acp-runner';
 import { parseLodyMessagePhase } from '@/agent/lody-acp-extension';
 import { extractTextFromAgentResponse } from '@/agent/response-utils';
 import { extractTitleChunkFromNotification } from '@/agent/title-generator';
+import { prepareBtwIsolation } from '@/btw/btw-isolation';
 import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { Logger } from '@/utils/logger';
 import type { AcpSessionRunConfig } from './acp-session-config-applier';
 import { resolveSessionLaunchConfig } from './session-launch-config-resolver';
-import type { TerminalManager } from './terminal-manager';
 import {
   buildColdSealPrompt,
   buildColdTextStreamForSeal,
@@ -225,6 +224,41 @@ export function buildLowEffortRunConfigForRenew(
   };
 }
 
+const RENEW_MAX_CONFIRMATION_CHARS = 300;
+const RENEW_REFUSAL_OR_ERROR_RE =
+  /\b(?:i (?:cannot|can't|am unable to)|cannot comply|refuse(?:d)?|request failed|error:|api error|rate limit|quota exceeded|context length exceeded|authentication required)\b|无法(?:完成|处理|继续|执行)|拒绝|出错|鉴权失败|超出上下文/i;
+
+/**
+ * Validate a lazy `:renew` handoff response before committing the new node.
+ * Requires `stopReason === 'end_turn'` and a concise, non-refusal visible
+ * confirmation so truncated (`max_tokens`), refused, empty, or runaway
+ * responses keep `pendingSwitch` intact for safe retry.
+ */
+export function isValidRolloverRenewConfirmation(
+  stopReason: unknown,
+  visibleText: string
+): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+  if (stopReason !== 'end_turn') {
+    if (stopReason === 'refusal') return { ok: false, reason: 'renew-refused' };
+    if (stopReason === 'max_tokens') return { ok: false, reason: 'renew-truncated' };
+    return {
+      ok: false,
+      reason: `renew-unexpected-stop:${typeof stopReason === 'string' ? stopReason : 'missing'}`,
+    };
+  }
+  const trimmed = visibleText.trim();
+  if (!trimmed) {
+    return { ok: false, reason: 'renew-empty-output' };
+  }
+  if (trimmed.length > RENEW_MAX_CONFIRMATION_CHARS) {
+    return { ok: false, reason: 'renew-unexpected-long-output' };
+  }
+  if (RENEW_REFUSAL_OR_ERROR_RE.test(trimmed)) {
+    return { ok: false, reason: 'renew-refusal-or-error-output' };
+  }
+  return { ok: true };
+}
+
 export type SessionRolloverColdSummarizer = (args: {
   readonly sessionId: SessionId;
   readonly meta?: SessionMeta;
@@ -234,28 +268,20 @@ export type SessionRolloverColdSummarizer = (args: {
 
 const COLD_ROLLOVER_SUMMARY_TIMEOUT_MS = 45_000;
 
-const noopColdRolloverTerminalManager: TerminalManager = {
-  createTerminal: async () => {
-    throw new Error('Terminal not supported in isolated cold rollover summarizer');
-  },
-  terminalOutput: async () => {
-    throw new Error('Terminal not supported in isolated cold rollover summarizer');
-  },
-  releaseTerminal: async () => {},
-  waitForTerminalExit: async () => ({ exitCode: null }),
-  killTerminal: async () => {},
-};
-
 /**
  * Production tool-free isolated cold summarizer for linear session rollover.
  *
- * Spawns a short-lived, completely isolated ACP session in an empty temp dir
- * (no tools, no terminals, all permissions cancelled, no MCP servers, low
- * effort when advertised) to summarize the bounded 8k–20k plain-text Loro Q&A
- * stream. Never wakes the old 350k ACP session, never writes Loro history or
- * `meta.acpSessionId`, always tears down its process + temp dir in `finally`,
- * and returns `null` on failure/timeout/abort so `sealNode` cleanly degrades
- * to `buildFallbackRolloverCard`.
+ * Spawns a short-lived, completely isolated text-only ACP session via
+ * `prepareBtwIsolation(..., readOnlyTools: false)`:
+ * - empty temp workdir (`0o700`), provider-specific isolated config/args (no
+ *   Antigravity `--dangerously-skip-permissions`, no Codex hooks/plugins/MCP,
+ *   Claude safe mode, fail-closed `NMEM_*`)
+ * - ACP `fs.readTextFile: false`, `fs.writeTextFile: false`, `terminal: false`,
+ *   `disableBuiltinMcp: true`, and all permission requests unconditionally cancelled
+ * - single bounded deadline + `AbortSignal` covering the ENTIRE lifecycle from
+ *   launch config resolution and agent startup through `setSessionConfigOption`
+ *   and `prompt()`, tearing down any spawned process and temp dirs in `finally`
+ *   and returning `null` so `sealNode` degrades cleanly to `buildFallbackRolloverCard`.
  */
 export function createIsolatedColdRolloverSummarizer(deps: {
   readonly workspaceDocument: LoroDocumentManager;
@@ -264,10 +290,12 @@ export function createIsolatedColdRolloverSummarizer(deps: {
   readonly logger: Logger;
   readonly timeoutMs?: number;
   readonly resolveLaunchConfig?: typeof resolveSessionLaunchConfig;
+  readonly prepareIsolation?: typeof prepareBtwIsolation;
   readonly startAgent?: typeof startLocalAcpAgent;
   readonly shutdownAgent?: typeof shutdownLocalAcpAgent;
 }): SessionRolloverColdSummarizer {
   const resolveLaunch = deps.resolveLaunchConfig ?? resolveSessionLaunchConfig;
+  const prepareIsolation = deps.prepareIsolation ?? prepareBtwIsolation;
   const startAgent = deps.startAgent ?? startLocalAcpAgent;
   const shutdownAgent = deps.shutdownAgent ?? shutdownLocalAcpAgent;
   const timeoutMs = deps.timeoutMs ?? COLD_ROLLOVER_SUMMARY_TIMEOUT_MS;
@@ -277,51 +305,112 @@ export function createIsolatedColdRolloverSummarizer(deps: {
       return null;
     }
 
-    let launchConfig: Awaited<ReturnType<typeof resolveSessionLaunchConfig>>['config'];
-    try {
-      const resolved = await resolveLaunch({
-        workspaceDocument: deps.workspaceDocument,
-        workspaceId: deps.workspaceId,
-        machineId: deps.machineId,
-        sessionId,
-        sessionMeta: meta,
-        logger: deps.logger,
-      });
-      launchConfig = resolved.config;
-    } catch (error) {
-      deps.logger.debug(
-        `[${sessionId}] Cold rollover summarizer could not resolve launch config: ${formatError(error)}`
-      );
-      return null;
-    }
-
-    if (signal?.aborted) {
-      return null;
-    }
-
-    const workdir = await mkdtemp(path.join(os.tmpdir(), 'lody-rollover-cold-'));
-    let started: Awaited<ReturnType<typeof startLocalAcpAgent>> | undefined;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const sessionLabel = `rollover-cold-seal:${meta.cliType}/${meta.agentType}`;
     const localAbort = new AbortController();
-    const onParentAbort = () => localAbort.abort(signal?.reason);
+    let started: Awaited<ReturnType<typeof startLocalAcpAgent>> | undefined;
+    let isolation: Awaited<ReturnType<typeof prepareBtwIsolation>> | undefined;
+    let exitedLifecycle = false;
+
+    let rejectAbort!: (reason: unknown) => void;
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    // Prevent unhandled rejections if abort fires while no race awaits `abortPromise`.
+    void abortPromise.catch(() => undefined);
+
+    const triggerAbort = (reason: unknown): void => {
+      if (!localAbort.signal.aborted) {
+        localAbort.abort(reason);
+      }
+      if (started?.client) {
+        void started.client.cancel(started.acpSessionId).catch(() => undefined);
+      }
+      rejectAbort(reason);
+    };
+
+    const onParentAbort = () =>
+      triggerAbort(
+        signal?.reason ?? new DOMException('Cold rollover summary aborted', 'AbortError')
+      );
     signal?.addEventListener('abort', onParentAbort, { once: true });
+
+    const timeoutHandle = setTimeout(() => {
+      triggerAbort(new Error(`Cold rollover summary exceeded ${timeoutMs}ms`));
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+
+    const raceAbort = async <T>(work: Promise<T>): Promise<T> => {
+      if (localAbort.signal.aborted) {
+        throw localAbort.signal.reason ?? new DOMException('Aborted', 'AbortError');
+      }
+      return await Promise.race([work, abortPromise]);
+    };
 
     let collectedFinalText = '';
     let collectedUnphasedText = '';
 
     try {
-      started = await startAgent({
+      let launchConfig: Awaited<ReturnType<typeof resolveSessionLaunchConfig>>['config'];
+      try {
+        const resolved = await raceAbort(
+          resolveLaunch({
+            workspaceDocument: deps.workspaceDocument,
+            workspaceId: deps.workspaceId,
+            machineId: deps.machineId,
+            sessionId,
+            sessionMeta: meta,
+            logger: deps.logger,
+          })
+        );
+        launchConfig = resolved.config;
+      } catch (error) {
+        if (!localAbort.signal.aborted) {
+          deps.logger.debug(
+            `[${sessionId}] Cold rollover summarizer could not resolve launch config: ${formatError(error)}`
+          );
+        }
+        return null;
+      }
+
+      const isolationPromise = prepareIsolation({
+        cliType: meta.cliType,
+        agentType: meta.agentType,
+        readOnlyTools: false,
+        sessionWorkdir: null,
+        baseEnv: { ...process.env, ...launchConfig?.env },
+        logger: deps.logger,
+      });
+      void isolationPromise.then(
+        (lateIsolation) => {
+          if (exitedLifecycle && isolation !== lateIsolation) {
+            lateIsolation.cleanup();
+          }
+        },
+        () => undefined
+      );
+      isolation = await raceAbort(isolationPromise);
+
+      const startPromise = startAgent({
         cliType: meta.cliType,
         agentType: meta.agentType,
         customAcp: launchConfig?.customAcp,
         runtimeOverrides: launchConfig?.runtimeOverrides,
         agentConfigId: meta.agentConfigId,
         magpieGatewayUrl: launchConfig?.magpieGatewayUrl,
-        workdir,
-        env: { ...process.env, ...launchConfig?.env, LODY_ROLLOVER_COLD_SEAL: '1' },
+        workdir: isolation.workdir,
+        env: { ...isolation.env, LODY_ROLLOVER_COLD_SEAL: '1' },
+        envTransform: (childEnv) => ({
+          ...isolation!.envTransform(childEnv),
+          LODY_ROLLOVER_COLD_SEAL: '1',
+        }),
+        launchArgFilter: isolation.launchArgFilter,
         logger: deps.logger,
-        terminalManager: noopColdRolloverTerminalManager,
+        terminalManager: isolation.terminalManager,
         terminalEnabled: false,
+        readOnlyFs: true,
+        disableReadTextFile: true,
+        disableBuiltinMcp: true,
+        signal: localAbort.signal,
         onUpdateMessage: (msg) => {
           const chunk = extractTitleChunkFromNotification(msg);
           if (!chunk) return;
@@ -337,10 +426,21 @@ export function createIsolatedColdRolloverSummarizer(deps: {
         ): Promise<RequestPermissionResponse> => ({ outcome: { outcome: 'cancelled' } }),
         extraArgs: [],
       });
-
-      if (localAbort.signal.aborted) {
-        return null;
-      }
+      void startPromise.then(
+        (lateStarted) => {
+          if (exitedLifecycle && started !== lateStarted) {
+            void shutdownAgent({
+              agentProcess: lateStarted.agentProcess,
+              client: lateStarted.client,
+              acpSessionId: lateStarted.acpSessionId,
+              logger: deps.logger,
+              sessionLabel,
+            }).catch(() => undefined);
+          }
+        },
+        () => undefined
+      );
+      started = await raceAbort(startPromise);
 
       // Lower thought_level to `low` when advertised so cold seal stays fast.
       const sessionOptions = (
@@ -354,53 +454,30 @@ export function createIsolatedColdRolloverSummarizer(deps: {
           ? extractSelectOptionValues(thoughtOpt).find((v) => v.trim().toLowerCase() === 'low')
           : undefined;
         if (thoughtOpt && lowValue) {
-          await started.client
-            .setSessionConfigOption(started.acpSessionId, thoughtOpt.id, lowValue)
-            .catch(() => undefined);
+          await raceAbort(
+            started.client
+              .setSessionConfigOption(started.acpSessionId, thoughtOpt.id, lowValue)
+              .catch(() => undefined)
+          );
         }
       }
 
       collectedFinalText = '';
       collectedUnphasedText = '';
 
-      const runPrompt = async () => {
-        if (!started?.client) return null;
-        const response = await started.client.prompt(
-          started.acpSessionId,
-          [{ type: 'text', text: prompt }],
-          { signal: localAbort.signal }
-        );
-        if (localAbort.signal.aborted) return null;
-        const stopReason = (response as { stopReason?: unknown } | undefined)?.stopReason;
-        if (stopReason === 'cancelled' || stopReason === 'refusal') return null;
-        const streamed = (collectedFinalText.trim() || collectedUnphasedText.trim()).trim();
-        if (streamed) return streamed;
-        const inline = extractTextFromAgentResponse(response)?.trim();
-        return inline || null;
-      };
-
-      const deadlinePromise = new Promise<null>((resolve) => {
-        timeoutHandle = setTimeout(() => {
-          localAbort.abort(new Error(`Cold rollover summary exceeded ${timeoutMs}ms`));
-          if (started?.client) {
-            void started.client.cancel(started.acpSessionId).catch(() => undefined);
-          }
-          resolve(null);
-        }, timeoutMs);
-        timeoutHandle.unref?.();
-      });
-
-      const onAbortCancel = () => {
-        if (started?.client) {
-          void started.client.cancel(started.acpSessionId).catch(() => undefined);
-        }
-      };
-      localAbort.signal.addEventListener('abort', onAbortCancel, { once: true });
-      try {
-        return await Promise.race([runPrompt(), deadlinePromise]);
-      } finally {
-        localAbort.signal.removeEventListener('abort', onAbortCancel);
-      }
+      if (!started.client) return null;
+      const response = await raceAbort(
+        started.client.prompt(started.acpSessionId, [{ type: 'text', text: prompt }], {
+          signal: localAbort.signal,
+        })
+      );
+      if (localAbort.signal.aborted) return null;
+      const stopReason = (response as { stopReason?: unknown } | undefined)?.stopReason;
+      if (stopReason === 'cancelled' || stopReason === 'refusal') return null;
+      const streamed = (collectedFinalText.trim() || collectedUnphasedText.trim()).trim();
+      if (streamed) return streamed;
+      const inline = extractTextFromAgentResponse(response)?.trim();
+      return inline || null;
     } catch (error) {
       if (!signal?.aborted) {
         deps.logger.warn(
@@ -409,6 +486,7 @@ export function createIsolatedColdRolloverSummarizer(deps: {
       }
       return null;
     } finally {
+      exitedLifecycle = true;
       clearTimeout(timeoutHandle);
       signal?.removeEventListener('abort', onParentAbort);
       if (started) {
@@ -417,10 +495,10 @@ export function createIsolatedColdRolloverSummarizer(deps: {
           client: started.client,
           acpSessionId: started.acpSessionId,
           logger: deps.logger,
-          sessionLabel: `rollover-cold-seal:${meta.cliType}/${meta.agentType}`,
+          sessionLabel,
         }).catch(() => undefined);
       }
-      await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
+      isolation?.cleanup();
     }
   };
 }
@@ -931,19 +1009,18 @@ export class SessionRolloverService {
       sealedAtMs: finishedMs,
       ...(usedBefore !== undefined ? { usedBefore } : {}),
       ...(userHint?.trim() ? { userHint: userHint.trim() } : {}),
+      ...(originTurnId && !current.originTurnId ? { candidateOriginTurnId: originTurnId } : {}),
+      candidateStateCard: sealParsed.stateCard,
+      candidateSpineItem: spineItem,
     };
 
     try {
       await this.options.store.update(sessionId, (latest) => {
         const base = latest ?? createInitialSessionRolloverState(sessionId, finishedMs);
-        // If re-sealing before the previous pending switch executed, replace its
-        // unactivated spine entry rather than duplicating the same generation.
-        const filteredSpine = base.spine.filter((item) => item.gen !== targetGen);
+        // Stage candidate stateCard/spineItem strictly inside `pendingSwitch`
+        // so committed state remains untouched until lazy `:renew` succeeds.
         return {
           ...base,
-          ...(originTurnId ? { originTurnId } : {}),
-          stateCard: sealParsed!.stateCard,
-          spine: [...filteredSpine, spineItem].slice(-SESSION_ROLLOVER_MAX_SPINE_ENTRIES),
           pendingSwitch,
           updatedAt: finishedMs,
         };
@@ -967,7 +1044,6 @@ export class SessionRolloverService {
           const { pendingSwitch: _rolledBack, ...rest } = latest;
           return {
             ...rest,
-            spine: latest.spine.filter((item) => item.gen !== targetGen),
             updatedAt: this.now(),
           };
         })
@@ -989,6 +1065,68 @@ export class SessionRolloverService {
       quality,
       mode,
     };
+  }
+
+  /**
+   * Discard an unactivated `pendingSwitch` (and its staged candidate stateCard /
+   * spineItem) when the old ACP session continues handling ordinary turns or
+   * history is rewritten, ensuring subsequent seals include the new turns and
+   * never inherit invalidated candidate state.
+   */
+  async invalidatePendingSwitch(args: {
+    readonly sessionId: SessionId;
+    readonly reason: string;
+    readonly writeDivider: (
+      runId: string,
+      meta: SessionRolloverNoticeMeta,
+      timestamp: string
+    ) => Promise<void>;
+  }): Promise<boolean> {
+    const { sessionId, reason } = args;
+    let pending: SessionRolloverPendingSwitch | undefined;
+    try {
+      pending = (await this.options.store.get(sessionId))?.pendingSwitch;
+    } catch (error) {
+      this.options.logger.warn(
+        `[${sessionId}] Could not read rollover state while invalidating pendingSwitch: ${formatError(error)}`
+      );
+      return false;
+    }
+    if (!pending) return false;
+    const nowIso = new Date(this.now()).toISOString();
+    await this.options.store
+      .update(sessionId, (latest) => {
+        if (!latest?.pendingSwitch || latest.pendingSwitch.runId !== pending!.runId) return latest;
+        const { pendingSwitch: _cleared, ...rest } = latest;
+        return {
+          ...rest,
+          ...(reason === 'superseded-by-live-turn' && pending!.reason === 'post_compact_recovery'
+            ? { degradedByNativeCompact: true }
+            : {}),
+          updatedAt: this.now(),
+        };
+      })
+      .catch((error) => {
+        this.options.logger.warn(
+          `[${sessionId}] Failed to clear invalidated rollover pendingSwitch: ${formatError(error)}`
+        );
+      });
+    await args
+      .writeDivider(
+        pending.runId,
+        {
+          kind: 'linear_rollover',
+          trigger: rolloverReasonToTrigger(pending.reason),
+          status: 'interrupted',
+          generation: pending.targetGen,
+          nodeId: pending.nodeId,
+          ...(pending.usedBefore !== undefined ? { usedBefore: pending.usedBefore } : {}),
+          reason,
+        },
+        nowIso
+      )
+      .catch(() => undefined);
+    return true;
   }
 
   /**
@@ -1080,7 +1218,6 @@ export class SessionRolloverService {
           const { pendingSwitch: _stale, ...rest } = latest;
           return {
             ...rest,
-            spine: latest.spine.filter((item) => item.gen !== pending.targetGen),
             updatedAt: this.now(),
           };
         })
@@ -1107,17 +1244,27 @@ export class SessionRolloverService {
       workdir: args.workdir,
       segmentEntries,
     });
+    const effectiveStateCard = pending.candidateStateCard ?? state.stateCard;
+    const effectiveSpine = pending.candidateSpineItem
+      ? [
+          ...state.spine.filter((item) => item.gen !== pending.targetGen),
+          pending.candidateSpineItem,
+        ].slice(-SESSION_ROLLOVER_MAX_SPINE_ENTRIES)
+      : state.spine;
+    const effectiveOriginTurnId = state.originTurnId ?? pending.candidateOriginTurnId;
+    const rolloverStateFilePath = this.options.store.getStateFilePath?.(sessionId);
     const openingPrompt = buildLinearRolloverOpening({
       sessionId,
       generation: pending.targetGen,
       nodeId: pending.nodeId,
       history,
-      originTurnId: state.originTurnId,
+      originTurnId: effectiveOriginTurnId,
       previousLastSealedTurnId: state.lastSealedTurnId,
       sealedThroughTurnId: pending.sealedThroughTurnId,
-      stateCard: state.stateCard,
-      spine: state.spine,
+      stateCard: effectiveStateCard,
+      spine: effectiveSpine,
       workspace: workspaceAnchor,
+      ...(rolloverStateFilePath ? { rolloverStateFilePath } : {}),
       nowIso,
       usedBefore: pending.usedBefore,
       userHint: pending.userHint,
@@ -1290,11 +1437,22 @@ export class SessionRolloverService {
     await this.options.store.update(sessionId, (latest) => {
       const base = latest ?? createInitialSessionRolloverState(sessionId, committedAt);
       const { pendingSwitch: _cleared, ...rest } = base;
+      const committedOriginTurnId = base.originTurnId ?? pending.candidateOriginTurnId;
+      const committedStateCard = pending.candidateStateCard ?? base.stateCard;
+      const committedSpine = pending.candidateSpineItem
+        ? [
+            ...base.spine.filter((item) => item.gen !== pending.targetGen),
+            pending.candidateSpineItem,
+          ].slice(-SESSION_ROLLOVER_MAX_SPINE_ENTRIES)
+        : base.spine;
       return {
         ...rest,
+        ...(committedOriginTurnId ? { originTurnId: committedOriginTurnId } : {}),
         generation: pending.targetGen,
         activeAcpSessionId: acpSessionId,
         lastSealedTurnId: pending.sealedThroughTurnId,
+        stateCard: committedStateCard,
+        spine: committedSpine,
         ...(usedAfter !== undefined ? { usedAfterLastRollover: usedAfter } : {}),
         degradedByNativeCompact: false,
         updatedAt: committedAt,
@@ -1331,6 +1489,7 @@ export class SessionRolloverService {
       workdir: args.workdir,
       segmentEntries,
     });
+    const rolloverStateFilePath = this.options.store.getStateFilePath?.(args.sessionId);
     const opening = buildLinearRolloverOpening({
       sessionId: args.sessionId,
       generation: state.generation,
@@ -1342,6 +1501,7 @@ export class SessionRolloverService {
       stateCard: state.stateCard,
       spine: state.spine,
       workspace: workspaceAnchor,
+      ...(rolloverStateFilePath ? { rolloverStateFilePath } : {}),
       nowIso,
     });
 

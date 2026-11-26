@@ -57,6 +57,15 @@ export type SessionRolloverPendingSwitch = {
   attemptingAcpSessionId?: string;
   /** Recorded once `:renew` has completed on a fresh ACP session, for crash-recovery convergence. */
   preparedAcpSessionId?: string;
+  /**
+   * Candidate state staged by `:seal` and promoted onto committed state only
+   * once lazy `:renew` succeeds. Keeping these inside `pendingSwitch` ensures
+   * Edit & Resend or deferred-turn invalidation discards them cleanly without
+   * contaminating committed `stateCard` or `spine`.
+   */
+  candidateOriginTurnId?: string;
+  candidateStateCard?: SessionRolloverStateCard;
+  candidateSpineItem?: SessionRolloverSpineItem;
 };
 
 export type SessionRolloverState = {
@@ -82,6 +91,8 @@ export type SessionRolloverStore = {
     updater: (current: SessionRolloverState | undefined) => SessionRolloverState | undefined
   ): Promise<SessionRolloverState | undefined>;
   clear(sessionId: SessionId): Promise<void>;
+  /** Machine-local JSON path for this session's persisted rollover state, when file-backed. */
+  getStateFilePath?(sessionId: SessionId): string;
 };
 
 const SessionRolloverReasonSchema = z.enum([
@@ -121,6 +132,9 @@ const SessionRolloverPendingSwitchSchema = z.object({
   userHint: z.string().optional(),
   attemptingAcpSessionId: z.string().min(1).optional(),
   preparedAcpSessionId: z.string().min(1).optional(),
+  candidateOriginTurnId: z.string().min(1).optional(),
+  candidateStateCard: SessionRolloverStateCardSchema.optional(),
+  candidateSpineItem: SessionRolloverSpineItemSchema.optional(),
 });
 
 const SessionRolloverStateSchema = z.object({
@@ -162,16 +176,32 @@ export function createInitialSessionRolloverState(
   };
 }
 
+function cloneStateCard(card: SessionRolloverStateCard): SessionRolloverStateCard {
+  return {
+    ...card,
+    lockedInvariants: [...card.lockedInvariants],
+    decisionsAndDeadEnds: [...card.decisionsAndDeadEnds],
+  };
+}
+
 function cloneState(state: SessionRolloverState): SessionRolloverState {
   return {
     ...state,
-    stateCard: {
-      ...state.stateCard,
-      lockedInvariants: [...state.stateCard.lockedInvariants],
-      decisionsAndDeadEnds: [...state.stateCard.decisionsAndDeadEnds],
-    },
+    stateCard: cloneStateCard(state.stateCard),
     spine: state.spine.map((item) => ({ ...item })),
-    ...(state.pendingSwitch ? { pendingSwitch: { ...state.pendingSwitch } } : {}),
+    ...(state.pendingSwitch
+      ? {
+          pendingSwitch: {
+            ...state.pendingSwitch,
+            ...(state.pendingSwitch.candidateStateCard
+              ? { candidateStateCard: cloneStateCard(state.pendingSwitch.candidateStateCard) }
+              : {}),
+            ...(state.pendingSwitch.candidateSpineItem
+              ? { candidateSpineItem: { ...state.pendingSwitch.candidateSpineItem } }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -405,6 +435,9 @@ export function createFileSessionRolloverStore(options?: {
     },
     clear(sessionId) {
       return enqueue(sessionId, () => clearUnlocked(sessionId));
+    },
+    getStateFilePath(sessionId) {
+      return filePathFor(sessionId);
     },
   };
 }

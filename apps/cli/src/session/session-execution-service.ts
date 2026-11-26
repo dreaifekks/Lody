@@ -29,6 +29,7 @@ import {
 import { parseSessionRolloverCommand } from './session-rollover-opening';
 import {
   buildLowEffortRunConfigForRenew,
+  isValidRolloverRenewConfirmation,
   SessionRolloverService,
   type SessionRolloverColdSummarizer,
   type SessionRolloverWorkspaceProber,
@@ -1789,6 +1790,11 @@ export class SessionExecutionService {
     return runtime;
   }
 
+  /** Whether this session is currently running a preemptible post-turn automatic rollover `:seal`. */
+  isAutoRolloverSealing(sessionId: SessionId): boolean {
+    return this.turnRuntimeBySession.get(sessionId)?.autoRolloverSealing === true;
+  }
+
   /**
    * Watcher hook: preempt an in-flight post-turn automatic rollover `:seal`
    * when new user input or queue work arrives, returning a promise that settles
@@ -1798,6 +1804,50 @@ export class SessionExecutionService {
     const preempted = this.preemptAutoRolloverSeal(sessionId);
     if (!preempted) return null;
     return this.waitForTurnRelease(sessionId, preempted.turnId).catch(() => undefined);
+  }
+
+  /**
+   * After an aborted or cancelled warm `:seal` prompt, wait up to `cancelDrainMs`
+   * for the raw ACP prompt to actually settle before allowing reuse of the live
+   * session; if the agent does not drain in time, retire it cleanly so the next
+   * user turn starts on a fresh connection instead of colliding on the same ACP.
+   */
+  private async drainOrRetireCancelledRolloverSeal(
+    sessionId: SessionId,
+    activeSession: ISession,
+    runtime?: TurnRuntimeState
+  ): Promise<void> {
+    const pending = activeSession.agentClient?.pendingPromptCompletion;
+    if (!pending) return;
+    if (activeSession.agentClient?.isCreated() && activeSession.acpSessionId) {
+      void activeSession.agentClient.cancel(activeSession.acpSessionId).catch(() => undefined);
+    }
+    try {
+      await withTimeout(
+        pending.then(
+          () => undefined,
+          () => undefined
+        ),
+        TURN_BUDGETS.cancelDrainMs,
+        'Rollover :seal ACP prompt cancellation timed out'
+      );
+    } catch {
+      // A terminal response may have settled right as the timeout fired.
+      if (!activeSession.agentClient?.pendingPromptCompletion) return;
+      this.deps.logger.warn(
+        `[${sessionId}] Cancelled rollover :seal ACP prompt did not drain within ${TURN_BUDGETS.cancelDrainMs}ms; retiring session before reuse`
+      );
+      await this.deps.sessionManager
+        .retireSessionForReconfiguration(activeSession)
+        .catch((error: unknown) => {
+          this.deps.logger.warn(
+            `[${sessionId}] Failed to retire session after rollover :seal cancel timeout: ${formatErrorMessage(error)}`
+          );
+        });
+      if (runtime?.session === activeSession) {
+        runtime.session = undefined;
+      }
+    }
   }
 
   /**
@@ -1963,6 +2013,9 @@ export class SessionExecutionService {
               }
               return { status: 'failed', reason: formatErrorMessage(error) };
             } finally {
+              if (isCancelled() || activeSession.agentClient?.pendingPromptCompletion) {
+                await this.drainOrRetireCancelledRolloverSeal(sessionId, activeSession, runtime);
+              }
               await this.deps.turnFinalization
                 .finalizeACPState(sessionId, sealAssistantId)
                 .catch(() => undefined);
@@ -2763,7 +2816,16 @@ export class SessionExecutionService {
           return read.state === 'ready' ? (read.turn as SessionHistoryInput) : undefined;
         },
       });
-    if (compactionResult.compacted && context.preTurnMeta.boardRole !== 'coordinator') {
+    const interruptedExplicitCompact = isExplicitCompactTurnInput(
+      resolveSessionExecutionInputBlocks(runtime.invocation?.inputConfig ?? {}),
+      runtime.invocation?.inputConfig?.prompt
+    );
+    if (
+      compactionResult.compacted &&
+      !interruptedExplicitCompact &&
+      (compactionResult.reason === 'acp_marker' || compactionResult.reason === 'usage_drop') &&
+      context.preTurnMeta.boardRole !== 'coordinator'
+    ) {
       await this.sessionRollover.markDegradedByNativeCompact(sessionId);
     }
   }
@@ -7728,7 +7790,7 @@ export class SessionExecutionService {
     const existingMeta = await this.getSessionMeta(sessionId);
     await this.upsertSessionMeta(sessionId, {
       lastHandledUserMsgId: userTurnId,
-      ...(existingMeta?.lastFailedUserMsgId === userTurnId
+      ...(existingMeta?.lastFailedUserMsgId !== undefined
         ? { lastFailedUserMsgId: undefined }
         : {}),
       processingUserMsgId: undefined,
@@ -9133,7 +9195,18 @@ export class SessionExecutionService {
           })
         );
         compactionObservedInTurn = compactionResult.compacted;
-        if (compactionResult.compacted && turnMeta.boardRole !== 'coordinator') {
+        const effectiveExplicitCompactTurn =
+          isUserExplicitCompactTurn ||
+          isExplicitCompactTurnInput(
+            resolveSessionExecutionInputBlocks(runtime.invocation?.inputConfig ?? {}),
+            runtime.invocation?.inputConfig?.prompt
+          );
+        if (
+          compactionResult.compacted &&
+          !effectiveExplicitCompactTurn &&
+          (compactionResult.reason === 'acp_marker' || compactionResult.reason === 'usage_drop') &&
+          turnMeta.boardRole !== 'coordinator'
+        ) {
           yield* self.tryPromise(() => self.sessionRollover.markDegradedByNativeCompact(sessionId));
         }
         if (inPostRolloverGrace && !runtime.promptFailed && producedOutput) {
@@ -9356,6 +9429,18 @@ export class SessionExecutionService {
                     return { status: 'failed', reason: formatErrorMessage(error) };
                   } finally {
                     ctx.runtime.promptInFlight = false;
+                    if (
+                      signal.aborted ||
+                      ctx.runtime.cancelRequested ||
+                      self.isTurnCancelled(sessionId, ctx.runtime.turnId) ||
+                      liveSession.agentClient?.pendingPromptCompletion
+                    ) {
+                      await self.drainOrRetireCancelledRolloverSeal(
+                        sessionId,
+                        liveSession,
+                        ctx.runtime
+                      );
+                    }
                     await self.deps.turnFinalization
                       .finalizeACPState(sessionId, sealAssistantId)
                       .catch(() => undefined);
@@ -9430,14 +9515,44 @@ export class SessionExecutionService {
           // the freshly warmed ACP node. Skips when the turn is pinned to a native
           // automation session ID or the live ACP session still owns unsettled
           // native background work (deferring retirement safely).
-          const eligibleForLazyRenew =
+          const isNormalNonSlashUserTurn =
             isOrdinaryUserContinueTurn &&
             Boolean(preTurnMeta) &&
             !preTurnMeta!.isArchived &&
             preTurnMeta!.boardRole !== 'coordinator' &&
             !resolvePinnedNativeSessionId(ctx.runtime) &&
-            !(session && self.hasLiveNativeWork(sessionId, session)) &&
             !(!incomingHasNonText && isSlashCommandInput(incomingText));
+          const liveNativeWorkBlocksRenew = Boolean(
+            session && self.hasLiveNativeWork(sessionId, session)
+          );
+          const eligibleForLazyRenew = isNormalNonSlashUserTurn && !liveNativeWorkBlocksRenew;
+
+          if (
+            isNormalNonSlashUserTurn &&
+            liveNativeWorkBlocksRenew &&
+            preTurnMeta &&
+            (yield* self.tryPromise(() => self.sessionRollover.hasPendingSwitch(sessionId)))
+          ) {
+            // Live native background work kept the old ACP session running for
+            // this normal user turn (M1). Invalidate the stale pending switch so
+            // a subsequent rollover re-seals including M1 rather than silently
+            // dropping M1's Q&A.
+            yield* self.tryPromise(() =>
+              self.sessionRollover.invalidatePendingSwitch({
+                sessionId,
+                reason: 'superseded-by-live-turn',
+                writeDivider: (runId, noticeMeta, timestamp) =>
+                  self.upsertSessionRolloverDivider(
+                    sessionDoc,
+                    sessionId,
+                    runId,
+                    noticeMeta,
+                    timestamp,
+                    dividerTimestamps
+                  ),
+              })
+            );
+          }
 
           if (
             eligibleForLazyRenew &&
@@ -9690,12 +9805,6 @@ export class SessionExecutionService {
                   ) {
                     return { status: 'cancelled' as const };
                   }
-                  if (renewStopReason === 'refusal') {
-                    return {
-                      status: 'failed' as const,
-                      reason: 'renew-refused',
-                    };
-                  }
 
                   const renewEntryRead = yield* self
                     .tryPromise(() => backend.readTurn(renewAssistantId))
@@ -9706,10 +9815,14 @@ export class SessionExecutionService {
                       : '') ||
                     extractTextFromAgentResponse(renewPromptResponse) ||
                     '';
-                  if (!renewVisibleText.trim()) {
+                  const renewValidation = isValidRolloverRenewConfirmation(
+                    renewStopReason,
+                    renewVisibleText
+                  );
+                  if (!renewValidation.ok) {
                     return {
                       status: 'failed' as const,
-                      reason: 'renew-empty-output',
+                      reason: renewValidation.reason,
                     };
                   }
 
@@ -10693,7 +10806,19 @@ export class SessionExecutionService {
               })
             );
             startCompactionObserved = compactionResult.compacted;
-            if (compactionResult.compacted && existingMeta.boardRole !== 'coordinator') {
+            const startExplicitCompact = isExplicitCompactTurnInput(
+              resolveSessionExecutionInputBlocks(
+                runtime.invocation?.inputConfig ?? acpSessionConfig
+              ),
+              runtime.invocation?.inputConfig?.prompt ?? acpSessionConfig.prompt
+            );
+            if (
+              compactionResult.compacted &&
+              !startExplicitCompact &&
+              (compactionResult.reason === 'acp_marker' ||
+                compactionResult.reason === 'usage_drop') &&
+              existingMeta.boardRole !== 'coordinator'
+            ) {
               yield* self.tryPromise(() =>
                 self.sessionRollover.markDegradedByNativeCompact(sessionId)
               );

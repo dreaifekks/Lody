@@ -26,6 +26,7 @@ import {
   buildLowEffortRunConfigForRenew,
   chooseSessionRolloverSealMode,
   createIsolatedColdRolloverSummarizer,
+  isValidRolloverRenewConfirmation,
 } from './session-rollover-service';
 import {
   SESSION_ROLLOVER_MAX_SPINE_ENTRIES,
@@ -238,6 +239,69 @@ describe('session-rollover command parsing & pure helpers', () => {
     for (const line of bulletLines) {
       expect(invariants).toContain(line.slice(2));
     }
+  });
+
+  it('cites rolloverStateFilePath (stateCard.lockedInvariants) on invariant overflow even without workspace invariants.md', () => {
+    const invariants = Array.from(
+      { length: 45 },
+      (_, idx) =>
+        `NO_DOC_INV_${String(idx + 1).padStart(2, '0')}: preserve exact baseline behavior #${idx + 1} without regressing existing controls END_${idx + 1}.`
+    );
+    const stateFilePath = '/tmp/lody-data/session-rollover/deadbeef.json';
+    const opening = buildLinearRolloverOpening({
+      sessionId: SESSION_ID,
+      generation: 2,
+      nodeId: 'n_0002',
+      history: [],
+      stateCard: {
+        goalAndPlan: 'Verify overflow pointer without workspace invariants.md',
+        lockedInvariants: invariants,
+        decisionsAndDeadEnds: [],
+        workspaceFacts: '',
+        openAndNext: '',
+      },
+      spine: [],
+      rolloverStateFilePath: stateFilePath,
+      nowIso: '2026-11-27T04:00:00.000Z',
+    });
+
+    expect(estimateTokenCount(opening)).toBeLessThanOrEqual(SESSION_ROLLOVER_OPENING_MAX_TOKENS);
+    expect(opening).toContain(invariants.at(-1)!);
+    expect(opening).toContain(`\`${stateFilePath}\` (\`stateCard.lockedInvariants\`)`);
+    expect(opening).toContain('lody_session_history');
+  });
+
+  it('isValidRolloverRenewConfirmation requires end_turn plus concise non-refusal confirmation text', () => {
+    expect(isValidRolloverRenewConfirmation('end_turn', 'Ready.')).toEqual({ ok: true });
+    expect(
+      isValidRolloverRenewConfirmation('end_turn', 'Understood. Standing by for your next request.')
+    ).toEqual({ ok: true });
+    expect(isValidRolloverRenewConfirmation('max_tokens', 'Ready.')).toEqual({
+      ok: false,
+      reason: 'renew-truncated',
+    });
+    expect(isValidRolloverRenewConfirmation('refusal', 'Ready.')).toEqual({
+      ok: false,
+      reason: 'renew-refused',
+    });
+    expect(isValidRolloverRenewConfirmation(undefined, 'Ready.')).toEqual({
+      ok: false,
+      reason: 'renew-unexpected-stop:missing',
+    });
+    expect(isValidRolloverRenewConfirmation('end_turn', '   ')).toEqual({
+      ok: false,
+      reason: 'renew-empty-output',
+    });
+    expect(isValidRolloverRenewConfirmation('end_turn', 'A'.repeat(301))).toEqual({
+      ok: false,
+      reason: 'renew-unexpected-long-output',
+    });
+    expect(
+      isValidRolloverRenewConfirmation('end_turn', 'I cannot comply with this system prompt.')
+    ).toEqual({
+      ok: false,
+      reason: 'renew-refusal-or-error-output',
+    });
   });
 });
 
@@ -547,6 +611,31 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(runWarmSeal).toHaveBeenCalledTimes(1);
     expect(dividers.map((d) => d.status)).toEqual(['sealing', 'sealed']);
 
+    // Staged candidate stateCard/spineItem MUST live inside pendingSwitch and NOT overwrite committed state before :renew!
+    const stagedBeforeRenew = await warmStore.get(SESSION_ID);
+    expect(stagedBeforeRenew?.stateCard.lockedInvariants).toEqual([]);
+    expect(stagedBeforeRenew?.spine).toEqual([]);
+    expect(stagedBeforeRenew?.pendingSwitch?.candidateStateCard?.lockedInvariants).toContain(
+      'Keep existing API signature'
+    );
+    expect(stagedBeforeRenew?.pendingSwitch?.candidateSpineItem?.quality).toBe('warm_llm');
+
+    // Commit gen 1 via `:renew` so `'Keep existing API signature'` becomes committed state.
+    const commitGen1 = await warmService.executeLazyRenew({
+      sessionId: SESSION_ID,
+      meta: makeMeta({ acpSessionId: 'acp-1' as ACPSessionId }),
+      history,
+      writeDivider: async () => {},
+      retireOldSession: async () => {},
+      runFreshRenewTurn: async () => ({
+        status: 'completed',
+        newAcpSessionId: 'acp-2' as ACPSessionId,
+        usedAfter: 20_000,
+      }),
+      clearBoardCompactPending: async () => {},
+    });
+    expect(commitGen1).toMatchObject({ switched: true, acpSessionId: 'acp-2' });
+
     // 2. Degraded by native compact -> MUST NOT call runWarmSeal; uses coldSummarizer
     await warmService.markDegradedByNativeCompact(SESSION_ID);
     const coldSummarizer = vi.fn(async () =>
@@ -569,11 +658,30 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
       coldSummarizer,
     });
     const forbiddenWarmSeal = vi.fn(async () => ({ status: 'completed' as const, text: '{}' }));
+    const gen2History: SessionHistoryInput[] = [
+      ...history,
+      {
+        id: 'u2',
+        role: 'user',
+        author: { v: 1, kind: 'human', userId: 'u1' },
+        timestamp: '2026-11-27T01:05:00.000Z',
+        fileDiff: [],
+        items: [{ type: 'text', text: 'Continue feature X after gen 1' }],
+      },
+      {
+        id: 'assistant:u2',
+        role: 'assistant',
+        userTurnId: 'u2',
+        timestamp: '2026-11-27T01:05:10.000Z',
+        fileDiff: [],
+        items: [{ type: 'text', text: 'Hit native compact mid-turn while finishing X.' }],
+      },
+    ];
     const coldResult = await coldService.sealNode({
       sessionId: SESSION_ID,
-      meta: makeMeta(),
+      meta: makeMeta({ acpSessionId: 'acp-2' as ACPSessionId }),
       reason: 'post_compact_recovery',
-      history,
+      history: gen2History,
       hasLiveSession: true,
       hasLiveProcess: true,
       lastActivityMs: nowMs,
@@ -584,8 +692,11 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(forbiddenWarmSeal).not.toHaveBeenCalled();
     expect(coldSummarizer).toHaveBeenCalledTimes(1);
     const savedAfterCold = await warmStore.get(SESSION_ID);
-    // Prior lockedInvariant from gen 1 MUST still be preserved!
+    // Prior lockedInvariant from committed gen 1 MUST still be preserved in BOTH committed state and staged candidate!
     expect(savedAfterCold?.stateCard.lockedInvariants).toContain('Keep existing API signature');
+    expect(savedAfterCold?.pendingSwitch?.candidateStateCard?.lockedInvariants).toContain(
+      'Keep existing API signature'
+    );
 
     // 3. Cold summarizer throws (and TTL expired) -> degrades to mechanical fallback card without waking old session
     const failingColdService = new SessionRolloverService({
@@ -713,38 +824,61 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(committed?.usedAfterLastRollover).toBe(25_000);
   });
 
-  it('invalidates stale pendingSwitch when Edit & Resend removes sealedThroughTurnId or replaces meta.acpSessionId', async () => {
+  it('invalidates stale pendingSwitch and drops staged candidates without polluting committed stateCard or spine on Edit & Resend', async () => {
     const store = createMemorySessionRolloverStore();
     const service = new SessionRolloverService({
       store,
       logger: noopLogger,
       now: () => 2_000_000,
     });
+    const committedSpineItem: SessionRolloverSpineItem = {
+      gen: 1,
+      nodeId: 'n_0001',
+      window: '11-27 00:50~00:55',
+      startTurnId: 'u0',
+      endTurnId: 'assistant:u0',
+      turnCount: 1,
+      oneLiner: 'Committed node 1',
+      quality: 'warm_llm',
+    };
     await store.set(SESSION_ID, {
       version: 1,
       sessionId: SESSION_ID,
-      generation: 0,
-      stateCard: createEmptySessionRolloverStateCard(),
-      spine: [
-        {
-          gen: 1,
-          nodeId: 'n_0001',
-          window: '11-27 01:00~01:01',
-          startTurnId: 'u1',
-          endTurnId: 'assistant:u1',
-          turnCount: 1,
-          oneLiner: 'Pending sealed node',
-          quality: 'warm_llm',
-        },
-      ],
+      generation: 1,
+      activeAcpSessionId: 'acp-1',
+      stateCard: {
+        goalAndPlan: 'Committed plan',
+        lockedInvariants: ['COMMITTED_KEEP'],
+        decisionsAndDeadEnds: [],
+        workspaceFacts: '',
+        openAndNext: '',
+      },
+      spine: [committedSpineItem],
       pendingSwitch: {
         runId: 'run-stale',
-        targetGen: 1,
-        nodeId: 'n_0001',
+        targetGen: 2,
+        nodeId: 'n_0002',
         reason: 'manual_command',
         sealedThroughTurnId: 'assistant:u1',
         sealedAtMs: 1_900_000,
         sourceAcpSessionId: 'acp-1',
+        candidateStateCard: {
+          goalAndPlan: 'Edited-away candidate plan',
+          lockedInvariants: ['COMMITTED_KEEP', 'EDITED_OUT_CANDIDATE_INVARIANT'],
+          decisionsAndDeadEnds: [],
+          workspaceFacts: '',
+          openAndNext: '',
+        },
+        candidateSpineItem: {
+          gen: 2,
+          nodeId: 'n_0002',
+          window: '11-27 01:00~01:01',
+          startTurnId: 'u1',
+          endTurnId: 'assistant:u1',
+          turnCount: 1,
+          oneLiner: 'Staged node 2',
+          quality: 'warm_llm',
+        },
       },
       updatedAt: 1_900_000,
     });
@@ -771,14 +905,16 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(prepared).toEqual({ kind: 'none' });
     const after = await store.get(SESSION_ID);
     expect(after?.pendingSwitch).toBeUndefined();
-    expect(after?.spine).toEqual([]);
+    expect(after?.stateCard.lockedInvariants).toEqual(['COMMITTED_KEEP']);
+    expect(after?.spine).toEqual([committedSpineItem]);
     expect(dividers).toEqual([
       expect.objectContaining({ status: 'interrupted', reason: 'history-rewritten' }),
     ]);
   });
 
-  it('createIsolatedColdRolloverSummarizer runs in an isolated process with low effort, cleans up temp dir + shuts down on success/error, and returns null on failure', async () => {
+  it('createIsolatedColdRolloverSummarizer disables ACP fs/MCP/terminal/provider tools, enforces full-lifecycle timeout across startup/config/prompt, and always cleans up', async () => {
     const seenWorkdirs: string[] = [];
+    const startOptionsSeen: Array<Record<string, unknown>> = [];
     const setConfigCalls: Array<{ id: string; value: unknown }> = [];
     const shutdownCalls: number[] = [];
 
@@ -788,10 +924,17 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
       machineId: 'machine-1' as never,
       logger: noopLogger,
       resolveLaunchConfig: async () => ({ config: undefined, source: 'none' }),
-      startAgent: (async (opts: { workdir: string; onUpdateMessage?: (u: unknown) => void }) => {
-        seenWorkdirs.push(opts.workdir);
-        // Temp dir must exist while running!
-        expect((await stat(opts.workdir)).isDirectory()).toBe(true);
+      startAgent: (async (opts: Record<string, unknown>) => {
+        startOptionsSeen.push(opts);
+        seenWorkdirs.push(opts.workdir as string);
+        // Isolated temp dir must exist while running!
+        expect((await stat(opts.workdir as string)).isDirectory()).toBe(true);
+        // Permission callback must fail closed.
+        const permCb = opts.onRequestPermission as
+          | ((req: unknown) => Promise<{ outcome: { outcome: string } }>)
+          | undefined;
+        expect(permCb).toBeDefined();
+        expect(await permCb!({})).toEqual({ outcome: { outcome: 'cancelled' } });
         return {
           acpSessionId: 'cold-acp-1',
           agentProcess: {} as never,
@@ -815,7 +958,7 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
               setConfigCalls.push({ id, value });
             },
             prompt: async () => {
-              opts.onUpdateMessage?.({
+              (opts.onUpdateMessage as ((u: unknown) => void) | undefined)?.({
                 update: {
                   sessionUpdate: 'agent_message_chunk',
                   content: { type: 'text', text: '{"oneLiner":"ok","stateCard":{}}' },
@@ -840,6 +983,13 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(result).toBe('{"oneLiner":"ok","stateCard":{}}');
     expect(setConfigCalls).toEqual([{ id: 'thought_level', value: 'low' }]);
     expect(shutdownCalls).toHaveLength(1);
+    expect(startOptionsSeen[0]).toMatchObject({
+      readOnlyFs: true,
+      disableReadTextFile: true,
+      disableBuiltinMcp: true,
+      terminalEnabled: false,
+    });
+    expect(startOptionsSeen[0]?.signal).toBeInstanceOf(AbortSignal);
     // Temp dir MUST be cleaned up in finally!
     await expect(stat(seenWorkdirs[0]!)).rejects.toThrow();
 
@@ -876,6 +1026,129 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(failedResult).toBeNull();
     expect(shutdownCalls).toHaveLength(2);
     await expect(stat(seenWorkdirs[1]!)).rejects.toThrow();
+
+    // Full-lifecycle timeout during hung `startAgent` AND hung `setSessionConfigOption` (fake timers).
+    vi.useFakeTimers();
+    try {
+      let capturedStartupSignal: AbortSignal | undefined;
+      let lateResolveStart!: (val: unknown) => void;
+      const cleanupCalls: string[] = [];
+      const startupTimedOutShutdowns: string[] = [];
+
+      const startupTimeoutSummarizer = createIsolatedColdRolloverSummarizer({
+        workspaceDocument: {} as never,
+        workspaceId: 'ws-1' as never,
+        machineId: 'machine-1' as never,
+        logger: noopLogger,
+        timeoutMs: 250,
+        resolveLaunchConfig: async () => ({ config: undefined, source: 'none' }),
+        prepareIsolation: async () => ({
+          workdir: '/tmp/fake-cold-iso-1',
+          effectiveReadOnlyTools: false,
+          usedSessionWorkdir: false,
+          env: {},
+          envTransform: (env) => env,
+          onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
+          terminalManager: {} as never,
+          tempDirs: [],
+          cleanup: () => {
+            cleanupCalls.push('startup-timeout');
+          },
+        }),
+        startAgent: (async (opts: { signal?: AbortSignal }) => {
+          capturedStartupSignal = opts.signal;
+          return await new Promise((resolve) => {
+            lateResolveStart = resolve;
+          });
+        }) as never,
+        shutdownAgent: async (started) => {
+          startupTimedOutShutdowns.push((started as { acpSessionId: string }).acpSessionId);
+        },
+      });
+
+      const startupPromise = startupTimeoutSummarizer({
+        sessionId: SESSION_ID,
+        meta: makeMeta(),
+        prompt: 'Hung startup test',
+      });
+      await vi.advanceTimersByTimeAsync(260);
+      expect(await startupPromise).toBeNull();
+      expect(capturedStartupSignal?.aborted).toBe(true);
+      expect(cleanupCalls).toEqual(['startup-timeout']);
+
+      // Even if startAgent resolves late after timeout, the late agent is shut down!
+      lateResolveStart({
+        acpSessionId: 'late-cold-acp',
+        agentProcess: {} as never,
+        sessionResponse: {},
+        client: {},
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(startupTimedOutShutdowns).toEqual(['late-cold-acp']);
+
+      // Hung `setSessionConfigOption` also respects the same full-lifecycle timeout.
+      const configTimeoutShutdowns: string[] = [];
+      const configTimeoutSummarizer = createIsolatedColdRolloverSummarizer({
+        workspaceDocument: {} as never,
+        workspaceId: 'ws-1' as never,
+        machineId: 'machine-1' as never,
+        logger: noopLogger,
+        timeoutMs: 250,
+        resolveLaunchConfig: async () => ({ config: undefined, source: 'none' }),
+        prepareIsolation: async () => ({
+          workdir: '/tmp/fake-cold-iso-2',
+          effectiveReadOnlyTools: false,
+          usedSessionWorkdir: false,
+          env: {},
+          envTransform: (env) => env,
+          onRequestPermission: async () => ({ outcome: { outcome: 'cancelled' } }),
+          terminalManager: {} as never,
+          tempDirs: [],
+          cleanup: () => {
+            cleanupCalls.push('config-timeout');
+          },
+        }),
+        startAgent: (async () => ({
+          acpSessionId: 'config-hung-acp',
+          agentProcess: {} as never,
+          sessionResponse: {
+            configOptions: [
+              {
+                id: 'thought_level',
+                name: 'Thinking',
+                category: 'thought_level',
+                type: 'select',
+                currentValue: 'high',
+                options: [
+                  { value: 'low', name: 'Low' },
+                  { value: 'high', name: 'High' },
+                ],
+              },
+            ],
+          },
+          client: {
+            setSessionConfigOption: () => new Promise<void>(() => {}),
+            prompt: async () => ({ stopReason: 'end_turn' }),
+            cancel: async () => {},
+          },
+        })) as never,
+        shutdownAgent: async (started) => {
+          configTimeoutShutdowns.push((started as { acpSessionId: string }).acpSessionId);
+        },
+      });
+      const configPromise = configTimeoutSummarizer({
+        sessionId: SESSION_ID,
+        meta: makeMeta(),
+        prompt: 'Hung setSessionConfigOption test',
+      });
+      await vi.advanceTimersByTimeAsync(260);
+      expect(await configPromise).toBeNull();
+      expect(configTimeoutShutdowns).toEqual(['config-hung-acp']);
+      expect(cleanupCalls).toEqual(['startup-timeout', 'config-timeout']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -927,11 +1200,15 @@ describe('createFileSessionRolloverStore', () => {
     expect(reloaded?.spine[0]?.gen).toBe(5);
     expect(reloaded?.stateCard.lockedInvariants).toEqual(['Invariant A']);
 
-    // Verify 0o600 permissions on stored file (POSIX).
+    // Verify 0o600 permissions on stored file (POSIX) AND getStateFilePath matches disk file.
+    const expectedPath = store1.getStateFilePath?.(SESSION_ID);
+    expect(expectedPath).toBeDefined();
+    expect(await stat(expectedPath!)).toBeDefined();
     if (process.platform !== 'win32') {
       const files = await import('node:fs/promises').then((fs) => fs.readdir(rootDir));
       const jsonFile = files.find((f) => f.endsWith('.json'));
       expect(jsonFile).toBeDefined();
+      expect(expectedPath).toBe(path.join(rootDir, jsonFile!));
       const info = await stat(path.join(rootDir, jsonFile!));
       expect(info.mode & 0o777).toBe(0o600);
 
@@ -939,6 +1216,64 @@ describe('createFileSessionRolloverStore', () => {
       await writeFile(path.join(rootDir, jsonFile!), '{not valid json', 'utf8');
       const store3 = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
       expect(await store3.get(SESSION_ID)).toBeUndefined();
+    }
+
+    // Verify prepareLazyRenew threads store.getStateFilePath into overflowing opening prompt.
+    const overflowStore = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
+    const overflowService = new SessionRolloverService({
+      store: overflowStore,
+      logger: noopLogger,
+      now: () => 2_000_000,
+    });
+    const overflowInvariants = Array.from(
+      { length: 45 },
+      (_, idx) =>
+        `STORE_PATH_INV_${String(idx + 1).padStart(2, '0')}: enforce persistent rollover invariant contract #${idx + 1} across nodes END_${idx + 1}.`
+    );
+    await overflowStore.set(SESSION_ID, {
+      version: 1,
+      sessionId: SESSION_ID,
+      generation: 0,
+      stateCard: createEmptySessionRolloverStateCard(),
+      spine: [],
+      pendingSwitch: {
+        runId: 'run-overflow',
+        targetGen: 1,
+        nodeId: 'n_0001',
+        reason: 'manual_command',
+        sealedThroughTurnId: 'a1',
+        sealedAtMs: 1_900_000,
+        sourceAcpSessionId: 'acp-1',
+        candidateStateCard: {
+          goalAndPlan: 'Verify file path pointer',
+          lockedInvariants: overflowInvariants,
+          decisionsAndDeadEnds: [],
+          workspaceFacts: '',
+          openAndNext: '',
+        },
+      },
+      updatedAt: 1_900_000,
+    });
+    const preparedOverflow = await overflowService.prepareLazyRenew({
+      sessionId: SESSION_ID,
+      meta: makeMeta({ acpSessionId: 'acp-1' as ACPSessionId }),
+      history: [
+        {
+          id: 'a1',
+          role: 'assistant',
+          timestamp: '2026-11-27T01:00:00.000Z',
+          fileDiff: [],
+          items: [{ type: 'text', text: 'Done.' }],
+        },
+      ],
+      writeDivider: async () => {},
+      clearBoardCompactPending: async () => {},
+    });
+    expect(preparedOverflow.kind).toBe('ready');
+    if (preparedOverflow.kind === 'ready') {
+      expect(preparedOverflow.openingPrompt).toContain(
+        `\`${overflowStore.getStateFilePath!(SESSION_ID)}\` (\`stateCard.lockedInvariants\`)`
+      );
     }
   });
 

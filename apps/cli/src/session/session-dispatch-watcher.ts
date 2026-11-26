@@ -635,6 +635,15 @@ export class SessionDispatchWatcher {
    * whole check (including a dispatched turn) finishes.
    */
   enqueueSessionCheck(sessionId: SessionId, options: SessionCheckOptions = {}): Promise<void> {
+    // Preempt an in-flight end-of-turn auto rollover `:seal` BEFORE queuing
+    // behind `sessionCheckChains` (which may still be occupied by the turn that
+    // is running `:seal`) whenever local dispatch work is already pending.
+    if (
+      this.deps.executionService.isAutoRolloverSealing?.(sessionId) &&
+      this.hasPendingDispatch(sessionId)
+    ) {
+      this.deps.executionService.preemptAutoRolloverSealIfActive?.(sessionId);
+    }
     // Tests may drive an as-yet-unstarted watcher directly (generation 0). Once
     // a production watcher has ever started, every check is generation-bound,
     // including RPC/access callbacks that happen to enqueue after stop().
@@ -1318,6 +1327,20 @@ export class SessionDispatchWatcher {
         if (!this.watchedSessions.has(sessionId)) {
           const unsubscribe = subscribeSessionChanges(sessionDoc, () => {
             if (isActive()) {
+              if (this.deps.executionService.isAutoRolloverSealing?.(sessionId)) {
+                void sessionDoc
+                  .getMetaState()
+                  .then((latestMeta) => {
+                    if (
+                      isActive() &&
+                      latestMeta &&
+                      this.hasIncomingUserWorkSignal(sessionId, latestMeta)
+                    ) {
+                      this.deps.executionService.preemptAutoRolloverSealIfActive?.(sessionId);
+                    }
+                  })
+                  .catch(() => undefined);
+              }
               void this.enqueueCancelCheck(sessionId, lifecycleGeneration);
               void this.enqueueSessionCheck(sessionId, { lifecycleGeneration });
             }
@@ -1328,6 +1351,9 @@ export class SessionDispatchWatcher {
 
       if (!isActive()) {
         return;
+      }
+      if (this.hasIncomingUserWorkSignal(sessionId, meta)) {
+        this.deps.executionService.preemptAutoRolloverSealIfActive?.(sessionId);
       }
       phase = 'enqueue-session-checks';
       const cancelCheck = this.enqueueCancelCheck(sessionId, lifecycleGeneration);
@@ -1367,6 +1393,19 @@ export class SessionDispatchWatcher {
    * says otherwise; opening history to infer work would fan out across every
    * historical room on startup.
    */
+  /**
+   * Whether incoming user/queue/RPC work is waiting for this session — used to
+   * preempt an in-flight post-turn automatic rollover `:seal` immediately
+   * without waiting behind `sessionCheckChains`.
+   */
+  private hasIncomingUserWorkSignal(sessionId: SessionId, meta: SessionMeta): boolean {
+    return (
+      hasPendingUserTurnActivation(meta) ||
+      (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0) ||
+      this.hasPendingDispatch(sessionId)
+    );
+  }
+
   private sessionNeedsActiveWatch(meta: SessionMeta): boolean {
     return shouldWatchSession({
       meta,

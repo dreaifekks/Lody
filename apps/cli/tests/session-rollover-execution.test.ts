@@ -30,6 +30,7 @@ import { SessionDispatchWatcher } from '../src/session/session-dispatch-watcher'
 import { SessionExecutionService } from '../src/session/session-execution-service';
 import type { SessionManager } from '../src/session/session-manager';
 import { createMemorySessionRolloverStore } from '../src/session/session-rollover-store';
+import { TURN_BUDGETS } from '../src/session/turn-budgets';
 import { withHistoryPort } from './history-port-fixture';
 import { createBaseDeps } from './session-execution-service-helpers';
 
@@ -190,6 +191,7 @@ function createRolloverExecutionHarness(options: {
   let activePromptAbortController: AbortController | undefined;
   let liveNativeWorkKind: 'running' | 'background' | null = options.nativeWork?.kind ?? null;
   let liveNativeWorkUnsettled = options.nativeWork?.unsettled ?? false;
+  let livePendingPromptCompletion: Promise<void> | null = null;
   const makeAgent = (acpSessionId: string) => ({
     agentClient: {
       isCreated: () => true,
@@ -197,6 +199,9 @@ function createRolloverExecutionHarness(options: {
       supportsContextCompaction: () => true,
       getNativeWork: () => (liveNativeWorkKind ? { kind: liveNativeWorkKind } : null),
       hasUnsettledNativeWork: () => liveNativeWorkUnsettled,
+      get pendingPromptCompletion() {
+        return livePendingPromptCompletion;
+      },
       getConfigOptions: () =>
         options.configOptions ?? [
           {
@@ -259,6 +264,12 @@ function createRolloverExecutionHarness(options: {
   });
 
   let live: ReturnType<typeof makeAgent> | null = makeAgent(currentMeta.acpSessionId ?? 'acp-1');
+  const sessionManagerListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+  const emitSessionManagerEvent = (event: string, ...args: unknown[]) => {
+    for (const listener of sessionManagerListeners.get(event) ?? []) {
+      listener(...args);
+    }
+  };
   const retireSpy = vi.fn(async () => {
     live = null;
   });
@@ -350,6 +361,17 @@ function createRolloverExecutionHarness(options: {
       }),
       createSession: createSessionSpy,
       resolveLocalProjectRootPath: vi.fn(async () => '/tmp/lody-rollover-test'),
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        let listeners = sessionManagerListeners.get(event);
+        if (!listeners) {
+          listeners = new Set();
+          sessionManagerListeners.set(event, listeners);
+        }
+        listeners.add(listener);
+      },
+      off: (event: string, listener: (...args: unknown[]) => void) => {
+        sessionManagerListeners.get(event)?.delete(listener);
+      },
     } as unknown as SessionManager,
     workspaceDocument: {
       syncFlockDocOrThrow: vi.fn(async () => undefined),
@@ -464,6 +486,10 @@ function createRolloverExecutionHarness(options: {
     setNativeWork: (next: { kind?: 'running' | 'background' | null; unsettled?: boolean }) => {
       liveNativeWorkKind = next.kind ?? null;
       liveNativeWorkUnsettled = next.unsettled ?? false;
+      emitSessionManagerEvent('onNativeWorkChanged', sessionId);
+    },
+    setPendingPromptCompletion: (next: Promise<void> | null) => {
+      livePendingPromptCompletion = next;
     },
     getMeta: () => currentMeta,
     dropLiveAgent: () => {
@@ -967,8 +993,12 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       reason: 'post_compact_recovery',
       targetGen: 1,
     });
-    expect(sealed?.stateCard.lockedInvariants).toContain('COLD_PATH_INVARIANT_SENTINEL');
-    expect(sealed?.spine.at(-1)?.quality).toBe('cold_llm');
+    expect(sealed?.stateCard.lockedInvariants).toEqual([]);
+    expect(sealed?.spine).toEqual([]);
+    expect(sealed?.pendingSwitch?.candidateStateCard?.lockedInvariants).toContain(
+      'COLD_PATH_INVARIANT_SENTINEL'
+    );
+    expect(sealed?.pendingSwitch?.candidateSpineItem?.quality).toBe('cold_llm');
     const divider = h.history.find(
       (e) => e.id === sessionRolloverTurnId(sealed!.pendingSwitch!.runId)
     );
@@ -1437,7 +1467,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     });
   });
 
-  it('Round 1 #6: live native background work on active agentClient blocks BOTH end-of-turn auto :seal AND lazy :renew retirement', async () => {
+  it('Round 1 #6 + Round 2 #4: live native background work blocks auto :seal and lazy :renew retirement, invalidates stale pendingSwitch when M1 runs on old ACP, and re-seals including M1 once background work clears', async () => {
     const h = createRolloverExecutionHarness({
       metaPatch: { contextWindowUsage: { size: 1_000_000, used: 370_000 } },
       nativeWork: { kind: 'background' },
@@ -1445,7 +1475,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
         if (text.includes('[Lody Internal Handoff Seal')) {
           writeActiveAssistantText(
             JSON.stringify({
-              oneLiner: 'Manual seal',
+              oneLiner: 'Sealed node including latest turns',
               stateCard: {
                 goalAndPlan: 'G',
                 lockedInvariants: [],
@@ -1457,8 +1487,13 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
           );
           return;
         }
+        if (text.includes('[Lody Session Node Handoff')) {
+          writeActiveAssistantText('Ready.');
+          setUsage(24_000);
+          return;
+        }
         setUsage(370_000);
-        writeActiveAssistantText('Running with live native background task.');
+        writeActiveAssistantText('ANSWER_FOR_M1_WHILE_BG_ACTIVE.');
       },
     });
 
@@ -1467,15 +1502,45 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     expect(h.prompts).toHaveLength(1);
     expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
 
-    // 2. Even if `/rollover` arms `pendingSwitch`, live native background work blocks retiring old ACP!
+    // 2. Manual `/rollover` arms `pendingSwitch`, then ordinary M1 runs on old `acp-1`
+    // because background work is still live -> old `acp-1` is NOT retired AND the stale
+    // `pendingSwitch` MUST be invalidated so M1 is not silently dropped later!
+    await h.sendContinue('/rollover');
+    const staleRunId = (await h.rolloverStore.get(SESSION_ID))?.pendingSwitch?.runId;
+    expect(staleRunId).toBeDefined();
+
+    await h.sendContinue('M1_DURING_BACKGROUND_WORK');
+    expect(h.retireSpy).not.toHaveBeenCalled();
+    expect(h.createSessionSpy).not.toHaveBeenCalled();
+    expect(h.prompts.at(-1)).toMatchObject({
+      acpSessionId: 'acp-1',
+      text: 'M1_DURING_BACKGROUND_WORK',
+    });
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    const staleDivider = h.history.find((e) => e.id === sessionRolloverTurnId(staleRunId!));
+    expect(readSessionRolloverNotice(staleDivider!)).toMatchObject({
+      status: 'interrupted',
+      reason: 'superseded-by-live-turn',
+    });
+
+    // 3. Once background work clears, a fresh `/rollover` + M2 `:renew` MUST include M1!
+    h.setNativeWork({ kind: null });
+    // Flush microtasks so `watchNativeWork`'s `onNativeWorkChanged` settlement unregisters.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     await h.sendContinue('/rollover');
     expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
 
-    await h.sendContinue('Check status while background task still running');
-    expect(h.retireSpy).not.toHaveBeenCalled();
-    expect(h.createSessionSpy).not.toHaveBeenCalled();
-    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
-    expect(h.prompts.at(-1)?.acpSessionId).toBe('acp-1');
+    await h.sendContinue('M2_AFTER_BG_DONE');
+    const renewPrompt = h.prompts.find((p) => p.text.includes('[Lody Session Node Handoff'));
+    expect(renewPrompt).toBeDefined();
+    expect(renewPrompt!.text).toContain('M1_DURING_BACKGROUND_WORK');
+    expect(renewPrompt!.text).toContain('ANSWER_FOR_M1_WHILE_BG_ACTIVE.');
+    expect(h.prompts.at(-1)).toMatchObject({
+      acpSessionId: 'acp-fresh-1',
+      text: 'M2_AFTER_BG_DONE',
+    });
   });
 
   it('Round 1 #7: SessionDispatchWatcher preempts in-flight auto :seal on incoming user activation and writes silent auto+interrupted without pendingSwitch', async () => {
@@ -1703,7 +1768,9 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     expect(coldCalls).toHaveLength(1);
     const afterTurn2 = await h.rolloverStore.get(SESSION_ID);
     expect(afterTurn2?.pendingSwitch?.reason).toBe('post_compact_recovery');
-    expect(afterTurn2?.stateCard.lockedInvariants).toContain('DEFERRED_RECOVERY_INVARIANT');
+    expect(afterTurn2?.pendingSwitch?.candidateStateCard?.lockedInvariants).toContain(
+      'DEFERRED_RECOVERY_INVARIANT'
+    );
   });
 
   it('Round 1 #10: manual /rollover on a session idle > 8 min captures pre-touch activity and takes cold path without waking old ACP', async () => {
@@ -1734,7 +1801,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     expect(coldCalls).toHaveLength(1);
     const sealed = await h.rolloverStore.get(SESSION_ID);
     expect(sealed?.pendingSwitch).toBeDefined();
-    expect(sealed?.spine.at(-1)?.quality).toBe('cold_llm');
+    expect(sealed?.pendingSwitch?.candidateSpineItem?.quality).toBe('cold_llm');
   });
 
   it('Round 1 #14: zero-output /compact confirmation requires agy bare end_turn OR compaction evidence; silent non-agy /compact without evidence fails as agent_no_output', async () => {
@@ -1789,5 +1856,410 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       'agent_no_output',
       expect.any(String)
     );
+  });
+
+  it('Round 2 #2: explicit user /compact NEVER marks degradedByNativeCompact or triggers post_compact_recovery (agy bare, codex drop, or silent failure)', async () => {
+    const coldCalls: string[] = [];
+    // Case A: agy bare /compact succeeding cleanly
+    const agyHarness = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 180_000 } },
+      coldSummarizer: async ({ prompt }) => {
+        coldCalls.push(prompt);
+        return '{}';
+      },
+      onPrompt: ({ callIndex, service, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 22_000 });
+          setUsage(22_000);
+          writeActiveAssistantText('Compacted cleanly.');
+        } else {
+          writeActiveAssistantText('Ordinary follow-up stays on acp-1.');
+        }
+      },
+    });
+    await agyHarness.sendContinue('/compact');
+    expect((await agyHarness.rolloverStore.get(SESSION_ID))?.degradedByNativeCompact).not.toBe(
+      true
+    );
+    await agyHarness.sendContinue('Keep using native compact control arm');
+    expect(coldCalls).toHaveLength(0);
+    expect((await agyHarness.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    expect(agyHarness.prompts.at(-1)?.acpSessionId).toBe('acp-1');
+
+    // Case B: codex explicit /compact with silent zero output failing as agent_no_output
+    const codexFail = createRolloverExecutionHarness({
+      metaPatch: {
+        cliType: 'builtin',
+        agentType: 'codex',
+        contextWindowUsage: { size: 400_000, used: 120_000 },
+      },
+      observePromptContentForTurn: () => false,
+    });
+    await codexFail.sendContinue('/compact');
+    expect((await codexFail.rolloverStore.get(SESSION_ID))?.degradedByNativeCompact).not.toBe(true);
+
+    // Case C: codex explicit /compact with usage drop (120k -> 18k) + marker
+    const codexDrop = createRolloverExecutionHarness({
+      metaPatch: {
+        cliType: 'builtin',
+        agentType: 'codex',
+        contextWindowUsage: { size: 400_000, used: 120_000 },
+      },
+      onPrompt: ({ service, setUsage, writeActiveAssistantText }) => {
+        service.noteContextWindowUsageUpdate(SESSION_ID, { size: 400_000, used: 18_000 });
+        setUsage(18_000);
+        writeActiveAssistantText('Done.');
+      },
+    });
+    await codexDrop.sendContinue('/compact');
+    expect((await codexDrop.rolloverStore.get(SESSION_ID))?.degradedByNativeCompact).not.toBe(true);
+  });
+
+  it('Round 2 #3: staged candidate stateCard/spineItem discarded on Edit & Resend never pollutes subsequent seal or committed state', async () => {
+    let sealNum = 0;
+    const h = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 120_000 } },
+      onPrompt: ({ text, setUsage, writeActiveAssistantText }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          sealNum += 1;
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: `Seal #${sealNum}`,
+              stateCard: {
+                goalAndPlan: `Plan #${sealNum}`,
+                lockedInvariants:
+                  sealNum === 1
+                    ? ['COMMITTED_GEN1_INVARIANT']
+                    : sealNum === 2
+                      ? ['RETRACTED_EDITED_OUT_INVARIANT']
+                      : ['POST_EDIT_VALID_INVARIANT'],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        if (text.includes('[Lody Session Node Handoff')) {
+          writeActiveAssistantText('Ready.');
+          setUsage(25_000);
+          return;
+        }
+        writeActiveAssistantText('Normal response.');
+      },
+    });
+
+    // Gen 1 seal + commit
+    await h.sendContinue('/rollover');
+    await h.sendContinue('Commit gen 1');
+    const afterGen1 = await h.rolloverStore.get(SESSION_ID);
+    expect(afterGen1?.stateCard.lockedInvariants).toEqual(['COMMITTED_GEN1_INVARIANT']);
+    expect(afterGen1?.spine).toHaveLength(1);
+
+    // Gen 2 seal stages RETRACTED_EDITED_OUT_INVARIANT inside pendingSwitch ONLY
+    await h.sendContinue('Bad direction to be edited away', { userTurnId: 'u-retracted' });
+    await h.sendContinue('/rollover');
+    const stagedGen2 = await h.rolloverStore.get(SESSION_ID);
+    expect(stagedGen2?.stateCard.lockedInvariants).toEqual(['COMMITTED_GEN1_INVARIANT']);
+    expect(stagedGen2?.spine).toHaveLength(1);
+    expect(stagedGen2?.pendingSwitch?.candidateStateCard?.lockedInvariants).toContain(
+      'RETRACTED_EDITED_OUT_INVARIANT'
+    );
+
+    // Edit & Resend deletes `assistant:u-retracted` and switches ACP session
+    const delIdx = h.history.findIndex((e) => e.id === 'assistant:u-retracted');
+    expect(delIdx).toBeGreaterThanOrEqual(0);
+    h.history.splice(delIdx, 1);
+    h.replaceLiveAgent('acp-edited-clean' as ACPSessionId);
+
+    await h.sendContinue('Edited clean direction');
+    const afterInvalidation = await h.rolloverStore.get(SESSION_ID);
+    expect(afterInvalidation?.pendingSwitch).toBeUndefined();
+    expect(afterInvalidation?.stateCard.lockedInvariants).toEqual(['COMMITTED_GEN1_INVARIANT']);
+    expect(afterInvalidation?.spine).toHaveLength(1);
+
+    // Next seal + renew MUST NOT inherit RETRACTED_EDITED_OUT_INVARIANT!
+    await h.sendContinue('/rollover');
+    await h.sendContinue('Continue on clean gen 2');
+    const afterCleanGen2 = await h.rolloverStore.get(SESSION_ID);
+    expect(afterCleanGen2?.stateCard.lockedInvariants).toContain('COMMITTED_GEN1_INVARIANT');
+    expect(afterCleanGen2?.stateCard.lockedInvariants).toContain('POST_EDIT_VALID_INVARIANT');
+    expect(afterCleanGen2?.stateCard.lockedInvariants).not.toContain(
+      'RETRACTED_EDITED_OUT_INVARIANT'
+    );
+  });
+
+  it('Round 2 #5A: SessionDispatchWatcher preempts in-flight auto :seal BEFORE sessionCheckChains when an earlier turn still occupies the chain', async () => {
+    let sealStartedResolve!: () => void;
+    const sealStarted = new Promise<void>((resolve) => {
+      sealStartedResolve = resolve;
+    });
+
+    const h = createRolloverExecutionHarness({
+      metaPatch: {
+        contextWindowUsage: { size: 1_000_000, used: 200_000 },
+      },
+      onPrompt: async ({ callIndex, signal, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          setUsage(370_000);
+          writeActiveAssistantText('Turn 1 finished.');
+          return;
+        }
+        sealStartedResolve();
+        await new Promise<void>((_resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error('cancelled'));
+            return;
+          }
+          signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        });
+      },
+    });
+
+    const watcher = new SessionDispatchWatcher({
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never,
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+      workspaceDocument: h.deps.workspaceDocument,
+      executionService: h.service,
+      userResolver: {
+        resolve: async () => ({ id: 'owner-user', name: 'Owner', email: 'owner@example.com' }),
+        clear: () => {},
+      },
+      canUseMachine: async () => ({ outcome: 'allowed' }),
+    });
+    // Mark watcher started and occupy `sessionCheckChains` with the in-flight Turn 1 promise
+    // (mirroring real watcher dispatch where Turn 1's check holds the chain while auto `:seal` runs).
+    (watcher as unknown as { started: boolean; lifecycleGeneration: number }).started = true;
+    (watcher as unknown as { lifecycleGeneration: number }).lifecycleGeneration = 1;
+    (
+      watcher as unknown as { watchedSessions: Map<SessionId, { unsubscribe: () => void }> }
+    ).watchedSessions.set(SESSION_ID, { unsubscribe: () => {} });
+
+    const turn1 = h.sendContinue('Turn 1 triggering auto seal');
+    (
+      watcher as unknown as { sessionCheckChains: Map<SessionId, Promise<void>> }
+    ).sessionCheckChains.set(SESSION_ID, turn1.then(() => undefined));
+    await sealStarted;
+    expect(h.service.isAutoRolloverSealing(SESSION_ID)).toBe(true);
+
+    // Incoming user turn updates meta and triggers `reconcileSessionWatch`: MUST preempt
+    // BEFORE queuing behind the blocked `sessionCheckChains` entry (zero deadlock!).
+    h.setMeta({ latestUserMsgId: 'u-preempt-while-chain-busy', lastHandledUserMsgId: 'turn-u1' });
+    const enqueueSpy = vi.fn(async () => {});
+    (watcher as unknown as { enqueueSessionCheck: typeof enqueueSpy }).enqueueSessionCheck =
+      enqueueSpy;
+
+    await (
+      watcher as unknown as {
+        reconcileSessionWatch: (sid: SessionId, trigger: string) => Promise<void>;
+      }
+    ).reconcileSessionWatch(SESSION_ID, 'metadata');
+
+    // `turn1` MUST now resolve because auto `:seal` was preempted immediately!
+    await turn1;
+    expect(h.service.isAutoRolloverSealing(SESSION_ID)).toBe(false);
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    const divider = h.history.find((e) => e.role === 'system' && e.id.startsWith('session-rollover:'));
+    expect(isSilentSessionRollover(readSessionRolloverNotice(divider!)!)).toBe(true);
+    expect(enqueueSpy).toHaveBeenCalledWith(SESSION_ID, { lifecycleGeneration: 1 });
+  });
+
+  it('Round 2 #5B: cancelled warm :seal waits for raw pendingPromptCompletion to drain, or retires ACP session if drain exceeds cancelDrainMs', async () => {
+    // Case 1: raw ACP prompt drains cleanly before timeout -> session reused (NOT retired).
+    let sealStartedResolve!: () => void;
+    const sealStarted = new Promise<void>((resolve) => {
+      sealStartedResolve = resolve;
+    });
+    let resolveRawDrain!: () => void;
+    const rawDrainPromise = new Promise<void>((resolve) => {
+      resolveRawDrain = resolve;
+    });
+
+    const cleanDrain = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 200_000 } },
+      onPrompt: async ({ callIndex, signal, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          setUsage(370_000);
+          writeActiveAssistantText('Turn 1 finished.');
+          return;
+        }
+        cleanDrain.setPendingPromptCompletion(rawDrainPromise);
+        sealStartedResolve();
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('Agent prompt aborted')), {
+            once: true,
+          });
+        });
+      },
+    });
+
+    const turnClean = cleanDrain.sendContinue('Turn before clean drain');
+    await sealStarted;
+    let turnCleanSettled = false;
+    void turnClean.then(() => {
+      turnCleanSettled = true;
+    });
+    cleanDrain.service.preemptAutoRolloverSealIfActive(SESSION_ID);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Still waiting for raw ACP drain before releasing!
+    expect(turnCleanSettled).toBe(false);
+
+    cleanDrain.setPendingPromptCompletion(null);
+    resolveRawDrain();
+    await turnClean;
+    expect(cleanDrain.retireSpy).not.toHaveBeenCalled();
+
+    // Case 2: raw ACP prompt stays stuck past `TURN_BUDGETS.cancelDrainMs` -> retires ACP!
+    vi.useFakeTimers();
+    try {
+      let stuckSealResolve!: () => void;
+      const stuckSealStarted = new Promise<void>((resolve) => {
+        stuckSealResolve = resolve;
+      });
+      const neverSettlingRaw = new Promise<void>(() => {});
+      const stuckDrain = createRolloverExecutionHarness({
+        metaPatch: { contextWindowUsage: { size: 1_000_000, used: 200_000 } },
+        onPrompt: async ({ callIndex, signal, setUsage, writeActiveAssistantText }) => {
+          if (callIndex === 0) {
+            setUsage(370_000);
+            writeActiveAssistantText('Turn 1 finished.');
+            return;
+          }
+          stuckDrain.setPendingPromptCompletion(neverSettlingRaw);
+          stuckSealResolve();
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('Agent prompt aborted')), {
+              once: true,
+            });
+          });
+        },
+      });
+
+      const turnStuck = stuckDrain.sendContinue('Turn before stuck drain');
+      await stuckSealStarted;
+      stuckDrain.service.preemptAutoRolloverSealIfActive(SESSION_ID);
+      await vi.advanceTimersByTimeAsync(TURN_BUDGETS.cancelDrainMs + 50);
+      await turnStuck;
+      expect(stuckDrain.retireSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Round 2 #6: strict :renew validation rejects max_tokens, missing stopReason, runaway output, and refusal text without clearing pendingSwitch', async () => {
+    const cases: Array<{ name: string; stopReason?: string; text: string }> = [
+      { name: 'max_tokens', stopReason: 'max_tokens', text: 'Ready.' },
+      { name: 'missing stopReason', stopReason: undefined, text: 'Ready.' },
+      { name: 'runaway >300 chars', stopReason: 'end_turn', text: 'R'.repeat(320) },
+      { name: 'refusal text', stopReason: 'end_turn', text: 'I cannot comply with this prompt.' },
+    ];
+
+    for (const tc of cases) {
+      const h = createRolloverExecutionHarness({
+        onPrompt: ({ text, writeActiveAssistantText }) => {
+          if (text.includes('[Lody Internal Handoff Seal')) {
+            writeActiveAssistantText(
+              JSON.stringify({
+                oneLiner: 'Sealed',
+                stateCard: {
+                  goalAndPlan: 'G',
+                  lockedInvariants: [],
+                  decisionsAndDeadEnds: [],
+                  workspaceFacts: '',
+                  openAndNext: '',
+                },
+              })
+            );
+            return { stopReason: 'end_turn' };
+          }
+          if (text.includes('[Lody Session Node Handoff')) {
+            writeActiveAssistantText(tc.text);
+            return { stopReason: tc.stopReason };
+          }
+          writeActiveAssistantText('Unexpected user delivery');
+          return { stopReason: 'end_turn' };
+        },
+      });
+
+      await h.sendContinue('/rollover');
+      const runId = (await h.rolloverStore.get(SESSION_ID))?.pendingSwitch?.runId;
+      await h.sendContinue('Blocked until valid renew');
+
+      const state = await h.rolloverStore.get(SESSION_ID);
+      expect(state?.pendingSwitch?.runId, tc.name).toBe(runId);
+      expect(state?.generation, tc.name).toBe(0);
+      expect(
+        h.prompts.some((p) => p.text === 'Blocked until valid renew'),
+        tc.name
+      ).toBe(false);
+      const divider = h.history.find((e) => e.id === sessionRolloverTurnId(runId!));
+      expect(readSessionRolloverNotice(divider!)?.status, tc.name).toBe('failed');
+    }
+  });
+
+  it('Round 2 #8: standard Lody Resend flow (cancel failed M1, send new M2) completes :renew on single divider and clears stale lastFailedUserMsgId', async () => {
+    let failFirstRenew = true;
+    const h = createRolloverExecutionHarness({
+      onPrompt: ({ text, setUsage, writeActiveAssistantText }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Sealed before Resend test',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: ['RESEND_INVARIANT'],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        if (text.includes('[Lody Session Node Handoff')) {
+          if (failFirstRenew) {
+            failFirstRenew = false;
+            throw new Error('transient renew transport failure');
+          }
+          writeActiveAssistantText('Ready.');
+          setUsage(24_000);
+          return;
+        }
+        writeActiveAssistantText('Delivered Resend M2 cleanly.');
+      },
+    });
+
+    await h.sendContinue('/rollover');
+    await h.sendContinue('Original message M1', { userTurnId: 'user-m1-failed' });
+    expect(h.history.find((e) => e.id === 'user-m1-failed')?.status).toBe('failed');
+    expect(h.getMeta().lastFailedUserMsgId).toBe('user-m1-failed');
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
+
+    // Standard UI Resend contract: mark old failed M1 canceled and submit a NEW user message M2!
+    const failedEntry = h.history.find((e) => e.id === 'user-m1-failed');
+    expect(failedEntry).toBeDefined();
+    failedEntry!.status = 'canceled';
+
+    await h.sendContinue('Original message M1', { userTurnId: 'user-m2-resend' });
+    expect(h.getMeta().lastHandledUserMsgId).toBe('user-m2-resend');
+    expect(h.getMeta().lastFailedUserMsgId).toBeUndefined();
+    expect(h.history.find((e) => e.id === 'user-m2-resend')?.status).toBe('handled');
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    expect((await h.rolloverStore.get(SESSION_ID))?.generation).toBe(1);
+    expect(h.prompts.at(-1)?.text).toBe('Original message M1');
+
+    // Still exactly ONE divider entry (failed -> switching -> done in place)!
+    const dividers = h.history.filter(
+      (e) => e.role === 'system' && e.id.startsWith('session-rollover:')
+    );
+    expect(dividers).toHaveLength(1);
+    expect(readSessionRolloverNotice(dividers[0]!)).toMatchObject({
+      status: 'done',
+      generation: 1,
+      usedAfter: 24_000,
+    });
   });
 });

@@ -88,6 +88,8 @@ export type BuildLinearRolloverOpeningInput = {
   readonly stateCard: SessionRolloverStateCard;
   readonly spine: readonly SessionRolloverSpineItem[];
   readonly workspace?: Partial<SessionRolloverWorkspaceAnchor>;
+  /** Exact local rollover state JSON file path so overflow pointers can cite `stateCard.lockedInvariants`. */
+  readonly rolloverStateFilePath?: string;
   readonly nowIso: string;
   readonly usedBefore?: number;
   readonly userHint?: string;
@@ -360,7 +362,8 @@ function buildLockedInvariantsSection(
   lockedInvariants: readonly string[],
   invariantsDocPath: string | undefined,
   budget: number,
-  sessionId?: SessionId
+  sessionId?: SessionId,
+  rolloverStateFilePath?: string
 ): string {
   const items = dedupeTrimmedLines(lockedInvariants);
   if (items.length === 0 && !invariantsDocPath) return '';
@@ -398,9 +401,13 @@ function buildLockedInvariantsSection(
   const makeOverflowPointer = (omittedCount: number): string => {
     const refParts: string[] = [];
     if (invariantsDocPath) refParts.push(`\`${invariantsDocPath}\``);
+    if (rolloverStateFilePath) {
+      refParts.push(`\`${rolloverStateFilePath}\` (\`stateCard.lockedInvariants\`)`);
+    }
     if (sessionId) refParts.push(`lody_session_history({ sessionId: "${sessionId}" })`);
-    const refText =
-      refParts.length > 0
+    const refText = rolloverStateFilePath
+      ? `; full list preserved in ${refParts.join(' / ')}`
+      : refParts.length > 0
         ? `; full list preserved in rollover state and ${refParts.join(' / ')}`
         : '; full list preserved in rollover state';
     return `- [${omittedCount} earlier locked invariant(s) omitted from inline budget${refText}]`;
@@ -599,7 +606,8 @@ export function buildLinearRolloverOpening(input: BuildLinearRolloverOpeningInpu
     input.stateCard.lockedInvariants,
     workspaceAnchor.invariantsDocPath,
     SESSION_ROLLOVER_INVARIANTS_BUDGET,
-    input.sessionId
+    input.sessionId,
+    input.rolloverStateFilePath
   );
 
   const origin = buildOriginSection(originEntry, SESSION_ROLLOVER_ORIGIN_BUDGET);
