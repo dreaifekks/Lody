@@ -137,6 +137,15 @@ A notification failure cannot replay Agent execution.
 - `session-fork-service.ts` / `session-fork-operation-store.ts` — the fork saga and its
   machine-local marker store.
 - `session-edit-and-resend-service.ts` — same-session replacement of the last normal User turn.
+- `session-rollover-store.ts` / `session-rollover-opening.ts` / `session-rollover-service.ts` —
+  machine-local linear node rollover (`/rollover [hint]` and proactive end-of-turn warm `:seal`
+  at `min(350_000, floor(size * 0.35))` with `>= 80_000` delta) for ordinary Sessions (excluding
+  Board coordinators). Keeps `SessionMeta` CRDT untouched, builds a bounded `<= 7,500`-token
+  opening with protected `lockedInvariants[]`, lazily runs a silent fresh `:renew` on the next
+  normal user turn (temporarily lowering `thought_level` to `low` when supported), preserves
+  `pendingSwitch` on failure/cancel with `preparedAcpSessionId` crash convergence, and switches
+  to cold Loro plain-text sealing when idle beyond the warm TTL or after mid-turn native
+  auto-compaction (`degradedByNativeCompact`).
 - `session-launch-config-resolver.ts` — durable launch config resolution.
 - `workspace-git-service.ts` — observes checkout branches for local folders and worktrees,
   serializes reads/writes per owner Session, and publishes the last named branch. Execution

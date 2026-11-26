@@ -1,5 +1,6 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import {
+  isSilentSessionRollover,
   normalizeBoardMeta,
   readSessionRolloverNotice,
   sessionRolloverTurnId,
@@ -71,11 +72,13 @@ function createRolloverExecutionHarness(options: {
   resumeError?: Error;
   observePromptContentForTurn?: (sessionId: SessionId, turnId: string) => boolean;
   nowMs?: () => number;
+  coldSummarizer?: (args: { sessionId: SessionId; prompt: string; signal?: AbortSignal }) => Promise<string | null>;
   onPrompt?: (ctx: {
     callIndex: number;
     acpSessionId: string;
     blocks: ContentBlock[];
     text: string;
+    signal: AbortSignal;
     setUsage: (used: number, size?: number) => void;
     writeActiveAssistantText: (text: string) => void;
     service: SessionExecutionService;
@@ -169,6 +172,7 @@ function createRolloverExecutionHarness(options: {
     }
   };
 
+  let activePromptAbortController: AbortController | undefined;
   const makeAgent = (acpSessionId: string) => ({
     agentClient: {
       isCreated: () => true,
@@ -194,17 +198,28 @@ function createRolloverExecutionHarness(options: {
           .map((block) => (block.type === 'text' ? block.text : `[${block.type}]`))
           .join('\n');
         prompts.push({ acpSessionId: id, blocks, text });
-        await options.onPrompt?.({
-          callIndex,
-          acpSessionId: id,
-          blocks,
-          text,
-          setUsage,
-          writeActiveAssistantText,
-          service,
-        });
+        const controller = new AbortController();
+        activePromptAbortController = controller;
+        try {
+          await options.onPrompt?.({
+            callIndex,
+            acpSessionId: id,
+            blocks,
+            text,
+            signal: controller.signal,
+            setUsage,
+            writeActiveAssistantText,
+            service,
+          });
+        } finally {
+          if (activePromptAbortController === controller) {
+            activePromptAbortController = undefined;
+          }
+        }
       },
-      cancel: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {
+        activePromptAbortController?.abort();
+      }),
     },
     acpSessionId,
     hasLiveAgentProcess: () => true,
@@ -254,6 +269,7 @@ function createRolloverExecutionHarness(options: {
     boardCompactReinjectStore: reinjectStore,
     sessionRolloverStore: rolloverStore,
     sessionRolloverNow: nowFn,
+    ...(options.coldSummarizer ? { sessionRolloverColdSummarizer: options.coldSummarizer } : {}),
     sessionRolloverProbeWorkspace: async ({ segmentEntries }) => ({
       cwd: '/tmp/lody-rollover-test',
       gitBranch: 'feat/session-linear-rollover',
@@ -340,6 +356,7 @@ function createRolloverExecutionHarness(options: {
       userTurnId?: string;
       configOptionValues?: Record<string, AcpConfigOptionValue>;
       resume?: ACPSessionId;
+      nativeSessionId?: string;
     } = {}
   ) => {
     const userTurnId = extra.userTurnId ?? `user-turn-${++turnCounter}`;
@@ -369,6 +386,18 @@ function createRolloverExecutionHarness(options: {
         modelId: 'gemini-4-neon',
         configOptionValues: extra.configOptionValues ?? { thought_level: 'xhigh' },
         ...(extra.resume ? { resume: extra.resume } : {}),
+        ...(extra.nativeSessionId
+          ? {
+              _lodyAutomation: {
+                invocationId: 'inv-pin-1',
+                ruleId: 'rule-pin-1',
+                ruleRevision: 1,
+                eventRef: 'evt-pin-1',
+                authorizationUserId: 'owner-user',
+                nativeSessionId: extra.nativeSessionId,
+              },
+            }
+          : {}),
       },
     });
     return userTurnId;
@@ -591,8 +620,11 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
           prompt: 'automation check',
           resume: 'acp-1' as ACPSessionId,
           _lodyAutomation: {
-            automationId: 'auto-1',
-            triggerId: 'trig-1',
+            invocationId: 'inv-1',
+            ruleId: 'rule-1',
+            ruleRevision: 1,
+            eventRef: 'evt-1',
+            authorizationUserId: 'owner-user',
             nativeSessionId: 'acp-1',
           },
         },
@@ -788,5 +820,311 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       'agent_no_output',
       expect.any(String)
     );
+  });
+
+  it('Phase 2 + Hard Trap #3: mid-turn native auto-compact (90k -> 520k -> 30k -> 60k) on an ordinary non-Board session marks degradedByNativeCompact, skips Board reminder, and forces cold Loro path on subsequent /rollover', async () => {
+    const coldCalls: string[] = [];
+    const h = createRolloverExecutionHarness({
+      board: null,
+      metaPatch: {
+        boardId: undefined,
+        boardRole: undefined,
+        contextWindowUsage: { size: 1_000_000, used: 90_000 },
+      },
+      coldSummarizer: async ({ prompt }) => {
+        coldCalls.push(prompt);
+        return JSON.stringify({
+          oneLiner: 'Cold Loro recovery after mid-turn native compact',
+          stateCard: {
+            goalAndPlan: 'Recover cleanly from Loro plain text',
+            lockedInvariants: ['COLD_PATH_INVARIANT_SENTINEL'],
+            decisionsAndDeadEnds: ['Avoided querying degraded ACP session'],
+            workspaceFacts: 'Verified from Loro',
+            openAndNext: 'Continue on fresh node',
+          },
+        });
+      },
+      onPrompt: ({ callIndex, service, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          // Simulate long autonomous turn hitting native 512k auto-compact mid-turn,
+          // then regrowing to 60k before finishing.
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 520_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 30_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 60_000 });
+          setUsage(60_000);
+          writeActiveAssistantText('Finished long refactor after mid-turn compact.');
+        }
+      },
+    });
+
+    // Turn 1 triggers mid-turn usage drop (90k -> 520k -> 30k -> 60k).
+    await h.sendContinue('Run the huge multi-file refactor');
+    expect(h.prompts).toHaveLength(1);
+    const degradedState = await h.rolloverStore.get(SESSION_ID);
+    expect(degradedState?.degradedByNativeCompact).toBe(true);
+    expect(degradedState?.pendingSwitch).toBeUndefined();
+    // Non-Board session must NEVER arm Board compact reinject store.
+    expect(await h.reinjectStore.has(SESSION_ID)).toBe(false);
+
+    // Subsequent `/rollover` MUST skip warm `:seal` on degraded acp-1 and use cold Loro summarizer!
+    await h.sendContinue('/rollover');
+    // Still only 1 ACP prompt (the original user turn) — ZERO warm `:seal` sent to acp-1!
+    expect(h.prompts).toHaveLength(1);
+    expect(coldCalls).toHaveLength(1);
+    expect(coldCalls[0]).toContain('Run the huge multi-file refactor');
+    expect(coldCalls[0]).toContain('Finished long refactor after mid-turn compact.');
+
+    const sealed = await h.rolloverStore.get(SESSION_ID);
+    expect(sealed?.pendingSwitch).toBeDefined();
+    expect(sealed?.stateCard.lockedInvariants).toContain('COLD_PATH_INVARIANT_SENTINEL');
+    expect(sealed?.spine.at(-1)?.quality).toBe('cold_llm');
+  });
+
+  it('Phase 2 + Hard Trap #6: end-of-turn auto warm :seal triggers at >= 350k, lazily switches on next turn, and suppresses false usage_drop even when low usage arrives deferred on turn N+1', async () => {
+    const h = createRolloverExecutionHarness({
+      metaPatch: {
+        contextWindowUsage: { size: 1_000_000, used: 200_000 },
+      },
+      onPrompt: ({ callIndex, text, service, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          // Turn 1 crosses 350k threshold (360k >= 350k, delta = 360k >= 80k)
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 360_000 });
+          setUsage(360_000);
+          writeActiveAssistantText('Completed heavy turn at 360k.');
+        } else if (callIndex === 1) {
+          // Automatic warm `:seal` right at end of Turn 1
+          expect(text).toContain('[Lody Internal Handoff Seal');
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Auto-sealed at 360k',
+              stateCard: {
+                goalAndPlan: 'Proactive handoff',
+                lockedInvariants: ['AUTO_SEAL_INVARIANT'],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: 'Next user task',
+              },
+            })
+          );
+        } else if (callIndex === 2) {
+          // Lazy `:renew` on Turn 2 — deliberately do NOT update usage yet (deferred usage_update!)
+          writeActiveAssistantText('Ready.');
+        } else if (callIndex === 3) {
+          // Pure user message M on Turn 2 — still deferred (meta still shows 360k)
+          writeActiveAssistantText('Answered M on fresh node.');
+        } else if (callIndex === 4) {
+          // Turn 3 (immediately following turn after rollover): provider FINALLY reports 26k!
+          // Hard Trap #6: MUST NOT misclassify legal 360k -> 26k as native auto-compact!
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 26_000 });
+          setUsage(26_000);
+          writeActiveAssistantText('Answered follow-up cleanly.');
+        }
+      },
+    });
+
+    // 1. Ordinary turn finishes at 360k -> automatic warm `:seal` fires immediately while hot.
+    await h.sendContinue('Do heavy investigation');
+    expect(h.prompts).toHaveLength(2);
+    expect(h.createSessionSpy).not.toHaveBeenCalled();
+    const afterAutoSeal = await h.rolloverStore.get(SESSION_ID);
+    expect(afterAutoSeal?.pendingSwitch).toMatchObject({
+      reason: 'proactive_threshold',
+      targetGen: 1,
+      usedBefore: 360_000,
+    });
+    const autoDivider = h.history.find(
+      (e) => e.id === sessionRolloverTurnId(afterAutoSeal!.pendingSwitch!.runId)
+    );
+    expect(readSessionRolloverNotice(autoDivider!)).toMatchObject({
+      trigger: 'auto',
+      status: 'sealed',
+      generation: 1,
+      usedBefore: 360_000,
+    });
+
+    // 2. Next normal user message triggers lazy `:renew` (with deferred usage), then pure M.
+    await h.sendContinue('Now apply the fix');
+    expect(h.prompts).toHaveLength(4);
+    expect(h.prompts[3]!.text).toBe('Now apply the fix');
+    const afterRenew = await h.rolloverStore.get(SESSION_ID);
+    expect(afterRenew?.pendingSwitch).toBeUndefined();
+    expect(afterRenew?.generation).toBe(1);
+    expect(afterRenew?.degradedByNativeCompact).toBe(false);
+
+    // 3. Follow-up turn receives deferred 360k -> 26k usage_update: MUST NOT mark degraded or arm Board reinject!
+    await h.sendContinue('Verify the fix');
+    expect(h.prompts).toHaveLength(5);
+    const afterFollowUp = await h.rolloverStore.get(SESSION_ID);
+    expect(afterFollowUp?.degradedByNativeCompact).toBe(false);
+    expect(afterFollowUp?.usedAfterLastRollover).toBe(26_000);
+    expect(await h.reinjectStore.has(SESSION_ID)).toBe(false);
+    expect(h.prompts[4]!.text).not.toContain('<board_context_reminder>');
+  });
+
+  it('Phase 2 safety gates: skips auto :seal for coordinator, active /goal, pinned automation nativeSessionId, pending native work, queued user messages, and delta < 80k', async () => {
+    const cases: Array<{
+      name: string;
+      metaPatch?: Partial<SessionMeta>;
+      extraHistory?: SessionHistoryInput[];
+      priorUsedAfterRollover?: number;
+      nativeSessionId?: string;
+      pendingNativeWork?: boolean;
+    }> = [
+      {
+        name: 'coordinator',
+        metaPatch: { boardRole: 'coordinator' },
+      },
+      {
+        name: 'active goal',
+        extraHistory: [
+          {
+            id: 'goal-turn-1',
+            role: 'system',
+            timestamp: '2026-11-27T01:30:00.000Z',
+            fileDiff: [],
+            items: [
+              {
+                type: 'goal',
+                threadId: 'goal-1',
+                status: 'active',
+                objective: 'Finish migration',
+              } as never,
+            ],
+          },
+        ],
+      },
+      {
+        name: 'pinned automation nativeSessionId',
+        nativeSessionId: 'acp-1',
+      },
+      {
+        name: 'pending native work',
+        pendingNativeWork: true,
+      },
+      {
+        name: 'queued user messages',
+        metaPatch: { messageQueueUpdatedAt: 200, messageQueueCheckedAt: 100 },
+      },
+      {
+        name: 'delta < 80k since last rollover',
+        priorUsedAfterRollover: 300_000,
+      },
+    ];
+
+    for (const tc of cases) {
+      const h = createRolloverExecutionHarness({
+        metaPatch: {
+          contextWindowUsage: { size: 1_000_000, used: 360_000 },
+          ...tc.metaPatch,
+        },
+        ...(tc.extraHistory
+          ? {
+              initialHistory: [
+                {
+                  id: 'turn-u1',
+                  role: 'user',
+                  author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+                  timestamp: '2026-11-27T01:00:00.000Z',
+                  status: 'handled',
+                  fileDiff: [],
+                  items: [{ type: 'text', text: 'Origin' }],
+                },
+                ...tc.extraHistory,
+              ],
+            }
+          : {}),
+        onPrompt: ({ setUsage, writeActiveAssistantText }) => {
+          setUsage(360_000);
+          writeActiveAssistantText(`Done (${tc.name}).`);
+        },
+      });
+      if (tc.nativeSessionId) {
+        h.service.setAutomationAdmission(
+          async () => true,
+          () => true
+        );
+        vi.spyOn(h.service, 'acceptAutomationInput').mockResolvedValue(true);
+      }
+      if (tc.pendingNativeWork) {
+        vi.spyOn(h.service, 'hasPendingNativeWork').mockReturnValue(true);
+      }
+      if (tc.priorUsedAfterRollover !== undefined) {
+        await h.rolloverStore.set(SESSION_ID, {
+          version: 1,
+          sessionId: SESSION_ID,
+          generation: 1,
+          activeAcpSessionId: 'acp-1',
+          lastSealedTurnId: 'turn-u1',
+          usedAfterLastRollover: tc.priorUsedAfterRollover,
+          stateCard: {
+            goalAndPlan: 'G',
+            lockedInvariants: [],
+            decisionsAndDeadEnds: [],
+            workspaceFacts: '',
+            openAndNext: '',
+          },
+          spine: [],
+          updatedAt: 1_000,
+        });
+      }
+
+      await h.sendContinue(`Trigger check for ${tc.name}`, {
+        ...(tc.nativeSessionId ? { nativeSessionId: tc.nativeSessionId } : {}),
+      });
+      // Only the user turn prompt ran — ZERO automatic `:seal` prompt!
+      expect(h.prompts, `case: ${tc.name}`).toHaveLength(1);
+      expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch, `case: ${tc.name}`).toBeUndefined();
+    }
+  });
+
+  it('Phase 2 Stop preemption: cancelling during auto :seal writes silent auto+interrupted divider and leaves pendingSwitch unarmed', async () => {
+    let sealStartedResolve!: () => void;
+    const sealStarted = new Promise<void>((resolve) => {
+      sealStartedResolve = resolve;
+    });
+
+    const h = createRolloverExecutionHarness({
+      metaPatch: {
+        contextWindowUsage: { size: 1_000_000, used: 200_000 },
+      },
+      onPrompt: async ({ callIndex, signal, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          setUsage(370_000);
+          writeActiveAssistantText('Main answer finished.');
+          return;
+        }
+        // In-flight auto `:seal` waits until Stop cancels it.
+        sealStartedResolve();
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error('cancelled'));
+            return;
+          }
+          signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        });
+      },
+    });
+
+    const turnPromise = h.sendContinue('Heavy turn before Stop');
+    await sealStarted;
+
+    const cancelRes = await h.service.cancelSession({
+      type: 'session/cancel',
+      sessionId: SESSION_ID,
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(cancelRes).toEqual({ success: true });
+    await turnPromise;
+
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    const divider = h.history.find((e) => e.role === 'system' && e.id.startsWith('session-rollover:'));
+    expect(divider).toBeDefined();
+    const notice = readSessionRolloverNotice(divider!);
+    expect(notice).toMatchObject({
+      trigger: 'auto',
+      status: 'interrupted',
+    });
+    expect(isSilentSessionRollover(notice!)).toBe(true);
   });
 });

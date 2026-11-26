@@ -487,6 +487,10 @@ export class BoardCompactReinjectTracker {
     options: {
       isMaintenance: boolean;
       readSessionMeta: () => Promise<SessionMeta | undefined>;
+      onIdleCompaction?: (
+        sessionId: SessionId,
+        meta: SessionMeta | undefined
+      ) => Promise<void> | void;
     }
   ): void {
     if (!this.observeCompletedCompactionNotification(sessionId, notification)) {
@@ -509,9 +513,18 @@ export class BoardCompactReinjectTracker {
           if (meta?.boardId) {
             await this.store.mark(sessionId);
           }
+          if (options.onIdleCompaction) {
+            try {
+              await options.onIdleCompaction(sessionId, meta);
+            } catch (error) {
+              this.logger.warn(
+                `[${sessionId}] Failed to run idle compaction observer callback: ${formatError(error)}`
+              );
+            }
+          }
         } catch (error) {
           this.logger.warn(
-            `[${sessionId}] Failed to record idle Board compaction: ${formatError(error)}`
+            `[${sessionId}] Failed to record idle compaction signal: ${formatError(error)}`
           );
         }
       });
@@ -660,6 +673,7 @@ export class BoardCompactReinjectTracker {
 
     if (
       dispatchSource === 'maintenance' ||
+      dispatchSource === 'rollover' ||
       dispatchSource === 'goal' ||
       hasGoalControl ||
       !meta?.boardId
@@ -774,15 +788,21 @@ export class BoardCompactReinjectTracker {
       const observedUsageDrop = observation?.detectedUsageDrop ?? false;
       const observedMarker = observation?.detectedCompactionMarker ?? false;
 
-      if (dispatchSource === 'maintenance' || !meta?.boardId) {
+      if (dispatchSource === 'maintenance' || dispatchSource === 'rollover') {
         return { compacted: false };
       }
+
+      // Generalize three-layer compaction detection to all ordinary sessions so
+      // linear rollover can detect mid-turn native auto-compact (Hard Trap #3),
+      // while keeping `<board_context_reminder>` store mutations strictly gated
+      // to Board members (`meta?.boardId`).
+      const isBoardMember = Boolean(meta?.boardId);
 
       const turnSucceeded = !promptFailed && producedOutput;
       // Consume the previous pending flag BEFORE checking whether this turn itself
       // compacted, so a turn that both received a reminder and compacted again
       // leaves the pending marker armed for the following turn.
-      if (injectedBoardReminder && turnSucceeded) {
+      if (isBoardMember && injectedBoardReminder && turnSucceeded) {
         await this.clearPending(sessionId);
       }
 
@@ -795,7 +815,9 @@ export class BoardCompactReinjectTracker {
         promptCompletedNormally &&
         explicitCompactTriggered
       ) {
-        await this.markPending(sessionId);
+        if (isBoardMember) {
+          await this.markPending(sessionId);
+        }
         return { compacted: true, reason: 'explicit_compact' };
       }
 
@@ -805,7 +827,9 @@ export class BoardCompactReinjectTracker {
         observedMarker ||
         (await this.hasCompletedMarkerInEntries(sessionId, assistantTurnIds, readAssistantTurn))
       ) {
-        await this.markPending(sessionId);
+        if (isBoardMember) {
+          await this.markPending(sessionId);
+        }
         return { compacted: true, reason: 'acp_marker' };
       }
 
@@ -813,7 +837,7 @@ export class BoardCompactReinjectTracker {
       // Latched `observedUsageDrop` catches mid-turn drop-then-regrowth (`115k -> 22k -> 80k`).
       // When this turn already carried a reinjected reminder, ignore stale pre-turn
       // `turnStartUsed` so deferred `usage_update` from bare `/compact` never re-triggers.
-      const afterUsed = meta.contextWindowUsage?.used ?? lastObservedUsed;
+      const afterUsed = meta?.contextWindowUsage?.used ?? lastObservedUsed;
       const effectiveStartUsed = injectedBoardReminder ? undefined : turnStartUsed;
       if (
         !ineligibleForUsageDrop &&
@@ -824,7 +848,9 @@ export class BoardCompactReinjectTracker {
             afterUsed,
           }))
       ) {
-        await this.markPending(sessionId);
+        if (isBoardMember) {
+          await this.markPending(sessionId);
+        }
         return { compacted: true, reason: 'usage_drop' };
       }
 
@@ -865,6 +891,8 @@ export class BoardCompactReinjectTracker {
     requestedModelId?: string;
     freshAgentSession: boolean;
     usedHistoryReplay: boolean;
+    /** Explicit usage-drop suppression (e.g. post-rollover first follow-up turn, Hard Trap #6). */
+    ineligibleForUsageDrop?: boolean;
     observationSnapshot?: BoardTurnUsageSnapshot;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {
@@ -916,7 +944,8 @@ export class BoardCompactReinjectTracker {
         injectedBoardReminder: args.injectedBoardReminder,
         explicitCompactTriggered,
         turnStartUsed: args.isStartTurn ? undefined : args.turnStartUsed,
-        ineligibleForUsageDrop: replacedAcpSession || modelChanged,
+        ineligibleForUsageDrop:
+          Boolean(args.ineligibleForUsageDrop) || replacedAcpSession || modelChanged,
         observationSnapshot: args.observationSnapshot,
         readAssistantTurn: args.readAssistantTurn,
       });
@@ -951,6 +980,8 @@ export class BoardCompactReinjectTracker {
     finalInputConfig?: SessionTurnInputConfig;
     freshAgentSession: boolean;
     usedHistoryReplay: boolean;
+    /** Explicit usage-drop suppression (e.g. post-rollover first follow-up turn, Hard Trap #6). */
+    ineligibleForUsageDrop?: boolean;
     observationSnapshot?: BoardTurnUsageSnapshot;
     readAssistantTurn: (entryId: string) => Promise<SessionHistoryInput | undefined>;
   }): Promise<{ compacted: boolean; reason?: BoardCompactionReason }> {

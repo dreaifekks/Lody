@@ -553,7 +553,9 @@ describe('board-compact-reinject helpers', () => {
       );
       expect(await tracker.hasPending(boardSessionId)).toBe(true);
 
-      // Ordinary non-Board sessions ignore idle compaction updates.
+      // Ordinary non-Board sessions do not mark Board reminder store, but DO
+      // invoke the generalized `onIdleCompaction` observer callback (Phase 2).
+      const observedIdleSessions: SessionId[] = [];
       tracker.noteLiveAcpUpdate(
         plainSessionId,
         parseSessionNotification({
@@ -566,9 +568,50 @@ describe('board-compact-reinject helpers', () => {
             _meta: { lody: { activity: { kind: 'context_compaction' } } },
           },
         }),
-        { isMaintenance: false, readSessionMeta: async () => plainMeta }
+        {
+          isMaintenance: false,
+          readSessionMeta: async () => plainMeta,
+          onIdleCompaction: (sid) => {
+            observedIdleSessions.push(sid);
+          },
+        }
       );
       expect(await tracker.hasPending(plainSessionId)).toBe(false);
+      expect(observedIdleSessions).toEqual([plainSessionId]);
+    });
+
+    it('detects mid-turn usage drop (90k -> 520k -> 30k -> 60k) on ordinary non-Board sessions without arming Board reminder store (Hard Trap #3)', async () => {
+      const store = createMemoryBoardCompactReinjectStore();
+      const tracker = new BoardCompactReinjectTracker(store, silentLogger);
+      const sessionId = 'session-plain-midturn' as SessionId;
+      const meta = {
+        id: sessionId,
+        contextWindowUsage: { size: 1_000_000, used: 60_000 },
+      } as SessionMeta;
+
+      tracker.beginTurn(sessionId, 'turn-plain-1', { seedBaselineUsed: 90_000 });
+      tracker.noteContextWindowUsageUpdate(sessionId, { size: 1_000_000, used: 520_000 });
+      tracker.noteContextWindowUsageUpdate(sessionId, { size: 1_000_000, used: 30_000 });
+      tracker.noteContextWindowUsageUpdate(sessionId, { size: 1_000_000, used: 60_000 });
+
+      const result = await tracker.completeTurn({
+        sessionId,
+        turnId: 'turn-plain-1',
+        assistantTurnIds: ['turn-plain-1'],
+        meta,
+        promptFailed: false,
+        promptCompletedNormally: true,
+        producedOutput: true,
+        injectedBoardReminder: false,
+        explicitCompactTriggered: false,
+        turnStartUsed: 90_000,
+        ineligibleForUsageDrop: false,
+        readAssistantTurn: async () => undefined,
+      });
+
+      expect(result).toEqual({ compacted: true, reason: 'usage_drop' });
+      expect(await tracker.hasPending(sessionId)).toBe(false);
+      tracker.endTurn(sessionId, 'turn-plain-1');
     });
   });
 });

@@ -393,6 +393,31 @@ export class SessionRolloverService {
   }
 
   /**
+   * Anchor `usedAfterLastRollover` on the first turn after a `:renew` whose
+   * provider deferred its initial `usage_update` until the next prompt.
+   */
+  async recordPostRolloverUsageBaseline(sessionId: SessionId, used: number): Promise<void> {
+    if (!Number.isFinite(used) || used < 0) return;
+    const nowMs = this.now();
+    try {
+      await this.options.store.update(sessionId, (current) => {
+        if (!current || current.generation <= 0 || current.usedAfterLastRollover !== undefined) {
+          return current;
+        }
+        return {
+          ...current,
+          usedAfterLastRollover: Math.floor(used),
+          updatedAt: nowMs,
+        };
+      });
+    } catch (error) {
+      this.options.logger.debug(
+        `[${sessionId}] Failed to anchor post-rollover usage baseline: ${formatError(error)}`
+      );
+    }
+  }
+
+  /**
    * Seal the current node into `stateCard + spine + pendingSwitch` and update
    * the `session_context_rollover` divider to `sealed` (Form B: does NOT open
    * the fresh ACP session until the user's next normal message arrives).
