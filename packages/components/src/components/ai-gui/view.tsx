@@ -4977,6 +4977,7 @@ const UserMessageRowView = ({
   const rpcDelivered = rpcDeliveredTurns.has(getRpcDeliveredTurnKey(sessionId, message.id));
   const isPendingApply = message.status === 'pending_apply' && !rpcDelivered;
   const isDeliveryUnknown = message.status === 'delivery_unknown';
+  const isFailed = message.status === 'failed';
   // A forced machine update cancelled this turn; Continue resends it as a new
   // message instead of replaying it automatically.
   const isUpdateInterrupted =
@@ -4985,7 +4986,9 @@ const UserMessageRowView = ({
     ? t('sessions.messageStatus.interruptedByUpdate', 'Interrupted by update')
     : isDeliveryUnknown
       ? t('sessions.messageStatus.deliveryUnknown', 'Application unknown')
-      : t('sessions.messageStatus.notDelivered', 'Not delivered');
+      : isFailed
+        ? t('sessions.messageStatus.failed', 'Failed')
+        : t('sessions.messageStatus.notDelivered', 'Not delivered');
   const isDelivered = !isPendingApply && (isSessionHistoryDelivered(message) || rpcDelivered);
   // Missing-history recovery negatively acknowledged this exact turn
   // (`SessionMeta.lastMissingHistoryUserMsgId`): the entry is visible but kept
@@ -5134,7 +5137,7 @@ const UserMessageRowView = ({
             </span>
           ) : null}
           {timestampLabel ? <span className="tabular-nums">{timestampLabel}</span> : null}
-          {isUndelivered || isDeliveryUnknown || isUpdateInterrupted ? (
+          {isUndelivered || isDeliveryUnknown || isUpdateInterrupted || isFailed ? (
             onResendUndelivered ? (
               <button
                 type="button"
@@ -5373,6 +5376,7 @@ const UserMessageRowView = ({
         <ResendUndeliveredDialog
           deliveryUnknown={isDeliveryUnknown}
           updateInterrupted={isUpdateInterrupted}
+          failedTurn={isFailed}
           open={resendDialogOpen}
           onOpenChange={setResendDialogOpen}
           isResending={isResending}
@@ -5467,6 +5471,7 @@ const ResendUndeliveredDialog = ({
   onConfirm,
   deliveryUnknown = false,
   updateInterrupted = false,
+  failedTurn = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -5474,6 +5479,7 @@ const ResendUndeliveredDialog = ({
   onConfirm: () => void;
   deliveryUnknown?: boolean;
   updateInterrupted?: boolean;
+  failedTurn?: boolean;
 }) => {
   const { t } = useTranslation();
   if (updateInterrupted)
@@ -5510,7 +5516,9 @@ const ResendUndeliveredDialog = ({
           <AlertDialog.Title>
             {deliveryUnknown
               ? t('sessions.messageStatus.deliveryUnknown', 'Application unknown')
-              : t('sessions.resendUndelivered.title', 'Message not delivered')}
+              : failedTurn
+                ? t('sessions.resendUndelivered.failedTitle', 'Message failed')
+                : t('sessions.resendUndelivered.title', 'Message not delivered')}
           </AlertDialog.Title>
           <AlertDialog.Description>
             {deliveryUnknown
@@ -5518,10 +5526,15 @@ const ResendUndeliveredDialog = ({
                   'sessions.resendUndelivered.unknownDescription',
                   'The agent may already have applied this guidance. Sending it as a new message could repeat work. Send again?'
                 )
-              : t(
-                  'sessions.resendUndelivered.description',
-                  'This message never reached the agent, so it did not run. Resend the same content as a new message?'
-                )}
+              : failedTurn
+                ? t(
+                    'sessions.resendUndelivered.failedDescription',
+                    'This message failed before completing. Resend the same content as a new message?'
+                  )
+                : t(
+                    'sessions.resendUndelivered.description',
+                    'This message never reached the agent, so it did not run. Resend the same content as a new message?'
+                  )}
           </AlertDialog.Description>
         </AlertDialog.Header>
         <AlertDialog.Footer>

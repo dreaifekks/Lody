@@ -99,14 +99,10 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Light: Story = {};
+export const Light: Story = {
+  globals: { theme: 'light' },
+};
 
 export const Dark: Story = {
-  decorators: [
-    (Story) => (
-      <div className="dark" data-mode="dark" style={{ background: '#111113', minHeight: '100vh' }}>
-        <Story />
-      </div>
-    ),
-  ],
+  globals: { theme: 'dark' },
 };

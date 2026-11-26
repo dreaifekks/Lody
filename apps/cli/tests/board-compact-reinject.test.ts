@@ -227,6 +227,9 @@ function createBoardExecutionHarness(options: {
 
   const deps = createBaseDeps({
     boardCompactReinjectStore: options.store,
+    // Isolate Board compact re-injection contract tests from automatic linear
+    // `post_compact_recovery` rollover (which opens a fresh ACP node and clears pending).
+    sessionRolloverAutoEnabled: false,
     ...(options.observePromptContentForTurn
       ? { observePromptContentForTurn: options.observePromptContentForTurn }
       : {}),

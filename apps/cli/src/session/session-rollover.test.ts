@@ -6,7 +6,7 @@ import {
   type SessionMeta,
   type SessionRolloverNoticeMeta,
 } from '@lody/shared';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,9 +25,11 @@ import {
   SessionRolloverService,
   buildLowEffortRunConfigForRenew,
   chooseSessionRolloverSealMode,
+  createIsolatedColdRolloverSummarizer,
 } from './session-rollover-service';
 import {
   SESSION_ROLLOVER_MAX_SPINE_ENTRIES,
+  SessionRolloverStoreReadError,
   createEmptySessionRolloverStateCard,
   createFileSessionRolloverStore,
   createMemorySessionRolloverStore,
@@ -132,6 +134,110 @@ describe('session-rollover command parsing & pure helpers', () => {
     });
     expect(fallbackKey.appliedLow).toBe(true);
     expect(fallbackKey.config.configOptionValues?.reasoning_effort).toBe('low');
+    expect(fallbackKey.overriddenKey).toBe('reasoning_effort');
+    expect(fallbackKey.restoreValue).toBe('high');
+
+    // Implicit default (no user configOptionValues): records advertised currentValue for restoration.
+    const implicitDefault = buildLowEffortRunConfigForRenew({ modelId: 'gemini-4-neon' }, [
+      {
+        id: 'thought_level',
+        name: 'Thinking',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'xhigh',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'xhigh', name: 'XHigh' },
+        ],
+      },
+    ]);
+    expect(implicitDefault).toMatchObject({
+      appliedLow: true,
+      overriddenKey: 'thought_level',
+      restoreValue: 'xhigh',
+    });
+    expect(implicitDefault.config.configOptionValues?.thought_level).toBe('low');
+
+    // Unknown implicit currentValue -> skips `low` override so `low` can NEVER leak to user message M.
+    const unknownDefault = buildLowEffortRunConfigForRenew({ modelId: 'gemini-4-neon' }, [
+      {
+        id: 'thought_level',
+        name: 'Thinking',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: '',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+    ]);
+    expect(unknownDefault.appliedLow).toBe(false);
+    expect(unknownDefault.config.configOptionValues).toBeUndefined();
+  });
+
+  it('sliceRolloverSegmentEntries fails closed (returns []) when throughTurnId is missing from history', () => {
+    const entries: SessionHistoryInput[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        timestamp: '2026-11-27T01:00:00Z',
+        fileDiff: [],
+        items: [{ type: 'text', text: 'First' }],
+      },
+      {
+        id: 'u2',
+        role: 'user',
+        timestamp: '2026-11-27T01:01:00Z',
+        fileDiff: [],
+        items: [{ type: 'text', text: 'Rewritten tail' }],
+      },
+    ];
+    expect(sliceRolloverSegmentEntries(entries, { throughTurnId: 'deleted-by-edit' })).toEqual([]);
+  });
+
+  it('never truncates any lockedInvariant mid-sentence when overflowing inline budget', () => {
+    const invariants = Array.from(
+      { length: 45 },
+      (_, idx) =>
+        `INVARIANT_${String(idx + 1).padStart(2, '0')}: must keep exact contract #${idx + 1} across all nodes and drawer/composer surfaces with deterministic end marker END_${idx + 1}.`
+    );
+    const opening = buildLinearRolloverOpening({
+      sessionId: SESSION_ID,
+      generation: 1,
+      nodeId: 'n_0001',
+      history: [],
+      stateCard: {
+        goalAndPlan: 'Verify invariant overflow',
+        lockedInvariants: invariants,
+        decisionsAndDeadEnds: [],
+        workspaceFacts: '',
+        openAndNext: '',
+      },
+      spine: [],
+      workspace: { invariantsDocPath: 'invariants.md' },
+      nowIso: '2026-11-27T04:00:00.000Z',
+    });
+
+    expect(estimateTokenCount(opening)).toBeLessThanOrEqual(SESSION_ROLLOVER_OPENING_MAX_TOKENS);
+    // Newest invariants must appear COMPLETE (no mid-sentence `...` clipping).
+    expect(opening).toContain(invariants.at(-1)!);
+    expect(opening).toContain('earlier locked invariant(s) omitted from inline budget');
+    expect(opening).toContain('invariants.md');
+    expect(opening).toContain('lody_session_history');
+    // Every rendered bullet in the locked invariants section must equal a full original invariant!
+    const sectionMatch = opening.match(
+      /## 2\. Locked Invariants \(Protected — Must Not Regress\)[\s\S]*?(?=\n## |$)/
+    );
+    expect(sectionMatch).not.toBeNull();
+    const bulletLines = sectionMatch![0]
+      .split('\n')
+      .filter((line) => line.startsWith('- INVARIANT_'));
+    expect(bulletLines.length).toBeGreaterThan(0);
+    expect(bulletLines.length).toBeLessThan(invariants.length);
+    for (const line of bulletLines) {
+      expect(invariants).toContain(line.slice(2));
+    }
   });
 });
 
@@ -144,7 +250,7 @@ describe('10-generation anti-bloat steady-state opening invariants', () => {
       {
         id: 'u-origin',
         role: 'user',
-        author: { v: 1, kind: 'human', userId: 'u1', name: 'Alice' },
+        author: { v: 1, kind: 'human', userId: 'u1' },
         timestamp: '2026-11-27T01:00:00.000Z',
         fileDiff: [],
         items: [{ type: 'text', text: longOrigin }],
@@ -210,7 +316,7 @@ describe('10-generation anti-bloat steady-state opening invariants', () => {
           {
             id: uid,
             role: 'user',
-            author: { v: 1, kind: 'human', userId: 'u1', name: 'Alice' },
+            author: { v: 1, kind: 'human', userId: 'u1' },
             timestamp: `2026-11-27T0${Math.min(gen, 9)}:2${round}:00.000Z`,
             fileDiff: [],
             items: [
@@ -293,7 +399,7 @@ describe('10-generation anti-bloat steady-state opening invariants', () => {
           endTurnId: lastTurnId,
           turnCount: 3,
           oneLiner: parsed!.oneLiner,
-          quality: 'warm_llm',
+          quality: 'warm_llm' as const,
         },
       ].slice(-SESSION_ROLLOVER_MAX_SPINE_ENTRIES);
 
@@ -368,7 +474,7 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
       {
         id: 'u1',
         role: 'user',
-        author: { v: 1, kind: 'human', userId: 'u1', name: 'Alice' },
+        author: { v: 1, kind: 'human', userId: 'u1' },
         timestamp: '2026-11-27T01:00:00.000Z',
         fileDiff: [],
         items: [{ type: 'text', text: 'Design feature X' }],
@@ -533,11 +639,22 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
       updatedAt: 1_900_000,
     });
 
+    const sealedHistory: SessionHistoryInput[] = [
+      {
+        id: 'assistant:u1',
+        role: 'assistant',
+        userTurnId: 'u1',
+        timestamp: '2026-11-27T01:00:10.000Z',
+        fileDiff: [],
+        items: [{ type: 'text', text: 'Sealed endpoint.' }],
+      },
+    ];
+
     // 1. Failed :renew MUST preserve pendingSwitch
     const failedOutcome = await service.executeLazyRenew({
       sessionId: SESSION_ID,
       meta: makeMeta({ acpSessionId: 'acp-1' as ACPSessionId }),
-      history: [],
+      history: sealedHistory,
       writeDivider: async () => {},
       retireOldSession: async () => {},
       runFreshRenewTurn: async () => ({ status: 'failed', reason: 'network-timeout' }),
@@ -567,7 +684,7 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
         acpSessionId: 'acp-fresh-2' as ACPSessionId,
         contextWindowUsage: { size: 1_000_000, used: 25_000 },
       }),
-      history: [],
+      history: sealedHistory,
       writeDivider: async (_runId, meta) => {
         dividers.push(meta);
       },
@@ -594,6 +711,171 @@ describe('SessionRolloverService warm/cold mode, fallback, and crash recovery', 
     expect(committed?.activeAcpSessionId).toBe('acp-fresh-2');
     expect(committed?.lastSealedTurnId).toBe('assistant:u1');
     expect(committed?.usedAfterLastRollover).toBe(25_000);
+  });
+
+  it('invalidates stale pendingSwitch when Edit & Resend removes sealedThroughTurnId or replaces meta.acpSessionId', async () => {
+    const store = createMemorySessionRolloverStore();
+    const service = new SessionRolloverService({
+      store,
+      logger: noopLogger,
+      now: () => 2_000_000,
+    });
+    await store.set(SESSION_ID, {
+      version: 1,
+      sessionId: SESSION_ID,
+      generation: 0,
+      stateCard: createEmptySessionRolloverStateCard(),
+      spine: [
+        {
+          gen: 1,
+          nodeId: 'n_0001',
+          window: '11-27 01:00~01:01',
+          startTurnId: 'u1',
+          endTurnId: 'assistant:u1',
+          turnCount: 1,
+          oneLiner: 'Pending sealed node',
+          quality: 'warm_llm',
+        },
+      ],
+      pendingSwitch: {
+        runId: 'run-stale',
+        targetGen: 1,
+        nodeId: 'n_0001',
+        reason: 'manual_command',
+        sealedThroughTurnId: 'assistant:u1',
+        sealedAtMs: 1_900_000,
+        sourceAcpSessionId: 'acp-1',
+      },
+      updatedAt: 1_900_000,
+    });
+
+    const dividers: SessionRolloverNoticeMeta[] = [];
+    const prepared = await service.prepareLazyRenew({
+      sessionId: SESSION_ID,
+      meta: makeMeta({ acpSessionId: 'acp-edited-2' as ACPSessionId }),
+      history: [
+        {
+          id: 'u-edited',
+          role: 'user',
+          timestamp: '2026-11-27T01:05:00Z',
+          fileDiff: [],
+          items: [{ type: 'text', text: 'Edited prompt' }],
+        },
+      ],
+      writeDivider: async (_runId, meta) => {
+        dividers.push(meta);
+      },
+      clearBoardCompactPending: async () => {},
+    });
+
+    expect(prepared).toEqual({ kind: 'none' });
+    const after = await store.get(SESSION_ID);
+    expect(after?.pendingSwitch).toBeUndefined();
+    expect(after?.spine).toEqual([]);
+    expect(dividers).toEqual([
+      expect.objectContaining({ status: 'interrupted', reason: 'history-rewritten' }),
+    ]);
+  });
+
+  it('createIsolatedColdRolloverSummarizer runs in an isolated process with low effort, cleans up temp dir + shuts down on success/error, and returns null on failure', async () => {
+    const seenWorkdirs: string[] = [];
+    const setConfigCalls: Array<{ id: string; value: unknown }> = [];
+    const shutdownCalls: number[] = [];
+
+    const summarizer = createIsolatedColdRolloverSummarizer({
+      workspaceDocument: {} as never,
+      workspaceId: 'ws-1' as never,
+      machineId: 'machine-1' as never,
+      logger: noopLogger,
+      resolveLaunchConfig: async () => ({ config: undefined, source: 'none' }),
+      startAgent: (async (opts: { workdir: string; onUpdateMessage?: (u: unknown) => void }) => {
+        seenWorkdirs.push(opts.workdir);
+        // Temp dir must exist while running!
+        expect((await stat(opts.workdir)).isDirectory()).toBe(true);
+        return {
+          acpSessionId: 'cold-acp-1',
+          agentProcess: {} as never,
+          sessionResponse: {
+            configOptions: [
+              {
+                id: 'thought_level',
+                name: 'Thinking',
+                category: 'thought_level',
+                type: 'select',
+                currentValue: 'high',
+                options: [
+                  { value: 'low', name: 'Low' },
+                  { value: 'high', name: 'High' },
+                ],
+              },
+            ],
+          },
+          client: {
+            setSessionConfigOption: async (_sid: string, id: string, value: unknown) => {
+              setConfigCalls.push({ id, value });
+            },
+            prompt: async () => {
+              opts.onUpdateMessage?.({
+                update: {
+                  sessionUpdate: 'agent_message_chunk',
+                  content: { type: 'text', text: '{"oneLiner":"ok","stateCard":{}}' },
+                },
+              });
+              return { stopReason: 'end_turn' };
+            },
+            cancel: async () => {},
+          },
+        } as never;
+      }) as never,
+      shutdownAgent: async () => {
+        shutdownCalls.push(1);
+      },
+    });
+
+    const result = await summarizer({
+      sessionId: SESSION_ID,
+      meta: makeMeta(),
+      prompt: 'Summarize this cold text stream',
+    });
+    expect(result).toBe('{"oneLiner":"ok","stateCard":{}}');
+    expect(setConfigCalls).toEqual([{ id: 'thought_level', value: 'low' }]);
+    expect(shutdownCalls).toHaveLength(1);
+    // Temp dir MUST be cleaned up in finally!
+    await expect(stat(seenWorkdirs[0]!)).rejects.toThrow();
+
+    // Error path returns null and STILL shuts down and cleans up temp dir.
+    const failingSummarizer = createIsolatedColdRolloverSummarizer({
+      workspaceDocument: {} as never,
+      workspaceId: 'ws-1' as never,
+      machineId: 'machine-1' as never,
+      logger: noopLogger,
+      resolveLaunchConfig: async () => ({ config: undefined, source: 'none' }),
+      startAgent: (async (opts: { workdir: string }) => {
+        seenWorkdirs.push(opts.workdir);
+        return {
+          acpSessionId: 'cold-acp-2',
+          agentProcess: {} as never,
+          sessionResponse: {},
+          client: {
+            prompt: async () => {
+              throw new Error('upstream cold error');
+            },
+            cancel: async () => {},
+          },
+        } as never;
+      }) as never,
+      shutdownAgent: async () => {
+        shutdownCalls.push(2);
+      },
+    });
+    const failedResult = await failingSummarizer({
+      sessionId: SESSION_ID,
+      meta: makeMeta(),
+      prompt: 'Summarize failing stream',
+    });
+    expect(failedResult).toBeNull();
+    expect(shutdownCalls).toHaveLength(2);
+    await expect(stat(seenWorkdirs[1]!)).rejects.toThrow();
   });
 });
 
@@ -658,5 +940,56 @@ describe('createFileSessionRolloverStore', () => {
       const store3 = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
       expect(await store3.get(SESSION_ID)).toBeUndefined();
     }
+  });
+
+  it('fails closed on non-ENOENT read errors without invoking updater or overwriting disk state', async () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'lody-rollover-store-err-'));
+    tempDirs.push(rootDir);
+
+    const store1 = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
+    await store1.set(SESSION_ID, {
+      version: 1,
+      sessionId: SESSION_ID,
+      generation: 3,
+      activeAcpSessionId: 'acp-3',
+      stateCard: {
+        goalAndPlan: 'Preserved across EACCES',
+        lockedInvariants: ['DO_NOT_OVERWRITE'],
+        decisionsAndDeadEnds: [],
+        workspaceFacts: '',
+        openAndNext: '',
+      },
+      spine: [],
+      updatedAt: 999,
+    });
+
+    const files = await import('node:fs/promises').then((fs) => fs.readdir(rootDir));
+    const targetPath = path.join(
+      rootDir,
+      files.find((f) => f.endsWith('.json'))!
+    );
+    const originalBytes = await readFile(targetPath, 'utf8');
+
+    // Make the persisted state file unreadable to trigger EACCES on a fresh store instance.
+    await chmod(targetPath, 0o000);
+    try {
+      const store2 = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
+      await expect(store2.get(SESSION_ID)).rejects.toBeInstanceOf(SessionRolloverStoreReadError);
+      const updater = vi.fn((curr) => curr);
+      await expect(store2.update(SESSION_ID, updater)).rejects.toBeInstanceOf(
+        SessionRolloverStoreReadError
+      );
+      expect(updater).not.toHaveBeenCalled();
+    } finally {
+      await chmod(targetPath, 0o600);
+    }
+
+    // Original persisted state on disk MUST remain completely intact!
+    expect(await readFile(targetPath, 'utf8')).toBe(originalBytes);
+    const store3 = createFileSessionRolloverStore({ rootDir, logger: noopLogger });
+    expect((await store3.get(SESSION_ID))?.stateCard.lockedInvariants).toEqual([
+      'DO_NOT_OVERWRITE',
+    ]);
   });
 });

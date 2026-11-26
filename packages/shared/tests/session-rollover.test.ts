@@ -87,6 +87,14 @@ describe('session-rollover shared contracts', () => {
     expect(
       isSilentSessionRollover({
         kind: 'linear_rollover',
+        trigger: 'recovery',
+        status: 'interrupted',
+        generation: 1,
+      })
+    ).toBe(true);
+    expect(
+      isSilentSessionRollover({
+        kind: 'linear_rollover',
         trigger: 'manual',
         status: 'interrupted',
         generation: 1,
@@ -346,5 +354,23 @@ describe('session-rollover shared contracts', () => {
       doneDivider,
     ];
     expect(resolveEditableTail(oldNodeClosed, 'u1')).toBeNull();
+
+    // 6. Failed `:renew` (no acpTurnId, divider not `done`) does NOT block editing the failed user turn.
+    const failedRenewBeforeSwitch = [
+      { id: 'u1', role: 'user', status: 'handled' },
+      { id: 'assistant:u1', role: 'assistant', userTurnId: 'u1', finished: true, acpTurnId: 't1' },
+      sessionRolloverTurn(
+        'r1',
+        { kind: 'linear_rollover', trigger: 'manual', status: 'failed', generation: 1 },
+        '2026-11-27T01:01:00Z'
+      ),
+      { id: `assistant:${renewId}`, role: 'assistant', userTurnId: renewId, finished: true },
+      { id: 'u2', role: 'user', status: 'failed' },
+    ];
+    expect(resolveEditableTail(failedRenewBeforeSwitch, 'u2')).toEqual({
+      userIndex: 4,
+      turn: failedRenewBeforeSwitch[4],
+      forkTurnId: 't1',
+    });
   });
 });

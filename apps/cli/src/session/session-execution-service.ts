@@ -8,7 +8,9 @@ import {
   BoardCompactReinjectTracker,
   EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT,
   createMemoryBoardCompactReinjectStore,
+  detectContextUsageDropCompaction,
   extractTurnPromptText,
+  hasCompletedCompactionMarker,
   hasNonTextInputBlocks,
   isBareExplicitCompactTurnInput,
   isExplicitCompactTurnInput,
@@ -17,6 +19,7 @@ import {
   type BoardCompactReinjectStore,
   type BoardTurnUsageSnapshot,
 } from './board-compact-reinject';
+import { extractTextFromAgentResponse } from '@/agent/response-utils';
 import { extractVisibleTurnText } from '@/orchestration/board-fold-opening';
 import {
   createMemorySessionRolloverStore,
@@ -451,6 +454,8 @@ type TurnRuntimeState = {
   autoRolloverSealing?: boolean;
   /** Abort controller used when Stop or a new user message preempts an in-flight auto-rollover `:seal`. */
   autoRolloverAbortController?: AbortController;
+  /** Last `stopReason` returned by `agentClient.prompt()` on this turn (e.g. `'end_turn'`, `'refusal'`). */
+  lastPromptStopReason?: string;
   userTurnId?: string;
   invocation?: TurnInvocation;
   /** Encrypted only: whose authority admitted the claimed turn's verified signer. */
@@ -786,6 +791,7 @@ export type SessionExecutionServiceDeps = {
   /** Optional machine-local store for linear session node rollover state. */
   sessionRolloverStore?: SessionRolloverStore;
   /** Optional clock / warm-TTL / cold-summarizer / workspace-probe overrides for linear rollover. */
+  sessionRolloverAutoEnabled?: boolean;
   sessionRolloverNow?: () => number;
   sessionRolloverWarmCacheTtlMs?: number;
   sessionRolloverColdSummarizer?: SessionRolloverColdSummarizer;
@@ -1702,7 +1708,8 @@ export class SessionExecutionService {
   private readonly acpAuthenticationManager: AcpAuthenticationManager;
   private readonly boardCompactReinject: BoardCompactReinjectTracker;
   private readonly sessionRollover: SessionRolloverService;
-  private readonly lastTurnCompletedAtBySession = new Map<SessionId, number>();
+  /** Real ACP interaction timestamp per session (never mutated by non-ACP `touchSession` calls). */
+  private readonly lastAcpActivityAtBySession = new Map<SessionId, number>();
   /**
    * Sessions whose immediately following ordinary turn must also suppress
    * `usage_drop` detection (Hard Trap #6) in case the provider deferred its
@@ -1737,16 +1744,36 @@ export class SessionExecutionService {
     return await this.sessionRollover.getState(sessionId);
   }
 
+  private recordAcpActivity(sessionId: SessionId): void {
+    this.lastAcpActivityAtBySession.set(sessionId, this.deps.sessionRolloverNow?.() ?? Date.now());
+  }
+
   private resolveSessionLastActivityMs(sessionId: SessionId): number | undefined {
-    const fromDep = this.deps.getSessionLastActivity?.(sessionId);
-    const fromTurn = this.lastTurnCompletedAtBySession.get(sessionId);
-    if (fromDep !== undefined && fromTurn !== undefined) return Math.max(fromDep, fromTurn);
-    return fromDep ?? fromTurn;
+    const fromAcp = this.lastAcpActivityAtBySession.get(sessionId);
+    if (fromAcp !== undefined) return fromAcp;
+    return this.deps.getSessionLastActivity?.(sessionId);
   }
 
   /**
-   * Preempt an in-flight post-turn proactive auto-rollover `:seal` when Stop
-   * or a new user message arrives so the user continues seamlessly on the old
+   * True when the session still owns pending native background work — either
+   * already registered for post-release completion watching OR reported live on
+   * the current ACP client before `releaseVisibleTurn()` runs.
+   */
+  private hasLiveNativeWork(sessionId: SessionId, targetSession?: ISession | null): boolean {
+    if (this.hasPendingNativeWork(sessionId)) return true;
+    const liveSession = targetSession ?? this.deps.sessionManager.getSession(sessionId);
+    const client = liveSession?.agentClient;
+    if (!liveSession || !client || liveSession.hasLiveAgentProcess?.() === false) return false;
+    try {
+      return client.getNativeWork()?.kind != null || client.hasUnsettledNativeWork?.() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Preempt an in-flight post-turn automatic rollover `:seal` when Stop or a
+   * new user message arrives so the user continues seamlessly on the old
    * session without leaving a pending switch behind.
    */
   private preemptAutoRolloverSeal(sessionId: SessionId): TurnRuntimeState | undefined {
@@ -1763,9 +1790,20 @@ export class SessionExecutionService {
   }
 
   /**
-   * Phase 2: evaluate proactive threshold + safety gates at the end of a
-   * completed ordinary turn and, when eligible, run a silent warm `:seal` while
-   * the session's prompt cache is hot. Fully error-contained and preemptible.
+   * Watcher hook: preempt an in-flight post-turn automatic rollover `:seal`
+   * when new user input or queue work arrives, returning a promise that settles
+   * once the owning turn releases the session slot (or `null` when idle / normal turn).
+   */
+  preemptAutoRolloverSealIfActive(sessionId: SessionId): Promise<void> | null {
+    const preempted = this.preemptAutoRolloverSeal(sessionId);
+    if (!preempted) return null;
+    return this.waitForTurnRelease(sessionId, preempted.turnId).catch(() => undefined);
+  }
+
+  /**
+   * Phase 2: evaluate post-compact automatic cold recovery (`post_compact_recovery`)
+   * or proactive threshold warm `:seal` (`proactive_threshold`) at the end of a
+   * completed ordinary turn. Fully error-contained and preemptible.
    */
   private async maybeRunProactiveAutoRolloverSeal(args: {
     sessionId: SessionId;
@@ -1789,13 +1827,24 @@ export class SessionExecutionService {
     } = args;
 
     try {
+      if (this.deps.sessionRolloverAutoEnabled === false) {
+        return;
+      }
       const freshMeta = (await sessionDoc.getMetaState?.().catch(() => undefined)) ?? preTurnMeta;
       if (freshMeta.isArchived || freshMeta.boardRole === 'coordinator') {
         return;
       }
+      let rolloverState: SessionRolloverState | undefined;
+      try {
+        rolloverState = await this.sessionRollover.getState(sessionId);
+      } catch (error) {
+        this.deps.logger.warn(
+          `[${sessionId}] Skipping automatic rollover :seal because persisted rollover state could not be read: ${formatErrorMessage(error)}`
+        );
+        return;
+      }
       const backend = await this.getSessionBackend(sessionDoc, sessionId);
-      const [rolloverState, latestGoal, queuedMessages] = await Promise.all([
-        this.sessionRollover.getState(sessionId).catch(() => undefined),
+      const [latestGoal, queuedMessages] = await Promise.all([
         backend.readLatestGoal().catch(() => null),
         backend.getMessageQueue().catch(() => []),
       ]);
@@ -1803,20 +1852,41 @@ export class SessionExecutionService {
       const hasQueuedUserMessages =
         queuedMessages.length > 0 ||
         (freshMeta.messageQueueUpdatedAt ?? 0) > (freshMeta.messageQueueCheckedAt ?? 0);
+      const hasNativeWork = this.hasLiveNativeWork(sessionId, activeSession);
+      const isGoalActive = isSessionGoalActive(latestGoal ?? legacyMeta.latestGoal);
 
-      const decision = decideSessionAutoRollover({
-        usage: freshMeta.contextWindowUsage,
-        usedAfterLastRollover: rolloverState?.usedAfterLastRollover,
-        isBoardCoordinator: freshMeta.boardRole === 'coordinator',
-        isGoalActive: isSessionGoalActive(latestGoal ?? legacyMeta.latestGoal),
-        hasPinnedNativeSessionId,
-        hasPendingNativeWork: this.hasPendingNativeWork(sessionId),
-        hasQueuedUserMessages,
-        hasPendingSwitch: Boolean(rolloverState?.pendingSwitch),
-        compactedInThisTurn,
-      });
-      if (!decision.shouldRollover) {
-        return;
+      const isPostCompactRecovery = Boolean(
+        rolloverState?.degradedByNativeCompact && !rolloverState.pendingSwitch
+      );
+
+      let sealReason: 'proactive_threshold' | 'post_compact_recovery';
+      let usedBefore: number | undefined;
+      if (isPostCompactRecovery) {
+        // Automatic cold Loro recovery after mid-turn native auto-compact:
+        // defer cleanly (retaining `degradedByNativeCompact: true`) whenever a
+        // safety gate blocks sealing on this boundary.
+        if (isGoalActive || hasPinnedNativeSessionId || hasNativeWork || hasQueuedUserMessages) {
+          return;
+        }
+        sealReason = 'post_compact_recovery';
+        usedBefore = freshMeta.contextWindowUsage?.used;
+      } else {
+        const decision = decideSessionAutoRollover({
+          usage: freshMeta.contextWindowUsage,
+          usedAfterLastRollover: rolloverState?.usedAfterLastRollover,
+          isBoardCoordinator: freshMeta.boardRole === 'coordinator',
+          isGoalActive,
+          hasPinnedNativeSessionId,
+          hasPendingNativeWork: hasNativeWork,
+          hasQueuedUserMessages,
+          hasPendingSwitch: Boolean(rolloverState?.pendingSwitch),
+          compactedInThisTurn,
+        });
+        if (!decision.shouldRollover) {
+          return;
+        }
+        sealReason = 'proactive_threshold';
+        usedBefore = decision.used;
       }
 
       if (runtime.cancelRequested || this.isTurnCancelled(sessionId, completedTurnId)) {
@@ -1835,17 +1905,19 @@ export class SessionExecutionService {
         this.isTurnCancelled(sessionId, completedTurnId);
 
       try {
-        const hasLiveSession = Boolean(
-          activeSession.agentClient?.isCreated() && activeSession.acpSessionId
-        );
+        // `post_compact_recovery` MUST take the cold Loro path and NEVER wake
+        // or query the degraded old ACP session.
+        const hasLiveSession =
+          sealReason !== 'post_compact_recovery' &&
+          Boolean(activeSession.agentClient?.isCreated() && activeSession.acpSessionId);
         const hasLiveProcess = hasLiveSession && activeSession.hasLiveAgentProcess?.() !== false;
 
         await this.sessionRollover.sealNode({
           sessionId,
           meta: freshMeta,
-          reason: 'proactive_threshold',
+          reason: sealReason,
           history: fullHistory,
-          usedBefore: decision.used,
+          usedBefore,
           hasLiveSession,
           hasLiveProcess,
           lastActivityMs: this.resolveSessionLastActivityMs(sessionId),
@@ -1878,10 +1950,13 @@ export class SessionExecutionService {
               activeSession.agentClient.currentModel,
               step.stepTurnId
             );
+            let sealPromptResponse: unknown;
             try {
-              await activeSession.agentClient.prompt(activeSession.acpSessionId, [
-                { type: 'text', text: step.prompt },
-              ]);
+              sealPromptResponse = await activeSession.agentClient.prompt(
+                activeSession.acpSessionId,
+                [{ type: 'text', text: step.prompt }],
+                { signal: autoSealController.signal }
+              );
             } catch (error) {
               if (isCancelled()) {
                 return { status: 'cancelled' };
@@ -1900,14 +1975,21 @@ export class SessionExecutionService {
                 .catch(() => undefined);
               this.deps.clearConversationTurn(sessionId, sealAssistantId);
             }
-            if (isCancelled()) {
+            const stopReason = (sealPromptResponse as { stopReason?: unknown } | undefined)
+              ?.stopReason;
+            if (isCancelled() || stopReason === 'cancelled') {
               return { status: 'cancelled' };
+            }
+            if (stopReason === 'refusal') {
+              return { status: 'failed', reason: 'seal-refused' };
             }
             const read = await backend.readTurn(sealAssistantId).catch(() => undefined);
             const text =
-              read?.state === 'ready'
+              (read?.state === 'ready'
                 ? extractVisibleTurnText(read.turn as SessionHistoryInput)
-                : '';
+                : '') ||
+              extractTextFromAgentResponse(sealPromptResponse) ||
+              '';
             return { status: 'completed', text };
           },
         });
@@ -2709,6 +2791,7 @@ export class SessionExecutionService {
 
   /** Record a live context-window usage reading for in-turn Board auto-compaction detection. */
   noteContextWindowUsageUpdate(sessionId: SessionId, usage: SessionContextWindowUsage): void {
+    this.recordAcpActivity(sessionId);
     this.boardCompactReinject.noteContextWindowUsageUpdate(sessionId, usage);
   }
 
@@ -2717,6 +2800,7 @@ export class SessionExecutionService {
    * signals, covering both active turns and spontaneous idle compaction.
    */
   noteLiveAcpUpdate(sessionId: SessionId, notification: AcpSessionNotification): void {
+    this.recordAcpActivity(sessionId);
     this.boardCompactReinject.noteLiveAcpUpdate(sessionId, notification, {
       isMaintenance: this.turnRuntimeBySession.get(sessionId)?.maintenance === true,
       readSessionMeta: () => this.getSessionMeta(sessionId),
@@ -6373,6 +6457,7 @@ export class SessionExecutionService {
                                 throw new Error('AUTOMATION_NATIVE_COMPACT_UNAVAILABLE');
                             }
                             runtime.promptStarted = true;
+                            runtime.lastPromptStopReason = undefined;
                             const raw = agentClient.prompt(acpSessionId, promptBlocks, {
                               signal,
                               ...(runtime.goalControl ? { goalControl: runtime.goalControl } : {}),
@@ -6382,7 +6467,14 @@ export class SessionExecutionService {
                               if (rawAcp) void self.clientLossRawWork.track(rawAcp);
                             }
                             runtime.rawPromptCompletion = raw.then(
-                              () => undefined,
+                              (result) => {
+                                const stopReason = (result as { stopReason?: unknown } | undefined)
+                                  ?.stopReason;
+                                if (typeof stopReason === 'string') {
+                                  runtime.lastPromptStopReason = stopReason;
+                                }
+                                return undefined;
+                              },
                               (cause) => {
                                 runtime.disconnectedTransport = isAgentDisconnectedError(cause);
                               }
@@ -7633,8 +7725,12 @@ export class SessionExecutionService {
     userTurnId: string
   ): Promise<void> {
     await this.setTerminalUserTurnStatus(sessionId, sessionDoc, userTurnId, 'handled');
+    const existingMeta = await this.getSessionMeta(sessionId);
     await this.upsertSessionMeta(sessionId, {
       lastHandledUserMsgId: userTurnId,
+      ...(existingMeta?.lastFailedUserMsgId === userTurnId
+        ? { lastFailedUserMsgId: undefined }
+        : {}),
       processingUserMsgId: undefined,
     });
   }
@@ -7965,6 +8061,9 @@ export class SessionExecutionService {
     const { sessionId, acpSessionConfig, userId, userName, userEmail, userTurnId } = message;
     const requiredNativeSessionId =
       normalizeSessionTurnInputConfig(acpSessionConfig)?._lodyAutomation?.nativeSessionId;
+    const resolvePinnedNativeSessionId = (runtime?: TurnRuntimeState): string | undefined =>
+      normalizeSessionTurnInputConfig(runtime?.invocation?.inputConfig)?._lodyAutomation
+        ?.nativeSessionId ?? requiredNativeSessionId;
     // System-caused turns own an assistant entry, not a user dispatch pointer.
     const executionUserTurnId =
       dispatchOptions?.dispatchSource === 'inbox' ||
@@ -7983,6 +8082,9 @@ export class SessionExecutionService {
       prepareOptions?.sessionDoc ??
       (await this.deps.workspaceDocument.getOrCreateSessionDoc(sessionId));
 
+    // Capture real pre-arrival ACP activity BEFORE `touchSession` refreshes the
+    // GC idle timer, so manual `/rollover` never misclassifies a cold session as warm.
+    const preTouchLastActivityMs = this.resolveSessionLastActivityMs(sessionId);
     this.deps.touchSession(sessionId);
     this.deps.logger.info(`Session chat received: ${sessionId}`);
     this.deps.logger.debug(`[${sessionId}] Received chat request (userTurnId=${userTurnId})`);
@@ -7997,6 +8099,12 @@ export class SessionExecutionService {
     // Set when this turn restored the native session by id, so its replay is the
     // native history and may hold turns written outside Lody.
     let restoredNativeSessionId: ACPSessionId | undefined;
+    // Tracks the effective ACP resume target for this turn; updated when lazy
+    // rollover commits a fresh node so stale-ACP disconnect retries target the new node.
+    let effectiveResumeSessionId: ACPSessionId | undefined = acpSessionConfig.resume;
+    // Explicit config overrides (e.g. implicit default `thought_level`) that must
+    // be restored after lazy `:renew` temporarily lowers effort to `low`.
+    let rolloverRestoredConfigOverrides: Record<string, AcpConfigOptionValue> | undefined;
 
     let replayPromptResult: ReplayPromptResult | null = null;
     let usedHistoryReplay = false;
@@ -8107,17 +8215,18 @@ export class SessionExecutionService {
         `[${sessionId}] Resume env resolved (agentConfigId=${meta?.agentConfigId ?? 'none'} source=${storedLaunchConfig.source} keys=${agentConfigEnv ? Object.keys(agentConfigEnv).length : 0})`
       );
 
+      const pinnedNativeSessionId = resolvePinnedNativeSessionId(ctx.runtime);
       const requestedResumeSessionId = effectiveFreshAgentSession
         ? undefined
-        : acpSessionConfig.resume;
+        : effectiveResumeSessionId;
       const storedResumeSessionId = effectiveFreshAgentSession
         ? undefined
         : resolveResumableAcpSessionId(meta);
       const resumeSessionId = requestedResumeSessionId ?? storedResumeSessionId;
       if (
-        requiredNativeSessionId &&
-        (storedResumeSessionId !== requiredNativeSessionId ||
-          resumeSessionId !== requiredNativeSessionId)
+        pinnedNativeSessionId &&
+        (storedResumeSessionId !== pinnedNativeSessionId ||
+          resumeSessionId !== pinnedNativeSessionId)
       )
         return yield* Effect.fail(new Error('AUTOMATION_NATIVE_SESSION_CHANGED'));
       const resumeSource = requestedResumeSessionId
@@ -8222,7 +8331,7 @@ export class SessionExecutionService {
               () =>
                 self.deps.sessionManager.createSession(restoreConfig, {
                   resumeSessionId,
-                  requireExactResume: !!requiredNativeSessionId,
+                  requireExactResume: !!pinnedNativeSessionId,
                 }),
               { terminateOnCancel: true }
             ),
@@ -8235,7 +8344,7 @@ export class SessionExecutionService {
         const requested = resumeSessionId;
         const actual = restoredSession.acpSessionId ?? null;
         if (requested && actual === requested) restoredNativeSessionId = requested;
-        if (requiredNativeSessionId && actual !== requiredNativeSessionId)
+        if (pinnedNativeSessionId && actual !== pinnedNativeSessionId)
           return yield* Effect.fail(new Error('AUTOMATION_NATIVE_RESUME_UNCONFIRMED'));
         if (requested) {
           self.deps.logger.debug(
@@ -8278,7 +8387,7 @@ export class SessionExecutionService {
         Effect.catch((error) =>
           Effect.gen(function* () {
             yield* ctx.abortIfCancelled();
-            if (requiredNativeSessionId) return yield* Effect.fail(error);
+            if (pinnedNativeSessionId) return yield* Effect.fail(error);
             const errMessage = formatErrorMessage(error);
             const lowerMessage = errMessage.toLowerCase();
             const isAcpResumeError =
@@ -8430,7 +8539,8 @@ export class SessionExecutionService {
       ctx: VisibleSessionTurnContext
     ): Effect.fn.Return<void, unknown, Scope.Scope> {
       const { turnId, runtime, abortIfCancelled, openAssistantEntry, prompt } = ctx;
-      if (requiredNativeSessionId && readySession.acpSessionId !== requiredNativeSessionId)
+      const pinnedNativeSessionId = resolvePinnedNativeSessionId(runtime);
+      if (pinnedNativeSessionId && readySession.acpSessionId !== pinnedNativeSessionId)
         yield* Effect.fail(new Error('AUTOMATION_NATIVE_SESSION_CHANGED'));
       let activeSession = readySession;
       let staleAcpPromptRecoveryAttempted = false;
@@ -8584,7 +8694,12 @@ export class SessionExecutionService {
                 targetSession,
                 {
                   ...acpSessionConfig,
-                  configOptionValues: acpSessionConfig.configOptionValues,
+                  configOptionValues: rolloverRestoredConfigOverrides
+                    ? {
+                        ...rolloverRestoredConfigOverrides,
+                        ...acpSessionConfig.configOptionValues,
+                      }
+                    : acpSessionConfig.configOptionValues,
                 },
                 {
                   sessionDoc,
@@ -8797,45 +8912,78 @@ export class SessionExecutionService {
       );
 
       // Phase 0: when a user-initiated explicit `/compact` returns cleanly from
-      // ACP with zero visible text (e.g. agy silent compaction), append a brief
-      // visible status confirmation so it never appears hung or fails as
-      // `agent_no_output` (BoardContinuityWorkflow `:compact` is excluded via
-      // `isUserExplicitCompactTurn`).
+      // ACP with zero visible text, append a brief visible status confirmation
+      // ONLY when compaction is actually confirmed — either Antigravity bare
+      // `/compact` finished normally (`stopReason === 'end_turn'`) OR explicit
+      // compaction evidence (completed compaction marker or real usage drop)
+      // was observed in this turn. Other silent failures still fall through to
+      // `recordSilentTurnFailure` (`agent_no_output`).
       if (!producedOutput && promptCompletedNormally && isUserExplicitCompactTurn) {
-        const wroteCompactFallback = yield* self.tryPromise(async () => {
-          try {
-            const backend = await self.getSessionBackend(sessionDoc, sessionId);
-            const appended = await backend.applyHistoryAction({
-              kind: 'assistant-items',
-              turnId: completedTurnId,
-              mode: 'append',
-              items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
-            });
-            if (!appended.matched) {
-              await backend.applyHistoryAction({
-                kind: 'upsert-turn',
-                turn: {
-                  id: completedTurnId,
-                  role: 'assistant',
-                  timestamp: new Date(getServerNow()).toISOString(),
-                  ...(completedUserTurnId ? { userTurnId: completedUserTurnId } : {}),
-                  modelInfo: activeSession.agentClient?.currentModel,
-                  fileDiff: [],
-                  finished: true,
-                  items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
-                },
-              });
-            }
+        const compactFallbackConfirmed = yield* self.tryPromise(async () => {
+          if (isUserBareCompactTurn && runtime.lastPromptStopReason === 'end_turn') {
             return true;
-          } catch (error) {
-            self.deps.logger.debug(
-              `[${sessionId}] Failed to append explicit /compact fallback confirmation: ${formatErrorMessage(error)}`
-            );
-            return false;
           }
+          const activeObs = self.boardCompactReinject.peekActiveTurnObservation(sessionId, turnId);
+          if (activeObs?.detectedCompactionMarker || activeObs?.detectedUsageDrop) {
+            return true;
+          }
+          const backend = await self.getSessionBackend(sessionDoc, sessionId);
+          const candidateIds = [
+            ...new Set((runtime.assistantTurnIds ?? [turnId, completedTurnId]).filter(Boolean)),
+          ];
+          for (const entryId of candidateIds) {
+            const read = await backend.readTurn(entryId).catch(() => undefined);
+            if (
+              read?.state === 'ready' &&
+              hasCompletedCompactionMarker(read.turn as SessionHistoryInput)
+            ) {
+              return true;
+            }
+          }
+          const freshMeta = await sessionDoc.getMetaState?.().catch(() => undefined);
+          return detectContextUsageDropCompaction({
+            startUsed: injectedBoardReminder ? undefined : turnStartUsed,
+            peakUsed: activeObs?.peakUsed,
+            afterUsed: freshMeta?.contextWindowUsage?.used ?? activeObs?.lastObservedUsed,
+            ineligible: freshAgentSession || justRolledOverInThisTurn || inPostRolloverGrace,
+          });
         });
-        if (wroteCompactFallback) {
-          producedOutput = true;
+        if (compactFallbackConfirmed) {
+          const wroteCompactFallback = yield* self.tryPromise(async () => {
+            try {
+              const backend = await self.getSessionBackend(sessionDoc, sessionId);
+              const appended = await backend.applyHistoryAction({
+                kind: 'assistant-items',
+                turnId: completedTurnId,
+                mode: 'append',
+                items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
+              });
+              if (!appended.matched) {
+                await backend.applyHistoryAction({
+                  kind: 'upsert-turn',
+                  turn: {
+                    id: completedTurnId,
+                    role: 'assistant',
+                    timestamp: new Date(getServerNow()).toISOString(),
+                    ...(completedUserTurnId ? { userTurnId: completedUserTurnId } : {}),
+                    modelInfo: activeSession.agentClient?.currentModel,
+                    fileDiff: [],
+                    finished: true,
+                    items: [{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }],
+                  },
+                });
+              }
+              return true;
+            } catch (error) {
+              self.deps.logger.debug(
+                `[${sessionId}] Failed to append explicit /compact fallback confirmation: ${formatErrorMessage(error)}`
+              );
+              return false;
+            }
+          });
+          if (wroteCompactFallback) {
+            producedOutput = true;
+          }
         }
       }
 
@@ -8917,10 +9065,7 @@ export class SessionExecutionService {
           )
         );
       }
-      self.lastTurnCompletedAtBySession.set(
-        sessionId,
-        self.deps.sessionRolloverNow?.() ?? Date.now()
-      );
+      self.recordAcpActivity(sessionId);
 
       let compactionObservedInTurn = false;
       if (dispatchOptions?.dispatchSource === 'maintenance' && preTurnMeta?.boardId) {
@@ -9012,8 +9157,7 @@ export class SessionExecutionService {
         dispatchOptions?.dispatchSource !== 'goal' &&
         !dispatchOptions?.goalControl &&
         !isUserExplicitCompactTurn &&
-        !justRolledOverInThisTurn &&
-        !usedHistoryReplay &&
+        ((!justRolledOverInThisTurn && !usedHistoryReplay) || compactionObservedInTurn) &&
         !runtime.promptFailed &&
         producedOutput &&
         !runtime.cancelRequested &&
@@ -9030,7 +9174,7 @@ export class SessionExecutionService {
             completedTurnId,
             preTurnMeta: sealMeta,
             compactedInThisTurn: compactionObservedInTurn,
-            hasPinnedNativeSessionId: Boolean(requiredNativeSessionId),
+            hasPinnedNativeSessionId: Boolean(resolvePinnedNativeSessionId(runtime)),
           })
         );
       }
@@ -9156,7 +9300,7 @@ export class SessionExecutionService {
                 usedBefore: turnStartUsed,
                 hasLiveSession,
                 hasLiveProcess,
-                lastActivityMs: self.resolveSessionLastActivityMs(sessionId),
+                lastActivityMs: preTouchLastActivityMs,
                 workdir: liveSession?.getWorkdir(),
                 abortSignal: signal,
                 isCancelled: () =>
@@ -9194,10 +9338,13 @@ export class SessionExecutionService {
                   );
                   ctx.bindSession(liveSession);
                   ctx.runtime.promptInFlight = true;
+                  let sealPromptResponse: unknown;
                   try {
-                    await liveSession.agentClient.prompt(liveSession.acpSessionId, [
-                      { type: 'text', text: step.prompt },
-                    ]);
+                    sealPromptResponse = await liveSession.agentClient.prompt(
+                      liveSession.acpSessionId,
+                      [{ type: 'text', text: step.prompt }],
+                      { signal }
+                    );
                   } catch (error) {
                     if (
                       signal.aborted ||
@@ -9221,18 +9368,27 @@ export class SessionExecutionService {
                       .catch(() => undefined);
                     self.deps.clearConversationTurn(sessionId, sealAssistantId);
                   }
+                  const sealStopReason = (
+                    sealPromptResponse as { stopReason?: unknown } | undefined
+                  )?.stopReason;
                   if (
                     signal.aborted ||
                     ctx.runtime.cancelRequested ||
-                    self.isTurnCancelled(sessionId, ctx.runtime.turnId)
+                    self.isTurnCancelled(sessionId, ctx.runtime.turnId) ||
+                    sealStopReason === 'cancelled'
                   ) {
                     return { status: 'cancelled' };
                   }
+                  if (sealStopReason === 'refusal') {
+                    return { status: 'failed', reason: 'seal-refused' };
+                  }
                   const read = await backend.readTurn(sealAssistantId).catch(() => undefined);
                   const text =
-                    read?.state === 'ready'
+                    (read?.state === 'ready'
                       ? extractVisibleTurnText(read.turn as SessionHistoryInput)
-                      : '';
+                      : '') ||
+                    extractTextFromAgentResponse(sealPromptResponse) ||
+                    '';
                   return { status: 'completed', text };
                 },
               })
@@ -9271,12 +9427,16 @@ export class SessionExecutionService {
           // Phase 1 (Form B): lazy `:renew` when a normal (non-slash) user message
           // enters a session with an armed `pendingSwitch`. Runs inside this same
           // per-session execution lock so the user's message M arrives 100% pure on
-          // the freshly warmed ACP node.
+          // the freshly warmed ACP node. Skips when the turn is pinned to a native
+          // automation session ID or the live ACP session still owns unsettled
+          // native background work (deferring retirement safely).
           const eligibleForLazyRenew =
             isOrdinaryUserContinueTurn &&
             Boolean(preTurnMeta) &&
             !preTurnMeta!.isArchived &&
             preTurnMeta!.boardRole !== 'coordinator' &&
+            !resolvePinnedNativeSessionId(ctx.runtime) &&
+            !(session && self.hasLiveNativeWork(sessionId, session)) &&
             !(!incomingHasNonText && isSlashCommandInput(incomingText));
 
           if (
@@ -9310,8 +9470,13 @@ export class SessionExecutionService {
             if (preparedRenew.kind === 'recovered') {
               justRolledOverInThisTurn = true;
               self.postRolloverUsageDropGrace.add(sessionId);
+              effectiveResumeSessionId = preparedRenew.acpSessionId;
               turnStartUsed = preparedRenew.usedAfter;
               turnStartAcpSessionId = preparedRenew.acpSessionId;
+              preTurnMeta = {
+                ...preTurnMeta,
+                acpSessionId: preparedRenew.acpSessionId,
+              };
             } else if (preparedRenew.kind === 'ready') {
               const previousSession = session;
               if (previousSession) {
@@ -9352,6 +9517,13 @@ export class SessionExecutionService {
                       error: new Error('Fresh ACP session was not ready for rollover :renew'),
                     };
                   }
+                  yield* self.tryPromise(() =>
+                    self.sessionRollover.recordAttemptingRenewAcpSession(
+                      sessionId,
+                      preparedRenew.pending.runId,
+                      created.acpSessionId!
+                    )
+                  );
                   yield* acpReplaySuppression.release;
                   yield* ctx.abortIfCancelled({ terminateSession: true });
 
@@ -9398,6 +9570,15 @@ export class SessionExecutionService {
                     acpSessionConfig,
                     created.agentClient.getConfigOptions?.()
                   );
+                  if (
+                    lowEffort.appliedLow &&
+                    lowEffort.overriddenKey &&
+                    lowEffort.restoreValue !== undefined
+                  ) {
+                    rolloverRestoredConfigOverrides = {
+                      [lowEffort.overriddenKey]: lowEffort.restoreValue,
+                    };
+                  }
                   yield* self
                     .tryPromise((signal) =>
                       self.deps.applyAcpModeAndModel(created, lowEffort.config, {
@@ -9468,11 +9649,14 @@ export class SessionExecutionService {
 
                   ctx.bindSession(created);
                   ctx.runtime.promptInFlight = true;
+                  let renewPromptResponse: unknown;
                   try {
-                    yield* self.tryPromise(() =>
-                      created.agentClient!.prompt(created.acpSessionId!, [
-                        { type: 'text', text: fullRenewPrompt },
-                      ])
+                    renewPromptResponse = yield* self.tryPromise((signal) =>
+                      created.agentClient!.prompt(
+                        created.acpSessionId!,
+                        [{ type: 'text', text: fullRenewPrompt }],
+                        { signal }
+                      )
                     );
                   } finally {
                     ctx.runtime.promptInFlight = false;
@@ -9493,13 +9677,40 @@ export class SessionExecutionService {
                         })
                       )
                       .pipe(Effect.catch(() => Effect.void));
+                    self.deps.clearConversationTurn(sessionId, renewAssistantId);
                   }
 
+                  const renewStopReason = (
+                    renewPromptResponse as { stopReason?: unknown } | undefined
+                  )?.stopReason;
                   if (
                     ctx.runtime.cancelRequested ||
-                    self.isTurnCancelled(sessionId, ctx.runtime.turnId)
+                    self.isTurnCancelled(sessionId, ctx.runtime.turnId) ||
+                    renewStopReason === 'cancelled'
                   ) {
                     return { status: 'cancelled' as const };
+                  }
+                  if (renewStopReason === 'refusal') {
+                    return {
+                      status: 'failed' as const,
+                      reason: 'renew-refused',
+                    };
+                  }
+
+                  const renewEntryRead = yield* self
+                    .tryPromise(() => backend.readTurn(renewAssistantId))
+                    .pipe(Effect.catch(() => Effect.succeed(undefined)));
+                  const renewVisibleText =
+                    (renewEntryRead?.state === 'ready'
+                      ? extractVisibleTurnText(renewEntryRead.turn as SessionHistoryInput)
+                      : '') ||
+                    extractTextFromAgentResponse(renewPromptResponse) ||
+                    '';
+                  if (!renewVisibleText.trim()) {
+                    return {
+                      status: 'failed' as const,
+                      reason: 'renew-empty-output',
+                    };
                   }
 
                   const freshMeta = yield* self
@@ -9540,8 +9751,10 @@ export class SessionExecutionService {
               }
 
               if (renewResult.status !== 'completed') {
+                rolloverRestoredConfigOverrides = undefined;
                 // Retire the half-initialized fresh ACP session so retry starts clean,
-                // while preserving `pendingSwitch` intact!
+                // restore `meta.acpSessionId` back to `sourceAcpSessionId` when known,
+                // and preserve `pendingSwitch` intact!
                 if (freshRenewSession) {
                   const toRetire = freshRenewSession as ISession;
                   yield* self
@@ -9552,6 +9765,15 @@ export class SessionExecutionService {
                   session = null;
                   ctx.runtime.session = undefined;
                   ctx.runtime.pendingSession = undefined;
+                }
+                if (preparedRenew.pending.sourceAcpSessionId) {
+                  yield* self
+                    .tryPromise(() =>
+                      self.upsertSessionMeta(sessionId, {
+                        acpSessionId: preparedRenew.pending.sourceAcpSessionId as ACPSessionId,
+                      })
+                    )
+                    .pipe(Effect.catch(() => Effect.void));
                 }
                 yield* self
                   .tryPromise(() =>
@@ -9627,8 +9849,12 @@ export class SessionExecutionService {
                 .pipe(Effect.catch(() => Effect.succeed(undefined)));
               if (updatedMeta) preTurnMeta = updatedMeta;
               if (renewOutcome.switched) {
+                effectiveResumeSessionId = renewOutcome.acpSessionId;
                 turnStartUsed = renewOutcome.usedAfter;
                 turnStartAcpSessionId = renewOutcome.acpSessionId;
+                preTurnMeta = preTurnMeta
+                  ? { ...preTurnMeta, acpSessionId: renewOutcome.acpSessionId }
+                  : updatedMeta;
               }
             }
           }
@@ -10433,10 +10659,7 @@ export class SessionExecutionService {
             );
           }
 
-          self.lastTurnCompletedAtBySession.set(
-            sessionId,
-            self.deps.sessionRolloverNow?.() ?? Date.now()
-          );
+          self.recordAcpActivity(sessionId);
 
           let startCompactionObserved = false;
           if (!isHiddenSystemDispatchSource(dispatchOptions?.dispatchSource) && existingMeta) {
@@ -10496,7 +10719,10 @@ export class SessionExecutionService {
                 completedTurnId,
                 preTurnMeta: existingMeta,
                 compactedInThisTurn: startCompactionObserved,
-                hasPinnedNativeSessionId: false,
+                hasPinnedNativeSessionId: Boolean(
+                  normalizeSessionTurnInputConfig(runtime.invocation?.inputConfig)?._lodyAutomation
+                    ?.nativeSessionId
+                ),
               })
             );
           }

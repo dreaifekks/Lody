@@ -209,4 +209,24 @@ describe('UserMessageRowView undelivered resend dialog', () => {
     } as unknown as SessionHistoryParsed);
     expect(document.body.textContent).not.toContain('Interrupted by update');
   });
+
+  it('offers a clickable Failed resend entry on a failed user turn', async () => {
+    const submissions: unknown[] = [];
+    const failedTurn = {
+      ...undeliveredMessage,
+      id: 'user-turn-failed',
+      status: 'failed',
+      read: true,
+    } as unknown as SessionHistoryParsed;
+    await renderRow(async (id, blocks) => {
+      submissions.push({ id, blocks });
+      return true;
+    }, failedTurn);
+    await click(queryBodyButton('Failed'));
+    expect(document.body.textContent).toContain('Message failed');
+    await click(queryBodyButton('Resend message'));
+    expect(submissions).toEqual([
+      { id: 'user-turn-failed', blocks: buildResendInputBlocks(failedTurn) },
+    ]);
+  });
 });

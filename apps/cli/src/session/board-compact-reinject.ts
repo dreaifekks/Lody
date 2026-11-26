@@ -536,6 +536,14 @@ export class BoardCompactReinjectTracker {
     });
   }
 
+  peekActiveTurnObservation(
+    sessionId: SessionId,
+    turnId: string
+  ): BoardTurnUsageSnapshot | undefined {
+    const active = this.activeTurns.get(sessionId);
+    return active?.turnId === turnId ? { ...active } : undefined;
+  }
+
   endTurn(sessionId: SessionId, turnId: string): BoardTurnUsageSnapshot | undefined {
     const active = this.activeTurns.get(sessionId);
     if (active?.turnId === turnId) {

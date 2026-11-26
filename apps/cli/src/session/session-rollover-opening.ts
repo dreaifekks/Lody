@@ -153,9 +153,10 @@ export function sliceRolloverSegmentEntries(
   let endIndex = history.length - 1;
   if (options.throughTurnId) {
     const foundThrough = history.findIndex((entry) => entry.id === options.throughTurnId);
-    if (foundThrough >= 0) {
-      endIndex = foundThrough;
+    if (foundThrough < 0) {
+      return [];
     }
+    endIndex = foundThrough;
   }
   if (endIndex < startIndex) return [];
 
@@ -358,7 +359,8 @@ function buildOriginSection(originEntry: SessionHistoryInput | undefined, budget
 function buildLockedInvariantsSection(
   lockedInvariants: readonly string[],
   invariantsDocPath: string | undefined,
-  budget: number
+  budget: number,
+  sessionId?: SessionId
 ): string {
   const items = dedupeTrimmedLines(lockedInvariants);
   if (items.length === 0 && !invariantsDocPath) return '';
@@ -367,33 +369,71 @@ function buildLockedInvariantsSection(
   const available = Math.max(0, budget - headingTok - 2);
   if (available <= 10) return '';
 
-  const lines: string[] = [];
-  let used = 0;
+  const prefixLines: string[] = [];
+  let prefixUsed = 0;
   if (invariantsDocPath) {
     const docLine = `- Invariants document on disk: \`${invariantsDocPath}\``;
     const tok = estimateTokenCount(`${docLine}\n`);
     if (tok <= available) {
-      lines.push(docLine);
-      used += tok;
+      prefixLines.push(docLine);
+      prefixUsed += tok;
     }
   }
-  for (const invariant of items) {
+
+  const formattedItems = items.map((invariant) => {
     const line = `- ${invariant}`;
-    const tok = estimateTokenCount(`${line}\n`);
-    if (used + tok <= available) {
-      lines.push(line);
-      used += tok;
+    return { line, tokens: estimateTokenCount(`${line}\n`) };
+  });
+  const totalItemsTokens = formattedItems.reduce((sum, item) => sum + item.tokens, 0);
+
+  if (prefixUsed + totalItemsTokens <= available) {
+    const allLines = [...prefixLines, ...formattedItems.map((item) => item.line)];
+    if (allLines.length === 0) return '';
+    return `${heading}\n${allLines.join('\n')}`;
+  }
+
+  // Overflow: NEVER clip a prohibition mid-sentence and NEVER silently drop the
+  // newest user red lines. Reserve room for a concise pointer to the full list,
+  // then retain as many complete newest invariants as fit in chronological order.
+  const makeOverflowPointer = (omittedCount: number): string => {
+    const refParts: string[] = [];
+    if (invariantsDocPath) refParts.push(`\`${invariantsDocPath}\``);
+    if (sessionId) refParts.push(`lody_session_history({ sessionId: "${sessionId}" })`);
+    const refText =
+      refParts.length > 0
+        ? `; full list preserved in rollover state and ${refParts.join(' / ')}`
+        : '; full list preserved in rollover state';
+    return `- [${omittedCount} earlier locked invariant(s) omitted from inline budget${refText}]`;
+  };
+
+  // Upper-bound pointer tokens using total item count so reservation is exact.
+  const pointerReserve = estimateTokenCount(`${makeOverflowPointer(items.length)}\n`);
+  const itemBudget = Math.max(0, available - prefixUsed - pointerReserve);
+
+  const keptReversed: string[] = [];
+  let keptTokens = 0;
+  for (let i = formattedItems.length - 1; i >= 0; i--) {
+    const entry = formattedItems[i]!;
+    if (keptTokens + entry.tokens <= itemBudget) {
+      keptReversed.push(entry.line);
+      keptTokens += entry.tokens;
     } else {
-      const rem = available - used;
-      if (rem > 12) {
-        const clipped = truncateToTokenBudget(line, rem, 'tail');
-        if (clipped) lines.push(clipped);
-      }
       break;
     }
   }
-  if (lines.length === 0) return '';
-  return `${heading}\n${lines.join('\n')}`;
+
+  const kept = keptReversed.reverse();
+  const omittedCount = formattedItems.length - kept.length;
+  const finalLines: string[] = [...prefixLines];
+  if (omittedCount > 0) {
+    const pointerLine = makeOverflowPointer(omittedCount);
+    if (prefixUsed + keptTokens + estimateTokenCount(`${pointerLine}\n`) <= available) {
+      finalLines.push(pointerLine);
+    }
+  }
+  finalLines.push(...kept);
+  if (finalLines.length === 0) return '';
+  return `${heading}\n${finalLines.join('\n')}`;
 }
 
 function buildStateCardSection(card: SessionRolloverStateCard, budget: number): string {
@@ -558,7 +598,8 @@ export function buildLinearRolloverOpening(input: BuildLinearRolloverOpeningInpu
   const lockedInvariants = buildLockedInvariantsSection(
     input.stateCard.lockedInvariants,
     workspaceAnchor.invariantsDocPath,
-    SESSION_ROLLOVER_INVARIANTS_BUDGET
+    SESSION_ROLLOVER_INVARIANTS_BUDGET,
+    input.sessionId
   );
 
   const origin = buildOriginSection(originEntry, SESSION_ROLLOVER_ORIGIN_BUDGET);

@@ -116,11 +116,12 @@ export function readSessionRolloverNotice(
 }
 
 /**
- * An automatic rollover attempt that yielded/interrupted before switching leaves
- * no divider on screen: nothing changed that the user needs to know about.
+ * An automatic (`auto` or `recovery`) rollover attempt that yielded/interrupted
+ * before switching leaves no divider on screen: nothing changed that the user
+ * needs to know about.
  */
 export const isSilentSessionRollover = (meta: SessionRolloverNoticeMeta): boolean =>
-  meta.trigger === 'auto' && meta.status === 'interrupted';
+  (meta.trigger === 'auto' || meta.trigger === 'recovery') && meta.status === 'interrupted';
 
 /** Default absolute context ceiling (tokens) for proactive linear rollover. */
 export const DEFAULT_SESSION_ROLLOVER_MAX_TOKENS = 350_000;

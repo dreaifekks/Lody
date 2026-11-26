@@ -1,23 +1,38 @@
-import type { SessionConfigOption, SessionConfigSelectGroup } from '@agentclientprotocol/sdk';
+import type {
+  RequestPermissionRequest,
+  RequestPermissionResponse,
+  SessionConfigOption,
+  SessionConfigSelectGroup,
+} from '@agentclientprotocol/sdk';
 import {
   buildReplayPromptFromHistory,
   sessionRolloverStepId,
   type ACPSessionId,
   type AcpConfigOptionSummary,
   type AcpConfigOptionValue,
+  type MachineId,
   type ReplayPromptResult,
   type SessionHistoryInput,
   type SessionId,
   type SessionMeta,
   type SessionRolloverNoticeMeta,
   type SessionRolloverTrigger,
+  type WorkspaceId,
 } from '@lody/shared';
 import { runCommandTextLegacy } from '@lody/shared/node/process';
 import { randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { shutdownLocalAcpAgent, startLocalAcpAgent } from '@/agent/acp-runner';
+import { parseLodyMessagePhase } from '@/agent/lody-acp-extension';
+import { extractTextFromAgentResponse } from '@/agent/response-utils';
+import { extractTitleChunkFromNotification } from '@/agent/title-generator';
+import type { LoroDocumentManager } from '@/lib/loro/doc';
 import type { Logger } from '@/utils/logger';
 import type { AcpSessionRunConfig } from './acp-session-config-applier';
+import { resolveSessionLaunchConfig } from './session-launch-config-resolver';
+import type { TerminalManager } from './terminal-manager';
 import {
   buildColdSealPrompt,
   buildColdTextStreamForSeal,
@@ -125,10 +140,11 @@ function extractSelectOptionValues(option: AnyConfigOption): string[] {
  * Temporarily lower `thought_level` / `reasoning_effort` / `effort` to `'low'`
  * for the silent `:renew` opening turn (eliminating 10-15s `xhigh` latency).
  *
- * When the runtime advertises explicit config options, only overrides if `'low'`
- * is an advertised value (avoiding config rejection warnings). When config
- * options are unavailable, overrides only a thought-level key already present in
- * `userConfig.configOptionValues`.
+ * Always captures the exact `restoreValue` (preferring explicit user config,
+ * falling back to the runtime's advertised `currentValue`) so the caller can
+ * explicitly restore the original setting before the user's real message M.
+ * If the original value cannot be confirmed (or is already `'low'`), skips the
+ * temporary override rather than leaking `'low'` into M.
  */
 export function buildLowEffortRunConfigForRenew(
   userConfig: AcpSessionRunConfig,
@@ -137,6 +153,7 @@ export function buildLowEffortRunConfigForRenew(
   readonly config: AcpSessionRunConfig;
   readonly appliedLow: boolean;
   readonly overriddenKey?: string;
+  readonly restoreValue?: AcpConfigOptionValue;
 } {
   if (availableConfigOptions && availableConfigOptions.length > 0) {
     const thoughtOpt = availableConfigOptions.find(
@@ -151,6 +168,18 @@ export function buildLowEffortRunConfigForRenew(
     if (!lowValue) {
       return { config: userConfig, appliedLow: false };
     }
+    const explicitUserValue = userConfig.configOptionValues?.[thoughtOpt.id];
+    const runtimeCurrentValue =
+      typeof thoughtOpt.currentValue === 'string' && thoughtOpt.currentValue.trim().length > 0
+        ? thoughtOpt.currentValue
+        : undefined;
+    const restoreValue = explicitUserValue ?? runtimeCurrentValue;
+    if (restoreValue === undefined) {
+      return { config: userConfig, appliedLow: false };
+    }
+    if (typeof restoreValue === 'string' && restoreValue.trim().toLowerCase() === 'low') {
+      return { config: userConfig, appliedLow: false };
+    }
     return {
       config: {
         ...userConfig,
@@ -161,6 +190,7 @@ export function buildLowEffortRunConfigForRenew(
       },
       appliedLow: true,
       overriddenKey: thoughtOpt.id,
+      restoreValue,
     };
   }
 
@@ -175,6 +205,9 @@ export function buildLowEffortRunConfigForRenew(
     return { config: userConfig, appliedLow: false };
   }
   const current = existingValues[thoughtKey];
+  if (current === undefined) {
+    return { config: userConfig, appliedLow: false };
+  }
   if (typeof current === 'string' && current.trim().toLowerCase() === 'low') {
     return { config: userConfig, appliedLow: false };
   }
@@ -188,14 +221,209 @@ export function buildLowEffortRunConfigForRenew(
     },
     appliedLow: true,
     overriddenKey: thoughtKey,
+    restoreValue: current,
   };
 }
 
 export type SessionRolloverColdSummarizer = (args: {
   readonly sessionId: SessionId;
+  readonly meta?: SessionMeta;
   readonly prompt: string;
   readonly signal?: AbortSignal;
 }) => Promise<string | null>;
+
+const COLD_ROLLOVER_SUMMARY_TIMEOUT_MS = 45_000;
+
+const noopColdRolloverTerminalManager: TerminalManager = {
+  createTerminal: async () => {
+    throw new Error('Terminal not supported in isolated cold rollover summarizer');
+  },
+  terminalOutput: async () => {
+    throw new Error('Terminal not supported in isolated cold rollover summarizer');
+  },
+  releaseTerminal: async () => {},
+  waitForTerminalExit: async () => ({ exitCode: null }),
+  killTerminal: async () => {},
+};
+
+/**
+ * Production tool-free isolated cold summarizer for linear session rollover.
+ *
+ * Spawns a short-lived, completely isolated ACP session in an empty temp dir
+ * (no tools, no terminals, all permissions cancelled, no MCP servers, low
+ * effort when advertised) to summarize the bounded 8k–20k plain-text Loro Q&A
+ * stream. Never wakes the old 350k ACP session, never writes Loro history or
+ * `meta.acpSessionId`, always tears down its process + temp dir in `finally`,
+ * and returns `null` on failure/timeout/abort so `sealNode` cleanly degrades
+ * to `buildFallbackRolloverCard`.
+ */
+export function createIsolatedColdRolloverSummarizer(deps: {
+  readonly workspaceDocument: LoroDocumentManager;
+  readonly workspaceId: WorkspaceId;
+  readonly machineId: MachineId;
+  readonly logger: Logger;
+  readonly timeoutMs?: number;
+  readonly resolveLaunchConfig?: typeof resolveSessionLaunchConfig;
+  readonly startAgent?: typeof startLocalAcpAgent;
+  readonly shutdownAgent?: typeof shutdownLocalAcpAgent;
+}): SessionRolloverColdSummarizer {
+  const resolveLaunch = deps.resolveLaunchConfig ?? resolveSessionLaunchConfig;
+  const startAgent = deps.startAgent ?? startLocalAcpAgent;
+  const shutdownAgent = deps.shutdownAgent ?? shutdownLocalAcpAgent;
+  const timeoutMs = deps.timeoutMs ?? COLD_ROLLOVER_SUMMARY_TIMEOUT_MS;
+
+  return async ({ sessionId, meta, prompt, signal }) => {
+    if (signal?.aborted || !meta?.cliType || !meta.agentType) {
+      return null;
+    }
+
+    let launchConfig: Awaited<ReturnType<typeof resolveSessionLaunchConfig>>['config'];
+    try {
+      const resolved = await resolveLaunch({
+        workspaceDocument: deps.workspaceDocument,
+        workspaceId: deps.workspaceId,
+        machineId: deps.machineId,
+        sessionId,
+        sessionMeta: meta,
+        logger: deps.logger,
+      });
+      launchConfig = resolved.config;
+    } catch (error) {
+      deps.logger.debug(
+        `[${sessionId}] Cold rollover summarizer could not resolve launch config: ${formatError(error)}`
+      );
+      return null;
+    }
+
+    if (signal?.aborted) {
+      return null;
+    }
+
+    const workdir = await mkdtemp(path.join(os.tmpdir(), 'lody-rollover-cold-'));
+    let started: Awaited<ReturnType<typeof startLocalAcpAgent>> | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const localAbort = new AbortController();
+    const onParentAbort = () => localAbort.abort(signal?.reason);
+    signal?.addEventListener('abort', onParentAbort, { once: true });
+
+    let collectedFinalText = '';
+    let collectedUnphasedText = '';
+
+    try {
+      started = await startAgent({
+        cliType: meta.cliType,
+        agentType: meta.agentType,
+        customAcp: launchConfig?.customAcp,
+        runtimeOverrides: launchConfig?.runtimeOverrides,
+        agentConfigId: meta.agentConfigId,
+        magpieGatewayUrl: launchConfig?.magpieGatewayUrl,
+        workdir,
+        env: { ...process.env, ...launchConfig?.env, LODY_ROLLOVER_COLD_SEAL: '1' },
+        logger: deps.logger,
+        terminalManager: noopColdRolloverTerminalManager,
+        terminalEnabled: false,
+        onUpdateMessage: (msg) => {
+          const chunk = extractTitleChunkFromNotification(msg);
+          if (!chunk) return;
+          if (parseLodyMessagePhase(msg.update._meta) === 'final_answer') {
+            collectedFinalText += chunk;
+          } else {
+            collectedUnphasedText += chunk;
+          }
+        },
+        onRequestPermission: async (
+          _requestId: string,
+          _request: RequestPermissionRequest
+        ): Promise<RequestPermissionResponse> => ({ outcome: { outcome: 'cancelled' } }),
+        extraArgs: [],
+      });
+
+      if (localAbort.signal.aborted) {
+        return null;
+      }
+
+      // Lower thought_level to `low` when advertised so cold seal stays fast.
+      const sessionOptions = (
+        started.sessionResponse as { configOptions?: SessionConfigOption[] | null } | undefined
+      )?.configOptions;
+      if (sessionOptions && sessionOptions.length > 0 && started.client) {
+        const thoughtOpt = sessionOptions.find(
+          (opt) => opt.type === 'select' && isThoughtLevelConfigOption(opt)
+        );
+        const lowValue = thoughtOpt
+          ? extractSelectOptionValues(thoughtOpt).find((v) => v.trim().toLowerCase() === 'low')
+          : undefined;
+        if (thoughtOpt && lowValue) {
+          await started.client
+            .setSessionConfigOption(started.acpSessionId, thoughtOpt.id, lowValue)
+            .catch(() => undefined);
+        }
+      }
+
+      collectedFinalText = '';
+      collectedUnphasedText = '';
+
+      const runPrompt = async () => {
+        if (!started?.client) return null;
+        const response = await started.client.prompt(
+          started.acpSessionId,
+          [{ type: 'text', text: prompt }],
+          { signal: localAbort.signal }
+        );
+        if (localAbort.signal.aborted) return null;
+        const stopReason = (response as { stopReason?: unknown } | undefined)?.stopReason;
+        if (stopReason === 'cancelled' || stopReason === 'refusal') return null;
+        const streamed = (collectedFinalText.trim() || collectedUnphasedText.trim()).trim();
+        if (streamed) return streamed;
+        const inline = extractTextFromAgentResponse(response)?.trim();
+        return inline || null;
+      };
+
+      const deadlinePromise = new Promise<null>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          localAbort.abort(new Error(`Cold rollover summary exceeded ${timeoutMs}ms`));
+          if (started?.client) {
+            void started.client.cancel(started.acpSessionId).catch(() => undefined);
+          }
+          resolve(null);
+        }, timeoutMs);
+        timeoutHandle.unref?.();
+      });
+
+      const onAbortCancel = () => {
+        if (started?.client) {
+          void started.client.cancel(started.acpSessionId).catch(() => undefined);
+        }
+      };
+      localAbort.signal.addEventListener('abort', onAbortCancel, { once: true });
+      try {
+        return await Promise.race([runPrompt(), deadlinePromise]);
+      } finally {
+        localAbort.signal.removeEventListener('abort', onAbortCancel);
+      }
+    } catch (error) {
+      if (!signal?.aborted) {
+        deps.logger.warn(
+          `[${sessionId}] Isolated cold rollover summary failed; degrading to fallback: ${formatError(error)}`
+        );
+      }
+      return null;
+    } finally {
+      clearTimeout(timeoutHandle);
+      signal?.removeEventListener('abort', onParentAbort);
+      if (started) {
+        await shutdownAgent({
+          agentProcess: started.agentProcess,
+          client: started.client,
+          acpSessionId: started.acpSessionId,
+          logger: deps.logger,
+          sessionLabel: `rollover-cold-seal:${meta.cliType}/${meta.agentType}`,
+        }).catch(() => undefined);
+      }
+      await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
+}
 
 export type SessionRolloverWorkspaceProber = (args: {
   readonly workdir?: string;
@@ -365,7 +593,44 @@ export class SessionRolloverService {
   }
 
   async hasPendingSwitch(sessionId: SessionId): Promise<boolean> {
-    return Boolean((await this.options.store.get(sessionId))?.pendingSwitch);
+    try {
+      return Boolean((await this.options.store.get(sessionId))?.pendingSwitch);
+    } catch (error) {
+      this.options.logger.warn(
+        `[${sessionId}] Failed to inspect pending session rollover switch: ${formatError(error)}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Stamp the fresh ACP session created for an in-flight `:renew` attempt before
+   * sending the opening prompt, so retry/crash logic distinguishes our own
+   * failed `:renew` attempt from an external Edit & Resend ACP replacement.
+   */
+  async recordAttemptingRenewAcpSession(
+    sessionId: SessionId,
+    runId: string,
+    acpSessionId: ACPSessionId
+  ): Promise<void> {
+    const nowMs = this.now();
+    try {
+      await this.options.store.update(sessionId, (latest) => {
+        if (!latest?.pendingSwitch || latest.pendingSwitch.runId !== runId) return latest;
+        return {
+          ...latest,
+          pendingSwitch: {
+            ...latest.pendingSwitch,
+            attemptingAcpSessionId: acpSessionId,
+          },
+          updatedAt: nowMs,
+        };
+      });
+    } catch (error) {
+      this.options.logger.debug(
+        `[${sessionId}] Failed to stamp attemptingAcpSessionId before :renew prompt: ${formatError(error)}`
+      );
+    }
   }
 
   /**
@@ -453,9 +718,16 @@ export class SessionRolloverService {
     const nowIso = new Date(nowMs).toISOString();
     const runId = this.createRunId();
 
-    const current =
-      (await this.options.store.get(sessionId)) ??
-      createInitialSessionRolloverState(sessionId, nowMs);
+    let existingState: SessionRolloverState | undefined;
+    try {
+      existingState = await this.options.store.get(sessionId);
+    } catch (error) {
+      this.options.logger.warn(
+        `[${sessionId}] Aborting rollover :seal because persisted rollover state could not be read: ${formatError(error)}`
+      );
+      return { outcome: 'failed', runId, reason: 'state-store-read-error' };
+    }
+    const current = existingState ?? createInitialSessionRolloverState(sessionId, nowMs);
 
     const originEntry = resolveOriginTurn(history, current.originTurnId);
     const originTurnId = current.originTurnId ?? originEntry?.id;
@@ -521,6 +793,7 @@ export class SessionRolloverService {
           });
           const rawCold = await this.options.coldSummarizer({
             sessionId,
+            meta,
             prompt: coldPrompt,
             signal: args.abortSignal,
           });
@@ -684,6 +957,29 @@ export class SessionRolloverService {
       return { outcome: 'failed', runId, reason: formatError(error) };
     }
 
+    // Re-check cancellation right after persistence: if Stop or a new user turn
+    // preempted during the disk write, roll back the just-armed pendingSwitch
+    // and emit a silent interrupted divider so the old session continues cleanly.
+    if (args.isCancelled?.() || args.abortSignal?.aborted) {
+      await this.options.store
+        .update(sessionId, (latest) => {
+          if (!latest?.pendingSwitch || latest.pendingSwitch.runId !== runId) return latest;
+          const { pendingSwitch: _rolledBack, ...rest } = latest;
+          return {
+            ...rest,
+            spine: latest.spine.filter((item) => item.gen !== targetGen),
+            updatedAt: this.now(),
+          };
+        })
+        .catch(() => undefined);
+      await args.writeDivider(
+        runId,
+        { ...baseNotice, status: 'interrupted', reason: 'cancelled' },
+        new Date(this.now()).toISOString()
+      );
+      return { outcome: 'interrupted', runId };
+    }
+
     await args.writeDivider(runId, { ...baseNotice, status: 'sealed' }, finishedIso);
     return {
       outcome: 'sealed',
@@ -713,7 +1009,15 @@ export class SessionRolloverService {
     readonly clearBoardCompactPending: () => Promise<void>;
   }): Promise<SessionRolloverPreparedLazyRenew> {
     const { sessionId, meta, history } = args;
-    const state = await this.options.store.get(sessionId);
+    let state: SessionRolloverState | undefined;
+    try {
+      state = await this.options.store.get(sessionId);
+    } catch (error) {
+      this.options.logger.warn(
+        `[${sessionId}] Skipping lazy rollover :renew because rollover state could not be read: ${formatError(error)}`
+      );
+      return { kind: 'none' };
+    }
     const pending = state?.pendingSwitch;
     if (!state || !pending) {
       return { kind: 'none' };
@@ -753,6 +1057,44 @@ export class SessionRolloverService {
         acpSessionId: pending.preparedAcpSessionId as ACPSessionId,
         ...(usedAfter !== undefined ? { usedAfter } : {}),
       };
+    }
+
+    // Hard validity check before retiring/switching: if Edit & Resend rewrote
+    // history (removing `sealedThroughTurnId`) or already replaced `meta.acpSessionId`
+    // with an unrelated ACP session, invalidate the stale `pendingSwitch` and let
+    // the edited message run directly on its prepared ACP session.
+    const sealedEndpointExists = history.some((entry) => entry.id === pending.sealedThroughTurnId);
+    const acpReplacedExternally = Boolean(
+      pending.sourceAcpSessionId &&
+      meta.acpSessionId &&
+      meta.acpSessionId !== pending.sourceAcpSessionId &&
+      meta.acpSessionId !== pending.attemptingAcpSessionId
+    );
+    if (!sealedEndpointExists || acpReplacedExternally) {
+      this.options.logger.info(
+        `[${sessionId}] Invalidating stale rollover pendingSwitch (${pending.runId}): sealedEndpointExists=${sealedEndpointExists} acpReplacedExternally=${acpReplacedExternally}`
+      );
+      await this.options.store
+        .update(sessionId, (latest) => {
+          if (!latest?.pendingSwitch || latest.pendingSwitch.runId !== pending.runId) return latest;
+          const { pendingSwitch: _stale, ...rest } = latest;
+          return {
+            ...rest,
+            spine: latest.spine.filter((item) => item.gen !== pending.targetGen),
+            updatedAt: this.now(),
+          };
+        })
+        .catch((error) => {
+          this.options.logger.warn(
+            `[${sessionId}] Failed to clear stale rollover pendingSwitch: ${formatError(error)}`
+          );
+        });
+      await args.writeDivider(
+        pending.runId,
+        { ...baseNotice, status: 'interrupted', reason: 'history-rewritten' },
+        nowIso
+      );
+      return { kind: 'none' };
     }
 
     await args.writeDivider(pending.runId, baseNotice, nowIso);

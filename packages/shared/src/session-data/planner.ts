@@ -1,6 +1,7 @@
 import { isSessionGoalActive, resolveLatestSessionGoalFromHistory } from '../goal';
 import type { PermissionOutcome } from '../message';
 import {
+  isSessionRolloverRenewEntry,
   isSessionRolloverSealEntry,
   isSessionRolloverTurnId,
   readSessionRolloverNotice,
@@ -165,6 +166,14 @@ function isHiddenRolloverSealAssistant(entry: EditableTailTurn | undefined): boo
   return isSessionRolloverSealEntry({ role: 'assistant', userTurnId: entry.userTurnId });
 }
 
+function isNonBoundaryRolloverRenewAssistant(entry: EditableTailTurn | undefined): boolean {
+  if (!entry || entry.role !== 'assistant' || typeof entry.userTurnId !== 'string') return false;
+  if (!isSessionRolloverRenewEntry({ role: 'assistant', userTurnId: entry.userTurnId })) {
+    return false;
+  }
+  return entry.finished !== true || typeof entry.acpTurnId !== 'string' || !entry.acpTurnId;
+}
+
 export type EditableTail<T extends EditableTailTurn = EditableTailTurn> = {
   readonly userIndex: number;
   readonly turn: T;
@@ -214,7 +223,9 @@ export function resolveEditableTail<T extends EditableTailTurn>(
     const entry = turns[index];
     if (!entry) continue;
     if (isCompletedSessionRolloverDivider(entry)) return null;
-    if (isHiddenRolloverSealAssistant(entry)) continue;
+    if (isHiddenRolloverSealAssistant(entry) || isNonBoundaryRolloverRenewAssistant(entry)) {
+      continue;
+    }
     if (entry.role === 'user') return null;
     if (entry.role !== 'assistant') continue;
     if (entry.finished !== true || typeof entry.acpTurnId !== 'string' || !entry.acpTurnId) {

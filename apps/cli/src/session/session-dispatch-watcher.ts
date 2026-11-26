@@ -834,6 +834,7 @@ export class SessionDispatchWatcher {
       this.deps.logger.debug(
         `[${sessionId}] RPC turn ${userTurnId} stashed for dispatch (duplicate=${wasStashed})`
       );
+      this.deps.executionService.preemptAutoRolloverSealIfActive?.(sessionId);
       this.activateRpcTurn(sessionId);
       return finish(wasStashed ? 'duplicate' : 'accepted');
     } catch (error) {
@@ -1455,6 +1456,22 @@ export class SessionDispatchWatcher {
           void this.deps.executionService.requestReleaseRecovery?.(sessionId).then((released) => {
             if (released) void this.enqueueSessionCheck(sessionId);
           });
+        } else if (
+          guardAction.reason === 'active-session' &&
+          (hasPendingUserTurnActivation(meta) ||
+            (meta.messageQueueUpdatedAt ?? 0) > (meta.messageQueueCheckedAt ?? 0) ||
+            this.hasPendingDispatch(sessionId))
+        ) {
+          // An end-of-turn automatic rollover `:seal` yields immediately when
+          // new user work arrives so the user is never stalled waiting for it.
+          const sealRelease =
+            this.deps.executionService.preemptAutoRolloverSealIfActive?.(sessionId);
+          if (sealRelease) {
+            outcome = 'guard-noop-preempt-auto-rollover-seal';
+            void sealRelease.then(() => {
+              if (isActive()) void this.enqueueSessionCheck(sessionId);
+            });
+          }
         }
         return;
       }
@@ -2296,6 +2313,9 @@ export class SessionDispatchWatcher {
         agentRoleRevision: entry.inputConfig?.agentRoleRevision,
         agentRoleSnapshot: entry.inputConfig?.agentRoleSnapshot,
         issuePRMentions: entry.inputConfig?.issuePRMentions,
+        ...(entry.inputConfig?._lodyAutomation
+          ? { _lodyAutomation: entry.inputConfig._lodyAutomation }
+          : {}),
         // Encrypted inputs never choose their resume target: the signature leaves out the
         // `resume` that promotion supplies, so it comes from this Session's metadata.
         resume: resolvedResumeId,

@@ -1,11 +1,13 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import {
+  getSessionRoomId,
   isSilentSessionRollover,
   normalizeBoardMeta,
   readSessionRolloverNotice,
   sessionRolloverTurnId,
   workspaceFlockKeys,
   type ACPSessionId,
+  type AcpConfigOptionSummary,
   type AcpConfigOptionValue,
   type BoardId,
   type BoardMeta,
@@ -17,12 +19,13 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import { describe, expect, it, vi } from 'vitest';
-import type { LoroDocumentManager } from '../src/lib/loro/doc';
+import type { LoroDocumentManager, SessionDocument } from '../src/lib/loro/doc';
 import {
   BARE_COMPACT_DEFAULT_INSTRUCTIONS,
   EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT,
   createMemoryBoardCompactReinjectStore,
 } from '../src/session/board-compact-reinject';
+import { findNextDispatchableUserTurn } from '../src/session/session-dispatch-logic';
 import { SessionDispatchWatcher } from '../src/session/session-dispatch-watcher';
 import { SessionExecutionService } from '../src/session/session-execution-service';
 import type { SessionManager } from '../src/session/session-manager';
@@ -71,8 +74,20 @@ function createRolloverExecutionHarness(options: {
   initialHistory?: SessionHistoryInput[];
   resumeError?: Error;
   observePromptContentForTurn?: (sessionId: SessionId, turnId: string) => boolean;
+  hasPromptEventsForTurn?: (sessionId: SessionId, turnId: string) => boolean;
   nowMs?: () => number;
-  coldSummarizer?: (args: { sessionId: SessionId; prompt: string; signal?: AbortSignal }) => Promise<string | null>;
+  initialLastActivityMs?: number;
+  configOptions?: AcpConfigOptionSummary[];
+  nativeWork?: {
+    kind?: 'running' | 'background' | null;
+    unsettled?: boolean;
+  };
+  coldSummarizer?: (args: {
+    sessionId: SessionId;
+    meta?: SessionMeta;
+    prompt: string;
+    signal?: AbortSignal;
+  }) => Promise<string | null>;
   onPrompt?: (ctx: {
     callIndex: number;
     acpSessionId: string;
@@ -82,7 +97,7 @@ function createRolloverExecutionHarness(options: {
     setUsage: (used: number, size?: number) => void;
     writeActiveAssistantText: (text: string) => void;
     service: SessionExecutionService;
-  }) => Promise<void> | void;
+  }) => Promise<{ stopReason?: string } | void> | { stopReason?: string } | void;
 } = {}) {
   const sessionId = SESSION_ID;
   const board = options.board === undefined ? makeBoard() : options.board;
@@ -124,7 +139,7 @@ function createRolloverExecutionHarness(options: {
       {
         id: 'turn-u1',
         role: 'user',
-        author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+        author: { v: 1, kind: 'human', userId: 'owner-user' },
         timestamp: '2026-11-27T01:00:00.000Z',
         status: 'handled',
         fileDiff: [],
@@ -173,26 +188,31 @@ function createRolloverExecutionHarness(options: {
   };
 
   let activePromptAbortController: AbortController | undefined;
+  let liveNativeWorkKind: 'running' | 'background' | null = options.nativeWork?.kind ?? null;
+  let liveNativeWorkUnsettled = options.nativeWork?.unsettled ?? false;
   const makeAgent = (acpSessionId: string) => ({
     agentClient: {
       isCreated: () => true,
       currentModel: { modelId: 'gemini-4-neon', name: 'Gemini 4 Neon' },
       supportsContextCompaction: () => true,
-      getConfigOptions: () => [
-        {
-          id: 'thought_level',
-          name: 'Thinking',
-          category: 'thought_level',
-          type: 'select' as const,
-          currentValue: 'xhigh',
-          options: [
-            { value: 'low', name: 'Low' },
-            { value: 'high', name: 'High' },
-            { value: 'xhigh', name: 'XHigh' },
-          ],
-        },
-      ],
-      prompt: async (id: string, blocks: ContentBlock[]) => {
+      getNativeWork: () => (liveNativeWorkKind ? { kind: liveNativeWorkKind } : null),
+      hasUnsettledNativeWork: () => liveNativeWorkUnsettled,
+      getConfigOptions: () =>
+        options.configOptions ?? [
+          {
+            id: 'thought_level',
+            name: 'Thinking',
+            category: 'thought_level',
+            type: 'select' as const,
+            currentValue: 'xhigh',
+            options: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+              { value: 'xhigh', name: 'XHigh' },
+            ],
+          },
+        ],
+      prompt: async (id: string, blocks: ContentBlock[], promptOptions?: { signal?: AbortSignal }) => {
         const callIndex = promptCallIndex++;
         const text = blocks
           .map((block) => (block.type === 'text' ? block.text : `[${block.type}]`))
@@ -200,8 +220,11 @@ function createRolloverExecutionHarness(options: {
         prompts.push({ acpSessionId: id, blocks, text });
         const controller = new AbortController();
         activePromptAbortController = controller;
+        const onExternalAbort = () => controller.abort();
+        promptOptions?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+        if (promptOptions?.signal?.aborted) controller.abort();
         try {
-          await options.onPrompt?.({
+          const outcome = await options.onPrompt?.({
             callIndex,
             acpSessionId: id,
             blocks,
@@ -211,7 +234,9 @@ function createRolloverExecutionHarness(options: {
             writeActiveAssistantText,
             service,
           });
+          return outcome ?? { stopReason: 'end_turn' };
         } finally {
+          promptOptions?.signal?.removeEventListener('abort', onExternalAbort);
           if (activePromptAbortController === controller) {
             activePromptAbortController = undefined;
           }
@@ -265,6 +290,7 @@ function createRolloverExecutionHarness(options: {
   });
 
   const nowFn = options.nowMs ?? (() => 1_700_000_000_000);
+  let lastTouchedActivityMs = options.initialLastActivityMs ?? nowFn() - 30_000;
   const deps = createBaseDeps({
     boardCompactReinjectStore: reinjectStore,
     sessionRolloverStore: rolloverStore,
@@ -276,9 +302,16 @@ function createRolloverExecutionHarness(options: {
       gitHead: '65dec718d',
       recentFiles: segmentEntries.length > 0 ? ['apps/cli/src/session/session-rollover-service.ts'] : [],
     }),
-    getSessionLastActivity: () => nowFn() - 30_000,
+    touchSession: vi.fn(() => {
+      // Mirrors real MessageHandler.touchSession refreshing GC activity clock on request arrival.
+      lastTouchedActivityMs = nowFn();
+    }),
+    getSessionLastActivity: () => lastTouchedActivityMs,
     ...(options.observePromptContentForTurn
       ? { observePromptContentForTurn: options.observePromptContentForTurn }
+      : {}),
+    ...(options.hasPromptEventsForTurn
+      ? { hasPromptEventsForTurn: options.hasPromptEventsForTurn }
       : {}),
     beginConversationTurn: vi.fn((_sid, userTurnId) => {
       const id = userTurnId ? `assistant:${userTurnId}` : `assistant:${++turnCounter}`;
@@ -321,7 +354,11 @@ function createRolloverExecutionHarness(options: {
     workspaceDocument: {
       syncFlockDocOrThrow: vi.fn(async () => undefined),
       repo: {
-        upsertDocMeta: vi.fn(async () => {}),
+        upsertDocMeta: vi.fn(async (roomId: string, patch: Partial<SessionMeta>) => {
+          if (roomId === getSessionRoomId(sessionId)) {
+            currentMeta = { ...currentMeta, ...patch };
+          }
+        }),
         getDocMeta: vi.fn(async () => ({ meta: currentMeta })),
         openFlockDoc: vi.fn(async () => ({
           flock: {
@@ -354,21 +391,25 @@ function createRolloverExecutionHarness(options: {
     prompt: string,
     extra: {
       userTurnId?: string;
+      reuseExistingHistoryEntry?: boolean;
       configOptionValues?: Record<string, AcpConfigOptionValue>;
+      omitConfigOptionValues?: boolean;
       resume?: ACPSessionId;
       nativeSessionId?: string;
     } = {}
   ) => {
     const userTurnId = extra.userTurnId ?? `user-turn-${++turnCounter}`;
-    history.push({
-      id: userTurnId,
-      role: 'user',
-      author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
-      timestamp: '2026-11-27T02:00:00.000Z',
-      status: 'pending',
-      fileDiff: [],
-      items: [{ type: 'text', text: prompt }],
-    });
+    if (!extra.reuseExistingHistoryEntry || !history.some((e) => e.id === userTurnId)) {
+      history.push({
+        id: userTurnId,
+        role: 'user',
+        author: { v: 1, kind: 'human', userId: 'owner-user' },
+        timestamp: '2026-11-27T02:00:00.000Z',
+        status: 'pending',
+        fileDiff: [],
+        items: [{ type: 'text', text: prompt }],
+      });
+    }
     await service.continueSession({
       type: 'session/chat',
       sessionId,
@@ -381,10 +422,12 @@ function createRolloverExecutionHarness(options: {
       userEmail: 'owner@example.com',
       acpSessionConfig: {
         prompt,
-        cliType: 'registry',
-        agentType: 'antigravity',
+        cliType: currentMeta.cliType ?? 'registry',
+        agentType: currentMeta.agentType ?? 'antigravity',
         modelId: 'gemini-4-neon',
-        configOptionValues: extra.configOptionValues ?? { thought_level: 'xhigh' },
+        ...(extra.omitConfigOptionValues
+          ? {}
+          : { configOptionValues: extra.configOptionValues ?? { thought_level: 'xhigh' } }),
         ...(extra.resume ? { resume: extra.resume } : {}),
         ...(extra.nativeSessionId
           ? {
@@ -406,6 +449,7 @@ function createRolloverExecutionHarness(options: {
   return {
     service,
     deps,
+    sessionDoc,
     prompts,
     configApplies,
     history,
@@ -414,9 +458,20 @@ function createRolloverExecutionHarness(options: {
     retireSpy,
     createSessionSpy,
     setUsage,
+    setMeta: (patch: Partial<SessionMeta>) => {
+      currentMeta = { ...currentMeta, ...patch };
+    },
+    setNativeWork: (next: { kind?: 'running' | 'background' | null; unsettled?: boolean }) => {
+      liveNativeWorkKind = next.kind ?? null;
+      liveNativeWorkUnsettled = next.unsettled ?? false;
+    },
     getMeta: () => currentMeta,
     dropLiveAgent: () => {
       live = null;
+    },
+    replaceLiveAgent: (acpSessionId: ACPSessionId) => {
+      live = makeAgent(acpSessionId);
+      currentMeta = { ...currentMeta, acpSessionId };
     },
     sendContinue,
   };
@@ -566,7 +621,10 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       executionService: {
         getSessionRolloverState: (sid: SessionId) => rolloverStore.get(sid),
       } as never,
-      userResolver: { resolve: async () => ({ name: 'Owner', email: 'owner@example.com' }), clear: () => {} },
+      userResolver: {
+        resolve: async () => ({ id: 'owner-user', name: 'Owner', email: 'owner@example.com' }),
+        clear: () => {},
+      },
       canUseMachine: async () => ({ outcome: 'allowed' }),
     });
 
@@ -642,7 +700,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
         {
           id: 'turn-old-1',
           role: 'user',
-          author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+          author: { v: 1, kind: 'human', userId: 'owner-user' },
           timestamp: '2026-11-27T01:00:00.000Z',
           fileDiff: [],
           items: [{ type: 'text', text: 'Origin task' }],
@@ -658,7 +716,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
         {
           id: 'turn-old-2',
           role: 'user',
-          author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+          author: { v: 1, kind: 'human', userId: 'owner-user' },
           timestamp: '2026-11-27T01:01:00.000Z',
           fileDiff: [],
           items: [{ type: 'text', text: 'Closing round of node 1' }],
@@ -674,7 +732,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
         {
           id: 'turn-node2-1',
           role: 'user',
-          author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+          author: { v: 1, kind: 'human', userId: 'owner-user' },
           timestamp: '2026-11-27T02:00:00.000Z',
           fileDiff: [],
           items: [{ type: 'text', text: 'POST_ROLLOVER_TURN_SENTINEL' }],
@@ -744,7 +802,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     expect(replaySent).not.toContain('ANCIENT_PRE_ROLLOVER_BLOAT_SENTINEL_100K');
   });
 
-  it('Hard Trap #4: failed :renew keeps pendingSwitch intact and lets retry complete cleanly without duplicating nodes', async () => {
+  it('Hard Trap #4: failed :renew keeps pendingSwitch intact, marks M visibly failed without watcher spin, restores source ACP, and same-ID retry smoothly transitions divider failed -> switching -> done without duplicates', async () => {
     let failFirstRenew = true;
     const h = createRolloverExecutionHarness({
       onPrompt: ({ text, writeActiveAssistantText, setUsage }) => {
@@ -780,20 +838,55 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     const pendingBefore = (await h.rolloverStore.get(SESSION_ID))?.pendingSwitch;
     expect(pendingBefore).toBeDefined();
 
-    // First attempt of user message M fails during `:renew` -> pendingSwitch MUST remain intact!
-    await h.sendContinue('My important message M');
+    // First attempt of user message M fails during `:renew` -> pendingSwitch preserved,
+    // source ACP restored, M marked visibly failed (no watcher spin), divider status = 'failed'.
+    const messageId = await h.sendContinue('My important message M', {
+      userTurnId: 'user-m-retry',
+    });
+    expect(messageId).toBe('user-m-retry');
     const pendingAfterFailure = (await h.rolloverStore.get(SESSION_ID))?.pendingSwitch;
     expect(pendingAfterFailure?.runId).toBe(pendingBefore!.runId);
     expect((await h.rolloverStore.get(SESSION_ID))?.generation).toBe(0);
+    expect(h.getMeta().acpSessionId).toBe('acp-1');
+    expect(h.getMeta().lastHandledUserMsgId).toBe('user-m-retry');
+    expect(h.getMeta().lastFailedUserMsgId).toBe('user-m-retry');
+    const failedEntry = h.history.find((e) => e.id === 'user-m-retry');
+    expect(failedEntry?.status).toBe('failed');
+    // Watcher must NOT spin on the failed user turn!
+    expect(findNextDispatchableUserTurn(h.history, h.getMeta())).toBeNull();
+    // Divider shows failed on the same single divider entry.
+    const dividersAfterFail = h.history.filter(
+      (e) => e.role === 'system' && e.id.startsWith('session-rollover:')
+    );
+    expect(dividersAfterFail).toHaveLength(1);
+    expect(readSessionRolloverNotice(dividersAfterFail[0]!)).toMatchObject({
+      status: 'failed',
+      generation: 1,
+    });
     // M was NOT sent to the broken fresh session.
     expect(h.prompts.some((p) => p.text === 'My important message M')).toBe(false);
 
-    // Retry of M succeeds cleanly: single committed node #1, pure M delivered!
-    await h.sendContinue('My important message M');
+    // Retry using the EXACT SAME userTurnId: divider transitions failed -> switching -> done
+    // in place (zero duplicates!), lastFailedUserMsgId clears, and pure M is delivered!
+    await h.sendContinue('My important message M', {
+      userTurnId: 'user-m-retry',
+      reuseExistingHistoryEntry: true,
+    });
     const afterRetry = await h.rolloverStore.get(SESSION_ID);
     expect(afterRetry?.pendingSwitch).toBeUndefined();
     expect(afterRetry?.generation).toBe(1);
     expect(h.prompts.at(-1)?.text).toBe('My important message M');
+    expect(h.history.find((e) => e.id === 'user-m-retry')?.status).toBe('handled');
+    expect(h.getMeta().lastFailedUserMsgId).toBeUndefined();
+    const dividersAfterRetry = h.history.filter(
+      (e) => e.role === 'system' && e.id.startsWith('session-rollover:')
+    );
+    expect(dividersAfterRetry).toHaveLength(1);
+    expect(readSessionRolloverNotice(dividersAfterRetry[0]!)).toMatchObject({
+      status: 'done',
+      generation: 1,
+      usedAfter: 24_000,
+    });
   });
 
   it('Phase 0: bare /compact appends preservation instructions and writes visible status confirmation on zero-output completion without breaking ordinary silent turn failure', async () => {
@@ -822,7 +915,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
     );
   });
 
-  it('Phase 2 + Hard Trap #3: mid-turn native auto-compact (90k -> 520k -> 30k -> 60k) on an ordinary non-Board session marks degradedByNativeCompact, skips Board reminder, and forces cold Loro path on subsequent /rollover', async () => {
+  it('Phase 2 + Hard Trap #3: mid-turn native auto-compact (90k -> 520k -> 30k -> 60k) on an ordinary non-Board session automatically triggers cold post_compact_recovery seal without waking degraded acp-1', async () => {
     const coldCalls: string[] = [];
     const h = createRolloverExecutionHarness({
       board: null,
@@ -857,27 +950,33 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       },
     });
 
-    // Turn 1 triggers mid-turn usage drop (90k -> 520k -> 30k -> 60k).
+    // Turn 1 triggers mid-turn usage drop (90k -> 520k -> 30k -> 60k) -> automatically
+    // triggers `post_compact_recovery` cold Loro seal right at turn end!
     await h.sendContinue('Run the huge multi-file refactor');
-    expect(h.prompts).toHaveLength(1);
-    const degradedState = await h.rolloverStore.get(SESSION_ID);
-    expect(degradedState?.degradedByNativeCompact).toBe(true);
-    expect(degradedState?.pendingSwitch).toBeUndefined();
-    // Non-Board session must NEVER arm Board compact reinject store.
-    expect(await h.reinjectStore.has(SESSION_ID)).toBe(false);
-
-    // Subsequent `/rollover` MUST skip warm `:seal` on degraded acp-1 and use cold Loro summarizer!
-    await h.sendContinue('/rollover');
-    // Still only 1 ACP prompt (the original user turn) — ZERO warm `:seal` sent to acp-1!
+    // Still only 1 ACP prompt (the original user turn) — ZERO warm `:seal` sent to degraded acp-1!
     expect(h.prompts).toHaveLength(1);
     expect(coldCalls).toHaveLength(1);
     expect(coldCalls[0]).toContain('Run the huge multi-file refactor');
     expect(coldCalls[0]).toContain('Finished long refactor after mid-turn compact.');
+    // Non-Board session must NEVER arm Board compact reinject store.
+    expect(await h.reinjectStore.has(SESSION_ID)).toBe(false);
 
     const sealed = await h.rolloverStore.get(SESSION_ID);
-    expect(sealed?.pendingSwitch).toBeDefined();
+    expect(sealed?.degradedByNativeCompact).toBe(true);
+    expect(sealed?.pendingSwitch).toMatchObject({
+      reason: 'post_compact_recovery',
+      targetGen: 1,
+    });
     expect(sealed?.stateCard.lockedInvariants).toContain('COLD_PATH_INVARIANT_SENTINEL');
     expect(sealed?.spine.at(-1)?.quality).toBe('cold_llm');
+    const divider = h.history.find(
+      (e) => e.id === sessionRolloverTurnId(sealed!.pendingSwitch!.runId)
+    );
+    expect(readSessionRolloverNotice(divider!)).toMatchObject({
+      trigger: 'recovery',
+      status: 'sealed',
+      generation: 1,
+    });
   });
 
   it('Phase 2 + Hard Trap #6: end-of-turn auto warm :seal triggers at >= 350k, lazily switches on next turn, and suppresses false usage_drop even when low usage arrives deferred on turn N+1', async () => {
@@ -1023,7 +1122,7 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
                 {
                   id: 'turn-u1',
                   role: 'user',
-                  author: { v: 1, kind: 'human', userId: 'owner-user', name: 'Owner' },
+                  author: { v: 1, kind: 'human', userId: 'owner-user' },
                   timestamp: '2026-11-27T01:00:00.000Z',
                   status: 'handled',
                   fileDiff: [],
@@ -1126,5 +1225,569 @@ describe('Session linear rollover end-to-end execution (Form B & hard-trap regre
       status: 'interrupted',
     });
     expect(isSilentSessionRollover(notice!)).toBe(true);
+  });
+
+  it('Round 1 #1: :renew returning cancelled, refusal, or empty visible output keeps pendingSwitch intact and never commits node', async () => {
+    const cases: Array<{
+      name: string;
+      renewOutcome: { stopReason?: string; text?: string };
+      expectedDividerStatus: 'failed' | 'interrupted';
+    }> = [
+      {
+        name: 'stopReason=cancelled',
+        renewOutcome: { stopReason: 'cancelled', text: 'Ready.' },
+        expectedDividerStatus: 'interrupted',
+      },
+      {
+        name: 'stopReason=refusal',
+        renewOutcome: { stopReason: 'refusal', text: 'Cannot comply.' },
+        expectedDividerStatus: 'failed',
+      },
+      {
+        name: 'empty visible output',
+        renewOutcome: { stopReason: 'end_turn', text: '' },
+        expectedDividerStatus: 'failed',
+      },
+    ];
+
+    for (const tc of cases) {
+      const h = createRolloverExecutionHarness({
+        onPrompt: ({ text, writeActiveAssistantText }) => {
+          if (text.includes('[Lody Internal Handoff Seal')) {
+            writeActiveAssistantText(
+              JSON.stringify({
+                oneLiner: 'Sealed',
+                stateCard: {
+                  goalAndPlan: 'G',
+                  lockedInvariants: [],
+                  decisionsAndDeadEnds: [],
+                  workspaceFacts: '',
+                  openAndNext: 'Next',
+                },
+              })
+            );
+            return { stopReason: 'end_turn' };
+          }
+          if (text.includes('[Lody Session Node Handoff')) {
+            if (tc.renewOutcome.text) writeActiveAssistantText(tc.renewOutcome.text);
+            return { stopReason: tc.renewOutcome.stopReason };
+          }
+          writeActiveAssistantText('Unexpected user turn delivery');
+          return { stopReason: 'end_turn' };
+        },
+      });
+
+      await h.sendContinue('/rollover');
+      const runId = (await h.rolloverStore.get(SESSION_ID))?.pendingSwitch?.runId;
+      expect(runId, tc.name).toBeDefined();
+
+      await h.sendContinue('Deliver me only after valid renew');
+      const state = await h.rolloverStore.get(SESSION_ID);
+      expect(state?.pendingSwitch?.runId, tc.name).toBe(runId);
+      expect(state?.generation, tc.name).toBe(0);
+      expect(
+        h.prompts.some((p) => p.text === 'Deliver me only after valid renew'),
+        tc.name
+      ).toBe(false);
+      const divider = h.history.find((e) => e.id === sessionRolloverTurnId(runId!));
+      expect(readSessionRolloverNotice(divider!)?.status, tc.name).toBe(tc.expectedDividerStatus);
+    }
+  });
+
+  it('Round 1 #3: Edit & Resend after seal invalidates stale pendingSwitch without retiring the edited ACP session', async () => {
+    const h = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 120_000 } },
+      onPrompt: ({ text, writeActiveAssistantText }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Sealed before edit-and-resend',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: [],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        writeActiveAssistantText('Answered edited message directly.');
+      },
+    });
+
+    await h.sendContinue('/rollover');
+    const sealedState = await h.rolloverStore.get(SESSION_ID);
+    const staleRunId = sealedState?.pendingSwitch?.runId;
+    expect(staleRunId).toBeDefined();
+
+    // Simulate Edit & Resend rewriting history (removing `assistant:turn-u1`) and replacing ACP session.
+    const idx = h.history.findIndex((e) => e.id === 'assistant:turn-u1');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    h.history.splice(idx, 1);
+    h.replaceLiveAgent('acp-edited-fork' as ACPSessionId);
+
+    await h.sendContinue('Edited replacement message');
+    // Stale pendingSwitch invalidated; edited ACP was NEVER retired or replaced by `:renew`!
+    expect(h.retireSpy).not.toHaveBeenCalled();
+    expect(h.createSessionSpy).not.toHaveBeenCalled();
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    const staleDivider = h.history.find((e) => e.id === sessionRolloverTurnId(staleRunId!));
+    expect(readSessionRolloverNotice(staleDivider!)).toMatchObject({
+      status: 'interrupted',
+      reason: 'history-rewritten',
+    });
+    expect(h.prompts.at(-1)).toMatchObject({
+      acpSessionId: 'acp-edited-fork',
+      text: 'Edited replacement message',
+    });
+  });
+
+  it('Round 1 #4: first message M after :renew experiencing stale-ACP disconnect retries on NEW acpSessionId, never old acp-1', async () => {
+    let failFirstUserPrompt = true;
+    const h = createRolloverExecutionHarness({
+      hasPromptEventsForTurn: () => false,
+      onPrompt: ({ text, writeActiveAssistantText, setUsage }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Sealed before disconnect test',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: [],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        if (text.includes('[Lody Session Node Handoff')) {
+          writeActiveAssistantText('Ready.');
+          setUsage(25_000);
+          return;
+        }
+        if (failFirstUserPrompt) {
+          failFirstUserPrompt = false;
+          throw Object.assign(new Error('Session not found'), { code: -32603 });
+        }
+        writeActiveAssistantText('Recovered on new node.');
+      },
+    });
+
+    await h.sendContinue('/rollover');
+    // Carry explicit pre-rollover `resume: 'acp-1'` to prove rollover updates effectiveResumeSessionId!
+    await h.sendContinue('Message M hitting disconnect', { resume: 'acp-1' as ACPSessionId });
+
+    // createSession call 0: fresh node (`resumeSessionId: undefined` -> `acp-fresh-1`).
+    // createSession call 1: stale-ACP disconnect recovery -> MUST resume `acp-fresh-1`, NOT `acp-1`!
+    expect(h.createSessionSpy).toHaveBeenCalledTimes(2);
+    expect(h.createSessionSpy.mock.calls[1]?.[1]).toMatchObject({
+      resumeSessionId: 'acp-fresh-1',
+    });
+    expect(h.prompts.at(-1)).toMatchObject({
+      acpSessionId: 'acp-fresh-1',
+      text: 'Message M hitting disconnect',
+    });
+  });
+
+  it('Round 1 #5: implicit default thought_level (xhigh) lowers to low for :renew and explicitly restores xhigh for user message M', async () => {
+    const h = createRolloverExecutionHarness({
+      onPrompt: ({ text, writeActiveAssistantText, setUsage }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Sealed',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: [],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        if (text.includes('[Lody Session Node Handoff')) {
+          writeActiveAssistantText('Ready.');
+          setUsage(22_000);
+          return;
+        }
+        writeActiveAssistantText('Answered M at restored xhigh.');
+      },
+    });
+
+    await h.sendContinue('/rollover');
+    // Omit configOptionValues to simulate implicit default `thought_level: 'xhigh'` advertised by ACP.
+    await h.sendContinue('User message with implicit default thinking', {
+      omitConfigOptionValues: true,
+    });
+
+    expect(h.configApplies).toHaveLength(2);
+    expect(h.configApplies[0]).toMatchObject({
+      acpSessionId: 'acp-fresh-1',
+      configOptionValues: { thought_level: 'low' },
+    });
+    expect(h.configApplies[1]).toMatchObject({
+      acpSessionId: 'acp-fresh-1',
+      configOptionValues: { thought_level: 'xhigh' },
+    });
+  });
+
+  it('Round 1 #6: live native background work on active agentClient blocks BOTH end-of-turn auto :seal AND lazy :renew retirement', async () => {
+    const h = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 370_000 } },
+      nativeWork: { kind: 'background' },
+      onPrompt: ({ text, setUsage, writeActiveAssistantText }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Manual seal',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: [],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        setUsage(370_000);
+        writeActiveAssistantText('Running with live native background task.');
+      },
+    });
+
+    // 1. Live `getNativeWork() -> { kind: 'background' }` blocks end-of-turn auto `:seal`.
+    await h.sendContinue('Kick off background work');
+    expect(h.prompts).toHaveLength(1);
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+
+    // 2. Even if `/rollover` arms `pendingSwitch`, live native background work blocks retiring old ACP!
+    await h.sendContinue('/rollover');
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
+
+    await h.sendContinue('Check status while background task still running');
+    expect(h.retireSpy).not.toHaveBeenCalled();
+    expect(h.createSessionSpy).not.toHaveBeenCalled();
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
+    expect(h.prompts.at(-1)?.acpSessionId).toBe('acp-1');
+  });
+
+  it('Round 1 #7: SessionDispatchWatcher preempts in-flight auto :seal on incoming user activation and writes silent auto+interrupted without pendingSwitch', async () => {
+    let sealStartedResolve!: () => void;
+    const sealStarted = new Promise<void>((resolve) => {
+      sealStartedResolve = resolve;
+    });
+
+    const h = createRolloverExecutionHarness({
+      metaPatch: {
+        contextWindowUsage: { size: 1_000_000, used: 200_000 },
+      },
+      onPrompt: async ({ callIndex, signal, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          setUsage(370_000);
+          writeActiveAssistantText('Turn 1 complete.');
+          return;
+        }
+        sealStartedResolve();
+        await new Promise<void>((_resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error('cancelled'));
+            return;
+          }
+          signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        });
+      },
+    });
+
+    const turn1 = h.sendContinue('Heavy turn triggering auto seal');
+    await sealStarted;
+
+    // Simulate a new user turn activation arriving at SessionDispatchWatcher while auto `:seal` owns the slot.
+    h.setMeta({ latestUserMsgId: 'u-incoming-new', lastHandledUserMsgId: 'turn-u1' });
+    const enqueueSpy = vi.fn(async () => {});
+    const watcher = new SessionDispatchWatcher({
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never,
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+      workspaceDocument: h.deps.workspaceDocument,
+      executionService: h.service,
+      userResolver: {
+        resolve: async () => ({ id: 'owner-user', name: 'Owner', email: 'owner@example.com' }),
+        clear: () => {},
+      },
+      canUseMachine: async () => ({ outcome: 'allowed' }),
+    });
+    (watcher as unknown as { enqueueSessionCheck: typeof enqueueSpy }).enqueueSessionCheck =
+      enqueueSpy;
+
+    await (
+      watcher as unknown as { maybeHandleSession: (sid: SessionId) => Promise<void> }
+    ).maybeHandleSession(SESSION_ID);
+
+    await turn1;
+    // Wait a microtask tick for `sealRelease.then(() => enqueueSessionCheck)` to fire.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeUndefined();
+    const divider = h.history.find((e) => e.role === 'system' && e.id.startsWith('session-rollover:'));
+    expect(isSilentSessionRollover(readSessionRolloverNotice(divider!)!)).toBe(true);
+    expect(enqueueSpy).toHaveBeenCalledWith(SESSION_ID);
+  });
+
+  it('Round 1 #8: watcher-dispatched _lodyAutomation.nativeSessionId blocks BOTH auto :seal and lazy :renew (never throws AUTOMATION_NATIVE_SESSION_CHANGED)', async () => {
+    const h = createRolloverExecutionHarness({
+      metaPatch: { contextWindowUsage: { size: 1_000_000, used: 370_000 } },
+      onPrompt: ({ text, setUsage, writeActiveAssistantText }) => {
+        if (text.includes('[Lody Internal Handoff Seal')) {
+          writeActiveAssistantText(
+            JSON.stringify({
+              oneLiner: 'Manual seal before pinned automation turn',
+              stateCard: {
+                goalAndPlan: 'G',
+                lockedInvariants: [],
+                decisionsAndDeadEnds: [],
+                workspaceFacts: '',
+                openAndNext: '',
+              },
+            })
+          );
+          return;
+        }
+        setUsage(370_000);
+        writeActiveAssistantText('Pinned automation check done.');
+      },
+    });
+    h.service.setAutomationAdmission(
+      async () => true,
+      () => true
+    );
+    vi.spyOn(h.service, 'acceptAutomationInput').mockResolvedValue(true);
+
+    // Arm a pendingSwitch via `/rollover`, then dispatch a pinned automation turn via
+    // `dispatchPreparedSessionTurn` carrying `_lodyAutomation.nativeSessionId` on `invocation.inputConfig`
+    // (and verify `buildChatRequestFromHistoryEntry` also propagates `_lodyAutomation`).
+    await h.sendContinue('/rollover');
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
+
+    const pinnedAutomation = {
+      invocationId: 'inv-pinned-watcher',
+      ruleId: 'rule-pinned-watcher',
+      ruleRevision: 1,
+      eventRef: 'evt-pinned-watcher',
+      authorizationUserId: 'owner-user',
+      nativeSessionId: 'acp-1',
+    };
+    const watcher = new SessionDispatchWatcher({
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never,
+      machineId: MACHINE_ID,
+      workspaceId: WORKSPACE_ID,
+      workspaceDocument: h.deps.workspaceDocument,
+      executionService: h.service,
+      userResolver: {
+        resolve: async () => ({ id: 'owner-user', name: 'Owner', email: 'owner@example.com' }),
+        clear: () => {},
+      },
+      canUseMachine: async () => ({ outcome: 'allowed' }),
+    });
+    const pinnedEntry: SessionHistoryInput = {
+      id: 'user-pinned-auto',
+      role: 'user',
+      timestamp: '2026-11-27T02:10:00.000Z',
+      status: 'pending',
+      fileDiff: [],
+      items: [{ type: 'text', text: 'Run pinned automation check' }],
+      inputConfig: {
+        prompt: 'Run pinned automation check',
+        cliType: 'registry',
+        agentType: 'antigravity',
+        modelId: 'gemini-4-neon',
+        resume: 'acp-1' as ACPSessionId,
+        _lodyAutomation: pinnedAutomation,
+      },
+    };
+    h.history.push(pinnedEntry);
+    const builtChatReq = await (
+      watcher as unknown as {
+        buildChatRequestFromHistoryEntry: (...args: unknown[]) => Promise<Record<string, unknown>>;
+      }
+    ).buildChatRequestFromHistoryEntry(h.getMeta(), pinnedEntry, undefined, {
+      id: 'owner-user',
+      name: 'Owner',
+      email: 'owner@example.com',
+    });
+    expect(
+      (builtChatReq.acpSessionConfig as { _lodyAutomation?: unknown })._lodyAutomation
+    ).toEqual(pinnedAutomation);
+
+    await h.service.dispatchPreparedSessionTurn({
+      sessionId: SESSION_ID,
+      sessionDoc: h.sessionDoc as unknown as SessionDocument,
+      userTurnId: 'user-pinned-auto',
+      invocation: {
+        sourceTurnId: 'user-pinned-auto',
+        requesterUserId: 'owner-user',
+        inputConfig: pinnedEntry.inputConfig!,
+      },
+      dispatchSource: 'crdt',
+      accessPromise: Promise.resolve({ outcome: 'allowed' }),
+      requestPromise: Promise.resolve({ mode: 'continue', request: builtChatReq as never }),
+      onAccessAllowed: async () => {},
+      onAccessDenied: async () => {},
+      onAccessIndeterminate: async () => {},
+    });
+
+    // Must stay on `acp-1`, preserve `pendingSwitch`, and NOT throw AUTOMATION_NATIVE_SESSION_CHANGED!
+    expect(h.retireSpy).not.toHaveBeenCalled();
+    expect(h.createSessionSpy).not.toHaveBeenCalled();
+    expect(h.prompts.at(-1)).toMatchObject({
+      acpSessionId: 'acp-1',
+      text: 'Run pinned automation check',
+    });
+    expect((await h.rolloverStore.get(SESSION_ID))?.pendingSwitch).toBeDefined();
+    expect(h.deps.recordChatFailure).not.toHaveBeenCalled();
+  });
+
+  it('Round 1 #9 deferred recovery: when a safety gate blocks post_compact_recovery on turn 1, degradedByNativeCompact persists and auto-recovers on the next safe turn', async () => {
+    const coldCalls: string[] = [];
+    const h = createRolloverExecutionHarness({
+      board: null,
+      metaPatch: {
+        boardId: undefined,
+        boardRole: undefined,
+        contextWindowUsage: { size: 1_000_000, used: 90_000 },
+        // Queued user message blocks recovery on turn 1
+        messageQueueUpdatedAt: 200,
+        messageQueueCheckedAt: 100,
+      },
+      coldSummarizer: async ({ prompt }) => {
+        coldCalls.push(prompt);
+        return JSON.stringify({
+          oneLiner: 'Deferred cold recovery succeeded',
+          stateCard: {
+            goalAndPlan: 'Recovered on next safe boundary',
+            lockedInvariants: ['DEFERRED_RECOVERY_INVARIANT'],
+            decisionsAndDeadEnds: [],
+            workspaceFacts: '',
+            openAndNext: '',
+          },
+        });
+      },
+      onPrompt: ({ callIndex, service, setUsage, writeActiveAssistantText }) => {
+        if (callIndex === 0) {
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 520_000 });
+          service.noteContextWindowUsageUpdate(SESSION_ID, { size: 1_000_000, used: 40_000 });
+          setUsage(40_000);
+          writeActiveAssistantText('Turn 1 done with mid-turn compact.');
+        } else {
+          writeActiveAssistantText('Turn 2 done on safe boundary.');
+        }
+      },
+    });
+
+    await h.sendContinue('Turn 1 with queued work pending');
+    expect(coldCalls).toHaveLength(0);
+    const afterTurn1 = await h.rolloverStore.get(SESSION_ID);
+    expect(afterTurn1?.degradedByNativeCompact).toBe(true);
+    expect(afterTurn1?.pendingSwitch).toBeUndefined();
+
+    // Queue drains -> Turn 2 completes on a safe boundary -> automatic cold post_compact_recovery fires!
+    h.setMeta({ messageQueueCheckedAt: 200 });
+    await h.sendContinue('Turn 2 after queue drained');
+    expect(coldCalls).toHaveLength(1);
+    const afterTurn2 = await h.rolloverStore.get(SESSION_ID);
+    expect(afterTurn2?.pendingSwitch?.reason).toBe('post_compact_recovery');
+    expect(afterTurn2?.stateCard.lockedInvariants).toContain('DEFERRED_RECOVERY_INVARIANT');
+  });
+
+  it('Round 1 #10: manual /rollover on a session idle > 8 min captures pre-touch activity and takes cold path without waking old ACP', async () => {
+    const now = 1_700_000_000_000;
+    const coldCalls: string[] = [];
+    const h = createRolloverExecutionHarness({
+      nowMs: () => now,
+      // Idle 15 minutes (> 8 min warm TTL); `touchSession` in harness refreshes `lastTouchedActivityMs = now`!
+      initialLastActivityMs: now - 15 * 60_000,
+      coldSummarizer: async ({ prompt }) => {
+        coldCalls.push(prompt);
+        return JSON.stringify({
+          oneLiner: 'Cold sealed after 15m idle',
+          stateCard: {
+            goalAndPlan: 'Cold path verified',
+            lockedInvariants: [],
+            decisionsAndDeadEnds: [],
+            workspaceFacts: '',
+            openAndNext: '',
+          },
+        });
+      },
+    });
+
+    await h.sendContinue('/rollover');
+    // ZERO prompts sent to the cold live ACP process!
+    expect(h.prompts).toHaveLength(0);
+    expect(coldCalls).toHaveLength(1);
+    const sealed = await h.rolloverStore.get(SESSION_ID);
+    expect(sealed?.pendingSwitch).toBeDefined();
+    expect(sealed?.spine.at(-1)?.quality).toBe('cold_llm');
+  });
+
+  it('Round 1 #14: zero-output /compact confirmation requires agy bare end_turn OR compaction evidence; silent non-agy /compact without evidence fails as agent_no_output', async () => {
+    // 1. Codex `/compact` with zero output and NO compaction marker / NO usage drop -> agent_no_output!
+    const codexSilent = createRolloverExecutionHarness({
+      metaPatch: {
+        cliType: 'builtin',
+        agentType: 'codex',
+        contextWindowUsage: { size: 400_000, used: 120_000 },
+      },
+      observePromptContentForTurn: () => false,
+    });
+    await codexSilent.sendContinue('/compact', { userTurnId: 'codex-silent-compact' });
+    expect(codexSilent.deps.recordChatFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      'agent_no_output',
+      expect.any(String)
+    );
+    const codexSilentEntry = codexSilent.history.find(
+      (e) => e.id === 'assistant:codex-silent-compact'
+    );
+    expect(codexSilentEntry?.items ?? []).toEqual([]);
+
+    // 2. Codex `/compact` with zero output WITH real usage drop (120k -> 18k) -> writes visible confirmation!
+    const codexDropped = createRolloverExecutionHarness({
+      metaPatch: {
+        cliType: 'builtin',
+        agentType: 'codex',
+        contextWindowUsage: { size: 400_000, used: 120_000 },
+      },
+      observePromptContentForTurn: () => false,
+      onPrompt: ({ service, setUsage }) => {
+        service.noteContextWindowUsageUpdate(SESSION_ID, { size: 400_000, used: 18_000 });
+        setUsage(18_000);
+        return { stopReason: 'end_turn' };
+      },
+    });
+    await codexDropped.sendContinue('/compact', { userTurnId: 'codex-dropped-compact' });
+    expect(codexDropped.deps.recordChatFailure).not.toHaveBeenCalled();
+    expect(
+      codexDropped.history.find((e) => e.id === 'assistant:codex-dropped-compact')?.items
+    ).toEqual([{ type: 'text', text: EXPLICIT_COMPACT_VISIBLE_FALLBACK_TEXT }]);
+
+    // 3. Antigravity bare `/compact` returning `stopReason: 'refusal'` with zero output and no evidence -> agent_no_output!
+    const agyRefused = createRolloverExecutionHarness({
+      observePromptContentForTurn: () => false,
+      onPrompt: () => ({ stopReason: 'refusal' }),
+    });
+    await agyRefused.sendContinue('/compact', { userTurnId: 'agy-refused-compact' });
+    expect(agyRefused.deps.recordChatFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      'agent_no_output',
+      expect.any(String)
+    );
   });
 });

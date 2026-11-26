@@ -53,6 +53,8 @@ export type SessionRolloverPendingSwitch = {
   sealedAtMs: number;
   usedBefore?: number;
   userHint?: string;
+  /** Fresh ACP session created for an in-flight `:renew` attempt before completion. */
+  attemptingAcpSessionId?: string;
   /** Recorded once `:renew` has completed on a fresh ACP session, for crash-recovery convergence. */
   preparedAcpSessionId?: string;
 };
@@ -117,6 +119,7 @@ const SessionRolloverPendingSwitchSchema = z.object({
   sealedAtMs: z.number().nonnegative(),
   usedBefore: z.number().nonnegative().optional(),
   userHint: z.string().optional(),
+  attemptingAcpSessionId: z.string().min(1).optional(),
   preparedAcpSessionId: z.string().min(1).optional(),
 });
 
@@ -187,6 +190,25 @@ function normalizeStateForPersistence(
 
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/**
+ * Thrown by the file-backed rollover store when reading an existing state file
+ * fails with a non-`ENOENT` I/O error (e.g. `EACCES`, `EMFILE`, `EIO`). Callers
+ * and `update()` MUST fail closed rather than treating the error as an empty
+ * gen-0 state and overwriting persisted state on disk.
+ */
+export class SessionRolloverStoreReadError extends Error {
+  readonly code?: string;
+  constructor(sessionId: SessionId, cause: unknown) {
+    const code = (cause as NodeJS.ErrnoException | null | undefined)?.code;
+    super(
+      `Failed to read session rollover state for ${sessionId}${code ? ` (${code})` : ''}: ${formatError(cause)}`,
+      { cause }
+    );
+    this.name = 'SessionRolloverStoreReadError';
+    this.code = code;
+  }
+}
 
 export function createMemorySessionRolloverStore(): SessionRolloverStore {
   const states = new Map<SessionId, SessionRolloverState>();
@@ -288,9 +310,9 @@ export function createFileSessionRolloverStore(options?: {
         return { state: undefined, cacheable: true };
       }
       options?.logger?.warn(
-        `[${sessionId}] Failed to read session rollover state; will retry next access: ${formatError(error)}`
+        `[${sessionId}] Failed to read session rollover state; refusing to treat as empty: ${formatError(error)}`
       );
-      return { state: undefined, cacheable: false };
+      throw new SessionRolloverStoreReadError(sessionId, error);
     }
     try {
       const parsed = SessionRolloverStateSchema.safeParse(JSON.parse(raw));

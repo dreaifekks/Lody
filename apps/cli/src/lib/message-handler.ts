@@ -47,6 +47,7 @@ import { encodeSessionFilePath, resolveSessionPullRequests } from '@lody/shared'
 import { SessionAutomationAuthority } from '@/session/session-automation-authority';
 import { createFileBoardCompactReinjectStore } from '@/session/board-compact-reinject';
 import { createFileSessionRolloverStore } from '@/session/session-rollover-store';
+import { createIsolatedColdRolloverSummarizer } from '@/session/session-rollover-service';
 import type { SessionFileRoot } from '@lody/shared';
 import { resolveProjectFileRoots } from '@/session/worktree/project-member-access';
 import { worktreeGitLegacy } from '@/session/worktree/git-execution-legacy';
@@ -3617,6 +3618,12 @@ export class MessageHandler {
       encryptedWorkspace: config.encryptedWorkspace,
       boardCompactReinjectStore: createFileBoardCompactReinjectStore({ logger: this.logger }),
       sessionRolloverStore: createFileSessionRolloverStore({ logger: this.logger }),
+      sessionRolloverColdSummarizer: createIsolatedColdRolloverSummarizer({
+        workspaceDocument: this.workspaceDocument,
+        workspaceId: this.workspaceId,
+        machineId: this.machineId,
+        logger: this.logger,
+      }),
       getSessionLastActivity: (sessionId) => this.getLastActivity(sessionId),
       logger: this.logger,
       sessionManager: this.sessionManager,
